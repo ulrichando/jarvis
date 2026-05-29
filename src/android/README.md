@@ -168,3 +168,9 @@ jarvis://chat?session=<conversationId>
 
 Opens the chat screen directly to the specified conversation. Handled by
 `MainActivity` via `launchMode="singleTask"`.
+
+---
+
+## Dependency roadmap
+
+AGP 8.7.3 → 9.x is a planned major upgrade (requires Gradle 9, new DSL interfaces; AGP 10 mid-2026 removes the 8.x opt-out). Deferred — verify LiteRT-LM / Kotlin 2.2 metadata coupling before bumping Kotlin past 2.2.
