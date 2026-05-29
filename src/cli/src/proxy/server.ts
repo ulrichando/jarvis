@@ -113,9 +113,24 @@ async function executeWithFallback(
   }
 }
 
+// Safety guard: refuse to bind on a non-loopback interface unless the operator
+// has explicitly opted in. The proxy has NO inbound auth — exposing it to the
+// LAN would create an open key-spending LLM relay accessible to any host on
+// the network. Default (127.0.0.1 / localhost / ::1) is always allowed; set
+// JARVIS_ALLOW_PUBLIC_BIND=1 to override for deliberate public deployments.
+const PROXY_HOST = process.env.JARVIS_PROXY_HOST ?? '127.0.0.1'
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1'])
+if (!LOOPBACK_HOSTS.has(PROXY_HOST) && process.env.JARVIS_ALLOW_PUBLIC_BIND !== '1') {
+  console.error(
+    `[jarvis-proxy] refusing non-loopback bind "${PROXY_HOST}" without JARVIS_ALLOW_PUBLIC_BIND=1 — ` +
+    'the proxy has no inbound auth; binding to a public interface would expose an open LLM relay to the network.',
+  )
+  process.exit(1)
+}
+
 const server = Bun.serve({
   port: PORT,
-  hostname: process.env.JARVIS_PROXY_HOST ?? '127.0.0.1',
+  hostname: PROXY_HOST,
   async fetch(req) {
     const url = new URL(req.url)
 
