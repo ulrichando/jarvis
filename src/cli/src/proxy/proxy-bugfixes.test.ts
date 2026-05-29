@@ -345,8 +345,10 @@ describe('gpt-oss-120b reasoning-budget floor (Fix 4)', () => {
 // non-transient → fallback is defeated exactly when it fires.
 //
 // Fix: clampRequestForProvider(openaiReq, provider) re-shapes an already-
-// converted OpenAI body for a different target provider. convertRequest now
-// calls it internally for the primary path too (single source of truth — DRY).
+// converted OpenAI body for a different target provider. The primary path is
+// clamped in executeWithFallback (server.ts), not inside convertRequest;
+// convertRequest and clampRequestForProvider apply equivalent clamp logic
+// independently (verified equivalent by the last test in this describe block).
 
 describe('clampRequestForProvider — fallback re-shaping (Fix 8)', () => {
   // Scenario: deepseek-v4-pro primary (cap 65536, no maxTools limit) fails;
@@ -448,7 +450,7 @@ describe('clampRequestForProvider — fallback re-shaping (Fix 8)', () => {
     expect(out.tool_choice).toBeUndefined()
   })
 
-  // Idempotency: primary went through convertRequest → clampRequestForProvider;
+  // Idempotency: primary went through executeWithFallback → clampRequestForProvider;
   // running clamp again for the same provider must not change values.
   test('idempotent when applied twice with the same provider', () => {
     const groq = getProviderForModel('qwen/qwen3-32b')!
@@ -459,9 +461,10 @@ describe('clampRequestForProvider — fallback re-shaping (Fix 8)', () => {
     expect(twice.tools.length).toBe(once.tools.length)
   })
 
-  // Primary behavior preservation: convertRequest output for a groq provider
+  // Primary behavior equivalence: convertRequest output for a groq provider
   // must equal clampRequestForProvider applied to an unclamped body for the
-  // same provider. This confirms the DRY refactor doesn't change primary behavior.
+  // same provider. This confirms that executeWithFallback's clamp (applied to
+  // the primary at index 0) produces the same result as convertRequest alone.
   test('convertRequest primary output equals clampRequestForProvider output for same provider', () => {
     const groq = getProviderForModel('qwen/qwen3-32b')!
     const anthropicReq = {
