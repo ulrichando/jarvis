@@ -663,6 +663,6 @@ registry.register(
     handler=_handle_image_generate,
     check_fn=check_image_generation_requirements,
     requires_env=["OPENAI_API_KEY", "XAI_API_KEY"],
-    is_async=False,  # sync SDK / HTTP calls; the adapter runs sync handlers fine.
+    is_async=False,  # sync SDK / HTTP; the adapter offloads sync handlers via asyncio.to_thread.
     emoji="🎨",
 )
