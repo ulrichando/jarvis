@@ -1,0 +1,40 @@
+name: cli-tests
+
+# Runs the jarvis CLI test suite on every push/PR that touches src/cli/**.
+# The CLI is a large TS/Bun fork — start non-blocking while coverage
+# is established, then ratchet to required once the suite is stable.
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "src/cli/**"
+      - ".github/workflows/cli-tests.yml"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "src/cli/**"
+      - ".github/workflows/cli-tests.yml"
+
+jobs:
+  bun-test:
+    name: bun test (linux)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/cli
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: bun install
+        run: bun install
+
+      - name: bun test
+        # cli is a large fork; start non-blocking and ratchet to required
+        # once the suite is confirmed green on the CI runner.
+        continue-on-error: true
+        run: bun test

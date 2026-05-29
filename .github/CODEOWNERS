@@ -1,0 +1,13 @@
+# CODEOWNERS — Load-bearing paths require maintainer review.
+# Mirrors the automod HARD_BLOCKLIST_PATHS defined in
+# src/voice-agent/pipeline/automod/_state.py and documented in CLAUDE.md.
+# GitHub enforces these as required reviews on any PR touching these paths.
+
+# Load-bearing — require maintainer review
+/src/voice-agent/sanitizers/        @ulrichando
+/src/voice-agent/confab_detector.py @ulrichando
+/src/voice-agent/prompts/soul.md    @ulrichando
+/src/voice-agent/pipeline/automod/  @ulrichando
+/CLAUDE.md                          @ulrichando
+/.claude/rules/                     @ulrichando
+/SECURITY.md                        @ulrichando
