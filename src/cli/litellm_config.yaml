@@ -1,3 +1,7 @@
+# ⚠️ DEAD CONFIG — NOT wired into the live JARVIS proxy.
+# The live LLM proxy is src/proxy/server.ts (Bun) using src/utils/model/jarvisModelRegistry.ts.
+# These mappings are stale/reference-only and DO NOT reflect actual routing. Do not trust for debugging.
+
 model_list:
 
   # ── DeepSeek ──────────────────────────────────────────────────
