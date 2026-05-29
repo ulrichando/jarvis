@@ -84,7 +84,7 @@ onnxruntime~=1.20
 ai-edge-litert>=2.1.5  # DTLN-aec L3 neural echo cancellation (audio/dtln_aec.py)
 # pkg_resources (transitively required by older deps); pin to a setuptools
 # version that still ships it (82+ removed pkg_resources).
-setuptools<70
+setuptools>=78.1.1,<82
 
 # LangChain + LangGraph orchestration. The voice loop's per-turn dispatch
 # is expressed as a StateGraph in turn_graph.py; the classifier uses
