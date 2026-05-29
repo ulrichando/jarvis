@@ -20,7 +20,7 @@
   },
   "keywords": ["ai", "cli", "assistant", "coding", "multi-provider"],
   "author": "Ulrich Ando",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "bugs": {
     "url": "https://github.com/ulrichando/jarvis/issues"
   },
