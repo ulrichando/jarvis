@@ -141,15 +141,60 @@ for unit in jarvis-voice-agent.service jarvis-voice-client.service; do
   fi
 done
 
-# ── Start proxy (4000) ────────────────────────────────────────────────
-"$BUN" "$ROOT/src/proxy/server.ts" &>/tmp/jarvis-proxy.log &
-PROXY_PID=$!
+# ── Start proxy (4000) with auto-respawn ─────────────────────────────
+# Background supervisor — keeps the proxy alive across crashes. Live
+# failure 2026-05-29: proxy died silently mid-session; the bridge kept
+# routing chat queries to :4000, every reply came back as Bun's
+# "Unable to connect. Is the computer able to access the url?" string
+# (visible verbatim in the JARVIS chat panel). Supervisor respawns
+# with a 2s back-off, capped at 5 restarts per 30s window — past that
+# the proxy is assumed broken (env missing, port conflict, syntax
+# error) and we stop pegging the CPU.
+# Output: the supervisor's notices AND the child's stdout/stderr both
+# append to /tmp/jarvis-proxy.log. Truncate once at script start so
+# each launcher invocation starts with a fresh log.
+: > /tmp/jarvis-proxy.log
+(
+  # The parent script runs under `set -euo pipefail`, which propagates
+  # into this subshell. Disable -e here: `wait $PROXY_CHILD` returns
+  # the child's exit code, and a non-zero crash would otherwise abort
+  # the supervisor on the very first failure — the opposite of what we
+  # want. The supervisor's whole job is to loop on non-zero exits.
+  set +e
+  PROXY_RESTARTS=0
+  PROXY_WINDOW_START=$(date +%s)
+  while true; do
+    "$BUN" "$ROOT/src/proxy/server.ts" >>/tmp/jarvis-proxy.log 2>&1 &
+    PROXY_CHILD=$!
+    # Forward SIGTERM/SIGINT from the parent's EXIT trap to the bun
+    # child so the tree dies cleanly on Quit. `wait` is signal-
+    # interruptible only when a trap is registered.
+    trap "kill $PROXY_CHILD 2>/dev/null; exit 0" TERM INT
+    wait $PROXY_CHILD
+    EC=$?
+    NOW=$(date +%s)
+    if (( NOW - PROXY_WINDOW_START > 30 )); then
+      PROXY_WINDOW_START=$NOW
+      PROXY_RESTARTS=0
+    fi
+    PROXY_RESTARTS=$((PROXY_RESTARTS + 1))
+    if (( PROXY_RESTARTS > 5 )); then
+      echo "[jarvis-proxy-sup] proxy crashed $PROXY_RESTARTS times in <30s; giving up (check env / port conflict)" \
+        >>/tmp/jarvis-proxy.log
+      break
+    fi
+    echo "[jarvis-proxy-sup] proxy exited (code=$EC); respawn #$PROXY_RESTARTS in 2s" \
+      >>/tmp/jarvis-proxy.log
+    sleep 2
+  done
+) &
+PROXY_SUP_PID=$!
 
 for i in $(seq 1 15); do
   curl -s http://localhost:4000/health >/dev/null 2>&1 && break
   sleep 1
 done
-echo "[jarvis] proxy up on :4000 (provider: $JARVIS_PROVIDER)"
+echo "[jarvis] proxy up on :4000 (provider: $JARVIS_PROVIDER, supervised pid=$PROXY_SUP_PID)"
 
 # ── Start bridge (8765) ───────────────────────────────────────────────
 "$BUN" "$ROOT/src/bridge/server.ts" &>/tmp/jarvis-bridge.log &
@@ -165,12 +210,15 @@ echo "[jarvis] bridge up on :8765"
 if [ ! -x "$DESKTOP_BIN" ]; then
   echo "[jarvis] desktop binary not found at $DESKTOP_BIN"
   echo "[jarvis] build it with: cd $PROJECT_ROOT/src/desktop-tauri && npm run tauri build"
-  kill $PROXY_PID $BRIDGE_PID 2>/dev/null || true
+  kill $PROXY_SUP_PID $BRIDGE_PID 2>/dev/null || true
   exit 1
 fi
 
 echo "[jarvis] launching desktop..."
-trap "kill $PROXY_PID $BRIDGE_PID 2>/dev/null" EXIT
+# EXIT trap: TERM the proxy supervisor (its own TERM trap reaps the
+# bun child), then TERM the bridge. pkill -P catches any straggler
+# child of the supervisor if its trap raced the parent's kill.
+trap "kill $PROXY_SUP_PID $BRIDGE_PID 2>/dev/null; pkill -P $PROXY_SUP_PID 2>/dev/null" EXIT
 # WebKit workarounds for tauri:// custom protocol on Linux:
 # - WEBKIT_DISABLE_COMPOSITING_MODE=1: required for transparent overlay
 #   windows on XFCE/X11 (and many other Linux setups). Without it,
