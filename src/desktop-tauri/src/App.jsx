@@ -3,6 +3,7 @@ import { invoke }  from '@tauri-apps/api/core'
 import { listen }  from '@tauri-apps/api/event'
 import ChatPanel   from './components/ChatPanel.jsx'
 import ChatPanelVscode from './components/ChatPanelVscode.jsx'
+import { FaceWebGL } from './components/FaceWebGL.jsx'
 import VoiceChatPanel from './components/VoiceChatPanel.jsx'
 import KeysSettings from './KeysSettings.jsx'
 import KioskHUD     from './components/KioskHUD.jsx'
@@ -198,6 +199,21 @@ export default function App() {
   if (typeof window !== 'undefined' &&
       window.location.search.includes('route=kiosk')) {
     return <KioskHUD />
+  }
+
+  // Dev-only: render JUST the WebGL face (no LiveKit), with a forced jaw value
+  // via ?jaw=N — used for headless screenshot tuning of camera/lights/look.
+  if (typeof window !== 'undefined' &&
+      window.location.search.includes('route=faceonly')) {
+    const p = new URLSearchParams(window.location.search)
+    const jaw = parseFloat(p.get('jaw') || '0')
+    const sz = Math.min(window.innerWidth, window.innerHeight)
+    return (
+      <div style={{ position: 'fixed', inset: 0, background: '#000',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <FaceWebGL size={sz} getJaw={() => jaw} />
+      </div>
+    )
   }
 
   // ChatPanel now runs as its OWN decorated, non-transparent Tauri

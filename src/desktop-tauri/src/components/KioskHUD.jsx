@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { LiveKitRoom, useTracks } from '@livekit/components-react'
 import { Track } from 'livekit-client'
-import { FaceStream } from '@/components/FaceStream'
+import { FaceWebGL, useJawFromTrack } from '@/components/FaceWebGL'
 
 // Root component for ?route=kiosk.
 //
@@ -49,7 +49,8 @@ export default function KioskHUD() {
   const [conn, setConn] = useState(null)        // { token, url, room }
   const [agentTrack, setAgentTrack] = useState(null)
   const [lkErr, setLkErr] = useState(null)
-  const [faceOk, setFaceOk] = useState(false)   // flips only on stream health change
+  // Jaw driven off-React from the agent audio track level (no per-frame state).
+  const jawRef = useJawFromTrack(agentTrack)
 
   const identity = useMemo(
     () => `kiosk-display-${Math.random().toString(36).slice(2, 8)}`,
@@ -163,10 +164,9 @@ export default function KioskHUD() {
           zIndex: 9999,
         }}
       >
-        {/* Live Blender talking face (MJPEG) — the kiosk's only visualizer.
-            The ring was removed; FaceStream auto-reconnects if the stream drops
-            (black backdrop shows through meanwhile). */}
-        <FaceStream size={AURA_SIZE} onHealth={setFaceOk} />
+        {/* JARVIS's face — rendered IN the kiosk with WebGL (three.js), no
+            Blender. The jaw morph is driven by the agent audio track's level. */}
+        <FaceWebGL size={AURA_SIZE} getJaw={() => jawRef.current} />
       </div>
       {/* LiveKit room — rendered only when we have a token. The probe
           inside reports the agent's track back via setAgentTrack. The
@@ -198,7 +198,7 @@ export default function KioskHUD() {
           borderRadius: 4,
         }}
       >
-        {vp.w}×{vp.h} · {agentState} · {lkStatus} · {faceOk ? 'face' : 'face:down'}
+        {vp.w}×{vp.h} · {agentState} · {lkStatus} · webgl
       </div>
     </>
   )
