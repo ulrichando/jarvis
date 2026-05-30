@@ -154,8 +154,8 @@ def setup():
     # report the resolved shape-key NAMES (literal ARKit or target_N alias)
     kb = head.data.shape_keys.key_blocks
     avail = {k.name for k in kb}
-    aliases = {"jawOpen": "target_17", "mouthClose": "target_18",
-               "mouthFunnel": "target_19", "mouthPucker": "target_20"}
+    aliases = {"jawOpen": "target_24", "mouthClose": "target_28",
+               "mouthFunnel": "target_29", "mouthPucker": "target_30"}
     resolved = {}
     for want in ("jawOpen", "mouthClose", "mouthFunnel", "mouthPucker"):
         if want in avail:

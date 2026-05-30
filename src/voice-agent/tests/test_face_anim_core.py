@@ -23,15 +23,11 @@ def test_smooth_jaw_opens_faster_than_it_closes():
     assert math.isclose(fac.smooth_jaw(1.0, 0.0, attack=0.5, decay=0.1), 0.9)
 
 
-def test_shape_values_co_articulation():
-    v = fac.shape_values(0.0)
-    assert v["jawOpen"] == 0.0
-    assert v["mouthClose"] == 1.0          # fully closed at rest
-    v = fac.shape_values(1.0)
-    assert v["jawOpen"] == 1.0
-    assert v["mouthClose"] == 0.0          # 1 - 1*1.5 clamped to 0
-    assert math.isclose(v["mouthFunnel"], 0.25)
-    assert math.isclose(v["mouthPucker"], 0.10)
+def test_shape_values_jaw_only_mvp():
+    # MVP drives jawOpen only; Basis already has closed lips at rest.
+    assert fac.shape_values(0.0) == {"jawOpen": 0.0}
+    assert fac.shape_values(0.5) == {"jawOpen": 0.5}
+    assert fac.shape_values(1.0) == {"jawOpen": 1.0}
 
 
 def test_shape_values_clamps_input():
@@ -40,15 +36,16 @@ def test_shape_values_clamps_input():
 
 
 def test_resolve_key_names_facecap_aliases():
-    # FaceCap head: morphs are Basis + target_0..target_51
+    # FaceCap head: morphs are Basis + target_0..target_51 in ARKit order.
+    # jawOpen=24 was confirmed empirically against the live head.
     available = ["Basis"] + [f"target_{i}" for i in range(52)]
     got = fac.resolve_key_names(
         ["jawOpen", "mouthClose", "mouthFunnel", "mouthPucker"], available)
     assert got == {
-        "jawOpen": "target_17",
-        "mouthClose": "target_18",
-        "mouthFunnel": "target_19",
-        "mouthPucker": "target_20",
+        "jawOpen": "target_24",
+        "mouthClose": "target_28",
+        "mouthFunnel": "target_29",
+        "mouthPucker": "target_30",
     }
 
 
