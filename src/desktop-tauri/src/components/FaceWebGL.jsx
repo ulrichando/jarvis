@@ -1,6 +1,7 @@
 import React, { Suspense, useEffect, useMemo, useRef } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { useGLTF, Center } from '@react-three/drei'
+import { createAudioAnalyser } from 'livekit-client'
 import * as THREE from 'three'
 
 // JARVIS's face rendered IN the kiosk with WebGL — no Blender at runtime.
@@ -63,45 +64,40 @@ function Head({ getJaw }) {
   )
 }
 
-// Drive the jaw from a LiveKit audio track's level via a Web Audio analyser.
-// Returns a ref holding the current 0..1 jaw value, updated off-React (rAF) so
-// there are no per-frame React re-renders. Pass the result to FaceWebGL's
-// getJaw. JARVIS's agent track carries its TTS, so this is the voice level.
-const JAW_GAIN = 5.5
+// Drive the jaw from a LiveKit audio track's level. Returns a ref holding the
+// current 0..1 jaw value, updated off-React (rAF) so there are NO per-frame
+// React re-renders. Pass the result to FaceWebGL's getJaw. JARVIS's agent track
+// carries its TTS, so this is the voice level.
+//
+// IMPORTANT: a hand-rolled createMediaStreamSource on a *remote* WebRTC track
+// returns silence in Chromium (known issue) — LiveKit's createAudioAnalyser
+// handles pulling audio from a remote track correctly, so we use that.
+const JAW_GAIN = 6.0
 export function useJawFromTrack(audioTrack) {
   const jawRef = useRef(0)
   useEffect(() => {
-    const mst = audioTrack?.mediaStreamTrack
-    if (!mst) return
-    let ctx, raf, src, analyser
+    // useTracks yields a TrackReference; createAudioAnalyser wants the track.
+    const track = audioTrack?.publication?.track ?? audioTrack
+    if (!track || track.kind !== 'audio' || !track.mediaStreamTrack) return
+    let raf
+    let handle
     try {
-      ctx = new (window.AudioContext || window.webkitAudioContext)()
-      src = ctx.createMediaStreamSource(new MediaStream([mst]))
-      analyser = ctx.createAnalyser()
-      analyser.fftSize = 512
-      analyser.smoothingTimeConstant = 0.3
-      src.connect(analyser)
-      ctx.resume?.()
+      handle = createAudioAnalyser(track, {
+        fftSize: 256,
+        smoothingTimeConstant: 0.25,
+      })
     } catch (e) {
       return
     }
-    const data = new Uint8Array(analyser.fftSize)
     const tick = () => {
-      analyser.getByteTimeDomainData(data)
-      let sum = 0
-      for (let i = 0; i < data.length; i++) {
-        const v = (data[i] - 128) / 128
-        sum += v * v
-      }
-      const rms = Math.sqrt(sum / data.length)
-      jawRef.current = Math.max(0, Math.min(1, rms * JAW_GAIN))
+      const vol = handle.calculateVolume()   // 0..1 RMS, remote-track safe
+      jawRef.current = Math.max(0, Math.min(1, vol * JAW_GAIN))
       raf = requestAnimationFrame(tick)
     }
     tick()
     return () => {
       cancelAnimationFrame(raf)
-      try { src.disconnect() } catch {}
-      try { ctx.close() } catch {}
+      try { handle.cleanup() } catch {}
     }
   }, [audioTrack])
   return jawRef
