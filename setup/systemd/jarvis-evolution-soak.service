@@ -1,0 +1,40 @@
+[Unit]
+Description=JARVIS — evolution-gate calibration soak (scores previous day → evolution_ledger.db)
+Documentation=file:%h/Documents/Projects/jarvis/bin/jarvis-evolution
+After=network.target
+
+[Service]
+Type=oneshot
+# Pre-create the data dir — ProtectSystem=strict refuses to bind-mount a
+# non-existent ReadWritePaths (status=226/NAMESPACE).
+ExecStartPre=/bin/mkdir -p %h/.local/share/jarvis
+# The fitness gate is flipped ON *only here*. Every other process keeps it OFF.
+Environment=JARVIS_EVOLUTION_GATE=1
+Environment=JARVIS_TTFW_TARGET_MS=1000
+ExecStart=%h/Documents/Projects/jarvis/bin/jarvis-evolution soak
+
+# Reads turn_telemetry.db (opened mode=ro at the app layer) and writes only
+# evolution_ledger.db under ~/.local/share/jarvis/. No network (pure local sqlite).
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/jarvis
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged ~@resources ~@reboot ~@module ~@swap ~@debug ~@raw-io
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=default.target

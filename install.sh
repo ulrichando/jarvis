@@ -274,7 +274,8 @@ install_systemd_units() {
   for src in \
       jarvis-backup-local.service jarvis-backup-local.timer \
       jarvis-log-rotate.service jarvis-log-rotate.timer \
-      jarvis-retention-prune.service jarvis-retention-prune.timer; do
+      jarvis-retention-prune.service jarvis-retention-prune.timer \
+      jarvis-evolution-soak.service jarvis-evolution-soak.timer; do
     if [ -f "$INSTALL_DIR/setup/systemd/$src" ]; then
       sed "${sed_path_subs[@]}" "$INSTALL_DIR/setup/systemd/$src" > "$USER_SYSTEMD/$src"
       ok "installed unit: $USER_SYSTEMD/$src"
@@ -296,7 +297,7 @@ install_systemd_units() {
   # immediately (they don't depend on .env or running provider APIs).
   # First fire happens per OnCalendar (hourly / 02:00 daily / 03:00
   # monthly-1st); Persistent=true catches up if laptop was off.
-  for unit in jarvis-backup-local.timer jarvis-log-rotate.timer jarvis-retention-prune.timer; do
+  for unit in jarvis-backup-local.timer jarvis-log-rotate.timer jarvis-retention-prune.timer jarvis-evolution-soak.timer; do
     if [ -f "$USER_SYSTEMD/$unit" ]; then
       systemctl --user enable --now "$unit" >/dev/null 2>&1 \
         && ok "enabled + started $unit" \
