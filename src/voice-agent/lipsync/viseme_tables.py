@@ -95,5 +95,7 @@ def resolve_pose(viseme: str, openness: float) -> dict[str, float]:
     pose = VISEME_TO_ARKIT.get(viseme, {})
     out: dict[str, float] = {}
     for name, w in pose.items():
-        out[ARKIT_TO_TARGET[name]] = round(w * o, 4)
+        target_key = ARKIT_TO_TARGET.get(name)
+        if target_key is not None:
+            out[target_key] = round(w * o, 4)
     return out
