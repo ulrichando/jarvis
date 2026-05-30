@@ -818,7 +818,10 @@ async def run_once(shutdown: asyncio.Event) -> None:
 
     # Publish mic. Must be done AFTER connect — the AudioSource isn't
     # known to the SFU until the track is created + published.
-    source = rtc.AudioSource(SAMPLE_RATE, NUM_CHANNELS)
+    # Pin the AudioSource to THIS run_once loop. The mic pump is now the sole
+    # caller of capture_frame; binding the source's future-loop here avoids a
+    # silent off-loop wedge (every frame would drop, looking like backpressure).
+    source = rtc.AudioSource(SAMPLE_RATE, NUM_CHANNELS, loop=loop)
     mic_track = rtc.LocalAudioTrack.create_audio_track("mic", source)
     mic_pub = await room.local_participant.publish_track(
         mic_track,
@@ -874,16 +877,6 @@ async def run_once(shutdown: asyncio.Event) -> None:
         # old_track is implicitly dropped; the SFU has already replaced
         # the subscription on the agent side.
 
-    # PortAudio's callback runs on a realtime thread ~100×/s. It must NOT
-    # spawn a capture_frame task per frame: source.capture_frame() awaits
-    # when the SFU buffer back-pressures (reconnect/republish, SFU hiccup),
-    # so run_coroutine_threadsafe-per-frame piles up thousands of pending
-    # tasks → ~1GB RAM + event-loop starvation → watchdog kill (root cause
-    # 2026-05-29: the stall dump showed 4108 pending capture_frame tasks).
-    # Fix: a single long-lived pump task drains a BOUNDED queue and awaits
-    # capture_frame sequentially (≤1 in-flight); the realtime callback does
-    # a non-blocking enqueue and DROPS the frame if the pump is behind.
-    # A dropped 10ms mic frame is inaudible; an unbounded task pile-up is fatal.
     # ── Mic → SFU bridge: FULLY DECOUPLED from the event loop ──────────
     # The PortAudio callback runs on a realtime thread ~100×/s and MUST NOT
     # schedule per-frame work on the asyncio loop: source.capture_frame
@@ -960,6 +953,7 @@ async def run_once(shutdown: asyncio.Event) -> None:
         # recurring 2026-05-29 "can't switch modes" trap). Muted means we
         # shouldn't be publishing mic audio anyway, so drop here at the source.
         if state.muted:
+            state.listening = False  # don't latch the tray indicator through a mute
             return
         # RMS on raw audio (pre-APM, pre-AGC) for the listening detector.
         if not state.speaking and len(indata):
@@ -1125,6 +1119,12 @@ async def run_once(shutdown: asyncio.Event) -> None:
         _mic_pub_ref = None
         mic_stream.stop()
         mic_pump_task.cancel()
+        # Await the cancellation so no frame is mid-capture_frame when the
+        # room/source go away (this teardown runs on every reconnect blip).
+        try:
+            await mic_pump_task
+        except asyncio.CancelledError:
+            pass
         mic_stream.close()
         await room.disconnect()
 
