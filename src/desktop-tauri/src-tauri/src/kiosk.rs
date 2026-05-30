@@ -721,6 +721,10 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
     let result = WebviewWindowBuilder::new(&app, "kiosk", WebviewUrl::App("index.html?route=kiosk".into()))
         .decorations(false)
         .transparent(false)
+        // Paint the window/webview black at creation so there's no white flash
+        // before the page loads (the kiosk is opaque; default webview bg is
+        // white). Pairs with the kiosk-route inline style in index.html.
+        .background_color(tauri::webview::Color(0, 0, 0, 255))
         .always_on_top(true)
         .focused(true)
         .skip_taskbar(true)
