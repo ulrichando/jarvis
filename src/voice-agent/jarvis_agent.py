@@ -3859,6 +3859,8 @@ class JarvisAgent(Agent):
                 if inj is not None:
                     role, content = inj
                     chat_ctx.add_message(role=role, content=content)
+                    logger.info("[vision] injected post-action screen "
+                                "(mode=%s, label=%s)", mode, cap.get("action_label"))
         except Exception:
             logger.debug("[vision] injection skipped", exc_info=True)
         async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
