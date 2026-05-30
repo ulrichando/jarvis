@@ -1033,6 +1033,67 @@ def _cancel_thinking_heartbeat(session) -> None:
     session._jarvis_thinking_heartbeat = None
 
 
+# Grace before the agent_state-idle backstop cancels the thinking
+# heartbeat (see _on_agent_state). The normal cancel lives in _on_item
+# (final-reply detection), but a turn can end with NO final assistant
+# item — e.g. the framework logs "skipping reply to user input, current
+# speech generation cannot be interrupted" (live 2026-05-30) — and then
+# _on_item never fires, so the heartbeat keeps re-touching the flag every
+# 3s and the tray's amber "thinking" sticks forever. If the agent settles
+# into idle/listening and STAYS there this long, the turn is truly over.
+# Generous enough to ignore the framework's transient sub-second
+# "listening" between tool calls; short enough that a leak self-heals.
+def _thinking_idle_grace_s() -> float:
+    try:
+        v = float(os.environ.get("JARVIS_THINKING_IDLE_GRACE_S", "5.0"))
+        return v if v > 0 else 5.0
+    except (TypeError, ValueError):
+        return 5.0
+
+
+def _schedule_idle_heartbeat_cancel(session) -> None:
+    """Backstop cancel for the thinking heartbeat. If the agent settles
+    into idle/listening and STAYS there past `_thinking_idle_grace_s()`,
+    the turn is over — cancel the heartbeat so the tray stops showing
+    amber. A return to thinking/speaking aborts the pending task via
+    `_cancel_pending_idle_heartbeat_cancel`. Covers turns that end with no
+    final assistant item (the framework skips the reply when the current
+    speech can't be interrupted), which `_on_item` never sees. Idempotent:
+    no-op if the heartbeat isn't running or a cancel is already pending."""
+    hb = getattr(session, "_jarvis_thinking_heartbeat", None)
+    if hb is None or hb.done():
+        return
+    prior = getattr(session, "_jarvis_thinking_idle_cancel_task", None)
+    if prior is not None and not prior.done():
+        return
+
+    async def _idle_cancel(_sess=session):
+        try:
+            await asyncio.sleep(_thinking_idle_grace_s())
+            if getattr(_sess, "agent_state", "") in ("idle", "listening"):
+                _cancel_thinking_heartbeat(_sess)
+                logger.info(
+                    "[heartbeat] cancelled after sustained idle "
+                    "(turn ended with no final assistant reply)"
+                )
+        except asyncio.CancelledError:
+            pass
+
+    try:
+        session._jarvis_thinking_idle_cancel_task = asyncio.create_task(_idle_cancel())
+    except Exception as _e:
+        logger.debug(f"[heartbeat] idle-cancel schedule skipped: {_e}")
+
+
+def _cancel_pending_idle_heartbeat_cancel(session) -> None:
+    """Abort a pending idle backstop-cancel — the turn resumed
+    (thinking/speaking), so the heartbeat must keep running. Idempotent."""
+    t = getattr(session, "_jarvis_thinking_idle_cancel_task", None)
+    if t is not None and not t.done():
+        t.cancel()
+    session._jarvis_thinking_idle_cancel_task = None
+
+
 # Per-turn tool-call governor. Without this, the LLM can chain
 # run_jarvis_cli calls indefinitely — observed: misinterpreted user
 # question → CLI #1 ran for 24 s → LLM chained CLI #2 ("fix the
@@ -4980,6 +5041,11 @@ def _register_state_tracking_handlers(session) -> None:
     def _on_agent_state(ev) -> None:
         new_state = getattr(ev, "new_state", None)
         old_state = getattr(ev, "old_state", None)
+        # Any return to active work aborts a pending idle backstop-cancel
+        # of the thinking heartbeat (scheduled in the idle/listening branch
+        # below) — the turn isn't over after all.
+        if new_state in ("thinking", "speaking"):
+            _cancel_pending_idle_heartbeat_cancel(session)
         if new_state == "thinking":
             # Heartbeat owns _AGENT_THINKING_FILE now (started in
             # _on_user_input). Don't touch the file here — the framework's
@@ -5076,6 +5142,16 @@ def _register_state_tracking_handlers(session) -> None:
                 session._jarvis_front_ack_task = None
             except Exception:
                 pass
+            # Backstop heartbeat cancel (2026-05-30). _on_item normally
+            # cancels the thinking heartbeat on the final assistant reply,
+            # but a turn can end with NO final item — e.g. the framework
+            # logs "skipping reply to user input, current speech generation
+            # cannot be interrupted" — and _on_item never fires, orphaning
+            # the heartbeat so the tray stays amber forever (live 2026-05-30:
+            # stuck "thinking" ~4min after a computer_use turn). Debounced so
+            # the framework's transient sub-second "listening" between tool
+            # calls doesn't cancel mid-turn.
+            _schedule_idle_heartbeat_cancel(session)
 
         # total_audio_ms tracking: accumulate every "speaking" segment
         # within a turn. Multi-segment turn (speaking → thinking →
