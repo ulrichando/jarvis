@@ -132,3 +132,13 @@ def test_build_injection_none_cases():
     assert cuv.build_injection(cap=None, mode="pixels") is None
     assert cuv.build_injection(cap={"png_b64": "x"}, mode="off") is None
     assert cuv.build_injection(cap={"png_b64": "x", "action_label": "c"}, mode="text", desc=None) is None
+
+
+def test_resolve_route_primary_model(monkeypatch):
+    from providers.llm import resolve_route_primary_model
+    monkeypatch.delenv("JARVIS_TASK_DESKTOP_MODEL", raising=False)
+    monkeypatch.delenv("JARVIS_TASK_MODEL", raising=False)
+    assert cuv.is_vision_capable(resolve_route_primary_model("TASK_DESKTOP")) is True   # claude default
+    monkeypatch.setenv("JARVIS_TASK_DESKTOP_MODEL", "llama-3.3-70b-versatile")
+    assert resolve_route_primary_model("TASK_DESKTOP") == "llama-3.3-70b-versatile"     # override wins
+    assert resolve_route_primary_model("NOT_A_ROUTE") == ""                              # unknown → ""
