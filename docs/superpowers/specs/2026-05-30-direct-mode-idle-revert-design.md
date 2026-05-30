@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-30
 **Status:** approved (design)
-**Scope:** `bin/jarvis-gemini-tools`, `bin/jarvis-gpt-tools` (+ one tiny shared helper)
+**Scope:** `bin/jarvis-gemini-tools`, `bin/jarvis-gpt-tools` (+ one tiny shared helper `src/voice-agent/direct_mode_idle.py`, + a one-line `--setenv` forwarding in `bin/jarvis-mode` so the timeout env actually reaches the systemd-run'd backends — a `systemd-run` unit gets a clean env)
 
 ## Problem
 
@@ -90,7 +90,7 @@ def should_revert(idle_s: float, timeout_s: float, tool_running: bool) -> bool:
     return timeout_s > 0 and not tool_running and idle_s > timeout_s
 ```
 
-Unit-test it (`tests/test_idle_revert.py`): timeout=0 disabled; tool_running
+Unit-test it (`tests/test_direct_mode_idle.py`): timeout=0 disabled; tool_running
 blocks; boundary at exactly timeout_s; reverts past it. The revert *mechanism*
 (systemd-run --scope) is verified by log + live observation.
 
