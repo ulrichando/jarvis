@@ -56,3 +56,28 @@ def test_monitor_degrades_when_source_unavailable():
     # falls back to the degraded constant so the jaw still moves
     assert mon.level() == 0.7
     mon.stop()
+
+
+def test_monitor_forced_level_override(monkeypatch):
+    monkeypatch.setenv("JARVIS_FACE_TEST_LEVEL", "0.8")
+    mon = lm.LoudnessMonitor()
+    mon.start()  # no capture thread spawned when forced
+    assert mon.level() == 0.8
+    mon.stop()
+
+
+def test_monitor_degrades_when_capture_subprocess_dies():
+    # Simulate parec dying: empty reads + a _proc whose poll() returns a code.
+    class _DeadProc:
+        def poll(self):
+            return 1  # exited
+
+    def source():
+        return b""  # no data
+
+    source._proc = _DeadProc()
+    mon = lm.LoudnessMonitor(frame_source=source, degraded_level=0.7)
+    mon.start()
+    time.sleep(0.05)
+    assert mon.level() == 0.7
+    mon.stop()

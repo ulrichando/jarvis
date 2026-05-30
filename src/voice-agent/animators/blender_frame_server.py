@@ -15,7 +15,7 @@ Endpoints:
 """
 
 CODE = r'''
-import bpy, gpu, os, threading, time
+import bpy, gpu, os, threading, time, json
 import numpy as np
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -26,6 +26,38 @@ H = int(os.environ.get("JARVIS_FACE_H", "448"))
 FPS = float(os.environ.get("JARVIS_FACE_FPS", "24"))
 SHM = "/dev/shm/jarvis_face.jpg"
 TMP = "/dev/shm/jarvis_face.tmp.jpg"
+# Shape-key values are written here by the animator (a tiny JSON file) and
+# applied INSIDE this timer just before each render — no per-frame socket
+# round-trip (execute_code is ~1s/call, hopeless for animation).
+SHAPES = "/dev/shm/jarvis_face_shapes.json"
+
+def _apply_shapes():
+    head = bpy.data.objects.get("FaceCap_Head")
+    if not head or not head.data.shape_keys:
+        return
+    sk = head.data.shape_keys.key_blocks
+    stale = False
+    vals = {}
+    try:
+        st = os.stat(SHAPES)
+        if time.time() - st.st_mtime > 0.5:
+            stale = True          # animator stopped writing -> neutralize
+        else:
+            with open(SHAPES) as f:
+                vals = json.load(f)
+    except (OSError, ValueError):
+        stale = True
+    if stale:
+        # animator dead/stopped: snap the previously-driven keys back to neutral
+        # so the mouth never freezes open.
+        for name in NS.get("jarvis_last_keys", []):
+            if name in sk:
+                sk[name].value = 0.0
+        return
+    NS["jarvis_last_keys"] = list(vals.keys())
+    for name, v in vals.items():
+        if name in sk:
+            sk[name].value = float(v)
 
 def _find_view3d():
     for area in bpy.context.screen.areas:
@@ -89,6 +121,7 @@ def _render_to_shm():
 
 def _timer():
     try:
+        _apply_shapes()
         _render_to_shm()
     except Exception as e:
         print("[face-server] render error:", e)
