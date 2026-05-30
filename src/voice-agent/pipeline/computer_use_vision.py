@@ -67,3 +67,30 @@ def is_vision_capable(model_id: Optional[str], prefixes=None) -> bool:
         prefixes = tuple(p.strip() for p in env.split(",") if p.strip()) or _VISION_PREFIXES_DEFAULT
     mid = model_id.lower()
     return any(mid.startswith(p.lower()) for p in prefixes)
+
+
+def downscale_png(png_b64: str, max_px: int = _MAX_DOWNSCALE_PX) -> Optional[str]:
+    """Downscale a base64 PNG so its longest edge <= max_px (aspect preserved);
+    return a new base64 PNG. Unchanged if already small. None on any error."""
+    if not png_b64:
+        return None
+    try:
+        raw = base64.b64decode(png_b64, validate=True)
+    except Exception:
+        return None
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+        w, h = img.size
+        longest = max(w, h)
+        if longest > max_px and longest > 0:
+            scale = max_px / float(longest)
+            img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))))
+        if img.mode not in ("RGB", "RGBA", "L"):
+            img = img.convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return None
