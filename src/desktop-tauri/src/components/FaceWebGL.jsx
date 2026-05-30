@@ -42,14 +42,6 @@ function Head({ getJaw }) {
     })
   }, [scene])
 
-  // DEV diagnostic: report the model bbox via document.title for headless checks.
-  useEffect(() => {
-    const box = new THREE.Box3().setFromObject(scene)
-    const s = new THREE.Vector3(), c = new THREE.Vector3()
-    box.getSize(s); box.getCenter(c)
-    document.title = `GLB size=${s.x.toFixed(3)},${s.y.toFixed(3)},${s.z.toFixed(3)} ctr=${c.x.toFixed(3)},${c.y.toFixed(3)},${c.z.toFixed(3)} jaw=${jawIdxRef.current}`
-  }, [scene])
-
   useFrame(() => {
     const h = headRef.current
     const idx = jawIdxRef.current
