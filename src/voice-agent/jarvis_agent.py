@@ -992,14 +992,37 @@ def _mark_thinking_end() -> None:
 # it re-touches _AGENT_THINKING_FILE every `interval_s` seconds — the
 # desktop's 60s TTL becomes a generous floor instead of the operative
 # expiry.
-async def _thinking_heartbeat(interval_s: float = 3.0) -> None:
+async def _thinking_heartbeat(interval_s: float = 3.0, *, session=None) -> None:
     """Touch _AGENT_THINKING_FILE every `interval_s` seconds.
 
     On cancellation, unlinks the file so the desktop indicator goes
     green immediately. Idempotent: external unlinks are repaired on
-    the next tick."""
+    the next tick.
+
+    Orphan watchdog (2026-05-30): when `session` is given, the heartbeat
+    ALSO self-cancels if no genuine turn progress (`_bump_turn_activity`:
+    user input / tool batch / assistant reply) has landed for
+    `_thinking_max_idle_s()` AND no tool is running. This is the
+    agent_state-INDEPENDENT backstop: the idle/listening cancel
+    (`_schedule_idle_heartbeat_cancel`) only fires when the framework
+    cleanly transitions to idle, but a turn can wedge agent_state at
+    "speaking"/"thinking" (live 2026-05-30: a non-interruptible TTS whose
+    playout never completed left the heartbeat orphaned for minutes). The
+    tool-busy guard keeps a long `run_jarvis_cli` from clearing early."""
+    max_idle = _thinking_max_idle_s()
     try:
         while True:
+            if session is not None:
+                last = getattr(session, "_jarvis_last_turn_activity", None)
+                if (last is not None
+                        and (time.monotonic() - last) > max_idle
+                        and not _TOOL_BUSY_FILE.exists()):
+                    logger.info(
+                        f"[heartbeat] self-cancelled: no turn progress for "
+                        f"{max_idle:.0f}s, no tool running (orphan guard)"
+                    )
+                    _mark_thinking_end()
+                    return
             _mark_thinking_start()
             await asyncio.sleep(interval_s)
     except asyncio.CancelledError:
@@ -1014,9 +1037,10 @@ def _start_thinking_heartbeat(session, interval_s: float = 3.0) -> None:
     prior = getattr(session, "_jarvis_thinking_heartbeat", None)
     if prior is not None and not prior.done():
         prior.cancel()
+    _bump_turn_activity(session)  # fresh progress clock for the new turn
     try:
         session._jarvis_thinking_heartbeat = asyncio.create_task(
-            _thinking_heartbeat(interval_s=interval_s)
+            _thinking_heartbeat(interval_s=interval_s, session=session)
         )
     except Exception as _e:
         logger.debug(f"[heartbeat] start failed: {_e}")
@@ -1049,6 +1073,38 @@ def _thinking_idle_grace_s() -> float:
         return v if v > 0 else 5.0
     except (TypeError, ValueError):
         return 5.0
+
+
+# Hard ceiling for the heartbeat's orphan watchdog (see _thinking_heartbeat):
+# if a turn produces NO progress (_bump_turn_activity) for this long and no
+# tool is running, the heartbeat self-cancels even if agent_state never went
+# idle. Generous so it rarely clears during a long legit turn; the fast path
+# for normal turns is the 5s idle backstop. Bounds a wedged-state leak to this
+# instead of forever.
+#   CAVEAT: the tool-busy guard (~/.jarvis/.tool-running) only covers
+#   `run_jarvis_cli` — that's the only tool calling `_mark_tool_start`. A
+#   `computer_use` / `dispatch_agent` call that runs past this ceiling emits no
+#   interim agent-side event and sets no tool-busy flag, so the watchdog WILL
+#   fire mid-turn and flip the indicator green while JARVIS is still working
+#   (cosmetic; self-heals on the next real event). FOLLOW-UP: have those two
+#   tools call `_mark_tool_start`/`_mark_tool_end` to close this gap.
+def _thinking_max_idle_s() -> float:
+    try:
+        v = float(os.environ.get("JARVIS_THINKING_MAX_IDLE_S", "120.0"))
+        return v if v > 0 else 120.0
+    except (TypeError, ValueError):
+        return 120.0
+
+
+def _bump_turn_activity(session) -> None:
+    """Record genuine turn progress for the heartbeat's orphan watchdog.
+    Called on user input, tool-batch execution, and assistant replies —
+    NOT on raw agent_state changes (which can flap during a wedge and keep
+    a dead turn's heartbeat alive). Idempotent / failure-silent."""
+    try:
+        session._jarvis_last_turn_activity = time.monotonic()
+    except Exception:
+        pass
 
 
 def _schedule_idle_heartbeat_cancel(session) -> None:
@@ -5251,6 +5307,7 @@ def _register_state_tracking_handlers(session) -> None:
             calls = list(getattr(ev, "function_calls", None) or [])
             if not calls:
                 return
+            _bump_turn_activity(session)  # tool batch ran = genuine turn progress
             # Tool-batch completion is no longer a moment we need to
             # re-touch the thinking-flag file — the heartbeat (started
             # in _on_user_input) refreshes it every 3s for the whole
@@ -6040,6 +6097,7 @@ async def entrypoint(ctx: JobContext) -> None:
             except Exception:
                 pass
             if role == "assistant":
+                _bump_turn_activity(session)  # assistant reply landed = turn progress
                 # Use the pure classifier to decide what kind of
                 # assistant item this is and how to handle it:
                 #   final_reply / benign_empty → cancel heartbeat (turn done)
