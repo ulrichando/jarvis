@@ -789,8 +789,8 @@ async def run_once(shutdown: asyncio.Event) -> None:
                 buf.append(chunk)
             text = "".join(buf).strip()
             # Only the agent's TTS transcript drives the face, not our own
-            # STT transcript echoed back under the local identity.
-            if text and participant_identity != "desktop-ulrich":
+            # STT echoed back under the local identity (IDENTITY).
+            if text and participant_identity != IDENTITY:
                 _viseme_engine.set_pending_text(text)
         except Exception as e:
             log.debug(f"[stream-drain] text stream from {participant_identity} ended: {e}")
