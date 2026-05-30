@@ -56,6 +56,11 @@ if VOICE_AGENT_DIR not in sys.path:
 
 import sanitizers  # noqa: F401  (side-effect import)
 
+from direct_mode_idle import idle_revert_watch
+
+# jarvis-mode lives next to this script (same bin/ dir); used by the idle watcher.
+JARVIS_MODE_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jarvis-mode")
+
 try:
     import websockets
     import mss
@@ -388,6 +393,7 @@ async def main() -> int:
         stop.set()
 
     loop = asyncio.get_running_loop()
+    last_activity = [loop.time()]  # monotonic; reset on speech/model/tool activity
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _stop, sig)
 
@@ -570,6 +576,7 @@ async def main() -> int:
                         # fast for the dedicated event to land.
                         if not status._speaking:
                             status.set_speaking(True)
+                            last_activity[0] = loop.time()
                             status.set_agent_thinking(False)
                             speak_start = time.monotonic()
                         try:
@@ -584,6 +591,7 @@ async def main() -> int:
                 # that Gemini Live doesn't expose, so the indicator
                 # is more responsive on OpenAI mode.
                 elif etype == "input_audio_buffer.speech_started":
+                    last_activity[0] = loop.time()
                     status.set_listening(True)
                     # BARGE-IN: user talking over the model. The server cancels
                     # its own response on VAD, but WE must (a) stop the
@@ -618,6 +626,7 @@ async def main() -> int:
                         log.info(f"[gpt-tools] barge-in: truncated at {played_ms}ms + flushed speaker")
                     status.set_speaking(False)
                 elif etype == "input_audio_buffer.speech_stopped":
+                    last_activity[0] = loop.time()
                     status.set_listening(False)
                     status.set_agent_thinking(True)
 
@@ -676,6 +685,7 @@ async def main() -> int:
                         args = {}
                     log.info(f"[gpt-tools] → {name}({args})")
                     status.set_tool_running(True)
+                    last_activity[0] = loop.time()
                     result = await execute_tool(name, args)
                     status.set_tool_running(False)
                     short = json.dumps(result)[:200] if not isinstance(result, str) else result[:200]
@@ -710,6 +720,12 @@ async def main() -> int:
         tasks = [
             asyncio.create_task(pump_mic(),      name="mic"),
             asyncio.create_task(drain_replies(), name="replies"),
+            asyncio.create_task(idle_revert_watch(
+                get_idle_s=lambda: loop.time() - last_activity[0],
+                is_tool_running=lambda: status._tool_running,
+                jarvis_mode_path=JARVIS_MODE_BIN,
+                stop=stop, log=log, label="gpt-tools",
+            ), name="idle-revert"),
             asyncio.create_task(stop.wait(),     name="stop"),
         ]
         try:
