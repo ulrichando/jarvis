@@ -32,10 +32,15 @@ class VisemeEngine:
         self._pending_text = (text or "").strip()
 
     def reset(self) -> None:
+        # Clears all per-utterance state INCLUDING the pending text, so the
+        # next rising edge never replays a previous utterance's words — it
+        # uses only text set since the last utterance ended (else amplitude
+        # fallback).
         self._seq = []
         self._durs = []
         self._t0 = None
         self._was_speaking = False
+        self._pending_text = ""
 
     def _start(self, now: float) -> None:
         vis = text_to_visemes(self._pending_text)
@@ -68,7 +73,8 @@ class VisemeEngine:
             jaw = max(0.0, min(1.0, rms * _FALLBACK_JAW_GAIN))
             return {"target_24": round(jaw, 4)}
 
-        elapsed = now - (self._t0 or now)
+        t0 = self._t0 if self._t0 is not None else now
+        elapsed = now - t0
         # find the current viseme by cumulative end-time; hold the last one
         # if the audio outruns the sequence.
         idx = len(self._seq) - 1

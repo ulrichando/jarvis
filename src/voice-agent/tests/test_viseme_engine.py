@@ -44,3 +44,25 @@ def test_falling_edge_resets():
     eng.set_pending_text("hi")
     out = eng.frame(now=1.0, speaking=True, rms=0.2)
     assert out
+
+
+def test_cursor_advances_over_time_even_from_t0_zero():
+    # Guards the _t0==0.0 falsy trap: with t0=0.0 the cursor must still
+    # advance, so the pose early in the utterance differs from later.
+    eng = VisemeEngine()
+    eng.set_pending_text("hello world")
+    eng.frame(now=0.0, speaking=True, rms=0.2)        # rising edge, t0 = 0.0
+    early = eng.frame(now=0.02, speaking=True, rms=0.2)
+    late = eng.frame(now=0.6, speaking=True, rms=0.2)
+    assert early != late
+
+
+def test_reset_clears_pending_text_so_no_stale_replay():
+    eng = VisemeEngine()
+    eng.set_pending_text("hello world")
+    eng.frame(now=0.0, speaking=True, rms=0.2)
+    eng.frame(now=0.3, speaking=False, rms=0.0)       # falling edge -> reset
+    # No new text set; next utterance must fall back to amplitude jaw, NOT
+    # replay "hello world".
+    out = eng.frame(now=1.0, speaking=True, rms=0.1)
+    assert set(out) == {"target_24"}
