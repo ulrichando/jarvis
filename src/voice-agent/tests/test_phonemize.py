@@ -10,7 +10,9 @@ def test_known_word_produces_visemes():
 
 def test_silence_between_words():
     vis = text_to_visemes("hi there")
-    assert "sil" in vis  # word boundary inserts a brief closure
+    assert "sil" in vis           # word boundary inserts a brief closure
+    assert vis[0] != "sil"        # but never leading
+    assert vis[-1] != "sil"       # nor trailing
 
 
 def test_empty_text_is_empty():
