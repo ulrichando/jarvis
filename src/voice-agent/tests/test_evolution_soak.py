@@ -50,3 +50,24 @@ def test_run_soak_window_matches_previous_local_day(tmp_path):
                       ledger_db=tmp_path / "led.db", gate_on=False)
     assert r["since"] == "2026-05-29T04:00:00Z"
     assert r["until"] == "2026-05-30T03:59:59Z"
+
+
+def test_format_trend_table_contains_axes_and_date():
+    rows = [{
+        "window_start": "2026-05-29T04:00:00Z", "window_end": "2026-05-30T03:59:59Z",
+        "n_turns": 177, "composite": 0.8523,
+        "per_axis": {"reask": 0.949, "confab": 1.0, "latency": 0.374,
+                     "action": 1.0, "interruption": 0.904},
+        "passed": True,
+    }]
+    out = soak.format_trend_table(rows)
+    assert "DATE" in out and "reask" in out and "confab" in out
+    assert "2026-05-29" in out          # date label from window_start[:10]
+    assert "177" in out and "PASS" in out
+
+
+def test_format_trend_table_handles_missing_window_and_axes():
+    rows = [{"window_start": None, "window_end": None, "n_turns": 0,
+             "composite": 0.0, "per_axis": {}, "passed": False}]
+    out = soak.format_trend_table(rows)
+    assert "(all)" in out and "FAIL" in out      # no crash on None/empty
