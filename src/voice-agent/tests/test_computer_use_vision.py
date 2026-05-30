@@ -79,3 +79,56 @@ def test_downscale_png_keeps_small():
 def test_downscale_png_bad_input_returns_none():
     assert cuv.downscale_png("not-base64-@@@") is None
     assert cuv.downscale_png("") is None
+
+
+class _FakeDispatch:
+    def __init__(self, route):
+        self.last_route = route
+
+
+def test_decide_mode_explicit(monkeypatch):
+    for m in ("pixels", "text", "off"):
+        monkeypatch.setenv("JARVIS_CU_VISION_MODE", m)
+        assert cuv.decide_mode(None) == m
+
+
+def test_decide_mode_auto_defaults_pixels_without_dispatch(monkeypatch):
+    monkeypatch.delenv("JARVIS_CU_VISION_MODE", raising=False)
+    assert cuv.decide_mode(None) == "pixels"        # uncertainty → pixels (Claude default)
+
+
+def test_decide_mode_auto_text_only_route(monkeypatch):
+    monkeypatch.delenv("JARVIS_CU_VISION_MODE", raising=False)
+    monkeypatch.setenv("JARVIS_TASK_DESKTOP_MODEL", "llama-3.3-70b-versatile")
+    assert cuv.decide_mode(_FakeDispatch("TASK_DESKTOP")) == "text"
+
+
+def test_decide_mode_auto_vision_route(monkeypatch):
+    monkeypatch.delenv("JARVIS_CU_VISION_MODE", raising=False)
+    monkeypatch.delenv("JARVIS_TASK_DESKTOP_MODEL", raising=False)
+    monkeypatch.delenv("JARVIS_TASK_MODEL", raising=False)
+    assert cuv.decide_mode(_FakeDispatch("TASK_DESKTOP")) == "pixels"   # default claude-sonnet
+
+
+def test_build_injection_pixels():
+    from livekit.agents.llm import ImageContent
+    cap = {"png_b64": _png_b64(100, 80), "action_label": "capture"}
+    res = cuv.build_injection(cap=cap, mode="pixels")
+    assert res is not None
+    role, content = res
+    assert role == "user"
+    assert any(isinstance(c, ImageContent) for c in content)
+    assert any(isinstance(c, str) and "screen after" in c for c in content)
+
+
+def test_build_injection_text():
+    cap = {"png_b64": "x", "action_label": "capture"}
+    res = cuv.build_injection(cap=cap, mode="text", desc="A settings window is open.")
+    role, content = res
+    assert role == "user" and "settings window" in content[0]
+
+
+def test_build_injection_none_cases():
+    assert cuv.build_injection(cap=None, mode="pixels") is None
+    assert cuv.build_injection(cap={"png_b64": "x"}, mode="off") is None
+    assert cuv.build_injection(cap={"png_b64": "x", "action_label": "c"}, mode="text", desc=None) is None
