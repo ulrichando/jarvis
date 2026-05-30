@@ -1,7 +1,6 @@
 import React, { Suspense, useEffect, useMemo, useRef } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { useGLTF, Center } from '@react-three/drei'
-import { createAudioAnalyser } from 'livekit-client'
 import * as THREE from 'three'
 
 // JARVIS's face rendered IN the kiosk with WebGL — no Blender at runtime.
@@ -62,45 +61,6 @@ function Head({ getJaw }) {
       </group>
     </Center>
   )
-}
-
-// Drive the jaw from a LiveKit audio track's level. Returns a ref holding the
-// current 0..1 jaw value, updated off-React (rAF) so there are NO per-frame
-// React re-renders. Pass the result to FaceWebGL's getJaw. JARVIS's agent track
-// carries its TTS, so this is the voice level.
-//
-// IMPORTANT: a hand-rolled createMediaStreamSource on a *remote* WebRTC track
-// returns silence in Chromium (known issue) — LiveKit's createAudioAnalyser
-// handles pulling audio from a remote track correctly, so we use that.
-const JAW_GAIN = 6.0
-export function useJawFromTrack(audioTrack) {
-  const jawRef = useRef(0)
-  useEffect(() => {
-    // useTracks yields a TrackReference; createAudioAnalyser wants the track.
-    const track = audioTrack?.publication?.track ?? audioTrack
-    if (!track || track.kind !== 'audio' || !track.mediaStreamTrack) return
-    let raf
-    let handle
-    try {
-      handle = createAudioAnalyser(track, {
-        fftSize: 256,
-        smoothingTimeConstant: 0.25,
-      })
-    } catch (e) {
-      return
-    }
-    const tick = () => {
-      const vol = handle.calculateVolume()   // 0..1 RMS, remote-track safe
-      jawRef.current = Math.max(0, Math.min(1, vol * JAW_GAIN))
-      raf = requestAnimationFrame(tick)
-    }
-    tick()
-    return () => {
-      cancelAnimationFrame(raf)
-      try { handle.cleanup() } catch {}
-    }
-  }, [audioTrack])
-  return jawRef
 }
 
 export function FaceWebGL({ size, getJaw }) {

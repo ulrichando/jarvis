@@ -414,6 +414,7 @@ class ClientState:
     muted:         bool = False       # local mic track muted
     listening:     bool = False       # local speaker (us) is talking
     speaking:      bool = False       # remote agent is talking
+    output_level:  float = 0.0        # 0..1 RMS of played TTS — drives kiosk face lip-sync
     # Active CLI model ID (e.g., "deepseek-chat", "qwen/qwen3-32b").
     # Read straight from CLI_MODEL_FILE on every /status hit, so the
     # tray sees changes the same instant they're written.
@@ -572,6 +573,11 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
                 _speaking_until[0] = time.monotonic() + _SPEAKING_HOLD_S
             elif time.monotonic() > _speaking_until[0]:
                 state.speaking = False
+            # Output amplitude (0..1, normalized RMS) of the played TTS frame —
+            # the kiosk WebGL face polls /level and drives the jaw morph from
+            # this. Lightly smoothed; cheap (one np.sqrt per 10ms frame).
+            _lvl = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2))) / 32768.0
+            state.output_level += (_lvl - state.output_level) * 0.5
             # write() is non-blocking-ish — it copies into PortAudio's
             # internal ring, the audio thread drains. If we ever fall
             # behind, it returns a buffer-underflow warning; harmless
