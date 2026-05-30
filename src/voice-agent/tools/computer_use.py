@@ -124,7 +124,14 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
         "\n"
         "Linux/X11 only. No accessibility tree, so target UI elements "
         "by pixel coordinate read from the latest capture. Coordinates "
-        "are screen pixels [x, y]. Requires xdotool."
+        "are screen pixels [x, y]. Requires xdotool.\n"
+        "\n"
+        "When NOT to use: for web lookups or web navigation where "
+        "nothing needs to appear on the user's own screen, prefer "
+        "`browser_task` (headless, DOM-aware, more reliable). Use "
+        "computer_use for the VISIBLE desktop — showing something on "
+        "screen, controlling a native GUI app, or when the user "
+        "explicitly wants to watch it happen."
     ),
     "parameters": {
         "type": "object",
