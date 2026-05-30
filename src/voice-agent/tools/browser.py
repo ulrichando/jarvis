@@ -251,6 +251,55 @@ def _validate_task(task: str) -> "tuple[bool, str]":
     return True, ""
 
 
+def _payload_step_count(payload: dict) -> Optional[int]:
+    """Best-effort browser-step count from a runner payload.
+
+    The runner emits ``steps`` as a per-step trace list (Task 4) plus an
+    explicit ``steps_count`` int. Prefer the explicit count; fall back to the
+    length of the trace list; tolerate the legacy int-``steps`` shape. Returns
+    None when no count can be determined.
+    """
+    count = payload.get("steps_count")
+    if isinstance(count, int):
+        return count
+    steps = payload.get("steps")
+    if isinstance(steps, list):
+        return len(steps)
+    if isinstance(steps, int):  # legacy shape — steps was the count
+        return steps
+    return None
+
+
+def _record_steps(task: str, payload: dict) -> None:
+    """Surface the runner's per-step trace into telemetry (best-effort, silent).
+
+    Writes one ``browser_task_steps`` row per step in the payload's ``steps``
+    trace. Telemetry never breaks the tool: a missing telemetry module, a
+    locked DB, or a malformed trace entry is swallowed. No-op when the trace
+    is absent or not a list (e.g. the legacy int-``steps`` shape).
+    """
+    steps = payload.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return
+    try:
+        from pipeline import turn_telemetry
+    except Exception:  # noqa: BLE001 — telemetry import must never break the tool
+        return
+    for entry in steps:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            turn_telemetry.record_browser_step(
+                task=task,
+                step_index=int(entry.get("step_index", 0)),
+                action=entry.get("action"),
+                ok=bool(entry.get("ok", True)),
+                detail=entry.get("detail"),
+            )
+        except Exception:  # noqa: BLE001 — a single bad row never breaks the tool
+            continue
+
+
 def _format_result(payload: dict, stderr_tail: str = "") -> str:
     """Turn the runner's JSON payload into a concise string for the supervisor.
 
@@ -261,7 +310,7 @@ def _format_result(payload: dict, stderr_tail: str = "") -> str:
     """
     if payload.get("ok"):
         result = str(payload.get("result", "")).strip() or "(browser task finished with no result text)"
-        steps = payload.get("steps")
+        steps = _payload_step_count(payload)
         if isinstance(steps, int) and steps > 0:
             return f"{result}\n\n(completed in {steps} browser step{'s' if steps != 1 else ''})"
         return result
@@ -272,14 +321,16 @@ def _format_result(payload: dict, stderr_tail: str = "") -> str:
     return f"Browser task failed: {err}"
 
 
-async def _run_runner(python_path: Path, request: bytes) -> str:
+async def _run_runner(python_path: Path, request: bytes, task: str = "") -> str:
     """Spawn the isolated browser_use runner with *request*, return a summary.
 
     Shared by the local-default and the opt-in remote-CDP paths — the only
     difference between them is whether *request* carries a ``cdp_url`` key.
-    Never raises: timeout, a crashed subprocess, or garbled output all map to a
-    clear human-readable error string so a failed browser task can't crash the
-    voice turn.
+    *task* is the plain-English task text, used only to label the per-step
+    telemetry rows written from the parsed payload (best-effort, never
+    load-bearing). Never raises: timeout, a crashed subprocess, or garbled
+    output all map to a clear human-readable error string so a failed browser
+    task can't crash the voice turn.
     """
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -340,6 +391,10 @@ async def _run_runner(python_path: Path, request: bytes) -> str:
     if not isinstance(payload, dict):
         return tool_error("browser task returned an unexpected result shape")
 
+    # Surface the per-step trace into telemetry before formatting the reply
+    # (best-effort, silent — telemetry never breaks the tool).
+    _record_steps(task, payload)
+
     return _format_result(payload, stderr_tail)
 
 
@@ -384,7 +439,7 @@ async def _handle_browser_task(args: dict) -> str:
     provider = _resolve_browser_provider()
     if provider is None:
         request = json.dumps(request_obj, ensure_ascii=False).encode("utf-8")
-        return await _run_runner(python_path, request)
+        return await _run_runner(python_path, request, task)
 
     # Opt-in remote path: open a CDP session, drive it, always close it.
     task_id = uuid.uuid4().hex[:12]
@@ -416,7 +471,7 @@ async def _handle_browser_task(args: dict) -> str:
     request = json.dumps(request_obj, ensure_ascii=False).encode("utf-8")
 
     try:
-        return await _run_runner(python_path, request)
+        return await _run_runner(python_path, request, task)
     finally:
         if session_id:
             try:

@@ -55,3 +55,58 @@ def test_task_validation_rejects_destinationless(browser_tool):
     assert ok is False
     ok, _ = browser_tool._validate_task("go to nvidia.com and find the RTX 6000 price")
     assert ok is True
+
+
+def test_step_table_roundtrip(tmp_path):
+    """``record_browser_step`` writes a row that reads back faithfully.
+
+    Uses a throwaway DB so the live telemetry file is never touched. The table
+    is additive (Web-Nav Phase 1, Task 4) — this asserts the insert + read-back
+    contract for ``browser_task_steps`` independently of the runner/tool path.
+    """
+    import sqlite3
+
+    from pipeline import turn_telemetry
+
+    db = tmp_path / "telemetry.db"
+    # init_db must create the new table without touching the turns schema.
+    turn_telemetry.init_db(db)
+
+    turn_telemetry.record_browser_step(
+        db_path=db,
+        task="find the price of the RTX 6000 on nvidia.com",
+        step_index=0,
+        action="go_to_url",
+        ok=True,
+        detail=None,
+    )
+    turn_telemetry.record_browser_step(
+        db_path=db,
+        task="find the price of the RTX 6000 on nvidia.com",
+        step_index=1,
+        action="click_element",
+        ok=False,
+        detail="element not found",
+    )
+
+    with sqlite3.connect(db) as conn:
+        rows = conn.execute(
+            "SELECT task, step_index, action, ok, detail "
+            "FROM browser_task_steps ORDER BY step_index"
+        ).fetchall()
+
+    assert len(rows) == 2
+    assert rows[0] == (
+        "find the price of the RTX 6000 on nvidia.com",
+        0,
+        "go_to_url",
+        1,
+        None,
+    )
+    assert rows[1] == (
+        "find the price of the RTX 6000 on nvidia.com",
+        1,
+        "click_element",
+        0,
+        "element not found",
+    )
