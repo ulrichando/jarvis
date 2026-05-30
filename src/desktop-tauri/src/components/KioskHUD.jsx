@@ -1,23 +1,27 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { LiveKitRoom, useTracks } from '@livekit/components-react'
-import { Track } from 'livekit-client'
-import { FaceWebGL, useJawFromTrack } from '@/components/FaceWebGL'
+import { FaceWebGL } from '@/components/FaceWebGL'
 
 // Root component for ?route=kiosk.
 //
-// The visualizer is ALWAYS rendered (state-only by default). LiveKit is an
-// enhancement that adds audio reactivity when the room connects — a tiny
-// TrackProbe lives inside <LiveKitRoom> and pushes the agent's audio track
-// back into KioskHUD's state via a callback. If LiveKit fails (token
-// fetch error, CSP block, server down), the visualizer stays driven by
-// state alone and the kiosk still looks alive.
+// JARVIS's face is rendered in-kiosk with WebGL (three.js), no Blender at
+// runtime. The jaw is driven by JARVIS's ACTUAL output audio level: the
+// voice-client computes the RMS of the TTS it plays and exposes it on /level,
+// and the kiosk polls that to drive the jaw morph.
+//
+// We deliberately do NOT use LiveKit/WebRTC in the kiosk browser: it was
+// unreliable for audio analysis in WebKitGTK (remote-track Web Audio returns
+// silence), and the kiosk joining the LiveKit room left ghost participants that
+// wedged the voice SFU on every restart. Polling a tiny localhost endpoint is
+// reliable and keeps the kiosk out of the room entirely.
 //
 // Centering: explicit pixel offsets from window.innerWidth/innerHeight
 // (vw/vh resolve to a stale viewport on GTK fullscreen).
 const STATUS_URL = 'http://127.0.0.1:8767/status'
-const TOKEN_URL  = 'http://127.0.0.1:8765/api/livekit/token'
-const POLL_MS = 500
+const LEVEL_URL  = 'http://127.0.0.1:8767/level'
+const STATUS_POLL_MS = 500
+const LEVEL_POLL_MS  = 40        // ~25 fps; useFrame smooths between samples
+const JAW_GAIN = 6.0             // /level peaks ~0.17 on speech -> ~1.0 jaw
 const AURA_SIZE = 448
 
 function deriveAgentState(s) {
@@ -29,53 +33,11 @@ function deriveAgentState(s) {
   return 'listening'
 }
 
-// Lives inside LiveKitRoom. Watches subscribed microphone tracks and
-// pushes the first remote one (the agent) up to KioskHUD via onTrack.
-// Renders nothing — the visualizer is a sibling of LiveKitRoom in the
-// tree, not a child of it.
-function TrackProbe({ onTrack }) {
-  const tracks = useTracks([Track.Source.Microphone], { onlySubscribed: true })
-  const ref = tracks[0]
-  useEffect(() => {
-    onTrack(ref ?? null)
-    return () => onTrack(null)
-  }, [ref, onTrack])
-  return null
-}
-
 export default function KioskHUD() {
   const [agentState, setAgentState] = useState('connecting')
   const [vp, setVp] = useState({ w: window.innerWidth, h: window.innerHeight })
-  const [conn, setConn] = useState(null)        // { token, url, room }
-  const [agentTrack, setAgentTrack] = useState(null)
-  const [lkErr, setLkErr] = useState(null)
-  // Jaw driven off-React from the agent audio track level (no per-frame state).
-  const jawRef = useJawFromTrack(agentTrack)
-
-  const identity = useMemo(
-    () => `kiosk-display-${Math.random().toString(36).slice(2, 8)}`,
-    []
-  )
-
-  // Mint a LiveKit token via Rust IPC (server-to-server, bypasses the
-  // CORS preflight that fails on tauri://localhost → http://127.0.0.1:8765).
-  // Failure is non-fatal — the aura still renders state-only.
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      try {
-        const raw = await invoke('mint_livekit_token', { identity, room: 'jarvis' })
-        if (cancelled) return
-        const c = JSON.parse(raw)
-        if (c?.token && c?.url) setConn(c)
-        else { console.error('[kiosk] token mint failed', c); setLkErr('mint') }
-      } catch (err) {
-        console.error('[kiosk] token mint via IPC failed', err)
-        if (!cancelled) setLkErr('ipc')
-      }
-    })()
-    return () => { cancelled = true }
-  }, [identity])
+  // 0..1 jaw target, updated off-React by the /level poll (no per-frame state).
+  const jawRef = useRef(0)
 
   // Track live viewport.
   useEffect(() => {
@@ -108,7 +70,7 @@ export default function KioskHUD() {
     }
   }, [])
 
-  // Poll voice-client status for the agent state.
+  // Poll voice-client status for the agent state (diagnostic only).
   useEffect(() => {
     let cancelled = false
     async function tick() {
@@ -121,7 +83,25 @@ export default function KioskHUD() {
       }
     }
     tick()
-    const id = setInterval(tick, POLL_MS)
+    const id = setInterval(tick, STATUS_POLL_MS)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
+
+  // Poll /level fast and drive the jaw (off-React — writes a ref, no re-render).
+  useEffect(() => {
+    let cancelled = false
+    const id = setInterval(async () => {
+      try {
+        const r = await fetch(LEVEL_URL)
+        const d = await r.json()
+        if (!cancelled) {
+          const jaw = (d.level || 0) * JAW_GAIN
+          jawRef.current = Math.max(0, Math.min(1, jaw))
+        }
+      } catch {
+        if (!cancelled) jawRef.current = 0
+      }
+    }, LEVEL_POLL_MS)
     return () => { cancelled = true; clearInterval(id) }
   }, [])
 
@@ -136,7 +116,6 @@ export default function KioskHUD() {
 
   const auraLeft = Math.round((vp.w - AURA_SIZE) / 2)
   const auraTop  = Math.round((vp.h - AURA_SIZE) / 2)
-  const lkStatus = lkErr ? `lk:err(${lkErr})` : conn ? (agentTrack ? 'lk:track' : 'lk:noaudio') : 'lk:wait'
 
   return (
     <>
@@ -151,11 +130,7 @@ export default function KioskHUD() {
           cursor: 'none',
         }}
       />
-      {/* Visualizer — always rendered. audioTrack is undefined unless
-          LiveKit is connected AND the probe has found the agent track.
-          This is the WebGL shader aura ring; it needs GPU compositing to
-          be smooth, so WEBKIT_DISABLE_COMPOSITING_MODE is NOT set for the
-          desktop (see start-desktop.sh) — hardware acceleration is on. */}
+      {/* JARVIS's face — WebGL (three.js), jaw driven by the /level poll. */}
       <div
         style={{
           position: 'fixed',
@@ -164,25 +139,8 @@ export default function KioskHUD() {
           zIndex: 9999,
         }}
       >
-        {/* JARVIS's face — rendered IN the kiosk with WebGL (three.js), no
-            Blender. The jaw morph is driven by the agent audio track's level. */}
         <FaceWebGL size={AURA_SIZE} getJaw={() => jawRef.current} />
       </div>
-      {/* LiveKit room — rendered only when we have a token. The probe
-          inside reports the agent's track back via setAgentTrack. The
-          room provides no UI; it's a connection + context. */}
-      {conn && (
-        <LiveKitRoom
-          token={conn.token}
-          serverUrl={conn.url}
-          connect={true}
-          audio={false}
-          video={false}
-          onError={(e) => { console.error('[kiosk] LiveKit error', e); setLkErr('conn') }}
-        >
-          <TrackProbe onTrack={setAgentTrack} />
-        </LiveKitRoom>
-      )}
       {/* Diagnostic readout */}
       <div
         style={{
@@ -198,7 +156,7 @@ export default function KioskHUD() {
           borderRadius: 4,
         }}
       >
-        {vp.w}×{vp.h} · {agentState} · {lkStatus} · webgl
+        {vp.w}×{vp.h} · {agentState} · webgl
       </div>
     </>
   )
