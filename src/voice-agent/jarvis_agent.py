@@ -3835,7 +3835,14 @@ class JarvisAgent(Agent):
         """Vision-feedback loop (P2a): before generating, inject the post-action
         screen (pixels for a vision-capable model, else a text description) into
         THIS generation's chat_ctx copy. Ephemeral — never persists to history.
-        Best-effort: any failure just skips injection and generates normally."""
+        Best-effort: any failure just skips injection and generates normally.
+
+        Known degraded edge (deferred to P2c): the gate decides on the route's
+        PRIMARY model. If that primary is vision-capable (pixels injected) but the
+        FallbackAdapter then cascades to a text-only rung (Groq llama-3.x) because
+        the primary errored, the ImageContent rides along and that rung
+        ignores/rejects it (wasted tokens). Rare — the primary had to fail first.
+        Hardening (strip ImageContent on the text-only rung) is a P2c follow-up."""
         try:
             from pipeline import computer_use_vision as _cuv
             cap = _cuv.take_current()

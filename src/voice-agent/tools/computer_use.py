@@ -404,19 +404,21 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> str:
     except Exception as e:
         return json.dumps({"error": f"computer_use backend unavailable: {e}"})
 
+    try:
+        result = _dispatch(backend, action, args)
+    except Exception as e:  # noqa: BLE001 — a tool error must not crash the turn
+        logger.exception("computer_use %s failed", action)
+        return json.dumps({"error": f"{action} failed: {e}"})
+
     # Vision-feedback loop (P2a): record the action label for the recent-actions
-    # trail injected alongside the screenshot. Best-effort — never break the tool.
+    # trail — AFTER dispatch, so only actions that actually ran are recorded.
+    # Best-effort — never break the tool.
     try:
         from pipeline import computer_use_vision
         computer_use_vision.record_action(_summarize_action(action, args))
     except Exception:
         pass
-
-    try:
-        return _dispatch(backend, action, args)
-    except Exception as e:  # noqa: BLE001 — a tool error must not crash the turn
-        logger.exception("computer_use %s failed", action)
-        return json.dumps({"error": f"{action} failed: {e}"})
+    return result
 
 
 def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
