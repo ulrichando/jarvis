@@ -150,7 +150,10 @@ export default function KioskHUD() {
         }}
       />
       {/* Visualizer — always rendered. audioTrack is undefined unless
-          LiveKit is connected AND the probe has found the agent track. */}
+          LiveKit is connected AND the probe has found the agent track.
+          This is the WebGL shader aura ring; it needs GPU compositing to
+          be smooth, so WEBKIT_DISABLE_COMPOSITING_MODE is NOT set for the
+          desktop (see start-desktop.sh) — hardware acceleration is on. */}
       <div
         style={{
           position: 'fixed',
