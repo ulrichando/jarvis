@@ -55,9 +55,10 @@ while not stop.is_set():
         cause = e
     if stop.is_set(): break
     decision = rc.on_drop(loop.time(), cause)       # circuit-breaker (pure helper)
-    if not decision.retry:
-        log("reconnect budget exhausted / hard failure → exiting; Restart=always takes over")
-        return 1                                    # hard exit → systemd backstop
+    if not decision.retry:                          # hard failure OR reconnect storm
+        log(f"reconnect not viable ({decision.reason}) → reverting to JARVIS-Claude")
+        revert_to_claude(JARVIS_MODE_BIN, log)      # reuse direct_mode_idle: systemd-run --scope jarvis-mode jarvis
+        stop.set(); break
     status.set_agent_present(False)                 # indicator shows the brief gap
     log(f"Live dropped ({cause}); reconnecting in {decision.delay:.1f}s (attempt {decision.n})")
     await asyncio.sleep(decision.delay)
@@ -104,9 +105,13 @@ unchanged).
 - **Audio glitch at reconnect** → minor (~1–2 s silence); strictly better than today's ~7 s.
 - **Lost Gemini context across a drop** → same as today's restart; out of scope.
 
-## Open decision (for your review)
-**Hard-failure policy.** On a *hard* failure (spend-cap/auth) the design **exits** and lets
-`Restart=always` + StartLimit handle it — i.e. identical to today. The alternative is to instead
-**revert to Claude** on a hard failure (call `jarvis-mode jarvis`, like the idle-revert does),
-so a spend-cap drops you into the stable free mode rather than a systemd retry loop. Default:
-exit-to-Restart (minimal change). Say if you'd prefer revert-to-Claude on hard failure.
+## Resolved decision (2026-05-30)
+**Hard-failure / unrecoverable policy → revert to Claude.** When `classify()` returns `hard`
+(spend-cap/auth/policy) OR the transient storm cap is exhausted (the Live API is flapping too
+hard to be usable), the loop calls `direct_mode_idle.revert_to_claude(JARVIS_MODE_BIN, log)` —
+the same proven `systemd-run --user --scope -- jarvis-mode jarvis` path the idle-revert uses —
+which stops the gemini unit, unmutes JARVIS-Claude, and writes `active-mode=jarvis`. So a
+spend-cap drops the user into the stable free mode instead of a systemd retry loop or a dead
+unit. `Restart=always` is no longer the handler for these cases; it remains only the OS-level
+backstop if the process dies unexpectedly (e.g. crash before reaching the revert). The same
+policy will apply to `bin/jarvis-gpt-tools` in the follow-up.
