@@ -190,16 +190,10 @@ def _appearance(head):
     _set(bsdf, "Specular IOR Level", 0.3)
     _set(bsdf, "Subsurface Weight", 0.06)
     _set(bsdf, "Subsurface Radius", (0.36, 0.18, 0.12))
-    # --- brow material (dark warm brown, matte) ---
-    brow = bpy.data.materials.get("JarvisBrow")
-    if brow is None:
-        brow = bpy.data.materials.new("JarvisBrow"); brow.use_nodes = True
-    bb = next(n for n in brow.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
-    bb.inputs["Base Color"].default_value = (0.045, 0.026, 0.016, 1.0)
-    bb.inputs["Roughness"].default_value = 0.88
-    _set(bb, "Coat Weight", 0.0)
+    # Head wears ONLY the textured skin — the eyebrows come from the FaceCap
+    # texture itself (do NOT draw geometry/face-painted brows).
     me = head.data
-    me.materials.clear(); me.materials.append(skin); me.materials.append(brow)
+    me.materials.clear(); me.materials.append(skin)
     # --- EYE contrast (lambert5, shared by eyes/teeth) so iris/pupil define ---
     ent = lambert.node_tree
     eb = next(n for n in ent.nodes if n.type == "BSDF_PRINCIPLED")
@@ -215,26 +209,6 @@ def _appearance(head):
     ent.links.new(ebc.outputs["Color"], eb.inputs["Base Color"])
     _set(eb, "Coat Weight", 0.0)
     _set(eb, "Roughness", 0.45)
-    # --- brow face band on the ridge (thin, follows geometry) ---
-    hc = _wc("FaceCap_Head"); eyeL = _wc("eyeLeft_lambert5_0")
-    eyeR = _wc("eyeRight_lambert5_0"); teeth = _wc("teeth_lambert5_0")
-    for poly in me.polygons:
-        poly.material_index = 0
-    if hc and eyeL and eyeR and teeth:
-        right = (eyeR - eyeL).normalized()
-        up = (((eyeL + eyeR) * 0.5) - teeth).normalized()
-        up = (up - right * up.dot(right)).normalized()
-        fwd = right.cross(up).normalized()
-        if fwd.dot(((eyeL + eyeR) * 0.5) - hc) < 0:
-            fwd = -fwd
-        mw = head.matrix_world
-        for poly in me.polygons:
-            c = mw @ poly.center
-            for ec in (eyeL, eyeR):
-                d = c - ec; u = d.dot(up); rt = d.dot(right); fc = d.dot(fwd)
-                if 0.009 < u < 0.0150 and abs(rt) < 0.017 and fc > -0.002:
-                    poly.material_index = 1
-                    break
     # slightly open the eyes (ARKit eyeWide = target_17/18)
     sk = head.data.shape_keys.key_blocks
     for t in ("target_17", "target_18"):
