@@ -43,20 +43,26 @@ reading is a **vector with guardrails**, not one scalar — because any single p
 change is only "fitter" if it improves the composite **without regressing any guardrail axis
 past its floor** (lexicographic veto).
 
-### Principle 2 — the signals (all from data that already exists)
-From `~/.local/share/jarvis/turn_telemetry.db` (read-only) + the conversation record. Each
-axis: source, direction, gaming-risk → mitigation.
+### Principle 2 — the signals (only columns the live DB actually populates)
+From `~/.local/share/jarvis/turn_telemetry.db` (read-only). **Empirically grounded 2026-05-30
+against the live 2876-row DB** — an earlier draft used columns that are never written
+(`tool_call_count`/`had_tool_error` are 0 on every row; `correction_signal` is NULL on every
+row; `recurring_*` tables are empty) and an assumed `confab_check_state` vocabulary that does
+not exist. Those axes were dead (every window scored ~0.985). The live, populated signals are:
 
-| Axis | Signal (source) | Better = | Gaming risk → mitigation |
+| Axis | Signal (source) | Better = | Notes / gaming risk → mitigation |
 |---|---|---|---|
-| **Task success** | tool ran AND `had_tool_error`=0; structured tool-result evidence present (`confab_check_state`) | higher | "claim success without acting" → require *verifiable* tool_result (confab detector already enforces this) |
-| **Correction rate** | `correction_signal` + re-ask detection (same intent repeated within N turns) | lower | "avoid corrections by doing nothing" → vetoed by the task-success guardrail |
-| **Interruption rate** | `interrupted` / barge-in telemetry | lower | "talk less to avoid barge-in" → vetoed by task-success + completeness guardrails |
-| **Confab rate** | confab-detector drops + denial-detector blanks | lower | self-evident; sourced from the detectors, not self-report |
-| **Latency** | `ttfw_ms` (time-to-first-word) | lower | "be fast by being wrong" → vetoed by correction + success guardrails |
-| **Recurring failure** | growth/decay of `recurring_errors` / `tool_gap_patterns` rows | fewer / decaying | hard to game (external pattern tables) |
+| **Re-ask rate** (guardrail) | same/near-duplicate `user_text` repeated within N turns | lower | The single strongest live failure signal (user had to repeat → JARVIS missed it). "Avoid by doing nothing" → vetoed by confab guardrail. |
+| **Confab-quality** (guardrail) | `confab_check_state` real vocabulary: `clean*` = good, `caught_t*_passed`/`no_text_t*_passed` = recovered (half-credit), `caught_filler`/`no_text_filler`/`retry_*`/`bypassed_killed` = failure. Scored over *checked* turns only (exclude NULL/`unchecked`). | higher | Sourced from the pre-TTS confab gate, not self-report. |
+| **Latency** | `ttfw_ms` (time-to-first-word) vs `JARVIS_TTFW_TARGET_MS` (default **1000**) | lower ms | "be fast by being wrong" → vetoed by the re-ask + confab guardrails. |
+| **Clean-action rate** | `confab_check_state='clean_tool_called'` ÷ (clean_tool_called + `no_text_*`) — the live proxy for "an action actually completed and was voiced" | higher | Replaces the dead `tool_call_count` task-success axis. Sparse but real. |
+| **Interruption** (low weight, NOT a guardrail) | `interrupted` / barge-in | informational | **Empirically ambiguous** — the calm 2026-05-29 day interrupted *more* (0.096) than the wedged window (0.05); active conversations barge in. Kept at low weight, never a veto. |
 
-(Final axis set + weights are an open decision — see below.)
+Dead-on-arrival columns (`tool_call_count`, `had_tool_error`, `correction_signal`,
+`recurring_*`) are excluded until/unless the telemetry writer populates them; re-instating any
+of them is a future increment, not this one.
+
+(Final weights are tuned during the calibration period — see Principle 5.)
 
 ### Principle 3 — reading shape
 - Per-axis normalized sub-score over a window of real turns.
@@ -129,10 +135,13 @@ The hardest part of an honest fitness function is *trusting* it. So:
   Darwin–Gödel Machine substitutes empirical validation for the original Gödel machine's
   impossible "provably beneficial" requirement.
 
-## Open decisions (for your review)
-1. **Axis set + weights.** The 6 axes above and their relative weights. Recommendation:
-   task-success + correction-rate as hard guardrails; latency carries the lowest weight.
-2. **Scope of measurement.** JARVIS-Claude turns only (richest telemetry) or also the direct
-   modes (gemini/openai)? Recommendation: Claude-only first.
-3. **Ledger location.** Separate `evolution_ledger.db` (recommended) vs. a new table inside
-   `turn_telemetry.db`.
+## Resolved decisions (post empirical grounding, 2026-05-30)
+1. **Axis set + weights.** Settled to the 5 live axes in Principle 2: re-ask rate (guardrail),
+   confab-quality (guardrail), latency, clean-action rate, interruption (low weight). Weights
+   start at reask 0.35 / confab 0.25 / latency 0.20 / action 0.15 / interruption 0.05 and are
+   refined during the calibration period.
+2. **Scope of measurement.** Moot: `turn_telemetry.db` contains **only base-mode turns** — the
+   gemini/openai *direct* modes are separate processes that don't write here. The per-route
+   LLM variety (Claude/groq/deepseek) within base mode is intentional, so all base-mode turns
+   are measured; no `claude_only` filter is needed (the earlier draft's param was dead code).
+3. **Ledger location.** Separate `evolution_ledger.db` (does not touch the telemetry schema).
