@@ -25,6 +25,7 @@ sys.path.insert(0, "/home/ulrich/Documents/Projects/jarvis/src/voice-agent")
 
 from evolution import backtest as _bt   # noqa: E402
 from evolution import ledger as _led     # noqa: E402
+from evolution import soak as _soak      # noqa: E402
 
 
 def _now_utc_iso() -> str:
@@ -99,6 +100,31 @@ def _cmd_ledger(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_soak(args: argparse.Namespace) -> int:
+    now = _dt.datetime.now().astimezone()          # local, tz-aware
+    gate_on = bool(os.environ.get("JARVIS_EVOLUTION_GATE"))
+    res = _soak.run_soak(now=now, gate_on=gate_on)
+    print(f"window:    {res['since']} .. {res['until']}")
+    if res["action"] == "already_logged":
+        print("[soak] already logged this window; skipping (idempotent).")
+        return 0
+    print(f"composite: {res['composite']}  passed: {res['passed']}  n_turns: {res['n_turns']}")
+    if res["action"] == "no_gate":
+        print("[soak] JARVIS_EVOLUTION_GATE not set; computed but not written.")
+    else:  # logged
+        print(f"[ledger] appended reading id={res['reading_id']}")
+    return 0
+
+
+def _cmd_trend(args: argparse.Namespace) -> int:
+    rows = _led.read_readings(limit=args.limit)
+    if not rows:
+        print("(ledger empty — no readings yet; run the soak or wait for the timer)")
+        return 0
+    print(_soak.format_trend_table(rows))
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="jarvis-evolution",
                                 description="Read-only self-evolution fitness gate CLI.")
@@ -119,6 +145,13 @@ def main(argv=None) -> int:
     lp = sub.add_parser("ledger", help="print recent ledger readings")
     lp.add_argument("--limit", type=int, default=50)
     lp.set_defaults(func=_cmd_ledger)
+
+    kp = sub.add_parser("soak", help="score the previous local day + log it (gated)")
+    kp.set_defaults(func=_cmd_soak)
+
+    tp = sub.add_parser("trend", help="print a per-axis trend table of ledger readings")
+    tp.add_argument("--limit", type=int, default=30)
+    tp.set_defaults(func=_cmd_trend)
 
     args = p.parse_args(argv)
     return args.func(args)
