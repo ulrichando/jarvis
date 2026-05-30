@@ -404,6 +404,14 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> str:
     except Exception as e:
         return json.dumps({"error": f"computer_use backend unavailable: {e}"})
 
+    # Vision-feedback loop (P2a): record the action label for the recent-actions
+    # trail injected alongside the screenshot. Best-effort — never break the tool.
+    try:
+        from pipeline import computer_use_vision
+        computer_use_vision.record_action(_summarize_action(action, args))
+    except Exception:
+        pass
+
     try:
         return _dispatch(backend, action, args)
     except Exception as e:  # noqa: BLE001 — a tool error must not crash the turn
@@ -579,6 +587,15 @@ def _capture_response(cap: CaptureResult) -> str:
         desc = latest_description_global()
         if desc:
             payload["screen_description"] = desc.strip()
+    except Exception:
+        pass
+    # Vision-feedback loop (P2a): publish the frame so JarvisAgent.llm_node can
+    # inject it into the next generation. Best-effort — never break the tool.
+    try:
+        from pipeline import computer_use_vision
+        computer_use_vision.publish_capture(
+            png_b64=cap.png_b64, width=cap.width, height=cap.height,
+            action_label=f"capture/{cap.mode}")
     except Exception:
         pass
     return json.dumps(payload)

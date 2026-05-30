@@ -142,3 +142,14 @@ def test_resolve_route_primary_model(monkeypatch):
     monkeypatch.setenv("JARVIS_TASK_DESKTOP_MODEL", "llama-3.3-70b-versatile")
     assert resolve_route_primary_model("TASK_DESKTOP") == "llama-3.3-70b-versatile"     # override wins
     assert resolve_route_primary_model("NOT_A_ROUTE") == ""                              # unknown → ""
+
+
+def test_capture_response_publishes_frame():
+    """tools.computer_use._capture_response should publish the frame to the cache."""
+    import tools.computer_use as cu
+    from tools.computer_use_backend import CaptureResult
+    cuv.clear()
+    cap = CaptureResult(mode="som", width=1920, height=1080, png_b64="ZZZZ")
+    cu._capture_response(cap)                       # side effect: publish
+    cur = cuv.take_current()
+    assert cur is not None and cur["png_b64"] == "ZZZZ" and cur["width"] == 1920
