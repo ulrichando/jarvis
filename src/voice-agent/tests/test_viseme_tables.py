@@ -37,3 +37,11 @@ def test_resolve_pose_scales_by_openness():
     full = vt.resolve_pose("aa", openness=1.0)["target_24"]
     half = vt.resolve_pose("aa", openness=0.5)["target_24"]
     assert abs(half - full * 0.5) < 1e-6
+
+
+def test_resolve_pose_sil_returns_empty():
+    assert vt.resolve_pose("sil", openness=1.0) == {}
+
+
+def test_resolve_pose_unknown_viseme_returns_empty():
+    assert vt.resolve_pose("__not_a_viseme__", openness=1.0) == {}
