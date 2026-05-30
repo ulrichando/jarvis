@@ -84,3 +84,77 @@ def test_read_turns_no_table_returns_empty(tmp_path):
 
 def test_read_missing_db_returns_empty(tmp_path):
     assert db_read.read_turns(tmp_path / "nope.db") == []
+
+
+# --- Task 3: pure signal extraction -----------------------------------------
+
+from evolution.signals import compute_signals
+
+
+def test_empty_window():
+    sig = compute_signals([])
+    assert sig.n_turns == 0
+    assert sig.confab_quality == 1.0
+    assert sig.clean_action_rate == 1.0
+    assert sig.reask_rate == 0.0
+
+
+def test_reask_detected():
+    turns = [
+        {"user_text": "open the browser"},
+        {"user_text": "open the browser"},
+        {"user_text": "open the browser"},
+    ]
+    sig = compute_signals(turns)
+    assert sig.reask_rate > 0
+    # 2nd and 3rd are reasks of an earlier in-window utterance → 2 reasks of 3 turns
+    assert sig.reask_rate == 2 / 3
+
+
+def test_confab_quality():
+    turns = [
+        {"confab_check_state": "clean"},
+        {"confab_check_state": "clean_no_claim"},
+        {"confab_check_state": "caught_t1_passed"},
+        {"confab_check_state": "unchecked"},
+    ]
+    sig = compute_signals(turns)
+    assert sig.n_checked == 3
+    assert sig.confab_quality == (2 + 0.5) / 3
+
+
+def test_confab_failure_drags_quality():
+    turns = [
+        {"confab_check_state": "clean"},
+        {"confab_check_state": "no_text_filler"},
+    ]
+    sig = compute_signals(turns)
+    assert sig.confab_quality == (1 + 0) / 2
+
+
+def test_clean_action_rate():
+    turns = [
+        {"confab_check_state": "clean_tool_called"},
+        {"confab_check_state": "clean_tool_called"},
+        {"confab_check_state": "clean_tool_called"},
+        {"confab_check_state": "no_text_t1_passed"},
+    ]
+    sig = compute_signals(turns)
+    assert sig.clean_action_rate == 3 / 4
+
+
+def test_median_ttfw():
+    turns = [{"ttfw_ms": 100}, {"ttfw_ms": 200}, {"ttfw_ms": 300}]
+    assert compute_signals(turns).median_ttfw_ms == 200.0
+    none_turns = [{"ttfw_ms": None}, {"ttfw_ms": 0}]
+    assert compute_signals(none_turns).median_ttfw_ms == 0.0
+
+
+def test_interruption_rate():
+    turns = [
+        {"interrupted": 1},
+        {"interrupted": 0},
+        {"interrupted": 0},
+        {"interrupted": 0},
+    ]
+    assert compute_signals(turns).interruption_rate == 0.25
