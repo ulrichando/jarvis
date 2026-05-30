@@ -347,12 +347,23 @@ async def execute_tool(name: str, args: dict[str, Any]) -> Any:
     entry = registry.registry.get_entry(name)
     if entry is None:
         return {"error": f"unknown tool: {name}"}
+    handler = entry.handler
     try:
         # JARVIS handlers take dict positionally (sig: `(args: dict)`),
         # NOT unpacked kwargs.
-        result = entry.handler(args or {})
-        if inspect.isawaitable(result):
-            result = await result
+        #
+        # Mirror tools/_adapter.py:143-158 — async handlers are awaited,
+        # SYNC handlers run in a worker thread so a blocking tool (e.g.
+        # the sync handle_computer_use) can't freeze the event loop and
+        # stall the Realtime keepalive → session drop.
+        if inspect.iscoroutinefunction(handler):
+            result = await handler(args or {})
+        else:
+            result = await asyncio.to_thread(handler, args or {})
+            # Defensive: a sync-declared handler that returns a coroutine
+            # is still awaited rather than left as a coroutine object.
+            if inspect.isawaitable(result):
+                result = await result
     except Exception as e:
         log.warning(f"[gpt-tools] {name} raised: {type(e).__name__}: {e}")
         return {"error": f"{type(e).__name__}: {e}"}
@@ -394,6 +405,10 @@ async def main() -> int:
 
     loop = asyncio.get_running_loop()
     last_activity = [loop.time()]  # monotonic; reset on speech/model/tool activity
+    # Tools now run OFF the receive loop (spawned tasks), so two may be
+    # in flight at once — a bare bool would clear `tool_running` too
+    # early. Track an inflight COUNTER; `tool_running` is `count > 0`.
+    tool_inflight = [0]
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _stop, sig)
 
@@ -504,6 +519,46 @@ async def main() -> int:
                     "type": "input_audio_buffer.append",
                     "audio": base64.b64encode(chunk).decode("ascii"),
                 }))
+
+        async def _run_tool(cid: str, name: str, args: dict) -> None:
+            """Run one tool call OFF the receive loop and deliver the result on
+            the same session. Spawned (not awaited) by `drain_replies` so the
+            receive loop keeps reading `ws` and the Realtime keepalive stays
+            serviced while the tool runs. Preserves the OpenAI send shape —
+            `conversation.item.create` of type `function_call_output` then
+            `response.create` — plus an inflight COUNTER so overlapping tool
+            calls don't clear `tool_running` early, and a guarded send so a
+            session that dropped mid-tool just drops the stale response."""
+            tool_inflight[0] += 1
+            status.set_tool_running(True)
+            last_activity[0] = loop.time()
+            try:
+                log.info(f"[gpt-tools] → {name}({args})")
+                result = await execute_tool(name, args)
+                last_activity[0] = loop.time()
+                short = json.dumps(result)[:200] if not isinstance(result, str) else result[:200]
+                log.info(f"[gpt-tools]   {name} ← {short}")
+                output_str = result if isinstance(result, str) else json.dumps(result)
+                try:
+                    await ws.send(json.dumps({
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "function_call_output",
+                            "call_id": cid,
+                            "output": output_str,
+                        },
+                    }))
+                    # Kick off the next response so the model speaks
+                    # the result.
+                    await ws.send(json.dumps({"type": "response.create"}))
+                except Exception as e:
+                    log.warning(
+                        f"[gpt-tools] tool_response send failed (session dropped?): "
+                        f"{type(e).__name__}: {e}"
+                    )
+            finally:
+                tool_inflight[0] -= 1
+                status.set_tool_running(tool_inflight[0] > 0)
 
         async def maybe_inject_screen_frame(reason: str) -> None:
             """Grab a screen JPEG and append it as a user message
@@ -683,25 +738,15 @@ async def main() -> int:
                         args = json.loads(args_str) if args_str else {}
                     except Exception:
                         args = {}
-                    log.info(f"[gpt-tools] → {name}({args})")
-                    status.set_tool_running(True)
+                    # Run the tool OFF the receive loop (spawned task) so this
+                    # loop keeps reading `ws` and the Realtime keepalive stays
+                    # serviced for the tool's whole duration. Awaiting it inline
+                    # parked the receive loop → session drop on long tasks.
                     last_activity[0] = loop.time()
-                    result = await execute_tool(name, args)
-                    status.set_tool_running(False)
-                    short = json.dumps(result)[:200] if not isinstance(result, str) else result[:200]
-                    log.info(f"[gpt-tools]   {name} ← {short}")
-                    output_str = result if isinstance(result, str) else json.dumps(result)
-                    await ws.send(json.dumps({
-                        "type": "conversation.item.create",
-                        "item": {
-                            "type": "function_call_output",
-                            "call_id": cid,
-                            "output": output_str,
-                        },
-                    }))
-                    # Kick off the next response so the model speaks
-                    # the result.
-                    await ws.send(json.dumps({"type": "response.create"}))
+                    asyncio.create_task(
+                        _run_tool(cid, name, args),
+                        name="tool-call",
+                    )
 
                 # Some Realtime variants emit response.output_item.added
                 # with the function call's name; remember it so we have
