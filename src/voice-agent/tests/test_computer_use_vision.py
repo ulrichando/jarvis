@@ -110,6 +110,21 @@ def test_decide_mode_auto_vision_route(monkeypatch):
     assert cuv.decide_mode(_FakeDispatch("TASK_DESKTOP")) == "pixels"   # default claude-sonnet
 
 
+def test_decide_mode_auto_unknown_route_is_pixels(monkeypatch):
+    # Review fix #2: an unknown route is UNCERTAINTY → pixels (not text).
+    monkeypatch.delenv("JARVIS_CU_VISION_MODE", raising=False)
+    assert cuv.decide_mode(_FakeDispatch("NOT_A_ROUTE")) == "pixels"
+
+
+def test_take_current_ttl_env(monkeypatch):
+    # Review fix #1: JARVIS_CU_VISION_TTL_S controls the freshness window.
+    monkeypatch.setenv("JARVIS_CU_VISION_TTL_S", "5")
+    cuv.clear()
+    cuv.publish_capture(png_b64="AAAA", width=1, height=1, _now=100.0)
+    assert cuv.take_current(_now=104.0) is not None    # within 5s
+    assert cuv.take_current(_now=106.0) is None        # past 5s env window
+
+
 def test_build_injection_pixels():
     from livekit.agents.llm import ImageContent
     cap = {"png_b64": _png_b64(100, 80), "action_label": "capture"}

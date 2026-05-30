@@ -6,10 +6,13 @@ post-action screen into the per-generation chat_ctx copy.
 from __future__ import annotations
 import base64
 import io
+import logging
 import os
 import time
 from collections import deque
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 _VISION_PREFIXES_DEFAULT = ("claude-", "gpt-4o", "gpt-4.1", "gemini-")
 _DEFAULT_TTL_S = 20.0
@@ -37,10 +40,17 @@ def record_action(label: str) -> None:
         _recent.append(label)
 
 
-def take_current(ttl_s: float = _DEFAULT_TTL_S, _now: Optional[float] = None) -> Optional[dict]:
-    """Return a copy of the newest frame if within ttl_s (non-consuming), else None."""
+def take_current(ttl_s: Optional[float] = None, _now: Optional[float] = None) -> Optional[dict]:
+    """Return a copy of the newest frame if within ttl_s (non-consuming), else None.
+    When ttl_s is None the freshness window is read from JARVIS_CU_VISION_TTL_S
+    (default 20s) at call time."""
     if _latest is None:
         return None
+    if ttl_s is None:
+        try:
+            ttl_s = float(os.environ.get("JARVIS_CU_VISION_TTL_S", _DEFAULT_TTL_S))
+        except (TypeError, ValueError):
+            ttl_s = _DEFAULT_TTL_S
     now = _now if _now is not None else time.monotonic()
     if (now - _latest["ts"]) > ttl_s:
         return None
@@ -109,9 +119,11 @@ def decide_mode(dispatch_llm=None) -> str:
         if route:
             from providers.llm import resolve_route_primary_model
             model = resolve_route_primary_model(route)
+            if not model:
+                return "pixels"        # unknown route = uncertainty → pixels (Claude default)
             return "pixels" if is_vision_capable(model) else "text"
     except Exception:
-        pass
+        logger.debug("[vision] route resolution failed", exc_info=True)
     return "pixels"
 
 
