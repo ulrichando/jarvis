@@ -49,3 +49,33 @@ def test_is_vision_capable_env_override(monkeypatch):
     monkeypatch.setenv("JARVIS_VISION_MODEL_PREFIXES", "llama-,foo-")
     assert cuv.is_vision_capable("llama-3.3-70b-versatile") is True
     assert cuv.is_vision_capable("claude-sonnet-4-6") is False
+
+
+import base64, io
+
+
+def _png_b64(w, h):
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), (123, 50, 200)).save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def test_downscale_png_shrinks_large():
+    from PIL import Image
+    out = cuv.downscale_png(_png_b64(2400, 1200), max_px=1280)
+    assert out is not None
+    img = Image.open(io.BytesIO(base64.b64decode(out)))
+    assert max(img.size) <= 1280 and img.size[0] >= img.size[1]   # aspect preserved
+
+
+def test_downscale_png_keeps_small():
+    from PIL import Image
+    out = cuv.downscale_png(_png_b64(400, 300), max_px=1280)
+    img = Image.open(io.BytesIO(base64.b64decode(out)))
+    assert img.size == (400, 300)
+
+
+def test_downscale_png_bad_input_returns_none():
+    assert cuv.downscale_png("not-base64-@@@") is None
+    assert cuv.downscale_png("") is None
