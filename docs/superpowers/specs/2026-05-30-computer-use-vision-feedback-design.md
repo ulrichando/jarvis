@@ -50,6 +50,13 @@ provider; no persisted screenshot history.
    and `FunctionCallOutput.output` is `str` — so the screenshot fundamentally cannot travel in the
    `computer_use` tool result; it must be a separate `ChatMessage`. This is why injection (not
    "return the image") is the design.
+4. **The supervisor is Claude (vision-capable) by default, per route.** `providers/llm.py::_ANTH_DEFAULT_PER_ROUTE`
+   (lines 930-939) maps every route to `claude-haiku-4-5`/`claude-sonnet-4-6` (env-overridable);
+   `TASK_DESKTOP`→`claude-sonnet-4-6`. The live supervisor LLM is the per-route `DispatchingLLM`
+   (`build_dispatching_llm`), reachable as the module-global `_dispatch_llm` in `jarvis_agent.py`
+   (exposes `.last_route` / `.last_llm_label`). `SPEECH_MODELS`/`read_speech_model()` is a separate
+   tray registry (defaults to a Groq model) and is **not** the supervisor source — hence the gate
+   defaults to pixels-on (Decision 4), not a conservative text path.
 
 ## Design
 
@@ -76,18 +83,30 @@ action_label, ts_monotonic}` for the **newest** frame only. `computer_use`'s `ca
 path calls `publish_capture(...)`. A new user turn (`on_user_turn_completed`) clears it so a stale
 screen never bleeds into an unrelated turn. Pure functions → unit-testable without a session.
 
-### Decision 4 — vision-capability gate + text fallback
-Injection consults the **current turn's route** (set by `pipeline/turn_router.py` and stable for the
-turn) → its **configured primary model id** via the same per-route resolution `providers/llm.py`
-uses (the plan pins the exact accessor). A small allowlist — prefixes `claude-`, `gpt-4o`, `gpt-4.1`,
-`gemini-` — decides:
-- **vision-capable** → inject the downscaled screenshot as an `ImageContent`.
-- **text-only** (e.g. the Groq `llama-3.x` fallback rung) → inject `screen_share_observer`'s latest
-  text description if present, else inject nothing (the str summary already returned). Never send an
-  image to a text-only model (wasteful / errors).
+### Decision 4 — vision gate: `JARVIS_CU_VISION_MODE` (default pixels-on) + best-effort detection
+**Discovery (verified, amended 2026-05-30):** every per-route SUPERVISOR default in
+`providers/llm.py::_ANTH_DEFAULT_PER_ROUTE` (lines 930-939) is **Claude** — `claude-haiku-4-5` /
+`claude-sonnet-4-6`, all vision-capable; `TASK_DESKTOP`→`claude-sonnet-4-6`. (`SPEECH_MODELS` /
+`read_speech_model()` is a SEPARATE tray registry that defaults to a Groq model — it is **NOT** the
+supervisor source; gating on it would be wrong. The live supervisor LLM is the per-route
+`DispatchingLLM` built by `build_dispatching_llm`.) So the supervisor sees images by default; the
+gate's only job is to avoid sending an image to a text-only model when an operator has overridden a
+route (`JARVIS_{ROUTE}_MODEL`) to Groq/DeepSeek or the active rung fell back.
 
-The allowlist is env-overridable (`JARVIS_VISION_MODEL_PREFIXES`) and conservative-by-default
-(unknown model → text path).
+Gate = env `JARVIS_CU_VISION_MODE` (default `auto`):
+- `off` → never inject.
+- `text` → always inject the text-description fallback (operator running a text-only supervisor).
+- `pixels` → always inject pixels.
+- `auto` (default) → **best-effort** detect the active route's model: read the module-global
+  `_dispatch_llm` (the live `DispatchingLLM`) `.last_route`, resolve its primary model via a new
+  public `providers/llm.py::resolve_route_primary_model(route)`, and check a vision allowlist
+  (prefixes `claude-`/`gpt-4o`/`gpt-4.1`/`gemini-`, env-overridable `JARVIS_VISION_MODEL_PREFIXES`).
+  Inject **pixels** if vision-capable, **text-description** if confidently text-only, and **pixels on
+  ANY uncertainty** (detection failure / unknown route / no `_dispatch_llm`) — because the canonical
+  supervisor is Claude. Detection is best-effort, never load-bearing.
+
+Text-description fallback source: `screen_share_observer.latest_description_global()` if present,
+else inject nothing (the str summary already returned).
 
 ### Decision 5 — newest-frame-only, downscaled, with a cheap action trail
 Only the newest frame is ever injected (no accumulation; the copy is ephemeral so older frames are
@@ -103,8 +122,8 @@ refinement) without extra images. Freshness window `JARVIS_CU_VISION_TTL_S` (def
 |---|---|---|
 | `pipeline/computer_use_vision.py` (new) | `publish_capture(...)` / `take_current(ttl)` / `clear()` newest-frame cache; `is_vision_capable(model_id)`; `downscale_png(b64,max_px)` — all pure | stdlib, `livekit.agents.utils.images` |
 | `tools/computer_use.py` (modify) | after `capture` / post-mutation, call `publish_capture(...)` with the existing `CaptureResult` (`png_b64`,`width`,`height`) + an action label. No schema change. | the cache module |
-| `jarvis_agent.py` (modify) | `JarvisAgent.llm_node` override: read cache → gate on active model → inject `ImageContent` (vision) or text description (text-only) into the per-gen `chat_ctx` copy → `await super().llm_node(...)`. Clear the cache in `on_user_turn_completed`. | cache module, `providers/llm.py` active-model, `ImageContent` |
-| `providers/llm.py` (read-only use) | expose the active route's resolved model id for the gate (already computes per-route models) | — |
+| `jarvis_agent.py` (modify) | add `JarvisAgent.llm_node` async-generator override: read cache → decide mode (`JARVIS_CU_VISION_MODE`, `auto` best-effort via module-global `_dispatch_llm.last_route`) → inject `ImageContent` (pixels) or text description into the per-gen `chat_ctx` copy → `async for chunk in Agent.default.llm_node(self, ...): yield chunk`. Clear the cache in the existing `on_user_turn_completed`. | cache module, `providers/llm.py::resolve_route_primary_model`, `_dispatch_llm`, `ImageContent` |
+| `providers/llm.py` (modify) | add public `resolve_route_primary_model(route) -> str` — extract the env-override→`_ANTH_DEFAULT_PER_ROUTE` default resolution (currently nested in `build_dispatching_llm._resolve_route_model`) into a module-level helper the gate can call | — |
 
 ## Data flow
 
@@ -113,17 +132,19 @@ supervisor turn → computer_use(action) → backend acts + captures frame
    → publish_capture(png_b64,w,h,label,ts)        # newest-frame cache
    → tool returns its str summary (unchanged)      # FunctionCallOutput.output: str
 framework appends FunctionCallOutput, starts the follow-up generation:
-   → JarvisAgent.llm_node(chat_ctx_COPY, tools, settings)
+   → JarvisAgent.llm_node(chat_ctx_COPY, tools, settings)   # async generator override
        cap = take_current(ttl=JARVIS_CU_VISION_TTL_S)
-       if cap and is_vision_capable(active_model):
+       mode = decide_mode()   # JARVIS_CU_VISION_MODE, default 'auto' → best-effort via _dispatch_llm.last_route
+       if cap and mode == "pixels":
             chat_ctx_copy.add_message(role="user",
-                content=["[screen after: <label>] (recent: a, b, c)",
-                         ImageContent(image="data:image/png;base64,"+downscale(cap.png_b64),
+                content=[f"[screen after: {cap.label}]{recent_actions_text()}",
+                         ImageContent(image="data:image/png;base64,"+downscale_png(cap.png_b64),
                                       inference_detail="auto")])
-       elif cap:  # text-only model
+       elif cap and mode == "text":
             desc = screen_share_observer.latest_description_global()
-            if desc: chat_ctx_copy.add_message(role="user", content=[f"[screen after: <label>] {desc}"])
-       → await super().llm_node(chat_ctx_copy, tools, settings)   # supervisor now SEES the screen
+            if desc: chat_ctx_copy.add_message(role="user", content=[f"[screen after: {cap.label}] {desc}"])
+       async for chunk in Agent.default.llm_node(self, chat_ctx_copy, tools, settings):  # supervisor SEES the screen
+            yield chunk
 new user turn → on_user_turn_completed → computer_use_vision.clear()
 ```
 
