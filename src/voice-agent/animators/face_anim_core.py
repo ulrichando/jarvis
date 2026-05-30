@@ -9,23 +9,18 @@ The orchestrator resolves real indices by name against the live key_blocks;
 these are only fallback hints.
 """
 
-ARKIT_INDEX_HINTS = {
-    "jawOpen": 17,
-    "mouthClose": 18,
-    "mouthFunnel": 19,
-    "mouthPucker": 20,
-}
-
-# FaceCap glTF heads name their 52 ARKit morphs `target_0..target_51` in ARKit
-# index order (the imported head's key_blocks are Basis + target_0..51, NOT
-# literal names like "jawOpen"). Map the ARKit names we drive to those aliases
-# so we can resolve the right shape key. Heads that DO use literal ARKit names
-# resolve directly and skip the alias.
+# FaceCap glTF heads name their 52 ARKit morphs `target_0..target_51` in the
+# canonical ARKit index order (the imported head's key_blocks are Basis +
+# target_0..51, NOT literal names like "jawOpen"). These indices were CONFIRMED
+# empirically against the live head (target_24 produced the only real jaw drop;
+# the prototype's target_17 was an eye shape, which is why its face never
+# talked). Heads that DO use literal ARKit names resolve directly (the literal
+# name is preferred over the alias in resolve_key_names).
 FACECAP_ALIASES = {
-    "jawOpen": "target_17",
-    "mouthClose": "target_18",
-    "mouthFunnel": "target_19",
-    "mouthPucker": "target_20",
+    "jawOpen": "target_24",     # confirmed: dominant downward jaw deformation
+    "mouthClose": "target_28",  # canonical ARKit order (co-articulation, unused in MVP)
+    "mouthFunnel": "target_29",
+    "mouthPucker": "target_30",
 }
 
 
@@ -67,12 +62,12 @@ def smooth_jaw(current: float, target: float,
 
 
 def shape_values(jaw: float) -> dict:
-    """Map a 0..1 jaw openness to ARKit shape-key values with light
-    co-articulation so the mouth shuts cleanly at rest."""
+    """Map a 0..1 jaw openness to the ARKit shape-key values we drive.
+
+    MVP is jaw-only ("jaw-open from loudness"): the Basis already has closed
+    lips, so a jaw drop alone reads clearly as talking and carries zero risk of
+    deforming the idle face. Co-articulation (mouthClose/funnel/pucker) is a
+    fast-follow that requires per-shape verification before it's applied at
+    rest — see FACECAP_ALIASES."""
     jaw = max(0.0, min(1.0, jaw))
-    return {
-        "jawOpen": jaw,
-        "mouthClose": max(0.0, 1.0 - jaw * 1.5),
-        "mouthFunnel": jaw * 0.25,
-        "mouthPucker": jaw * 0.10,
-    }
+    return {"jawOpen": jaw}
