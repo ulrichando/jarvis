@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { LiveKitRoom, useTracks } from '@livekit/components-react'
 import { Track } from 'livekit-client'
-import { AgentAudioVisualizerAura } from '@/components/agents-ui/agent-audio-visualizer-aura'
 import { FaceStream } from '@/components/FaceStream'
 
 // Root component for ?route=kiosk.
@@ -20,8 +19,6 @@ const STATUS_URL = 'http://127.0.0.1:8767/status'
 const TOKEN_URL  = 'http://127.0.0.1:8765/api/livekit/token'
 const POLL_MS = 500
 const AURA_SIZE = 448
-// Face kiosk on by default; set VITE_JARVIS_FACE_KIOSK=0 to force ring-only.
-const FACE_ENABLED = import.meta.env.VITE_JARVIS_FACE_KIOSK !== '0'
 
 function deriveAgentState(s) {
   if (!s || s.connected === false) return 'disconnected'
@@ -166,24 +163,10 @@ export default function KioskHUD() {
           zIndex: 9999,
         }}
       >
-        {/* Live Blender talking face (MJPEG). Kept mounted but hidden during
-            fallback so it can recover; the ring shows until frames flow. */}
-        {FACE_ENABLED && (
-          <div style={{ display: faceOk ? 'block' : 'none',
-                        width: AURA_SIZE, height: AURA_SIZE }}>
-            <FaceStream size={AURA_SIZE} onHealth={setFaceOk} />
-          </div>
-        )}
-        {(!FACE_ENABLED || !faceOk) && (
-          <AgentAudioVisualizerAura
-            size="xl"
-            color="#1FD5F9"
-            colorShift={0.05}
-            state={agentState}
-            themeMode="dark"
-            audioTrack={agentTrack || undefined}
-          />
-        )}
+        {/* Live Blender talking face (MJPEG) — the kiosk's only visualizer.
+            The ring was removed; FaceStream auto-reconnects if the stream drops
+            (black backdrop shows through meanwhile). */}
+        <FaceStream size={AURA_SIZE} onHealth={setFaceOk} />
       </div>
       {/* LiveKit room — rendered only when we have a token. The probe
           inside reports the agent's track back via setAgentTrack. The
@@ -215,7 +198,7 @@ export default function KioskHUD() {
           borderRadius: 4,
         }}
       >
-        {vp.w}×{vp.h} · {agentState} · {lkStatus} · {FACE_ENABLED ? (faceOk ? 'face' : 'ring') : 'ring-only'}
+        {vp.w}×{vp.h} · {agentState} · {lkStatus} · {faceOk ? 'face' : 'face:down'}
       </div>
     </>
   )
