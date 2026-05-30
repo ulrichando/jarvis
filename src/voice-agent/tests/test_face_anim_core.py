@@ -37,3 +37,25 @@ def test_shape_values_co_articulation():
 def test_shape_values_clamps_input():
     assert fac.shape_values(5.0)["jawOpen"] == 1.0
     assert fac.shape_values(-5.0)["jawOpen"] == 0.0
+
+
+def test_resolve_key_names_facecap_aliases():
+    # FaceCap head: morphs are Basis + target_0..target_51
+    available = ["Basis"] + [f"target_{i}" for i in range(52)]
+    got = fac.resolve_key_names(
+        ["jawOpen", "mouthClose", "mouthFunnel", "mouthPucker"], available)
+    assert got == {
+        "jawOpen": "target_17",
+        "mouthClose": "target_18",
+        "mouthFunnel": "target_19",
+        "mouthPucker": "target_20",
+    }
+
+
+def test_resolve_key_names_prefers_literal_arkit_names():
+    # a head that ships literal ARKit names resolves directly, no alias
+    available = ["Basis", "jawOpen", "mouthClose"]
+    got = fac.resolve_key_names(["jawOpen", "mouthClose", "mouthFunnel"], available)
+    assert got == {"jawOpen": "jawOpen", "mouthClose": "mouthClose"}
+    # mouthFunnel absent in both forms -> omitted
+    assert "mouthFunnel" not in got
