@@ -40,7 +40,7 @@ def _clamp(x: float) -> float:
 
 def _normalize(sig: WindowSignals) -> dict:
     target = _ttfw_target_ms()
-    lat = 1.0 if sig.median_ttfw_ms <= 0 else _clamp(1.0 - (sig.median_ttfw_ms - target) / (3 * target))
+    lat = 1.0 if sig.ttfw_p90_ms <= 0 else _clamp(1.0 - (sig.ttfw_p90_ms - target) / (3 * target))
     return {
         "reask":        _clamp(1.0 - sig.reask_rate),
         "confab":       _clamp(sig.confab_quality),

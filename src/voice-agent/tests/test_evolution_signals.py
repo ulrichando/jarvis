@@ -143,11 +143,12 @@ def test_clean_action_rate():
     assert sig.clean_action_rate == 3 / 4
 
 
-def test_median_ttfw():
+def test_ttfw_p90():
+    # p90 (nearest-rank) keeps the slow tail: for [100,200,300], idx=round(0.9*2)=2 -> 300.
     turns = [{"ttfw_ms": 100}, {"ttfw_ms": 200}, {"ttfw_ms": 300}]
-    assert compute_signals(turns).median_ttfw_ms == 200.0
+    assert compute_signals(turns).ttfw_p90_ms == 300.0
     none_turns = [{"ttfw_ms": None}, {"ttfw_ms": 0}]
-    assert compute_signals(none_turns).median_ttfw_ms == 0.0
+    assert compute_signals(none_turns).ttfw_p90_ms == 0.0
 
 
 def test_interruption_rate():
