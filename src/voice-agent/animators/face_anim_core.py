@@ -16,6 +16,35 @@ ARKIT_INDEX_HINTS = {
     "mouthPucker": 20,
 }
 
+# FaceCap glTF heads name their 52 ARKit morphs `target_0..target_51` in ARKit
+# index order (the imported head's key_blocks are Basis + target_0..51, NOT
+# literal names like "jawOpen"). Map the ARKit names we drive to those aliases
+# so we can resolve the right shape key. Heads that DO use literal ARKit names
+# resolve directly and skip the alias.
+FACECAP_ALIASES = {
+    "jawOpen": "target_17",
+    "mouthClose": "target_18",
+    "mouthFunnel": "target_19",
+    "mouthPucker": "target_20",
+}
+
+
+def resolve_key_names(arkit_names, available) -> dict:
+    """Map each ARKit name to the actual shape-key name present on the mesh.
+
+    `available` is the set/list of key_blocks names. Prefer the literal ARKit
+    name; fall back to the FaceCap `target_N` alias. ARKit names with no match
+    are omitted (the caller simply won't drive them).
+    """
+    avail = set(available)
+    out = {}
+    for name in arkit_names:
+        if name in avail:
+            out[name] = name
+        elif FACECAP_ALIASES.get(name) in avail:
+            out[name] = FACECAP_ALIASES[name]
+    return out
+
 
 def target_jaw(speaking: bool, level: float, gain: float = 4.0,
                max_jaw: float = 1.0) -> float:
