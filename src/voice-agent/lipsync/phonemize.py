@@ -13,7 +13,12 @@ import cmudict
 
 from .viseme_tables import ARPABET_TO_VISEME
 
-_CMU = cmudict.dict()  # {word: [[phoneme, ...], ...]}, loaded once
+# Loaded once, eagerly, at import time (~0.4s, 126k entries). This is
+# DELIBERATE: text_to_visemes() is called from the audio playback loop, so
+# building the dict lazily on first call would stall the first utterance by
+# ~0.4s. Paying it at voice-client startup (a background service already
+# ~10s into boot) keeps every audio-loop call O(1). Do not lazy-load this.
+_CMU = cmudict.dict()  # {word: [[phoneme, ...], ...]}
 _WORD_RE = re.compile(r"[a-z']+")
 _STRESS_RE = re.compile(r"\d")
 
@@ -36,7 +41,9 @@ def _phonemes_for(word: str) -> list[str]:
 
 def text_to_visemes(text: str) -> list[str]:
     """Return a flat list of Oculus viseme codes for `text`, with 'sil'
-    at word boundaries. Empty/whitespace -> []."""
+    at word boundaries. Empty/whitespace -> []. Tokens with no alphabetic
+    content (bare digits like "2024", pure apostrophes) contribute no
+    visemes — number-to-words expansion is out of scope for v1."""
     words = _WORD_RE.findall(text.lower())
     out: list[str] = []
     for i, word in enumerate(words):
