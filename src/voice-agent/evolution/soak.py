@@ -43,3 +43,27 @@ def run_soak(*, now: datetime, telemetry_db=db_read.DEFAULT_TELEMETRY_DB,
         per_axis=reading.per_axis, composite=reading.composite,
         guardrail_flags=reading.guardrail_flags, passed=reading.passed, db_path=ledger_db)
     return {**base, "action": "logged", "reading_id": rid}
+
+
+def format_trend_table(readings: list[dict]) -> str:
+    """Render ledger readings (newest-first, as read_readings returns) as an aligned
+    per-axis table. Pure: takes dicts, returns a string. DATE = window_start[:10]
+    (UTC date == local date for west-of-UTC offsets, e.g. this EDT/EST box)."""
+    header = (f"{'DATE':<11} {'n':>4} {'comp':>7}  "
+              f"{'reask':>6} {'confab':>6} {'lat':>6} {'action':>6} {'intr':>6}  RESULT")
+    lines = [header]
+    for r in readings:
+        ws = r.get("window_start")
+        date = ws[:10] if ws else "(all)"
+        ax = r.get("per_axis") or {}
+
+        def _fmt(key: str) -> str:
+            v = ax.get(key)
+            return f"{v:.3f}" if isinstance(v, (int, float)) else "-"
+
+        lines.append(
+            f"{date:<11} {r.get('n_turns', 0):>4} {r.get('composite', 0.0):>7.4f}  "
+            f"{_fmt('reask'):>6} {_fmt('confab'):>6} {_fmt('latency'):>6} "
+            f"{_fmt('action'):>6} {_fmt('interruption'):>6}  "
+            f"{'PASS' if r.get('passed') else 'FAIL'}")
+    return "\n".join(lines)
