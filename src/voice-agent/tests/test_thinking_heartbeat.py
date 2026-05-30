@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -287,3 +288,111 @@ def test_thinking_idle_grace_s_parsing(monkeypatch):
     for bad in ("abc", "0", "-3", ""):
         monkeypatch.setenv("JARVIS_THINKING_IDLE_GRACE_S", bad)
         assert _thinking_idle_grace_s() == 5.0
+
+
+# ── Heartbeat orphan watchdog (2026-05-30) ─────────────────────────────
+# agent_state-INDEPENDENT backstop: a turn can wedge agent_state non-idle
+# (a non-interruptible TTS whose playout never completes), so the idle
+# backstop never fires. The heartbeat self-cancels when no genuine turn
+# progress (_bump_turn_activity) lands for _thinking_max_idle_s() AND no
+# tool is running.
+
+def test_thinking_max_idle_s_parsing(monkeypatch):
+    from jarvis_agent import _thinking_max_idle_s
+    monkeypatch.delenv("JARVIS_THINKING_MAX_IDLE_S", raising=False)
+    assert _thinking_max_idle_s() == 120.0
+    monkeypatch.setenv("JARVIS_THINKING_MAX_IDLE_S", "30")
+    assert _thinking_max_idle_s() == 30.0
+    for bad in ("abc", "0", "-5", ""):
+        monkeypatch.setenv("JARVIS_THINKING_MAX_IDLE_S", bad)
+        assert _thinking_max_idle_s() == 120.0
+
+
+def test_bump_turn_activity_sets_timestamp():
+    from jarvis_agent import _bump_turn_activity
+    sess = types.SimpleNamespace()
+    before = time.monotonic()
+    _bump_turn_activity(sess)
+    assert sess._jarvis_last_turn_activity >= before
+
+
+@pytest.mark.asyncio
+async def test_watchdog_self_cancels_when_progress_stale(tmp_path, monkeypatch):
+    """No turn progress for > max_idle AND no tool running → heartbeat
+    self-cancels and unlinks the flag, even though agent_state is never
+    consulted."""
+    from jarvis_agent import _thinking_heartbeat
+    fake_file = tmp_path / ".agent-thinking"
+    tool_file = tmp_path / ".tool-running"           # absent
+    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", fake_file)
+    monkeypatch.setattr("jarvis_agent._TOOL_BUSY_FILE", tool_file)
+    monkeypatch.setenv("JARVIS_THINKING_MAX_IDLE_S", "0.2")
+    sess = types.SimpleNamespace(_jarvis_last_turn_activity=time.monotonic() - 1.0)
+    task = asyncio.create_task(_thinking_heartbeat(interval_s=0.05, session=sess))
+    await asyncio.sleep(0.3)
+    assert task.done()              # watchdog stopped it
+    assert not fake_file.exists()   # and unlinked the flag
+
+
+@pytest.mark.asyncio
+async def test_watchdog_held_off_by_running_tool(tmp_path, monkeypatch):
+    """Stale progress BUT a tool is running → keep the indicator amber
+    (don't clear during a long legit tool)."""
+    from jarvis_agent import _thinking_heartbeat
+    fake_file = tmp_path / ".agent-thinking"
+    tool_file = tmp_path / ".tool-running"
+    tool_file.write_text("run_jarvis_cli\n123\n")     # tool busy
+    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", fake_file)
+    monkeypatch.setattr("jarvis_agent._TOOL_BUSY_FILE", tool_file)
+    monkeypatch.setenv("JARVIS_THINKING_MAX_IDLE_S", "0.2")
+    sess = types.SimpleNamespace(_jarvis_last_turn_activity=time.monotonic() - 1.0)
+    task = asyncio.create_task(_thinking_heartbeat(interval_s=0.05, session=sess))
+    await asyncio.sleep(0.3)
+    assert not task.done()          # held off
+    assert fake_file.exists()       # still amber
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_watchdog_survives_while_progress_is_fresh(tmp_path, monkeypatch):
+    """Ongoing progress keeps the heartbeat alive past max_idle."""
+    from jarvis_agent import _thinking_heartbeat
+    fake_file = tmp_path / ".agent-thinking"
+    tool_file = tmp_path / ".tool-running"
+    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", fake_file)
+    monkeypatch.setattr("jarvis_agent._TOOL_BUSY_FILE", tool_file)
+    monkeypatch.setenv("JARVIS_THINKING_MAX_IDLE_S", "0.2")
+    sess = types.SimpleNamespace(_jarvis_last_turn_activity=time.monotonic())
+    task = asyncio.create_task(_thinking_heartbeat(interval_s=0.05, session=sess))
+    for _ in range(6):              # bump faster than max_idle for ~0.3s
+        await asyncio.sleep(0.05)
+        sess._jarvis_last_turn_activity = time.monotonic()
+    assert not task.done()          # survived past max_idle thanks to bumps
+    assert fake_file.exists()
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_watchdog_inert_without_session(tmp_path, monkeypatch):
+    """session=None preserves the original always-on behavior (no watchdog)."""
+    from jarvis_agent import _thinking_heartbeat
+    fake_file = tmp_path / ".agent-thinking"
+    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", fake_file)
+    monkeypatch.setenv("JARVIS_THINKING_MAX_IDLE_S", "0.1")
+    task = asyncio.create_task(_thinking_heartbeat(interval_s=0.05))  # no session
+    await asyncio.sleep(0.3)        # well past max_idle
+    assert not task.done()          # no session → no watchdog → still running
+    assert fake_file.exists()
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
