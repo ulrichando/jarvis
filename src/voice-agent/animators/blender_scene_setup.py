@@ -129,6 +129,118 @@ def _collect(o, acc):
     for ch in o.children:
         _collect(ch, acc)
 
+def _wc(name):
+    o = bpy.data.objects.get(name)
+    if not o or o.type != "MESH":
+        return None
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev = o.evaluated_get(dg); mw = o.matrix_world
+    vs = [mw @ v.co for v in ev.data.vertices]; n = len(vs) or 1
+    return mathutils.Vector((sum(v.x for v in vs)/n, sum(v.y for v in vs)/n,
+                             sum(v.z for v in vs)/n))
+
+def _basecolor_tex(nt):
+    for n in nt.nodes:
+        if n.type == "TEX_IMAGE" and n.image and "basecolor" in n.image.name.lower():
+            return n
+    return None
+
+def _set(bsdf, name, value):
+    s = bsdf.inputs.get(name)
+    if s is not None:
+        s.default_value = value
+
+def _appearance(head):
+    """Bake JARVIS's face look: warm golden-caramel biracial skin (texture
+    detail x clean skin color), defined brows (thin dark ridge faces), and
+    higher-contrast eyes. Idempotent (nodes/materials reused by name)."""
+    # The eye/teeth material (original 'lambert5') is the SHARED textured
+    # material — read it from the eye object, NOT the head (on a re-run the
+    # head already wears JarvisSkinTex, which must not get the eye wiring).
+    eye_obj = bpy.data.objects.get("eyeLeft_lambert5_0")
+    lambert = (eye_obj.material_slots[0].material
+               if eye_obj and eye_obj.material_slots else None)
+    if lambert is None and head.material_slots:
+        lambert = head.material_slots[0].material
+    if lambert is None:
+        return
+    # --- HEAD skin material: texture detail x clean golden-caramel color ---
+    skin = bpy.data.materials.get("JarvisSkinTex")
+    if skin is None:
+        skin = lambert.copy(); skin.name = "JarvisSkinTex"
+    nt = skin.node_tree
+    bsdf = next(n for n in nt.nodes if n.type == "BSDF_PRINCIPLED")
+    tex = _basecolor_tex(nt)
+    bc = nt.nodes.get("JarvisBC") or nt.nodes.new("ShaderNodeBrightContrast")
+    bc.name = "JarvisBC"
+    bc.inputs["Bright"].default_value = 0.40
+    bc.inputs["Contrast"].default_value = 0.42
+    mul = nt.nodes.get("JarvisTint") or nt.nodes.new("ShaderNodeMixRGB")
+    mul.name = "JarvisTint"; mul.blend_type = "MULTIPLY"
+    mul.inputs[0].default_value = 1.0
+    mul.inputs[2].default_value = (0.52, 0.265, 0.125, 1.0)  # warm golden-caramel
+    if tex:
+        nt.links.new(tex.outputs["Color"], bc.inputs["Color"])
+    nt.links.new(bc.outputs["Color"], mul.inputs[1])
+    for l in list(bsdf.inputs["Base Color"].links):
+        nt.links.remove(l)
+    nt.links.new(mul.outputs[0], bsdf.inputs["Base Color"])
+    _set(bsdf, "Coat Weight", 0.0)
+    _set(bsdf, "Roughness", 0.6)
+    _set(bsdf, "Specular IOR Level", 0.3)
+    _set(bsdf, "Subsurface Weight", 0.06)
+    _set(bsdf, "Subsurface Radius", (0.36, 0.18, 0.12))
+    # --- brow material (dark warm brown, matte) ---
+    brow = bpy.data.materials.get("JarvisBrow")
+    if brow is None:
+        brow = bpy.data.materials.new("JarvisBrow"); brow.use_nodes = True
+    bb = next(n for n in brow.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+    bb.inputs["Base Color"].default_value = (0.045, 0.026, 0.016, 1.0)
+    bb.inputs["Roughness"].default_value = 0.88
+    _set(bb, "Coat Weight", 0.0)
+    me = head.data
+    me.materials.clear(); me.materials.append(skin); me.materials.append(brow)
+    # --- EYE contrast (lambert5, shared by eyes/teeth) so iris/pupil define ---
+    ent = lambert.node_tree
+    eb = next(n for n in ent.nodes if n.type == "BSDF_PRINCIPLED")
+    etex = _basecolor_tex(ent)
+    ebc = ent.nodes.get("JarvisEyeBC") or ent.nodes.new("ShaderNodeBrightContrast")
+    ebc.name = "JarvisEyeBC"
+    ebc.inputs["Bright"].default_value = 0.0
+    ebc.inputs["Contrast"].default_value = 0.85
+    if etex:
+        ent.links.new(etex.outputs["Color"], ebc.inputs["Color"])
+    for l in list(eb.inputs["Base Color"].links):
+        ent.links.remove(l)
+    ent.links.new(ebc.outputs["Color"], eb.inputs["Base Color"])
+    _set(eb, "Coat Weight", 0.0)
+    _set(eb, "Roughness", 0.45)
+    # --- brow face band on the ridge (thin, follows geometry) ---
+    hc = _wc("FaceCap_Head"); eyeL = _wc("eyeLeft_lambert5_0")
+    eyeR = _wc("eyeRight_lambert5_0"); teeth = _wc("teeth_lambert5_0")
+    for poly in me.polygons:
+        poly.material_index = 0
+    if hc and eyeL and eyeR and teeth:
+        right = (eyeR - eyeL).normalized()
+        up = (((eyeL + eyeR) * 0.5) - teeth).normalized()
+        up = (up - right * up.dot(right)).normalized()
+        fwd = right.cross(up).normalized()
+        if fwd.dot(((eyeL + eyeR) * 0.5) - hc) < 0:
+            fwd = -fwd
+        mw = head.matrix_world
+        for poly in me.polygons:
+            c = mw @ poly.center
+            for ec in (eyeL, eyeR):
+                d = c - ec; u = d.dot(up); rt = d.dot(right); fc = d.dot(fwd)
+                if 0.009 < u < 0.0150 and abs(rt) < 0.017 and fc > -0.002:
+                    poly.material_index = 1
+                    break
+    # slightly open the eyes (ARKit eyeWide = target_17/18)
+    sk = head.data.shape_keys.key_blocks
+    for t in ("target_17", "target_18"):
+        if t in sk:
+            sk[t].value = 1.0
+
 def setup():
     head, status = _ensure_head()
     if head is None:
@@ -147,10 +259,16 @@ def setup():
         for p in head.data.polygons:
             p.use_smooth = True
     _ensure_camera()
-    _ensure_light("JarvisKey",  "AREA", (1.2, -1.6, 1.2), 800.0)
-    _ensure_light("JarvisFill", "AREA", (-1.4, -1.2, 0.6), 250.0)
-    _ensure_light("JarvisRim",  "AREA", (0.0, 1.6, 1.4), 600.0, CYAN)
+    # tuned portrait lighting (low energies — the face is a small close-up;
+    # higher values blow the skin to white). Cool rim for edge separation.
+    _ensure_light("JarvisKey",  "AREA", (1.2, -1.6, 1.2), 24.0)
+    _ensure_light("JarvisFill", "AREA", (-1.4, -1.2, 0.6), 9.0)
+    _ensure_light("JarvisRim",  "AREA", (0.0, 1.6, 1.4), 10.0, (0.55, 0.8, 1.0))
     _dark_world()
+    # Standard view transform — AgX desaturates skin tones toward pale.
+    bpy.context.scene.view_settings.view_transform = 'Standard'
+    # Bake the face look (skin / brows / eyes).
+    _appearance(head)
     # report the resolved shape-key NAMES (literal ARKit or target_N alias)
     kb = head.data.shape_keys.key_blocks
     avail = {k.name for k in kb}
