@@ -279,8 +279,45 @@ async def _run_task(
     return {
         "ok": True,
         "result": str(final),
-        "steps": int(history.number_of_steps()),
+        "steps": _step_trace(history),
+        "steps_count": int(history.number_of_steps()),
     }
+
+
+def _step_trace(history) -> list:
+    """Build a per-step action trace from a browser_use AgentHistoryList.
+
+    Returns a list of ``{"step_index", "action", "ok", "detail"}`` dicts —
+    one per action browser_use took — so ``tools/browser.py`` can surface
+    them into ``turn_telemetry.browser_task_steps`` for post-mortem
+    debugging (Web-Nav Phase 1, Task 4). Best-effort: any accessor that the
+    installed browser_use doesn't expose (or that raises) degrades to an
+    empty trace rather than failing the task — the trace is observability,
+    never load-bearing for the result itself.
+    """
+    try:
+        names = list(history.action_names())
+    except Exception:  # noqa: BLE001 — trace is diagnostic, never load-bearing
+        return []
+    # `errors()` returns one entry per step, None where the step succeeded.
+    try:
+        errors = list(history.errors())
+    except Exception:  # noqa: BLE001
+        errors = []
+    trace: list = []
+    for idx, action in enumerate(names):
+        err = errors[idx] if idx < len(errors) else None
+        ok = err is None
+        detail = None if ok else str(err)[:1_000]
+        trace.append(
+            {
+                "step_index": idx,
+                "action": str(action) if action is not None else None,
+                "ok": ok,
+                "detail": detail,
+            }
+        )
+    return trace
 
 
 def _read_request() -> dict:
