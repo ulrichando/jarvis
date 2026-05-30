@@ -205,16 +205,23 @@ start_direct() {
     # Only forward when it has a real value; otherwise let PulseAudio
     # fall back to $XDG_RUNTIME_DIR/pulse/native.
     #
-    # Restart=on-failure + RestartSec=5 → 24/7 self-heal: if the
-    # direct-mode process crashes (network blip, provider 5xx, etc.)
-    # systemd restarts it. Clean exits (Ctrl-C / `jarvis-mode jarvis`)
-    # are NOT restarts. --collect dropped so the unit isn't removed
-    # on first stop, letting Restart kick in.
+    # Restart=always + RestartSec=2 → 24/7 self-heal for BOTH direct modes
+    # (gemini + openai share this run_args). Gemini/OpenAI Live sessions have
+    # a MAX DURATION: the server sends a GoAway and closes the socket (~every
+    # 10-15min), and the backend exits CLEANLY (exit 0) on that drop.
+    # Restart=on-failure does NOT restart a clean exit → the mode silently
+    # reverted to JARVIS-Claude every session (2026-05-30 bug: "keeps
+    # switching back to claude"). 'always' restarts on ANY exit so the direct
+    # mode auto-recovers; a deliberate `jarvis-mode jarvis|openai` uses
+    # `systemctl stop`, which is NOT a restart, so switching still works.
+    # StartLimitBurst=10/300s still caps a rapid crash-loop (bad/expired key,
+    # spend-cap). NOTE: this restarts the whole process (~7s gap + new Live
+    # session); a seamless in-process reconnect is a future enhancement.
     local -a run_args=(
         --user
         --unit="$scope"
-        -p Restart=on-failure
-        -p RestartSec=5
+        -p Restart=always
+        -p RestartSec=2
         -p StartLimitBurst=10
         -p StartLimitIntervalSec=300
         --setenv="GOOGLE_API_KEY=$google_key"
@@ -223,6 +230,12 @@ start_direct() {
         --setenv="DISPLAY=${DISPLAY:-:0}"
         --setenv="XAUTHORITY=${XAUTHORITY:-$HOME/.Xauthority}"
         --setenv="XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+        # Idle auto-revert window (sec) — the backend reverts to JARVIS-Claude
+        # after this much inactivity so Gemini/OpenAI quota stops burning while
+        # nobody's talking. systemd-run gives the unit a clean env, so the var
+        # must be forwarded explicitly or the config has no effect. Default 300
+        # = 5min (matches direct_mode_idle.idle_timeout_s); 0 disables.
+        --setenv="JARVIS_DIRECT_IDLE_TIMEOUT_S=${JARVIS_DIRECT_IDLE_TIMEOUT_S:-300}"
     )
     if [[ -n "${PULSE_SERVER:-}" ]]; then
         run_args+=(--setenv="PULSE_SERVER=$PULSE_SERVER")
