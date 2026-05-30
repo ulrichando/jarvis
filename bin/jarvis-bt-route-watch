@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# jarvis-bt-route-watch — keep JARVIS's voice on a Bluetooth headset (A2DP).
+#
+# Why this exists:
+#   JARVIS plays its TTS into the PipeWire echo-cancel virtual sink
+#   ("echo-cancel-sink"); the real audio leaves via the module's
+#   "Echo-Cancel Playback" stream, which lands on the built-in speaker by
+#   default. When a BT headset connects, nothing re-points that stream at it,
+#   so JARVIS keeps coming out the laptop. This watcher moves the echo-cancel
+#   playback onto the BT sink whenever a headset is present, and forces the
+#   A2DP profile so output actually works.
+#
+#   HFP ("headset-head-unit") mode has a broken downlink on some headsets
+#   (e.g. GID8_267E — mic works, speaker dead silent), so we deliberately
+#   keep the headset on A2DP. A classic BT headset can't do A2DP audio + its
+#   own mic at once; A2DP output is the reliable half. Net: hear JARVIS in the
+#   headset, talk through the laptop mic.
+#
+#   MIC: this watcher also keeps JARVIS's echo-cancel capture pinned to the
+#   built-in laptop mic ("HiFi__Mic__source"), NOT the Logitech webcam — the
+#   webcam outranks the built-in mic in PipeWire's default order, so without
+#   this it drifts back onto the webcam on every reconnect/reboot.
+#
+# Lifecycle: systemd --user, Type=simple, Restart=always. Reacts to
+#   `pactl subscribe` events. Fully idempotent: no-ops when already routed,
+#   when no BT headset is connected, or when echo-cancel is torn down
+#   (e.g. `jarvis-bluetooth on` full-BT mode).
+#
+# Disable anytime:  systemctl --user disable --now jarvis-bt-route.service
+set -u
+PREFIX="[jarvis-bt-route]"
+
+# Echo-cancel playback stream -> prints "<sink-input-id> <current-sink-idx>".
+# Block-aware parser: in a sink-input block the "Sink:" line precedes the
+# "media.name" line, so we evaluate each block when the NEXT header (or EOF)
+# arrives.
+find_ec_playback() {
+  pactl list sink-inputs 2>/dev/null | awk '
+    /^Sink Input #/ { if (!found && name=="Echo-Cancel Playback") { print id" "sink; found=1 }
+                      id=$3; sub("#","",id); sink=""; name="" }
+    /^[[:space:]]*Sink:/ { sink=$2 }
+    /media\.name = / { v=$0; sub(/.*media\.name = "/,"",v); sub(/".*/,"",v); name=v }
+    END { if (!found && name=="Echo-Cancel Playback") print id" "sink }
+  '
+}
+
+# Echo-cancel capture stream -> prints "<source-output-id> <current-source-idx>".
+find_ec_capture() {
+  pactl list source-outputs 2>/dev/null | awk '
+    /^Source Output #/ { if (!found && name=="Echo-Cancel Capture") { print id" "src; found=1 }
+                         id=$3; sub("#","",id); src=""; name="" }
+    /^[[:space:]]*Source:/ { src=$2 }
+    /media\.name = / { v=$0; sub(/.*media\.name = "/,"",v); sub(/".*/,"",v); name=v }
+    END { if (!found && name=="Echo-Cancel Capture") print id" "src }
+  '
+}
+
+# Keep JARVIS's mic on the built-in laptop mic, never the webcam. Independent
+# of the headset (HFP output is broken, so the headset mic is never used).
+BUILTIN_MIC="alsa_input.pci-0000_00_1f.3-platform-sof_sdw.HiFi__Mic__source"
+ensure_mic() {
+  local mic_idx ec_id ec_src
+  mic_idx=$(pactl list short sources 2>/dev/null | awk -v n="$BUILTIN_MIC" '$2==n {print $1; exit}')
+  [ -z "$mic_idx" ] && return 0          # built-in mic not present -> leave as-is
+  read -r ec_id ec_src < <(find_ec_capture)
+  [ -z "${ec_id:-}" ] && return 0        # echo-cancel absent -> nothing to do
+  if [ "${ec_src:-}" != "$mic_idx" ]; then
+    if pactl move-source-output "$ec_id" "$BUILTIN_MIC" 2>/dev/null; then
+      pactl set-source-mute "$BUILTIN_MIC" 0 2>/dev/null
+      echo "$PREFIX JARVIS mic -> built-in (was source ${ec_src:-none})"
+    fi
+  fi
+}
+
+route_once() {
+  ensure_mic                           # mic side: pin to built-in, off the webcam
+  local bt_sink bt_card profile avail ec_id ec_sink bt_idx
+  # first connected BT output (any headset); empty => leave JARVIS on laptop
+  bt_sink=$(pactl list short sinks 2>/dev/null | awk '$2 ~ /^bluez_output\./ {print $2; exit}')
+  [ -z "$bt_sink" ] && return 0
+
+  bt_card=$(pactl list short cards 2>/dev/null | awk '$2 ~ /^bluez_card\./ {print $2; exit}')
+
+  # force A2DP if not already (reliable output) — only when a2dp-sink is available
+  if [ -n "$bt_card" ]; then
+    profile=$(pactl list cards 2>/dev/null | awk -v c="Name: $bt_card" '$0 ~ c {f=1} f&&/Active Profile/{print $3; exit}')
+    if [ "$profile" != "a2dp-sink" ]; then
+      avail=$(pactl list cards 2>/dev/null | awk -v c="Name: $bt_card" '$0 ~ c {f=1} f&&/a2dp-sink:/{print; exit}')
+      if printf '%s' "$avail" | grep -q "available: yes"; then
+        pactl set-card-profile "$bt_card" a2dp-sink 2>/dev/null && echo "$PREFIX $bt_card -> a2dp-sink"
+        sleep 1
+        bt_sink=$(pactl list short sinks 2>/dev/null | awk '$2 ~ /^bluez_output\./ {print $2; exit}')
+        [ -z "$bt_sink" ] && return 0
+      fi
+    fi
+  fi
+
+  # JARVIS's echo-cancel playback stream; empty => echo-cancel absent, nothing to do
+  read -r ec_id ec_sink < <(find_ec_playback)
+  [ -z "${ec_id:-}" ] && return 0
+
+  bt_idx=$(pactl list short sinks 2>/dev/null | awk -v n="$bt_sink" '$2==n {print $1; exit}')
+  [ -z "$bt_idx" ] && return 0
+
+  if [ "${ec_sink:-}" != "$bt_idx" ]; then
+    if pactl move-sink-input "$ec_id" "$bt_sink" 2>/dev/null; then
+      pactl set-sink-mute "$bt_sink" 0 2>/dev/null
+      echo "$PREFIX JARVIS voice -> $bt_sink (was sink ${ec_sink:-none})"
+    fi
+  fi
+}
+
+case "${1:-watch}" in
+  once) route_once ;;
+  watch)
+    route_once
+    echo "$PREFIX watching pactl events"
+    # Coalesce bursts: PipeWire fires many events per audio change. On each
+    # event we drain everything that arrives within 0.5 s of quiet, then run
+    # route_once ONCE. Keeps CPU near-idle instead of one pass per event.
+    pactl subscribe 2>/dev/null \
+      | grep --line-buffered -E "(sink|source|card|server)" \
+      | while IFS= read -r _evt; do
+          while IFS= read -r -t 0.5 _drain; do :; done
+          route_once || true
+        done
+    ;;
+  *) echo "usage: $0 [once|watch]" >&2; exit 2 ;;
+esac
