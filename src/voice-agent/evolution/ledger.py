@@ -45,3 +45,21 @@ def read_readings(limit: int = 50, db_path: Path = DEFAULT_LEDGER_DB) -> list[di
         d["passed"] = bool(d["passed"])          # coerce 1/0 -> bool (clean contract)
         out.append(d)
     return out
+
+def reading_exists(*, window_start: Optional[str], window_end: Optional[str],
+                   db_path: Path = DEFAULT_LEDGER_DB) -> bool:
+    """Read-only: True if a reading for exactly this (window_start, window_end) is
+    already logged. Used by the soak to avoid double-logging on Persistent catch-up.
+    Append-only is preserved — this is a pure read (`SELECT 1`)."""
+    if not Path(db_path).exists():
+        return False
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        row = con.execute(
+            "SELECT 1 FROM readings WHERE window_start IS ? AND window_end IS ? LIMIT 1",
+            (window_start, window_end)).fetchone()
+    except sqlite3.OperationalError:        # table absent → treat as not-logged
+        row = None
+    finally:
+        con.close()
+    return row is not None
