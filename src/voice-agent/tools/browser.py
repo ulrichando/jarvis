@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -51,6 +52,11 @@ _TASK_TIMEOUT_S = 180.0
 
 # Default step budget if the supervisor doesn't specify one.
 _DEFAULT_MAX_STEPS = 25
+
+# How many trailing chars of the runner's stderr/step log to surface on a
+# failed task, so the supervisor (and post-mortem reader) gets a legible reason
+# instead of a generic "Browser task failed".
+_STDERR_TAIL_CHARS = 2_000
 
 # Opt-in: names a registered, available cloud-browser provider (kind "browser")
 # whose remote CDP browser browser_task should drive instead of launching a
@@ -199,8 +205,60 @@ def _coerce_max_steps(value) -> int:
     return max(1, steps)
 
 
-def _format_result(payload: dict) -> str:
-    """Turn the runner's JSON payload into a concise string for the supervisor."""
+# ---------------------------------------------------------------------------
+# Reliability helpers (pure — unit-tested in tests/test_browser_task_reliability.py)
+# ---------------------------------------------------------------------------
+
+# Multi-page "flow" verbs: each match nudges the step budget up. A login +
+# checkout + pay flow needs far more steps than a single price lookup, and a
+# fixed budget silently under-runs the former.
+_FLOW_VERBS = re.compile(
+    r"\b(log ?in|sign ?in|checkout|add to cart|fill|submit|book|purchase|pay|"
+    r"compare|apply|register|upload|download|reply|post)\b",
+    re.I,
+)
+# A concrete destination: an explicit URL or a bare domain (foo.com / x.ai).
+_DEST = re.compile(r"https?://|\b[\w-]+\.(com|org|net|io|gov|edu|co|ai|dev)\b", re.I)
+
+
+def _adaptive_max_steps(task: str, override: "int|None" = None) -> int:
+    """Scale the browser step budget from the task string.
+
+    A single lookup ("find the price of X on nvidia.com") gets a tight budget;
+    a multi-step flow ("log in, add to cart, checkout, pay") gets a generous one
+    so it doesn't silently under-run. An explicit *override* always wins.
+    """
+    if override:
+        return int(override)
+    n = len(_FLOW_VERBS.findall(task or ""))
+    return 50 if n >= 2 else (35 if n == 1 else 15)
+
+
+def _validate_task(task: str) -> "tuple[bool, str]":
+    """Reject a destination-less / goal-less task before spawning the runner.
+
+    Returns ``(ok, reason)``. A task with no URL/domain and no clear web-target
+    verb ("search"/"find"/"look up"/...) can't reliably be acted on, so it is
+    rejected with a reason the supervisor can use to refine the request.
+    """
+    t = (task or "").strip()
+    if len(t) < 8:
+        return False, "task too short / no clear goal"
+    if not _DEST.search(t) and not re.search(
+        r"\b(search|google|find|look up|on the web|website)\b", t, re.I
+    ):
+        return False, "no destination URL or clear web target — refine the task"
+    return True, ""
+
+
+def _format_result(payload: dict, stderr_tail: str = "") -> str:
+    """Turn the runner's JSON payload into a concise string for the supervisor.
+
+    On failure, append the runner's stderr tail (browser-use's per-step log)
+    when available — prefer the payload's own ``stderr_tail`` (captured inside
+    the runner), falling back to *stderr_tail* captured from the subprocess pipe
+    — so the failure is debuggable instead of a generic message.
+    """
     if payload.get("ok"):
         result = str(payload.get("result", "")).strip() or "(browser task finished with no result text)"
         steps = payload.get("steps")
@@ -208,6 +266,9 @@ def _format_result(payload: dict) -> str:
             return f"{result}\n\n(completed in {steps} browser step{'s' if steps != 1 else ''})"
         return result
     err = str(payload.get("error", "")).strip() or "unknown browser error"
+    tail = str(payload.get("stderr_tail", "")).strip() or (stderr_tail or "").strip()
+    if tail:
+        return f"Browser task failed: {err}\n\n--- browser log (tail) ---\n{tail[-_STDERR_TAIL_CHARS:]}"
     return f"Browser task failed: {err}"
 
 
@@ -252,13 +313,15 @@ async def _run_runner(python_path: Path, request: bytes) -> str:
         logger.warning("browser_task: subprocess communication failed: %s", exc)
         return tool_error(f"browser task failed: {exc}")
 
+    stderr_full = (stderr_b or b"").decode("utf-8", errors="replace").strip()
+    stderr_tail = stderr_full[-_STDERR_TAIL_CHARS:]
+
     stdout_text = (stdout_b or b"").decode("utf-8", errors="replace").strip()
     if not stdout_text:
-        stderr_tail = (stderr_b or b"").decode("utf-8", errors="replace").strip()[-300:]
         logger.warning(
             "browser_task: runner produced no stdout (rc=%s); stderr tail: %s",
             proc.returncode,
-            stderr_tail,
+            stderr_tail[-300:],
         )
         return tool_error(
             "browser task produced no output "
@@ -277,7 +340,7 @@ async def _run_runner(python_path: Path, request: bytes) -> str:
     if not isinstance(payload, dict):
         return tool_error("browser task returned an unexpected result shape")
 
-    return _format_result(payload)
+    return _format_result(payload, stderr_tail)
 
 
 async def _handle_browser_task(args: dict) -> str:
@@ -296,7 +359,16 @@ async def _handle_browser_task(args: dict) -> str:
     if not task:
         return tool_error("browser_task requires a non-empty 'task'")
 
-    max_steps = _coerce_max_steps(args.get("max_steps", _DEFAULT_MAX_STEPS))
+    # Reject a destination-less / goal-less task before paying the subprocess
+    # cost; the reason is something the supervisor can use to refine the request.
+    valid, reason = _validate_task(task)
+    if not valid:
+        return tool_error(f"browser_task: {reason}")
+
+    # An explicit max_steps from the supervisor is an override; otherwise scale
+    # the budget from the task string (quick lookup vs multi-page flow).
+    override = _coerce_max_steps(args["max_steps"]) if "max_steps" in args else None
+    max_steps = _adaptive_max_steps(task, override)
 
     python_path = _isolated_python()
     if not python_path.exists():
