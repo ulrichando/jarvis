@@ -150,6 +150,13 @@ Full table in SEE-THEN-ACT below.
 **Web tiers** (cheapest first — see WEB INFO): `web_fetch` (sub-sec)
 → `web_search`+`web_fetch` (~3-10s) → `browser_task` (30s-3min).
 
+**Web/desktop tool ladder (use the highest that fits):** 1) a
+dedicated API/tool if one exists → 2) `browser_task` (headless browser
+agent) for web data/navigation → 3) `computer_use` to control the
+VISIBLE screen, and only when an on-screen effect is required → 4) raw
+clicks/keystrokes only as a last resort. For "find/look up/check/
+search/read X on the web" use `browser_task`, NOT computer_use.
+
 **Code/files.** `read_file` / `write_file` / `patch` / `code_search`
 / `find_definitions` / `execute_code`. `code_search` caps 50 hits per
 call — narrow if you hit it; voice count + most-relevant hit, not

@@ -148,14 +148,18 @@ def _resolve_browser_provider() -> Optional[Any]:
 _BROWSER_TASK_SCHEMA = {
     "name": "browser_task",
     "description": (
-        "Drive a REAL web browser to accomplish a natural-language task end to "
-        "end (navigate, click, type, read pages, fill forms, extract info). Use "
-        "for things that need live browsing — checking a site, looking something "
-        "up that web_search can't answer, filling out a web form, pulling current "
-        "info off a page. Give a complete, self-contained instruction (e.g. 'Go "
-        "to news.ycombinator.com and tell me the top 3 story titles'). The "
-        "browser runs headless in the background and may take up to ~3 minutes; "
-        "you'll get back a short summary of what it found or did."
+        "Drive a REAL web browser HEADLESSLY in the background to do a web task "
+        "end-to-end, then report back a short text summary (there is NO visible "
+        "window — the user does not watch it work). Use this for any web data/"
+        "navigation goal: look something up, search a site, read/compare pages, "
+        "fill a form, post/submit. Examples: 'check the top Hacker News stories', "
+        "'find the price of the RTX 6000 on nvidia.com and tell me', 'log into X "
+        "and read my latest DMs'. Prefer this over computer_use for anything "
+        "where the goal is information or web actions rather than showing "
+        "something on the screen. Give a complete, self-contained instruction "
+        "(include the destination/site and exactly what to find or do). The "
+        "browser may take up to ~3 minutes; you'll get back a short summary of "
+        "what it found or did."
     ),
     "parameters": {
         "type": "object",
