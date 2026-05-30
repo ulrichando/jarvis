@@ -3831,9 +3831,42 @@ class JarvisAgent(Agent):
         # Base Agent.on_exit is a no-op pass; preserve the contract.
         await super().on_exit()
 
+    async def llm_node(self, chat_ctx, tools, model_settings):
+        """Vision-feedback loop (P2a): before generating, inject the post-action
+        screen (pixels for a vision-capable model, else a text description) into
+        THIS generation's chat_ctx copy. Ephemeral — never persists to history.
+        Best-effort: any failure just skips injection and generates normally."""
+        try:
+            from pipeline import computer_use_vision as _cuv
+            cap = _cuv.take_current()
+            if cap is not None:
+                mode = _cuv.decide_mode(getattr(self, "_dispatch_llm", None))
+                desc = None
+                if mode == "text":
+                    try:
+                        from pipeline.screen_share_observer import latest_description_global
+                        desc = latest_description_global()
+                    except Exception:
+                        desc = None
+                inj = _cuv.build_injection(cap=cap, mode=mode, desc=desc)
+                if inj is not None:
+                    role, content = inj
+                    chat_ctx.add_message(role=role, content=content)
+        except Exception:
+            logger.debug("[vision] injection skipped", exc_info=True)
+        async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
+            yield chunk
+
     async def on_user_turn_completed(
         self, turn_ctx: ChatContext, new_message: ChatMessage,
     ) -> None:
+        # Vision-feedback loop (P2a): a new user turn invalidates any cached
+        # post-action screen so it can't bleed into an unrelated turn.
+        try:
+            from pipeline import computer_use_vision
+            computer_use_vision.clear()
+        except Exception:
+            pass
         # Computer-use safety-confirm channel: if the subagent is
         # waiting on a user yes/no, parse the transcript and resolve
         # its Future. Don't continue normal turn processing — the
@@ -6644,6 +6677,13 @@ async def entrypoint(ctx: JobContext) -> None:
         tools=load_all_livekit_tools(),
     )
 
+    # Give llm_node a handle to the per-route DispatchingLLM for the vision gate's
+    # best-effort active-model detection (P2a). Defaults to pixels if absent.
+    try:
+        _jarvis_agent._dispatch_llm = _dispatch_llm
+    except Exception:
+        pass
+
     # Pre-TTS confab gate (2026-05-24) — wire the LLM factory + tool_specs
     # the gate's retry chain needs. The factory builds a runner for ANY
     # model id from the SPEECH_MODELS registry; the runner uses livekit-
@@ -6796,6 +6836,33 @@ async def entrypoint(ctx: JobContext) -> None:
             await asyncio.sleep(_crondelivery.PENDING_POLL_S)
 
     asyncio.create_task(_cron_pending_watcher())
+
+    # ── Background-task completion watcher ────────────────────────
+    # In-session fire-and-forget delivery: dispatch_agent(background=True)
+    # spawns a long subagent and drops a spoken announcement into
+    # pipeline.background_tasks when it finishes. This watcher voices each
+    # one via session.say() — the same rail as the cron watcher above, but
+    # in-process and with background-appropriate wording. If the session
+    # isn't ready to speak (idle between turns), the announcement is
+    # re-queued and retried on the next tick rather than lost. Bound to the
+    # session (cancelled on disconnect). Added 2026-05-30.
+    from pipeline import background_tasks as _bgtasks
+
+    async def _background_task_watcher() -> None:
+        while True:
+            for ann in _bgtasks.drain_announcements():
+                spoken = False
+                if getattr(session, "_activity", None) is not None:
+                    try:
+                        session.say(ann)
+                        spoken = True
+                    except Exception:
+                        spoken = False
+                if not spoken:
+                    _bgtasks.requeue(ann)  # session not ready — retry next tick
+            await asyncio.sleep(_bgtasks.poll_s())
+
+    asyncio.create_task(_background_task_watcher(), name="bg-task-watcher")
 
     # Spec B (Plane 3) — pattern detector + spawner background loop.
     # Reads turn_telemetry.db every N seconds (default 30 min), emits
