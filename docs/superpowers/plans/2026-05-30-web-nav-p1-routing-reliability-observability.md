@@ -223,6 +223,22 @@ git commit -m "feat(browser_task): per-step trace into turn_telemetry.browser_ta
 **Acceptance:** the 3 routing phrasings route correctly in both modes; a real `browser_task` completes
 with a telemetry step-trace and legible failures; full suite green; no schema-shape changes; no new deps.
 
+**VERIFIED 2026-05-30** (live, evidence captured):
+- **5.1 offline:** full suite `2809 passed, 3 skipped`; `py_compile` clean on both bins + all edited python.
+- **5.2:** `tools.browser` imports with stdlib + registry only (no `browser_use` leak).
+- **5.3 routing:** live LLM tool-choice over the REAL registry schemas + the supervisor ladder
+  (`claude-sonnet-4-6`, `tool_choice=auto`) — `open YouTube on my screen`→`computer_use`,
+  `check the top Hacker News stories`→`browser_task`, `find the RTX 6000 price on nvidia.com and
+  tell me`→`browser_task`. 3/3 correct. *(Supervisor tool-surface proven; the same ladder text is
+  injected into `jarvis-gemini-tools`/`jarvis-gpt-tools` and text-verified present, but direct-mode
+  LLM tool-choice was not separately driven — minor open item.)*
+- **5.4 live:** a real `browser_task` ("top 3 Hacker News stories") completed in 40.1s, returned a
+  correct summary, `steps_count=2`, and wrote 2 rows to `turn_telemetry.browser_task_steps`
+  (`navigate`, `done`). Induced failure (no LLM key) returned `Browser task failed: RuntimeError: no
+  LLM API key set` **with the `--- browser log (tail) ---` traceback** — legible-failures path confirmed.
+
+P1 is functionally complete and proven. Remaining: optional direct-mode routing spot-check; then Phase 2.
+
 ---
 
 ## Self-review
