@@ -940,6 +940,31 @@ _ANTH_DEFAULT_PER_ROUTE: dict[str, tuple[str, str, float]] = {
 }
 
 
+def resolve_route_primary_model(route: str) -> str:
+    """Public: resolve a route's PRIMARY supervisor model id (rung-1 only).
+
+    Lookup order mirrors build_dispatching_llm's nested _resolve_route_model:
+      1. per-route env override (JARVIS_TASK_DESKTOP_MODEL etc.)
+      2. legacy JARVIS_TASK_MODEL for TASK_* routes
+      3. specialty_routes spec default, else the _ANTH_DEFAULT_PER_ROUTE default.
+    Returns '' for an unknown route. Used by the computer_use vision gate."""
+    entry = _ANTH_DEFAULT_PER_ROUTE.get(route)
+    if entry is None:
+        return ""
+    env_var, default_model, _temp = entry
+    override = os.environ.get(env_var, "").strip()
+    if override:
+        return override
+    legacy_task = os.environ.get("JARVIS_TASK_MODEL", "").strip()
+    if legacy_task and route.startswith("TASK_"):
+        return legacy_task
+    try:
+        spec_default = _specialty.get_primary_model(route)
+    except Exception:
+        spec_default = None
+    return spec_default or default_model
+
+
 # Routes where the supervisor MUST call a tool — narration-only replies on
 # these are categorically confab. Set via tool_choice="required" on the
 # primary LLM construction; Anthropic maps "required" → {"type":"any"} per
