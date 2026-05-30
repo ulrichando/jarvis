@@ -42,6 +42,7 @@ Env (from voice-agent/.env, inherited by the systemd unit):
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import faulthandler
 import json
 import logging
@@ -873,9 +874,63 @@ async def run_once(shutdown: asyncio.Event) -> None:
         # old_track is implicitly dropped; the SFU has already replaced
         # the subscription on the agent side.
 
-    # PortAudio callback runs in a realtime thread. Marshal each frame
-    # back to the asyncio loop so capture_frame (which awaits) runs on
-    # the right thread. run_coroutine_threadsafe is exactly that bridge.
+    # PortAudio's callback runs on a realtime thread ~100×/s. It must NOT
+    # spawn a capture_frame task per frame: source.capture_frame() awaits
+    # when the SFU buffer back-pressures (reconnect/republish, SFU hiccup),
+    # so run_coroutine_threadsafe-per-frame piles up thousands of pending
+    # tasks → ~1GB RAM + event-loop starvation → watchdog kill (root cause
+    # 2026-05-29: the stall dump showed 4108 pending capture_frame tasks).
+    # Fix: a single long-lived pump task drains a BOUNDED queue and awaits
+    # capture_frame sequentially (≤1 in-flight); the realtime callback does
+    # a non-blocking enqueue and DROPS the frame if the pump is behind.
+    # A dropped 10ms mic frame is inaudible; an unbounded task pile-up is fatal.
+    # ── Mic → SFU bridge: FULLY DECOUPLED from the event loop ──────────
+    # The PortAudio callback runs on a realtime thread ~100×/s and MUST NOT
+    # schedule per-frame work on the asyncio loop: source.capture_frame
+    # back-pressures whenever the SFU isn't draining the mic (muted in a
+    # direct mode, or no agent consumer), and ANY per-frame loop scheduling
+    # (run_coroutine_threadsafe OR call_soon_threadsafe) then floods the loop
+    # → it can't serve the :8767 control endpoint (mode-switch mute hangs)
+    # or ping the systemd watchdog (SIGABRT). Root-cause fix (2026-05-29):
+    # the callback only appends to a bounded, thread-safe deque (append/len/
+    # popleft are atomic under the GIL; maxlen auto-drops the OLDEST frame
+    # when full — inaudible, and correct under backpressure). One pump task
+    # drains it and is the SOLE caller of capture_frame (≤1 in-flight). The
+    # loop never does per-frame work, so backpressure cannot saturate it.
+    _MIC_RING_MAX = 50  # 50 × 10ms ≈ 500ms jitter buffer before dropping oldest
+    _mic_ring: "deque[rtc.AudioFrame]" = deque(maxlen=_MIC_RING_MAX)
+    _mic_drops = [0]
+
+    async def _mic_pump() -> None:
+        # Sole consumer of source.capture_frame. Under backpressure it blocks
+        # here, the ring fills, and the realtime callback's maxlen append
+        # drops the oldest — bounded, with ZERO loop involvement. The short
+        # sleep runs only when the ring is momentarily empty (frames flow
+        # continuously, so that's rare). Drop count surfaced here, off the
+        # 10ms realtime hot path. Uses the stable `source` (same AudioSource
+        # survives mic republish — see _republish_mic_track).
+        pumped = 0
+        last_drops = 0
+        while True:
+            if not _mic_ring:
+                await asyncio.sleep(0.005)
+                continue
+            try:
+                frame = _mic_ring.popleft()
+            except IndexError:
+                continue
+            pumped += 1
+            if pumped % 500 == 0 and _mic_drops[0] != last_drops:
+                log.warning(
+                    f"[mic] dropped {_mic_drops[0]} frame(s) total under SFU "
+                    f"backpressure (ring bounded at {_MIC_RING_MAX})"
+                )
+                last_drops = _mic_drops[0]
+            try:
+                await source.capture_frame(frame)
+            except Exception as e:
+                log.debug(f"[mic] capture_frame failed (harmless mid-rotation): {e}")
+
     #
     # If WebRTC APM is enabled (`_apm` non-None), the frame is passed
     # through `process_stream` for NS + AGC + HPF (+ optional AEC) BEFORE
@@ -897,6 +952,15 @@ async def run_once(shutdown: asyncio.Event) -> None:
     def _mic_cb(indata, frames, _time, status) -> None:
         if status:
             log.debug(f"[mic] portaudio status: {status}")
+        # Muted (e.g. a direct mode muted JARVIS-Claude) → send NOTHING.
+        # Capturing into a muted, undrained LiveKit track back-pressures the
+        # AudioSource and floods the event loop with per-frame work, which
+        # starves the HTTP control server (:8767 /mute,/status) + the watchdog
+        # heartbeat — making the NEXT mode-switch's mute call hang ~30s (the
+        # recurring 2026-05-29 "can't switch modes" trap). Muted means we
+        # shouldn't be publishing mic audio anyway, so drop here at the source.
+        if state.muted:
+            return
         # RMS on raw audio (pre-APM, pre-AGC) for the listening detector.
         if not state.speaking and len(indata):
             raw_rms = float(np.sqrt(np.mean(indata.astype(np.float32) ** 2)))
@@ -999,7 +1063,16 @@ async def run_once(shutdown: asyncio.Event) -> None:
             )
             if not _should_publish_during_speak(profile=_current_profile, defense=_defense):
                 return
-        asyncio.run_coroutine_threadsafe(source.capture_frame(frame), loop)
+        # Hand the frame to the pump via the bounded, thread-safe deque —
+        # NO loop scheduling at all (no call_soon / run_coroutine_threadsafe),
+        # which is what keeps the event loop free under backpressure so the
+        # :8767 control endpoint + the watchdog heartbeat stay alive. append
+        # and len are atomic under the GIL; maxlen drops the oldest frame if
+        # the pump is behind. Count drops for visibility (the pump logs them,
+        # off this realtime hot path).
+        if len(_mic_ring) >= _MIC_RING_MAX:
+            _mic_drops[0] += 1
+        _mic_ring.append(frame)
 
     mic_stream = sd.InputStream(
         samplerate=SAMPLE_RATE,
@@ -1012,6 +1085,12 @@ async def run_once(shutdown: asyncio.Event) -> None:
         # pipewire-pulse so other apps can share the mic concurrently.
         device=AUDIO_INPUT_DEVICE,
     )
+    # Start the single mic-pump consumer BEFORE the stream so no callback
+    # frame is appended to the ring before a consumer exists. Bounds in-flight
+    # capture_frame to 1 so SFU backpressure can never pile up tasks/RAM and
+    # — with the fully-decoupled deque bridge — never saturates the loop
+    # (2026-05-29/30 :8767 + watchdog root cause).
+    mic_pump_task = asyncio.create_task(_mic_pump(), name="mic-pump")
     mic_stream.start()
     log.info(
         f"[mic] capture started device={AUDIO_INPUT_DEVICE!r} "
@@ -1045,6 +1124,7 @@ async def run_once(shutdown: asyncio.Event) -> None:
         _room_ref = None
         _mic_pub_ref = None
         mic_stream.stop()
+        mic_pump_task.cancel()
         mic_stream.close()
         await room.disconnect()
 
