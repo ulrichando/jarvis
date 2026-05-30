@@ -52,7 +52,7 @@ import sys
 import threading
 import time
 import traceback
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Optional
 
@@ -142,6 +142,12 @@ if _APM_NS or _APM_AGC or _APM_HPF or _APM_AEC:
 from audio.apm_reverse_stream import APMDelayEstimator, ReverseRefRingBuffer
 _reverse_estimator = APMDelayEstimator()
 _reverse_ringbuf = ReverseRefRingBuffer(capacity_frames=64)
+
+# ── Viseme lip-sync engine (kiosk talking face) ──
+# Module-level singleton; survives LiveKit reconnects. Fed the agent's TTS
+# transcript via set_pending_text() and ticked per playback frame via frame().
+from lipsync import VisemeEngine
+_viseme_engine = VisemeEngine()
 
 # ── L3 DTLN neural residual filter (2026-05-22, Phase B Task 10 wiring) ──
 # Module-level lazy singleton. The first call to `_get_dtln()` from the
@@ -415,6 +421,10 @@ class ClientState:
     listening:     bool = False       # local speaker (us) is talking
     speaking:      bool = False       # remote agent is talking
     output_level:  float = 0.0        # 0..1 RMS of played TTS — drives kiosk face lip-sync
+    # Current frame's ARKit-morph weights {target_N: 0..1} for the kiosk
+    # face's visemes. Updated by the playback loop via the VisemeEngine;
+    # published on GET /face. Empty dict = mouth at rest.
+    face_weights:  dict = field(default_factory=dict)
     # Active CLI model ID (e.g., "deepseek-chat", "qwen/qwen3-32b").
     # Read straight from CLI_MODEL_FILE on every /status hit, so the
     # tray sees changes the same instant they're written.
@@ -578,6 +588,18 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
             # this. Lightly smoothed; cheap (one np.sqrt per 10ms frame).
             _lvl = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2))) / 32768.0
             state.output_level += (_lvl - state.output_level) * 0.5
+            # Viseme lip-sync: resolve this frame's ARKit-morph weights from
+            # the agent's known text + the smoothed RMS. Never raises into
+            # the audio path — on any error the face just falls back to rest.
+            try:
+                state.face_weights = _viseme_engine.frame(
+                    now=time.monotonic(),
+                    speaking=state.speaking,
+                    rms=state.output_level,
+                )
+            except Exception as e:
+                log.debug(f"[lipsync] frame failed: {e}")
+                state.face_weights = {}
             # write() is non-blocking-ish — it copies into PortAudio's
             # internal ring, the audio thread drains. If we ever fall
             # behind, it returns a buffer-underflow warning; harmless
@@ -762,8 +784,14 @@ async def run_once(shutdown: asyncio.Event) -> None:
 
     async def _drain_text_stream(reader, participant_identity: str) -> None:
         try:
-            async for _ in reader:
-                pass
+            buf = []
+            async for chunk in reader:
+                buf.append(chunk)
+            text = "".join(buf).strip()
+            # Only the agent's TTS transcript drives the face, not our own
+            # STT transcript echoed back under the local identity.
+            if text and participant_identity != "desktop-ulrich":
+                _viseme_engine.set_pending_text(text)
         except Exception as e:
             log.debug(f"[stream-drain] text stream from {participant_identity} ended: {e}")
 
