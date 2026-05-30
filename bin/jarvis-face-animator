@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Launch the JARVIS -> Blender face animator in the voice-agent venv.
+#
+# Drives the FaceCap head's jaw from JARVIS's voice loudness and (re)installs
+# the Blender scene + MJPEG frame server on :8770. Requires Blender running
+# with the MCP addon (port 9876). The kiosk shows the stream and falls back to
+# the ring if this isn't running.
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$HERE/src/voice-agent"
+exec .venv/bin/python animators/blender_face.py "$@"

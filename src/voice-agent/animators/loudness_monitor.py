@@ -12,6 +12,7 @@ import shutil
 import struct
 import subprocess
 import threading
+import time
 
 
 def rms_level(pcm_s16: bytes, gain: float = 4.0, floor: float = 0.004) -> float:
@@ -89,8 +90,16 @@ class LoudnessMonitor:
         self._running = False
         self._thread = None
         self._lock = threading.Lock()
+        # Manual override: $JARVIS_FACE_TEST_LEVEL forces a constant level so the
+        # face can be previewed/tuned (with the speaking gate) without JARVIS or
+        # any real audio. Unset in normal operation.
+        forced = os.getenv("JARVIS_FACE_TEST_LEVEL")
+        self._forced = float(forced) if forced else None
 
     def start(self):
+        # No capture thread needed when a constant level is forced.
+        if self._forced is not None:
+            return
         self._running = True
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -101,6 +110,8 @@ class LoudnessMonitor:
             self._thread.join(timeout=1.0)
 
     def level(self) -> float:
+        if self._forced is not None:
+            return self._forced
         with self._lock:
             if self._degraded:
                 return self._degraded_level
@@ -128,7 +139,15 @@ class LoudnessMonitor:
                     self._degraded = True
                 return
             if not chunk:
-                # end-of-stream / no data: brief idle, keep last level
+                # No data. If our capture subprocess has DIED (e.g. bad audio
+                # device), degrade to the constant level so the jaw still moves
+                # when JARVIS speaks rather than hanging shut. Otherwise idle.
+                proc = getattr(source, "_proc", None)
+                if proc is not None and proc.poll() is not None:
+                    with self._lock:
+                        self._degraded = True
+                    return
+                time.sleep(0.02)
                 continue
             lvl = rms_level(chunk, gain=self._gain, floor=self._floor)
             with self._lock:
