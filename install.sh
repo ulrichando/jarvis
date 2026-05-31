@@ -193,6 +193,25 @@ configure_soul() {
   return 0
 }
 
+configure() {
+  if [ "${JARVIS_SKIP_SETUP:-0}" = "1" ]; then
+    warn "skipping first-run setup (JARVIS_SKIP_SETUP=1)"
+    setup_env_template
+    return 0
+  fi
+  section "First-run configuration"
+  if _interactive; then
+    setup_env_template      # ensure .env exists (template + optional-knob comments)
+    configure_api_keys      # upsert real keys into .env + voice-agent/.env
+    configure_soul          # optional persona override at ~/.jarvis/SOUL.md
+  else
+    sub "non-interactive shell — writing the key template; edit it to add keys."
+    setup_env_template
+    sub "Personalize later: copy src/voice-agent/prompts/soul.md to ~/.jarvis/SOUL.md and edit."
+  fi
+  return 0
+}
+
 check_prereqs() {
   section "Checking prerequisites"
 
@@ -891,7 +910,7 @@ main() {
   check_computer_use_deps  # optional probes for computer_use subagent
   install_audio_profile
   install_echo_cancel_aec
-  setup_env_template
+  configure
   print_summary
 }
 

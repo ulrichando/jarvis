@@ -101,4 +101,29 @@ printf 'Y\n\nn\n' > "$T3c/ans"   # personalize Y, name blank (keep JARVIS), edit
 ( export INSTALL_DIR="$T3c" HOME="$T3c/home" EDITOR=true; _JARVIS_TTY="$T3c/ans" configure_soul ) >/dev/null 2>&1
 check "blank name = verbatim copy" 'diff -q "$T3c/src/voice-agent/prompts/soul.md" "$T3c/home/.jarvis/SOUL.md" >/dev/null'
 
+# ── configure() orchestration ────────────────────────────────────────
+# Non-interactive: writes the .env template, runs no prompts, does not hang.
+T5="$(mktemp -d)"; mkdir -p "$T5/src/voice-agent/prompts"
+printf 'You are JARVIS.\n' > "$T5/src/voice-agent/prompts/soul.md"
+( export INSTALL_DIR="$T5" HOME="$T5/home" JARVIS_NONINTERACTIVE=1; configure ) >/dev/null 2>&1
+check "non-interactive writes .env template" 'grep -q "^ANTHROPIC_API_KEY=" "$T5/.env"'
+check "non-interactive makes no SOUL.md"     '[ ! -f "$T5/home/.jarvis/SOUL.md" ]'
+
+# SKIP_SETUP bypasses prompts but still leaves a usable template.
+T5b="$(mktemp -d)"; mkdir -p "$T5b/src/voice-agent/prompts"
+printf 'You are JARVIS.\n' > "$T5b/src/voice-agent/prompts/soul.md"
+( export INSTALL_DIR="$T5b" HOME="$T5b/home" JARVIS_SKIP_SETUP=1; configure ) >/dev/null 2>&1
+check "skip-setup still writes template" '[ -f "$T5b/.env" ]'
+
+# Interactive end-to-end: keys + soul via fixtures.
+T5c="$(mktemp -d)"; mkdir -p "$T5c/src/voice-agent/prompts"
+printf 'You are JARVIS.\n' > "$T5c/src/voice-agent/prompts/soul.md"
+# anthropic, groq, deepgram, more? n, personalize? Y, name blank, editor n
+printf 'sk-a\nsk-g\ndg\nn\nY\n\nn\n' > "$T5c/ans"
+( export INSTALL_DIR="$T5c" HOME="$T5c/home" EDITOR=true \
+    JARVIS_NONINTERACTIVE=0 JARVIS_DRY_RUN=0 JARVIS_SKIP_SETUP=0; \
+  _JARVIS_TTY="$T5c/ans" configure ) >/dev/null 2>&1
+check "interactive writes a key"  '[ "$(_env_get "$T5c/.env" ANTHROPIC_API_KEY)" = sk-a ]'
+check "interactive writes SOUL.md" '[ -f "$T5c/home/.jarvis/SOUL.md" ]'
+
 echo "---"; echo "$FAILS failures"; [ "$FAILS" -eq 0 ]
