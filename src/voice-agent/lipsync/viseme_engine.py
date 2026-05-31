@@ -83,6 +83,15 @@ class VisemeEngine:
         # makes visemes engage: text arrives slightly after audio start and
         # then grows word-by-word.
         if self._pending_text and self._pending_text != self._built_text:
+            # Distinguish a GROWING transcript (extend, keep the timeline) from
+            # a FRESH utterance (re-anchor t0). The audio falling-edge reset
+            # does NOT fire between back-to-back TTS segments because
+            # state.speaking has a 1.2s hold — so without this, every sentence
+            # after the first in a multi-sentence reply would inherit the first
+            # sentence's t0, run the cursor off the end, and freeze on one pose.
+            # A fresh utterance's text does not extend the built text.
+            if not self._pending_text.startswith(self._built_text):
+                self._t0 = now
             self._build(self._pending_text, now)
 
         openness = max(0.0, min(1.0, rms / _RMS_FULL))
