@@ -319,16 +319,16 @@ install_bubblewrap() {
   # and the network-namespace gate. apt + pacman covered; other distros
   # warn-only since the user-namespace approach is universal but
   # package names vary.
-  if have apt-get && [ "$JARVIS_DRY_RUN" != "1" ]; then
-    info "installing bubblewrap via apt..."
+  if have apt-get && [ "${JARVIS_DRY_RUN:-0}" != "1" ]; then
+    sub "installing bubblewrap via apt..."
     if sudo -n apt-get install -y bubblewrap >/dev/null 2>&1; then
       ok "bubblewrap installed"
     else
       warn "couldn't apt-install bubblewrap (sudo? offline?); the bash tool will run un-sandboxed."
       warn "to enable: sudo apt install bubblewrap"
     fi
-  elif have pacman && [ "$JARVIS_DRY_RUN" != "1" ]; then
-    info "installing bubblewrap via pacman..."
+  elif have pacman && [ "${JARVIS_DRY_RUN:-0}" != "1" ]; then
+    sub "installing bubblewrap via pacman..."
     if sudo -n pacman -S --noconfirm bubblewrap >/dev/null 2>&1; then
       ok "bubblewrap installed"
     else
