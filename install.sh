@@ -23,7 +23,7 @@ INSTALL_DIR="${JARVIS_INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
 # ── Platform guard ─────────────────────────────────────────────────────────
 case "$(uname -s)" in
   Linux)   ;;  # supported
-  Darwin)  die "macOS is not supported by this installer. Use the Windows installer (install.ps1) via a VM or WSL2 on a Windows host." ;;
+  Darwin)  die "macOS is not supported. JARVIS targets Linux and Windows only." ;;
   *)       die "Unsupported platform: $(uname -s). JARVIS installers target Linux and Windows only." ;;
 esac
 
