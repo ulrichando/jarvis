@@ -754,4 +754,10 @@ main() {
   print_summary
 }
 
-main "$@"
+# Only run the installer when executed directly (bash install.sh / curl|bash),
+# not when sourced by the test harness. curl|bash: BASH_SOURCE[0] is unset →
+# falls to $0 ("bash") which equals $0 → runs. Sourced: BASH_SOURCE[0] is the
+# install.sh path while $0 is the caller → not equal → does not run.
+if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
+  main "$@"
+fi
