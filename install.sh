@@ -777,20 +777,68 @@ install_playwright_chromium() {
     ok "Playwright Chromium already cached"
     return
   fi
-  sub "About to download ~200MB of Chromium for browser CDP fallback"
-  sub "(skip with JARVIS_SKIP_CDP=1 — CDP fallback won't work without it)"
-  # Non-interactive installs (e.g. curl|bash) → auto-yes.
-  if [ ! -t 0 ]; then
-    sub "non-interactive shell — proceeding with download"
-  else
-    read -r -p "  Download Playwright Chromium now? [Y/n] " reply
-    if [ "${reply:-Y}" != "Y" ] && [ "${reply:-Y}" != "y" ] && [ -n "$reply" ]; then
-      warn "skipped — run 'playwright install chromium' later if you want the fallback"
-      return
-    fi
+  # Probe for a system Chrome/Chromium first — if found, skip the 200 MB
+  # Playwright download entirely. The browser tools can use the system
+  # browser instead of the CDP fallback. Inspired by Hermes Agent's
+  # find_system_browser().
+  local browser_path=""
+  for _b in google-chrome google-chrome-stable chromium chromium-browser chrome; do
+    local _p; _p="$(command -v "$_b" 2>/dev/null)" || continue
+    browser_path="$_p"
+    break
+  done
+  if [ -z "$browser_path" ]; then
+    for _p in "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+              "/Applications/Chromium.app/Contents/MacOS/Chromium"; do
+      [ -x "$_p" ] && { browser_path="$_p"; break; }
+    done
   fi
+  if [ -n "$browser_path" ]; then
+    ok "system browser found ($browser_path) — skipping Playwright Chromium download"
+    # Write the path into the voice-agent .env so the browser tool
+    # knows to use the system browser instead of Playwright's Chromium.
+    if grep -q '^AGENT_BROWSER_EXECUTABLE_PATH=' "$VA_ENV" 2>/dev/null; then
+      : # already set
+    else
+      printf '\n# Auto-detected system browser (install.sh)\nAGENT_BROWSER_EXECUTABLE_PATH=%s\n' "$browser_path" >> "$VA_ENV"
+      ok "wrote AGENT_BROWSER_EXECUTABLE_PATH to $VA_ENV"
+    fi
+    return
+  fi
+  # Silent download — no prompt.
   "$va/.venv/bin/playwright" install chromium
   ok "Playwright Chromium installed"
+}
+
+# ── Config directory seeding ───────────────────────────────────────────
+# Create the JARVIS_HOME config directory structure with default templates
+# if they don't already exist (idempotent). Inspired by Hermes Agent's
+# copy_config_templates().
+copy_config_templates() {
+  section "Seeding config directory"
+  mkdir -p "$JARVIS_HOME/skills" "$JARVIS_HOME/plans"
+  ok "config directory ready at $JARVIS_HOME"
+}
+
+# ── Service start (post-install) ──────────────────────────────────────
+# Start the always-on services if the user has configured .env. Only
+# starts services; doesn't fail if anything's missing (user may not have
+# configured keys yet). Inspired by Hermes Agent's maybe_start_gateway().
+maybe_start_services() {
+  local _sctl="systemctl $([ "$SYSTEMD_SCOPE" = "system" ] && echo "" || echo "--user")"
+  # Check if at least one LLM key is set before offering to start.
+  local _has_key=0
+  for _k in ANTHROPIC_API_KEY GROQ_API_KEY OPENAI_API_KEY; do
+    [ -n "$(_env_get "$VA_ENV" "$_k")" ] || [ -n "$(_env_get "$INSTALL_DIR/.env" "$_k")" ] && _has_key=1
+  done
+  [ "$_has_key" = "0" ] && [ -n "$(_env_get "/etc/jarvis/.env" "ANTHROPIC_API_KEY")" ] && _has_key=1
+  [ "$_has_key" = "0" ] && [ -n "$(_env_get "/etc/jarvis/voice-agent.env" "GROQ_API_KEY")" ] && _has_key=1
+
+  if [ "$_has_key" = "1" ] && have systemctl; then
+    $_sctl start livekit-server.service 2>/dev/null && ok "started livekit-server.service"
+    sleep 1
+    $_sctl start jarvis-voice-agent.service 2>/dev/null && ok "started jarvis-voice-agent.service"
+  fi
 }
 
 install_systemd_units() {
@@ -1381,6 +1429,8 @@ main() {
   install_audio_profile
   install_echo_cancel_aec
   configure
+  copy_config_templates
+  maybe_start_services
   print_summary
 }
 
