@@ -152,6 +152,47 @@ configure_api_keys() {
   return 0
 }
 
+configure_soul() {
+  local soul_src="$INSTALL_DIR/src/voice-agent/prompts/soul.md"
+  local soul_dst="$HOME/.jarvis/SOUL.md"
+  if [ ! -f "$soul_src" ]; then
+    warn "base soul not found at $soul_src — skipping persona setup"; return 0
+  fi
+
+  if [ -f "$soul_dst" ]; then
+    _confirm "  ~/.jarvis/SOUL.md exists — overwrite to re-personalize? [y/N] " N \
+      || { ok "keeping existing $soul_dst"; return 0; }
+  else
+    _confirm "  Personalize the assistant's persona now? [Y/n] " Y \
+      || { sub "skipping persona (JARVIS uses the built-in soul)"; return 0; }
+  fi
+
+  mkdir -p "$HOME/.jarvis"
+  cp "$soul_src" "$soul_dst"
+  chmod 600 "$soul_dst"
+
+  # Optional rename. Only [A-Za-z0-9 _-] accepted (no sed metachar injection).
+  local name; name="$(_ask "  Assistant name [JARVIS]: " "JARVIS")"
+  if [ -n "$name" ] && [ "$name" != "JARVIS" ]; then
+    if printf '%s' "$name" | grep -qE '^[A-Za-z0-9 _-]+$'; then
+      sed -i "s/\\bJARVIS\\b/${name}/g" "$soul_dst"
+      ok "set assistant name to '$name'"
+    else
+      warn "name has unsupported characters — keeping 'JARVIS'"
+    fi
+  fi
+  ok "wrote $soul_dst (chmod 600)"
+
+  # Offer the editor for hand tweaks. EDITOR=true (tests) is a no-op.
+  local editor="${EDITOR:-}"
+  [ -z "$editor" ] && { have nano && editor=nano || editor=vi; }
+  if _confirm "  Open $soul_dst in $editor to fine-tune? [Y/n] " Y; then
+    "$editor" "$soul_dst" < "$(_tty_path)" > "$(_tty_path)" 2>&1 \
+      || warn "editor exited non-zero; $soul_dst left as written"
+  fi
+  return 0
+}
+
 check_prereqs() {
   section "Checking prerequisites"
 

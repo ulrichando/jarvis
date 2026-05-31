@@ -76,4 +76,29 @@ printf '\n\n\nn\n' > "$T2b/ans"
 ( export INSTALL_DIR="$T2b"; _JARVIS_TTY="$T2b/ans" configure_api_keys ) >/dev/null 2>&1
 check "blank input sets no anthropic key" '[ -z "$(_env_get "$T2b/.env" ANTHROPIC_API_KEY)" ]'
 
+# ── configure_soul (Option A: copy base soul -> ~/.jarvis/SOUL.md) ────
+T3="$(mktemp -d)"
+mkdir -p "$T3/src/voice-agent/prompts" "$T3/home"
+printf 'You are JARVIS. JARVIS helps you.\n' > "$T3/src/voice-agent/prompts/soul.md"
+# answers: personalize? Y ; name -> Aria ; open editor? n
+printf 'Y\nAria\nn\n' > "$T3/ans"
+( export INSTALL_DIR="$T3" HOME="$T3/home" EDITOR=true; _JARVIS_TTY="$T3/ans" configure_soul ) >/dev/null 2>&1
+check "SOUL.md created"        '[ -f "$T3/home/.jarvis/SOUL.md" ]'
+check "name applied to soul"   'grep -q "You are Aria. Aria helps you." "$T3/home/.jarvis/SOUL.md"'
+check "SOUL.md chmod 600"      '[ "$(stat -c %a "$T3/home/.jarvis/SOUL.md")" = 600 ]'
+
+# decline -> no SOUL.md written
+T3b="$(mktemp -d)"; mkdir -p "$T3b/src/voice-agent/prompts" "$T3b/home"
+printf 'You are JARVIS.\n' > "$T3b/src/voice-agent/prompts/soul.md"
+printf 'n\n' > "$T3b/ans"
+( export INSTALL_DIR="$T3b" HOME="$T3b/home" EDITOR=true; _JARVIS_TTY="$T3b/ans" configure_soul ) >/dev/null 2>&1
+check "decline leaves no SOUL.md" '[ ! -f "$T3b/home/.jarvis/SOUL.md" ]'
+
+# keep default name -> verbatim copy
+T3c="$(mktemp -d)"; mkdir -p "$T3c/src/voice-agent/prompts" "$T3c/home"
+printf 'You are JARVIS, the assistant.\n' > "$T3c/src/voice-agent/prompts/soul.md"
+printf 'Y\n\nn\n' > "$T3c/ans"   # personalize Y, name blank (keep JARVIS), editor n
+( export INSTALL_DIR="$T3c" HOME="$T3c/home" EDITOR=true; _JARVIS_TTY="$T3c/ans" configure_soul ) >/dev/null 2>&1
+check "blank name = verbatim copy" 'diff -q "$T3c/src/voice-agent/prompts/soul.md" "$T3c/home/.jarvis/SOUL.md" >/dev/null'
+
 echo "---"; echo "$FAILS failures"; [ "$FAILS" -eq 0 ]
