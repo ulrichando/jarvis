@@ -89,20 +89,46 @@ _interactive() {
   return 1
 }
 
+# Open (once) a persistent read fd on the tty path so sequential prompts
+# advance through the input. A fresh `read < "$tty"` re-opens the path at
+# offset 0 every call, which works for a real /dev/tty (a non-seekable
+# stream) but re-reads the SAME first line of a regular-file test fixture —
+# so multi-prompt flows would read the first answer over and over. Binding
+# one fd keeps the read cursor where it left off for both. _JARVIS_TTY_FD
+# tracks which path the fd is bound to so a new fixture (new path) re-opens.
+_tty_open_read() {
+  local tty; tty="$(_tty_path)"
+  if [ "${_JARVIS_TTY_FD:-}" != "$tty" ]; then
+    exec 3<"$tty" 2>/dev/null || { _JARVIS_TTY_FD=""; return 1; }
+    _JARVIS_TTY_FD="$tty"
+  fi
+  return 0
+}
+
+# Write the prompt where the user will see it WITHOUT clobbering the input
+# we read from. For a real /dev/tty (char device) we write to the tty; for a
+# regular-file test fixture (which holds the queued answers) writing to it
+# would truncate/corrupt the answers, so we send the prompt to stderr instead.
+_tty_prompt() {
+  local tty; tty="$(_tty_path)"
+  if [ -c "$tty" ]; then printf '%s' "$1" > "$tty" 2>/dev/null || printf '%s' "$1" >&2
+  else printf '%s' "$1" >&2; fi
+}
+
 # _ask <prompt> <default> — echo the answer, or <default> if blank.
 _ask() {
-  local prompt="$1" default="$2" ans tty; tty="$(_tty_path)"
-  printf '%s' "$prompt" > "$tty" 2>/dev/null || printf '%s' "$prompt" >&2
-  IFS= read -r ans < "$tty" 2>/dev/null || ans=""
+  local prompt="$1" default="$2" ans
+  _tty_prompt "$prompt"
+  if _tty_open_read; then IFS= read -r ans <&3 || ans=""; else ans=""; fi
   printf '%s' "${ans:-$default}"
 }
 
 # _ask_secret <prompt> — echo the typed secret without terminal echo.
 _ask_secret() {
-  local prompt="$1" ans tty; tty="$(_tty_path)"
-  printf '%s' "$prompt" > "$tty" 2>/dev/null || printf '%s' "$prompt" >&2
-  IFS= read -rs ans < "$tty" 2>/dev/null || ans=""
-  printf '\n' > "$tty" 2>/dev/null || true
+  local prompt="$1" ans
+  _tty_prompt "$prompt"
+  if _tty_open_read; then IFS= read -rs ans <&3 || ans=""; else ans=""; fi
+  _tty_prompt $'\n'
   printf '%s' "$ans"
 }
 
@@ -131,6 +157,10 @@ _maybe_set_key() {
 configure_api_keys() {
   local root_env="$INSTALL_DIR/.env"
   local va_env="$INSTALL_DIR/src/voice-agent/.env"
+  # Open the persistent read fd HERE (the non-substitution parent) so the
+  # per-prompt `val="$(_ask_secret ...)"` subshells inherit fd 3 and share
+  # its file offset — without this each subshell would reopen at offset 0.
+  _tty_open_read || true
   sub "API keys — press Enter to skip any provider."
 
   _maybe_set_key "Anthropic"      ANTHROPIC_API_KEY "$root_env"
@@ -155,6 +185,9 @@ configure_api_keys() {
 configure_soul() {
   local soul_src="$INSTALL_DIR/src/voice-agent/prompts/soul.md"
   local soul_dst="$HOME/.jarvis/SOUL.md"
+  # Persistent read fd (see configure_api_keys) so this function's sequence of
+  # _confirm/_ask prompts advances through the input instead of re-reading line 1.
+  _tty_open_read || true
   if [ ! -f "$soul_src" ]; then
     warn "base soul not found at $soul_src — skipping persona setup"; return 0
   fi
