@@ -52,6 +52,28 @@ detect_invocation() {
 # ── Prerequisites ────────────────────────────────────────────────────────
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# ── .env read/write helpers ──────────────────────────────────────────
+# _env_get <file> <VAR> — print the current value of VAR (empty if unset/missing).
+_env_get() {
+  local file="$1" var="$2"
+  [ -f "$file" ] || return 0
+  grep -E "^${var}=" "$file" 2>/dev/null | tail -1 | sed "s/^${var}=//"
+}
+
+# _env_upsert <file> <VAR> <value> — set VAR=value idempotently. Replaces an
+# existing `^VAR=` line (any value) or appends; preserves all other lines;
+# creates the file + parent dir if missing; chmod 600.
+_env_upsert() {
+  local file="$1" var="$2" value="$3" tmp
+  mkdir -p "$(dirname "$file")"
+  [ -f "$file" ] || : > "$file"
+  tmp="$(mktemp)"
+  grep -v -E "^${var}=" "$file" > "$tmp" 2>/dev/null || true
+  printf '%s=%s\n' "$var" "$value" >> "$tmp"
+  mv "$tmp" "$file"
+  chmod 600 "$file"
+}
+
 check_prereqs() {
   section "Checking prerequisites"
 

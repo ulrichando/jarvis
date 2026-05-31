@@ -28,4 +28,15 @@ check "sourcing install.sh runs no installer" '[ "$SRC_OUT" = "SENTINEL" ]'
 source "$REPO/install.sh"
 set +e +u  # install.sh's `set -euo pipefail` leaks in; relax for asserts.
 
+# ── _env_get / _env_upsert ───────────────────────────────────────────
+T1="$(mktemp -d)"; EF="$T1/.env"
+_env_upsert "$EF" FOO bar
+check "_env_upsert creates + sets" '[ "$(grep -c "^FOO=bar$" "$EF")" = 1 ]'
+_env_upsert "$EF" FOO baz
+check "_env_upsert replaces (no dup)" '[ "$(grep -c "^FOO=" "$EF")" = 1 ] && [ "$(_env_get "$EF" FOO)" = baz ]'
+_env_upsert "$EF" OTHER keep
+check "_env_upsert preserves other keys" '[ "$(_env_get "$EF" FOO)" = baz ] && [ "$(_env_get "$EF" OTHER)" = keep ]'
+check "_env_upsert chmod 600" '[ "$(stat -c %a "$EF")" = 600 ]'
+check "_env_get missing key is empty" '[ -z "$(_env_get "$EF" NOPE)" ]'
+
 echo "---"; echo "$FAILS failures"; [ "$FAILS" -eq 0 ]
