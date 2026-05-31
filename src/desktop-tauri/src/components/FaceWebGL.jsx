@@ -23,6 +23,9 @@ const MOUTH = [24, 28, 29, 36, 37, 38, 43, 44, 45, 46, 47, 48, 49, 50, 51]
 // eyeWide (17/18) is handled separately with a 0.55 baseline so the wide-eyed
 // look persists and expressions modulate around it. Module-level (no realloc).
 const EXPRESSION = [0, 1, 2, 3, 4, 20, 21, 39, 40]
+// Resting-face defaults — a friendly look at rest, not a wide-eyed stare.
+const SMILE_REST  = 0.28   // baseline mouthSmile (37/38): gentle default smile
+const EYELID_REST = 0.12   // baseline eyeBlink (13/14): upper lid relaxed toward the iris
 
 function Head({ getWeights }) {
   const { scene } = useGLTF(MODEL_URL)
@@ -62,7 +65,8 @@ function Head({ getWeights }) {
       const key = 'target_' + n
       const i = dict[key]
       if (i == null) continue
-      const target = Math.max(0, Math.min(1, targets[key] || 0))
+      let target = Math.max(0, Math.min(1, targets[key] || 0))
+      if (n === 37 || n === 38) target = Math.max(target, SMILE_REST)   // default gentle smile
       const cur = inf[i] || 0
       const k = target > cur ? 0.4 : 0.25
       inf[i] = cur + (target - cur) * k
@@ -77,8 +81,8 @@ function Head({ getWeights }) {
       const cur = inf[i] || 0
       inf[i] = cur + (target - cur) * 0.2
     }
-    // eyeWide: 0.55 baseline + expression modulation (blink overrides below).
-    const eyeTarget = Math.max(0, Math.min(1, 0.55 + (targets['target_17'] || 0)))
+    // eyeWide: NO baseline (relaxed eyes, not a stare) — expression widens only.
+    const eyeTarget = Math.max(0, Math.min(1, targets['target_17'] || 0))
     const ewL = dict['target_17'], ewR = dict['target_18']
     if (ewL != null) inf[ewL] = inf[ewL] + (eyeTarget - inf[ewL]) * 0.2
     if (ewR != null) inf[ewR] = inf[ewR] + (eyeTarget - inf[ewR]) * 0.2
@@ -95,8 +99,8 @@ function Head({ getWeights }) {
       if (p >= 1) { blink.t = -1; blink.next = now + 3 + Math.random() * 3 }
       else { blinkVal = Math.sin(p * Math.PI) }  // 0→1→0
     }
-    if (bl != null) inf[bl] = blinkVal
-    if (br != null) inf[br] = blinkVal
+    if (bl != null) inf[bl] = Math.max(EYELID_REST, blinkVal)
+    if (br != null) inf[br] = Math.max(EYELID_REST, blinkVal)
 
     // Head sway: gentle, damped while the mouth is active so it doesn't
     // fight visemes.
