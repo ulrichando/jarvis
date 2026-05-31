@@ -5,5 +5,6 @@ drive the FaceCap GLB. Pure CPU/RAM — no GPU, no neural net. See
 docs/superpowers/specs/2026-05-30-jarvis-face-viseme-lipsync-design.md.
 """
 from .viseme_engine import VisemeEngine
+from .expression import ExpressionEngine
 
-__all__ = ["VisemeEngine"]
+__all__ = ["VisemeEngine", "ExpressionEngine"]
