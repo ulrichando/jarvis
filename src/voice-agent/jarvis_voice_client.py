@@ -146,8 +146,9 @@ _reverse_ringbuf = ReverseRefRingBuffer(capacity_frames=64)
 # ── Viseme lip-sync engine (kiosk talking face) ──
 # Module-level singleton; survives LiveKit reconnects. Fed the agent's TTS
 # transcript via set_pending_text() and ticked per playback frame via frame().
-from lipsync import VisemeEngine
+from lipsync import VisemeEngine, ExpressionEngine
 _viseme_engine = VisemeEngine()
+_expression_engine = ExpressionEngine()
 
 # ── L3 DTLN neural residual filter (2026-05-22, Phase B Task 10 wiring) ──
 # Module-level lazy singleton. The first call to `_get_dtln()` from the
@@ -588,17 +589,18 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
             # this. Lightly smoothed; cheap (one np.sqrt per 10ms frame).
             _lvl = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2))) / 32768.0
             state.output_level += (_lvl - state.output_level) * 0.5
-            # Viseme lip-sync: resolve this frame's ARKit-morph weights from
-            # the agent's known text + the smoothed RMS. Never raises into
-            # the audio path — on any error the face just falls back to rest.
+            # Face morphs: viseme mouth shapes (text + RMS) merged with the
+            # expression layer (brows/eyes/cheeks/smile-frown from sentiment).
+            # Disjoint morphs, so the union is clean. Never raises into audio.
             try:
-                state.face_weights = _viseme_engine.frame(
+                _vw = _viseme_engine.frame(
                     now=time.monotonic(),
                     speaking=state.speaking,
                     rms=state.output_level,
                 )
+                state.face_weights = {**_vw, **_expression_engine.frame(state.speaking)}
             except Exception as e:
-                log.debug(f"[lipsync] frame failed: {e}")
+                log.debug(f"[face] frame failed: {e}")
                 state.face_weights = {}
             # write() is non-blocking-ish — it copies into PortAudio's
             # internal ring, the audio thread drains. If we ever fall
@@ -795,7 +797,9 @@ async def run_once(shutdown: asyncio.Event) -> None:
             async for chunk in reader:
                 buf.append(chunk)
                 if is_agent:
-                    _viseme_engine.set_pending_text("".join(buf))
+                    _txt = "".join(buf)
+                    _viseme_engine.set_pending_text(_txt)
+                    _expression_engine.set_pending_text(_txt)
         except Exception as e:
             log.debug(f"[stream-drain] text stream from {participant_identity} ended: {e}")
 
