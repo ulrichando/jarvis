@@ -19,6 +19,7 @@ readonly LOCAL_BIN="$HOME/.local/bin"
 readonly USER_SYSTEMD="$HOME/.config/systemd/user"
 
 INSTALL_DIR="${JARVIS_INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
+readonly NODE_VERSION="22"
 
 # ── Platform guard ─────────────────────────────────────────────────────────
 case "$(uname -s)" in
@@ -331,9 +332,11 @@ check_prereqs() {
     missing+=("bun")
   fi
 
-  # Node + npm — voice/web/desktop need them
-  if have node; then ok "node ($(node --version))"; else err "node not found"; missing+=("node"); fi
-  if have npm;  then ok "npm  ($(npm --version))";  else err "npm not found";  missing+=("npm"); fi
+  # Node + npm — voice/web/desktop need them. If missing, install_node()
+  # will download a managed tarball later. Non-fatal here so the install
+  # continues and install_node() gets a chance to run.
+  if have node; then ok "node ($(node --version))"; else warn "node not found — will attempt managed download"; fi
+  if have npm;  then ok "npm  ($(npm --version))";  else warn "npm not found — will download with node"; fi
 
   # Rust — only required for desktop channel
   if [ "${JARVIS_SKIP_DESKTOP:-0}" != "1" ]; then
@@ -510,6 +513,75 @@ export UV_NO_CONFIG=1
 exec "$real_target" "\$@"
 EOF
   chmod 755 "$path"
+}
+
+# ── Managed Node.js download ───────────────────────────────────────────
+# Download Node.js v22 binary tarball if the system has no node. The
+# desktop Tauri build and web channel need npm + node to run. Uses the
+# same approach as Hermes Agent's install_node().
+install_node() {
+  if have node; then
+    ok "node ($(node --version)) already on PATH"
+    return 0
+  fi
+
+  section "Installing Node.js (managed download)"
+
+  local arch
+  case "$(uname -m)" in
+    x86_64)        arch="x64"    ;;
+    aarch64|arm64) arch="arm64"  ;;
+    *)             warn "unsupported arch $(uname -m) for managed Node.js; install manually"; return 1 ;;
+  esac
+
+  # Resolve latest v22.x.x tarball name from the index page.
+  local index_url="https://nodejs.org/dist/latest-v${NODE_VERSION}.x/"
+  local tarball_name
+  tarball_name="$(curl -fsSL "$index_url" 2>/dev/null | grep -oE "node-v${NODE_VERSION}\.[0-9]+\.[0-9]+-linux-${arch}\.tar\.xz" | head -1)"
+  [ -z "$tarball_name" ] && tarball_name="$(curl -fsSL "$index_url" 2>/dev/null | grep -oE "node-v${NODE_VERSION}\.[0-9]+\.[0-9]+-linux-${arch}\.tar\.gz" | head -1)"
+
+  if [ -z "$tarball_name" ]; then
+    warn "could not find Node.js v${NODE_VERSION} binary for linux-${arch}"
+    warn "install Node.js >= 20 manually: https://nodejs.org/en/download/"
+    return 1
+  fi
+
+  local tmp_dir; tmp_dir="$(mktemp -d)"
+  sub "downloading $tarball_name..."
+  if ! curl -fsSL "${index_url}${tarball_name}" -o "$tmp_dir/$tarball_name"; then
+    warn "download failed — install Node.js >= 20 manually"
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+
+  sub "extracting..."
+  if echo "$tarball_name" | grep -q '\.tar\.xz$'; then
+    tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir" 2>/dev/null
+  else
+    tar xzf "$tmp_dir/$tarball_name" -C "$tmp_dir" 2>/dev/null
+  fi
+
+  local extracted; extracted="$(ls -d "$tmp_dir"/node-v* 2>/dev/null | head -1)"
+  if [ ! -d "$extracted" ]; then
+    warn "extraction failed — install Node.js >= 20 manually"
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+
+  # Place into ~/.jarvis/node/ and symlink binaries to ~/.local/bin/.
+  rm -rf "$HOME/.jarvis/node"
+  mkdir -p "$HOME/.jarvis"
+  mv "$extracted" "$HOME/.jarvis/node"
+  rm -rf "$tmp_dir"
+
+  mkdir -p "$LOCAL_BIN"
+  ln -sf "$HOME/.jarvis/node/bin/node" "$LOCAL_BIN/node"
+  ln -sf "$HOME/.jarvis/node/bin/npm"  "$LOCAL_BIN/npm"
+  ln -sf "$HOME/.jarvis/node/bin/npx"  "$LOCAL_BIN/npx"
+  export PATH="$LOCAL_BIN:$PATH"
+
+  ok "Node.js $("$LOCAL_BIN/node" --version) installed to ~/.jarvis/node/"
+  ok "symlinked node/npm/npx to $LOCAL_BIN"
 }
 
 # ── Channel: Web (Next.js) ───────────────────────────────────────────────
@@ -1023,9 +1095,39 @@ check_computer_use_deps() {
 }
 
 # ── Channel: Desktop (Tauri) ─────────────────────────────────────────────
+# ── Tauri system library pre-check ─────────────────────────────────────
+# Probes for the shared libraries the Tauri build needs *before* the
+# 10-minute cargo build, so we fail fast with a clear action message
+# instead of a cryptic pkg-config error partway through.
+_TAURI_DEPS=(libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev patchelf pkg-config)
+
+check_desktop_prereqs() {
+  if [ "${JARVIS_SKIP_DESKTOP:-0}" = "1" ]; then return; fi
+  local missing=()
+  for pkg in "${_TAURI_DEPS[@]}"; do
+    if dpkg -l "$pkg" >/dev/null 2>&1; then
+      : # present
+    elif command -v pkg-config >/dev/null 2>&1 && pkg-config --exists "${pkg%-dev}" 2>/dev/null; then
+      : # pkg-config alternative check
+    else
+      missing+=("$pkg")
+    fi
+  done
+  if [ ${#missing[@]} -gt 0 ]; then
+    err "Tauri build dependencies missing: ${missing[*]}"
+    err "Install them and re-run:"
+    err "  sudo apt install ${missing[*]}"
+    err "(adjust package names for your distro if not using apt)"
+    die "Desktop channel cannot build without the above system libraries."
+  fi
+  ok "Tauri build dependencies present"
+}
+
 install_desktop() {
   if [ "${JARVIS_SKIP_DESKTOP:-0}" = "1" ]; then warn "skipping Desktop (JARVIS_SKIP_DESKTOP=1)"; return; fi
   section "Installing Desktop (Tauri) — first build takes 5–10 min"
+
+  check_desktop_prereqs
 
   local dt="$INSTALL_DIR/src/desktop-tauri"
   (cd "$dt" && npm install --silent)
@@ -1196,6 +1298,7 @@ main() {
   fi
   clone_or_update
   install_cli
+  install_node               # managed Node.js tarball if system lacks one
   install_web
   install_voice_agent
   install_desktop
