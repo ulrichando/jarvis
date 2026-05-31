@@ -39,4 +39,24 @@ check "_env_upsert preserves other keys" '[ "$(_env_get "$EF" FOO)" = baz ] && [
 check "_env_upsert chmod 600" '[ "$(stat -c %a "$EF")" = 600 ]'
 check "_env_get missing key is empty" '[ -z "$(_env_get "$EF" NOPE)" ]'
 
+# ── _interactive + prompt helpers ────────────────────────────────────
+check "_interactive false when NONINTERACTIVE=1" '! ( JARVIS_NONINTERACTIVE=1 _interactive )'
+check "_interactive false when DRY_RUN=1"        '! ( JARVIS_DRY_RUN=1 _interactive )'
+check "_interactive false when SKIP_SETUP=1"     '! ( JARVIS_SKIP_SETUP=1 _interactive )'
+TTYF="$T1/answers"; printf 'x\n' > "$TTYF"
+check "_interactive true with readable _JARVIS_TTY" '( _JARVIS_TTY="$TTYF" JARVIS_NONINTERACTIVE=0 JARVIS_DRY_RUN=0 JARVIS_SKIP_SETUP=0 _interactive )'
+
+printf 'typed\n' > "$TTYF"
+check "_ask returns typed value" '[ "$(_JARVIS_TTY="$TTYF" _ask "p: " def)" = typed ]'
+printf '\n' > "$TTYF"
+check "_ask returns default on blank" '[ "$(_JARVIS_TTY="$TTYF" _ask "p: " def)" = def ]'
+printf 'secret123\n' > "$TTYF"
+check "_ask_secret reads hidden value" '[ "$(_JARVIS_TTY="$TTYF" _ask_secret "p: ")" = secret123 ]'
+printf 'y\n' > "$TTYF"
+check "_confirm yes" '( _JARVIS_TTY="$TTYF" _confirm "p? " N )'
+printf 'n\n' > "$TTYF"
+check "_confirm no" '! ( _JARVIS_TTY="$TTYF" _confirm "p? " Y )'
+printf '\n' > "$TTYF"
+check "_confirm blank honors default Y" '( _JARVIS_TTY="$TTYF" _confirm "p? " Y )'
+
 echo "---"; echo "$FAILS failures"; [ "$FAILS" -eq 0 ]

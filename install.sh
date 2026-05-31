@@ -74,6 +74,45 @@ _env_upsert() {
   chmod 600 "$file"
 }
 
+# ── Interactivity + prompts ──────────────────────────────────────────
+# Tests inject a fixture file via _JARVIS_TTY; real runs use /dev/tty so even
+# `curl | bash` (whose stdin is the script) can prompt the user.
+_tty_path() { printf '%s' "${_JARVIS_TTY:-/dev/tty}"; }
+
+# True iff a terminal is reachable and the user hasn't opted out.
+_interactive() {
+  [ "${JARVIS_NONINTERACTIVE:-0}" = "1" ] && return 1
+  [ "${JARVIS_DRY_RUN:-0}" = "1" ]        && return 1
+  [ "${JARVIS_SKIP_SETUP:-0}" = "1" ]     && return 1
+  [ -t 0 ] && return 0
+  [ -r "$(_tty_path)" ] && return 0
+  return 1
+}
+
+# _ask <prompt> <default> — echo the answer, or <default> if blank.
+_ask() {
+  local prompt="$1" default="$2" ans tty; tty="$(_tty_path)"
+  printf '%s' "$prompt" > "$tty" 2>/dev/null || printf '%s' "$prompt" >&2
+  IFS= read -r ans < "$tty" 2>/dev/null || ans=""
+  printf '%s' "${ans:-$default}"
+}
+
+# _ask_secret <prompt> — echo the typed secret without terminal echo.
+_ask_secret() {
+  local prompt="$1" ans tty; tty="$(_tty_path)"
+  printf '%s' "$prompt" > "$tty" 2>/dev/null || printf '%s' "$prompt" >&2
+  IFS= read -rs ans < "$tty" 2>/dev/null || ans=""
+  printf '\n' > "$tty" 2>/dev/null || true
+  printf '%s' "$ans"
+}
+
+# _confirm <prompt> <default:Y|N> — return 0 for yes, 1 for no.
+_confirm() {
+  local prompt="$1" default="${2:-N}" ans
+  ans="$(_ask "$prompt" "$default")"
+  case "$ans" in [Yy]|[Yy][Ee][Ss]) return 0 ;; *) return 1 ;; esac
+}
+
 check_prereqs() {
   section "Checking prerequisites"
 
