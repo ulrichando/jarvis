@@ -65,7 +65,20 @@ SPK_SAMPLE_RATE = 24000       # Live API spec: 24k mono s16le output
 FRAME_INTERVAL_S = float(
     os.environ.get("JARVIS_GEMINI_DIRECT_FRAME_INTERVAL_S", "1.0")
 )
+# English-pin: native-audio Live models infer the output language from the
+# user's accent/tone and drift (Google cookbook #1197). language_code is the
+# documented pin; en-US default, env-overridable.
+GEMINI_LANGUAGE = os.environ.get("JARVIS_GEMINI_LANGUAGE", "en-US")
+# Speech pace: native-audio has NO rate knob, so slow the OUTPUT audio with a
+# pitch-preserving `sox tempo` (<1.0 = slower). 1.0 = unchanged (plain paplay).
+try:
+    GEMINI_SPEECH_TEMPO = float(os.environ.get("JARVIS_GEMINI_SPEECH_TEMPO", "0.9"))
+except (TypeError, ValueError):
+    GEMINI_SPEECH_TEMPO = 0.9
 SYSTEM_INSTRUCTION = (
+    "Respond ONLY in English (en-US). NEVER infer or switch language from "
+    "Ulrich's accent, tone, names, or a mishearing — even if the audio sounds "
+    "like another language, always reply in English. "
     "You are Gemini in direct conversation with Ulrich. He's sharing "
     "his screen with you — frames stream in at ~1 FPS. Be natural, "
     "concise, and reference what's on screen when relevant. Don't "
@@ -108,15 +121,26 @@ async def open_mic_stream() -> asyncio.subprocess.Process:
 
 
 async def open_speaker_stream() -> asyncio.subprocess.Process:
-    """Spawn `paplay` reading raw PCM from stdin at 24k mono s16le.
-    Stream Gemini's audio bytes into stdin."""
+    """Spawn the playback process reading raw 24k mono s16le PCM from stdin.
+
+    Default (JARVIS_GEMINI_SPEECH_TEMPO=1.0): plain `paplay`. When a slowdown
+    is set (<1.0), pipe through `sox … tempo` — a pitch-preserving time-stretch
+    — since Gemini Live native audio has no speaking-rate knob. Both read raw
+    PCM from stdin, so the caller's write loop is unchanged either way.
+    """
+    if abs(GEMINI_SPEECH_TEMPO - 1.0) < 0.01:
+        args = [
+            "paplay", "--format=s16le", "--channels=1",
+            f"--rate={SPK_SAMPLE_RATE}", "--latency-msec=20", "--raw",
+        ]
+    else:
+        args = [
+            "sox", "-q", "-t", "raw", "-r", str(SPK_SAMPLE_RATE),
+            "-e", "signed", "-b", "16", "-c", "1", "-",
+            "-t", "pulseaudio", "default", "tempo", f"{GEMINI_SPEECH_TEMPO:g}",
+        ]
     return await asyncio.create_subprocess_exec(
-        "paplay",
-        "--format=s16le",
-        "--channels=1",
-        f"--rate={SPK_SAMPLE_RATE}",
-        "--latency-msec=20",
-        "--raw",
+        *args,
         stdin=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -163,6 +187,7 @@ async def main() -> int:
         response_modalities=["AUDIO"],
         media_resolution="MEDIA_RESOLUTION_MEDIUM",
         speech_config=types.SpeechConfig(
+            language_code=GEMINI_LANGUAGE,
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(
                     voice_name=VOICE_NAME,
