@@ -26,6 +26,7 @@ const EXPRESSION = [0, 1, 2, 3, 4, 20, 21, 39, 40]
 // Resting-face defaults — a friendly look at rest, not a wide-eyed stare.
 const SMILE_REST  = 0.28   // baseline mouthSmile (37/38): gentle default smile
 const EYELID_REST = 0.12   // baseline eyeBlink (13/14): upper lid relaxed toward the iris
+const HEAD_ROLL   = 0.087  // constant roll (rad, ~5°) to counter the GLB's baked head tilt (?roll= adds, dev)
 
 function Head({ getWeights }) {
   const { scene } = useGLTF(MODEL_URL)
@@ -36,6 +37,7 @@ function Head({ getWeights }) {
   const clockRef = useRef(0)
   const browRef = useRef({ next: 5.0, t: -1 })   // idle brow flick
   const dartRef = useRef({ next: 4.0, t: -1, dir: 1 })  // idle eye dart
+  const rollFix = HEAD_ROLL + (parseFloat(new URLSearchParams(window.location.search).get('roll')) || 0)
 
   // Find the head mesh (carries the jaw morph), build the target->index
   // map once, tint the skin, set a static eyeWide pose.
@@ -102,15 +104,9 @@ function Head({ getWeights }) {
     if (bl != null) inf[bl] = Math.max(EYELID_REST, blinkVal)
     if (br != null) inf[br] = Math.max(EYELID_REST, blinkVal)
 
-    // Head sway: gentle, damped while the mouth is active so it doesn't
-    // fight visemes.
-    const g = groupRef.current
-    if (g) {
-      const jaw = inf[dict['target_24']] || 0
-      const amp = (1 - Math.min(1, jaw * 2)) * 0.026   // ~±1.5° at rest
-      g.rotation.z = HEAD_ROT[2]                         // keep the head LEVEL — no roll/tilt
-      g.rotation.y = Math.sin(now * 0.43) * amp * 0.35   // very subtle left/right turn only
-    }
+    // Head stays level (no sway). The screen-space roll correction is applied
+    // on the OUTER wrapper group in the render below (unambiguous: camera looks
+    // down Z, so an outer Z-rotation rolls the head in the image plane).
 
     // Idle brow flick — only when no content expression is driving the brows.
     const hasExprBrow = ((targets['target_0'] || 0) + (targets['target_3'] || 0) + (targets['target_1'] || 0)) > 0.01
@@ -143,8 +139,10 @@ function Head({ getWeights }) {
 
   return (
     <Center>
-      <group ref={groupRef} rotation={HEAD_ROT}>
-        <primitive object={scene} />
+      <group rotation={[0, 0, rollFix]}>
+        <group ref={groupRef} rotation={HEAD_ROT}>
+          <primitive object={scene} />
+        </group>
       </group>
     </Center>
   )
