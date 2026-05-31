@@ -783,15 +783,19 @@ async def run_once(shutdown: asyncio.Event) -> None:
             log.debug(f"[stream-drain] byte stream from {participant_identity} ended: {e}")
 
     async def _drain_text_stream(reader, participant_identity: str) -> None:
+        # The agent's TTS transcript streams in word-by-word on
+        # lk.transcription, roughly in sync with the audio. Feed it to the
+        # viseme engine INCREMENTALLY (the accumulated text on each chunk) so
+        # the face's visemes engage as the words are spoken — not only at
+        # stream end. Only the agent's transcript drives the face, never our
+        # own STT echoed back under the local identity.
+        is_agent = participant_identity != IDENTITY
         try:
             buf = []
             async for chunk in reader:
                 buf.append(chunk)
-            text = "".join(buf).strip()
-            # Only the agent's TTS transcript drives the face, not our own
-            # STT echoed back under the local identity (IDENTITY).
-            if text and participant_identity != IDENTITY:
-                _viseme_engine.set_pending_text(text)
+                if is_agent:
+                    _viseme_engine.set_pending_text("".join(buf))
         except Exception as e:
             log.debug(f"[stream-drain] text stream from {participant_identity} ended: {e}")
 
