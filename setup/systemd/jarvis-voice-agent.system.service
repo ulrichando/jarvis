@@ -1,0 +1,44 @@
+[Unit]
+Description=JARVIS voice agent (LiveKit worker) — system scope
+After=network-online.target livekit-server.service
+Wants=network-online.target
+Requires=livekit-server.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+WatchdogSec=120s
+User=jarvis
+Group=jarvis
+WorkingDirectory=/opt/jarvis/src/voice-agent
+Environment=JARVIS_HOME=/var/lib/jarvis
+Environment=JARVIS_DATA_DIR=/var/lib/jarvis
+EnvironmentFile=/etc/jarvis/.env
+EnvironmentFile=-/etc/jarvis/voice-agent.env
+EnvironmentFile=-/etc/jarvis/local-api-token.env
+Environment=JARVIS_BROWSER_PRELAUNCH_DISABLE=1
+Environment=JARVIS_BROWSER_DISABLE_CDP_FALLBACK=1
+Environment=JARVIS_BROWSER_AUTOLAUNCH_DISABLE=1
+Environment=JARVIS_SAVE_TRIGGER_LIVE=1
+Environment=JARVIS_RECALL_TRIGGER_LIVE=1
+Environment=JARVIS_SKILL_REVIEW_APPLY=1
+Environment=JARVIS_AUTOMOD_ENABLED=1
+ExecStart=/opt/jarvis/src/voice-agent/.venv/bin/python /opt/jarvis/src/voice-agent/jarvis_agent.py start
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/jarvis/voice-agent.log
+StandardError=append:/var/log/jarvis/voice-agent.log
+
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

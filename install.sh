@@ -14,12 +14,14 @@ set -euo pipefail
 
 # ── Constants ────────────────────────────────────────────────────────────
 readonly REPO_URL="https://github.com/ulrichando/jarvis.git"
-readonly DEFAULT_INSTALL_DIR="$HOME/Documents/Projects/jarvis"
-readonly LOCAL_BIN="$HOME/.local/bin"
-readonly USER_SYSTEMD="$HOME/.config/systemd/user"
-
-INSTALL_DIR="${JARVIS_INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
 readonly NODE_VERSION="22"
+
+# Path defaults — may be overridden by detect_fhs(). Evaluated lazily
+# (inside _resolve_paths) so the test suite can source this file and
+# override $HOME afterward.
+INSTALL_DIR="${JARVIS_INSTALL_DIR:-}"
+LOCAL_BIN=""; JARVIS_HOME=""; JARVIS_LOG_DIR=""
+JARVIS_DATA_DIR=""; SYSTEMD_DIR=""; SYSTEMD_SCOPE=""; VA_ENV=""
 
 # ── Platform guard ─────────────────────────────────────────────────────────
 case "$(uname -s)" in
@@ -104,6 +106,20 @@ detect_os() {
   sub "detected OS: $OS, distro: $DISTRO"
 }
 
+# ── Lazy path resolution ──────────────────────────────────────────────
+# Set default paths based on $HOME if detect_fhs() hasn't run yet. This
+# allows the test suite to source install.sh and override $HOME afterward.
+_resolve_paths() {
+  [ -z "$INSTALL_DIR" ] && INSTALL_DIR="${JARVIS_INSTALL_DIR:-$HOME/Documents/Projects/jarvis}"
+  [ -z "$LOCAL_BIN" ]   && LOCAL_BIN="$HOME/.local/bin"
+  [ -z "$JARVIS_HOME" ] && JARVIS_HOME="$HOME/.jarvis"
+  [ -z "$JARVIS_LOG_DIR" ] && JARVIS_LOG_DIR="$HOME/.local/share/jarvis/logs"
+  [ -z "$JARVIS_DATA_DIR" ] && JARVIS_DATA_DIR="$HOME/.local/share/jarvis"
+  [ -z "$SYSTEMD_DIR" ] && SYSTEMD_DIR="$HOME/.config/systemd/user"
+  [ -z "$SYSTEMD_SCOPE" ] && SYSTEMD_SCOPE="user"
+  [ -z "$VA_ENV" ] && VA_ENV="$INSTALL_DIR/src/voice-agent/.env"
+}
+
 # _pkg_mgr_cmd — echo the package-manager install command for $DISTRO.
 # Only verb + packages; caller prepends sudo.
 _pkg_mgr_cmd() {
@@ -115,6 +131,39 @@ _pkg_mgr_cmd() {
     opensuse) echo "zypper install -y" ;;
     *)        echo "" ;;
   esac
+}
+
+# ── FHS root layout detection ──────────────────────────────────────────
+# When running as root (EUID 0) or JARVIS_FHS=1, install to system paths
+# with system-scoped systemd services instead of user-space paths.
+detect_fhs() {
+  _resolve_paths
+_resolve_paths
+  JARVIS_FHS="${JARVIS_FHS:-0}"
+  [ "$EUID" = "0" ] && JARVIS_FHS=1
+
+  if [ "$JARVIS_FHS" = "1" ]; then
+    INSTALL_DIR="/opt/jarvis"
+    LOCAL_BIN="/usr/local/bin"
+    JARVIS_HOME="/var/lib/jarvis"
+    JARVIS_LOG_DIR="/var/log/jarvis"
+    JARVIS_DATA_DIR="/var/lib/jarvis"
+    SYSTEMD_DIR="/etc/systemd/system"
+    SYSTEMD_SCOPE="system"
+    VA_ENV="/etc/jarvis/voice-agent.env"
+    sub "FHS root layout enabled — installing to system paths"
+  else
+    INSTALL_DIR="${JARVIS_INSTALL_DIR:-$HOME/Documents/Projects/jarvis}"
+    LOCAL_BIN="$HOME/.local/bin"
+    JARVIS_HOME="$HOME/.jarvis"
+    JARVIS_LOG_DIR="$HOME/.local/share/jarvis/logs"
+    JARVIS_DATA_DIR="$HOME/.local/share/jarvis"
+    SYSTEMD_DIR="$HOME/.config/systemd/user"
+    SYSTEMD_SCOPE="user"
+    VA_ENV="$INSTALL_DIR/src/voice-agent/.env"
+  fi
+  sub "install dir: $INSTALL_DIR"
+  sub "JARVIS home: $JARVIS_HOME"
 }
 
 # ── .env read/write helpers ──────────────────────────────────────────
@@ -226,6 +275,7 @@ _maybe_set_key() {
 }
 
 configure_api_keys() {
+  _resolve_paths
   local root_env="$INSTALL_DIR/.env"
   local va_env="$INSTALL_DIR/src/voice-agent/.env"
   # Open the persistent read fd HERE (the non-substitution parent) so the
@@ -254,8 +304,9 @@ configure_api_keys() {
 }
 
 configure_soul() {
+  _resolve_paths
   local soul_src="$INSTALL_DIR/src/voice-agent/prompts/soul.md"
-  local soul_dst="$HOME/.jarvis/SOUL.md"
+  local soul_dst="$JARVIS_HOME/SOUL.md"
   # Persistent read fd (see configure_api_keys) so this function's sequence of
   # _confirm/_ask prompts advances through the input instead of re-reading line 1.
   _tty_open_read || true
@@ -271,7 +322,7 @@ configure_soul() {
       || { sub "skipping persona (JARVIS uses the built-in soul)"; return 0; }
   fi
 
-  mkdir -p "$HOME/.jarvis"
+  mkdir -p "$JARVIS_HOME"
   cp "$soul_src" "$soul_dst"
   chmod 600 "$soul_dst"
 
@@ -298,6 +349,7 @@ configure_soul() {
 }
 
 configure() {
+  _resolve_paths
   if [ "${JARVIS_SKIP_SETUP:-0}" = "1" ]; then
     warn "skipping first-run setup (JARVIS_SKIP_SETUP=1)"
     setup_env_template
@@ -568,19 +620,19 @@ install_node() {
     return 1
   fi
 
-  # Place into ~/.jarvis/node/ and symlink binaries to ~/.local/bin/.
-  rm -rf "$HOME/.jarvis/node"
-  mkdir -p "$HOME/.jarvis"
-  mv "$extracted" "$HOME/.jarvis/node"
+  # Place into JARVIS_HOME/node/ and symlink binaries to ~/.local/bin/.
+  rm -rf "$JARVIS_HOME/node"
+  mkdir -p "$JARVIS_HOME"
+  mv "$extracted" "$JARVIS_HOME/node"
   rm -rf "$tmp_dir"
 
   mkdir -p "$LOCAL_BIN"
-  ln -sf "$HOME/.jarvis/node/bin/node" "$LOCAL_BIN/node"
-  ln -sf "$HOME/.jarvis/node/bin/npm"  "$LOCAL_BIN/npm"
-  ln -sf "$HOME/.jarvis/node/bin/npx"  "$LOCAL_BIN/npx"
+  ln -sf "$JARVIS_HOME/node/bin/node" "$LOCAL_BIN/node"
+  ln -sf "$JARVIS_HOME/node/bin/npm"  "$LOCAL_BIN/npm"
+  ln -sf "$JARVIS_HOME/node/bin/npx"  "$LOCAL_BIN/npx"
   export PATH="$LOCAL_BIN:$PATH"
 
-  ok "Node.js $("$LOCAL_BIN/node" --version) installed to ~/.jarvis/node/"
+  ok "Node.js $("$LOCAL_BIN/node" --version) installed to $JARVIS_HOME/node/"
   ok "symlinked node/npm/npx to $LOCAL_BIN"
 }
 
@@ -707,9 +759,10 @@ install_voice_agent() {
   install_systemd_units
 
   # Harden secret-bearing env files (owner-only)
-  for f in "$va/.env" "$HOME/.jarvis/keys.env" "$HOME/.jarvis/local-api-token.env"; do
+  for f in "$VA_ENV" "$JARVIS_HOME/keys.env" "$JARVIS_HOME/local-api-token.env"; do
     [ -f "$f" ] && chmod 600 "$f"
   done
+
   ok "hardened env file permissions (chmod 600)"
 }
 
@@ -747,51 +800,71 @@ install_playwright_chromium() {
 
 install_systemd_units() {
   if ! have systemctl; then warn "no systemctl; skipping systemd unit install"; return; fi
-  mkdir -p "$USER_SYSTEMD"
+  mkdir -p "$SYSTEMD_DIR"
 
   # Pre-create state + log dirs the units' ReadWritePaths= bind-mounts
   # require. Without these, the sandboxed units fail bring-up with
   # status=226/NAMESPACE (systemd refuses to bind-mount a non-existent
   # path even if the ExecStart script would create it). The units
   # have ExecStartPre fallbacks too — this is belt-and-suspenders.
-  mkdir -p "$HOME/.local/share/jarvis/logs"   # voice-agent + livekit-server log dest
-  mkdir -p "$HOME/.jarvis/snapshots"           # hourly backup snapshots
-  chmod 700 "$HOME/.jarvis/snapshots"          # contains telemetry detail
+  mkdir -p "$JARVIS_LOG_DIR"                # voice-agent + livekit-server log dest
+  mkdir -p "$JARVIS_HOME/snapshots"          # hourly backup snapshots
+  chmod 700 "$JARVIS_HOME/snapshots"         # contains telemetry detail
 
-  local sed_path_subs=(
-    -e "s|%h/Documents/Projects/jarvis|$INSTALL_DIR|g"
-    -e "s|/home/[^/]*/Documents/Projects/jarvis|$INSTALL_DIR|g"
-    -e "s|/home/[^/]*/jarvis|$INSTALL_DIR|g"
-  )
+  local _sctl="systemctl $([ "$SYSTEMD_SCOPE" = "system" ] && echo "" || echo "--user")"
 
-  # Always-on services (voice-agent, voice-client, livekit-server).
-  for src in jarvis-voice-agent.service jarvis-voice-client.service livekit-server.service; do
-    sed "${sed_path_subs[@]}" "$INSTALL_DIR/setup/systemd/$src" > "$USER_SYSTEMD/$src"
-    ok "installed unit: $USER_SYSTEMD/$src"
-  done
-
-  # Timer-driven maintenance units (added 2026-05-17). 3 services + 3
-  # timers: hourly backup snapshot, daily log rotation, monthly
-  # telemetry retention prune. The .service files are oneshots; the
-  # .timer files are what get enabled.
-  for src in \
-      jarvis-backup-local.service jarvis-backup-local.timer \
-      jarvis-log-rotate.service jarvis-log-rotate.timer \
-      jarvis-retention-prune.service jarvis-retention-prune.timer \
-      jarvis-evolution-soak.service jarvis-evolution-soak.timer; do
-    if [ -f "$INSTALL_DIR/setup/systemd/$src" ]; then
-      sed "${sed_path_subs[@]}" "$INSTALL_DIR/setup/systemd/$src" > "$USER_SYSTEMD/$src"
-      ok "installed unit: $USER_SYSTEMD/$src"
+  if [ "$JARVIS_FHS" = "1" ]; then
+    # ── System-scope units ──────────────────────────────────────────
+    # Use the .system.service templates which have absolute paths and
+    # User=jarvis. Simply copy with INSTALL_DIR substituted.
+    for tmpl in jarvis-voice-agent.system.service jarvis-voice-client.system.service livekit-server.system.service; do
+      local name="${tmpl%.system.service}.service"
+      sed "s|/opt/jarvis|$INSTALL_DIR|g" "$INSTALL_DIR/setup/systemd/$tmpl" > "$SYSTEMD_DIR/$name"
+      ok "installed system unit: $SYSTEMD_DIR/$name"
+    done
+    # Create system user for FHS services.
+    if ! id -u jarvis >/dev/null 2>&1; then
+      useradd --system --home-dir "$JARVIS_HOME" --shell /usr/sbin/nologin jarvis 2>/dev/null \
+        && ok "created system user 'jarvis'" \
+        || warn "could not create system user 'jarvis'"
     fi
-  done
+  else
+    # ── User-scope units ────────────────────────────────────────────
+    # Use %h-based templates with sed path substitution.
+    local sed_path_subs=(
+      -e "s|%h/Documents/Projects/jarvis|$INSTALL_DIR|g"
+      -e "s|/home/[^/]*/Documents/Projects/jarvis|$INSTALL_DIR|g"
+      -e "s|/home/[^/]*/jarvis|$INSTALL_DIR|g"
+    )
+    local sed_unit="sed ${sed_path_subs[*]}"
 
-  systemctl --user daemon-reload
+    # Always-on services (voice-agent, voice-client, livekit-server).
+    for src in jarvis-voice-agent.service jarvis-voice-client.service livekit-server.service; do
+      $sed_unit "$INSTALL_DIR/setup/systemd/$src" > "$SYSTEMD_DIR/$src"
+      ok "installed unit: $SYSTEMD_DIR/$src"
+    done
+
+    # Timer-driven maintenance units.
+    for src in \
+        jarvis-backup-local.service jarvis-backup-local.timer \
+        jarvis-log-rotate.service jarvis-log-rotate.timer \
+        jarvis-retention-prune.service jarvis-retention-prune.timer \
+        jarvis-evolution-soak.service jarvis-evolution-soak.timer; do
+      if [ -f "$INSTALL_DIR/setup/systemd/$src" ]; then
+        $sed_unit "$INSTALL_DIR/setup/systemd/$src" > "$SYSTEMD_DIR/$src"
+        ok "installed unit: $SYSTEMD_DIR/$src"
+      fi
+    done
+  fi
+
+  local _sctl="systemctl $([ "$SYSTEMD_SCOPE" = "system" ] && echo "" || echo "--user")"
+  $_sctl daemon-reload
 
   # Enable always-on services (NOT started — user runs them after
   # configuring .env). Enable order matters: SFU first, then agent +
   # client.
   for unit in livekit-server.service jarvis-voice-agent.service jarvis-voice-client.service; do
-    systemctl --user enable "$unit" >/dev/null 2>&1 \
+    $_sctl enable "$unit" >/dev/null 2>&1 \
       && ok "enabled $unit (NOT started — configure .env first)" \
       || warn "could not enable $unit"
   done
@@ -801,8 +874,8 @@ install_systemd_units() {
   # First fire happens per OnCalendar (hourly / 02:00 daily / 03:00
   # monthly-1st); Persistent=true catches up if laptop was off.
   for unit in jarvis-backup-local.timer jarvis-log-rotate.timer jarvis-retention-prune.timer jarvis-evolution-soak.timer; do
-    if [ -f "$USER_SYSTEMD/$unit" ]; then
-      systemctl --user enable --now "$unit" >/dev/null 2>&1 \
+    if [ -f "$SYSTEMD_DIR/$unit" ]; then
+      $_sctl enable --now "$unit" >/dev/null 2>&1 \
         && ok "enabled + started $unit" \
         || warn "could not enable $unit"
     fi
@@ -865,12 +938,12 @@ install_system_packages() {
 
 # ── Bridge auth token (pre-generated for first-run UX) ────────────────────
 generate_bridge_token() {
-  local token_file="$HOME/.jarvis/local-api-token.env"
+  local token_file="$JARVIS_HOME/local-api-token.env"
   if [ -f "$token_file" ]; then
     ok "bridge token already exists at $token_file"
     return
   fi
-  mkdir -p "$HOME/.jarvis"
+  mkdir -p "$JARVIS_HOME"
   umask 077
   # 32 bytes urandom → base64 → 43 url-safe chars (no padding).
   local token
@@ -947,8 +1020,8 @@ ensure_livekit_binary() {
 
 # ── External services: LiveKit keys + Redis ──────────────────────────────
 setup_livekit_keys() {
-  local keys="$HOME/.jarvis/livekit-keys.yaml"
-  local va_env="$INSTALL_DIR/src/voice-agent/.env"
+  local keys="$JARVIS_HOME/livekit-keys.yaml"
+  local va_env="$VA_ENV"
 
   # If keys file already exists in proper YAML format (key: secret on
   # one line, no whitespace before the colon), leave it alone. Format
@@ -957,7 +1030,7 @@ setup_livekit_keys() {
     ok "LiveKit keys already at $keys"
     return
   fi
-  mkdir -p "$HOME/.jarvis"
+  mkdir -p "$JARVIS_HOME"
 
   # Prefer the LIVEKIT_API_KEY / LIVEKIT_API_SECRET already in
   # voice-agent/.env — that's the source of truth the running agent
@@ -1200,12 +1273,15 @@ EOF
 
 # ── .env template ────────────────────────────────────────────────────────
 setup_env_template() {
+  _resolve_paths
+  local env_path="$([ "$JARVIS_FHS" = "1" ] && echo "/etc/jarvis/.env" || echo "$INSTALL_DIR/.env")"
   section "API key template"
-  if [ -f "$INSTALL_DIR/.env" ]; then
-    ok ".env already exists; not overwriting"
+  if [ -f "$env_path" ]; then
+    ok ".env already exists at $env_path; not overwriting"
     return
   fi
-  cat > "$INSTALL_DIR/.env" <<'EOF'
+  mkdir -p "$(dirname "$env_path")"
+  cat > "$env_path" <<'EOF'
 # JARVIS — centralized API keys.
 # Each subproject's .env.local (or src/voice-agent/.env, etc.) holds
 # subproject-specific vars and overrides these on collision.
@@ -1238,36 +1314,37 @@ EOF
   # Lock the file to 0600 so other local users / containers / web pages
   # can't read the API keys. (Per security review 2026-05-16: previously
   # 0664; 22 prod API keys exposed.)
-  chmod 600 "$INSTALL_DIR/.env"
-  ok "created $INSTALL_DIR/.env (chmod 600 — fill in your real keys before starting the voice agent)"
+  chmod 600 "$env_path"
+  ok "created $env_path (chmod 600 — fill in your real keys before starting the voice agent)"
 }
 
 # ── Final summary ────────────────────────────────────────────────────────
 print_summary() {
   section "Done"
+  local _sctl="systemctl $([ "$SYSTEMD_SCOPE" = "system" ] && echo "" || echo "--user")"
+  local _env_path="$([ "$JARVIS_FHS" = "1" ] && echo "/etc/jarvis/.env" || echo "$INSTALL_DIR/.env")"
+  local _journal_scope="$([ "$SYSTEMD_SCOPE" = "system" ] && echo "" || echo "--user")"
   cat <<EOF
   Install location:  $INSTALL_DIR
   CLI launcher:      $LOCAL_BIN/jarvis  (also $LOCAL_BIN/jarvis-desktop)
+  Data directory:    $JARVIS_HOME
 
   Next steps:
-    1. Edit $INSTALL_DIR/.env and fill in real API keys.
-    2. Start the SFU + voice agent + voice client (in this order —
-       voice-agent requires livekit-server, voice-client is the
-       desktop's native PortAudio bridge):
-         systemctl --user start livekit-server.service
-         systemctl --user start jarvis-voice-agent.service
-         systemctl --user start jarvis-voice-client.service
+    1. Edit $_env_path and fill in real API keys.
+    2. Start the SFU + voice agent + voice client (in this order):
+         $_sctl start livekit-server.service
+         $_sctl start jarvis-voice-agent.service
+         $_sctl start jarvis-voice-client.service
        Logs:
-         journalctl --user -u jarvis-voice-agent.service -f
-         journalctl --user -u jarvis-voice-client.service -f
+         journalctl $_journal_scope -u jarvis-voice-agent.service -f
+         journalctl $_journal_scope -u jarvis-voice-client.service -f
     3. Try the CLI:
          jarvis
     4. Start the web app (optional):
          cd $INSTALL_DIR/src/web && bun dev
     5. Run the desktop app (Tauri):
          $INSTALL_DIR/src/desktop-tauri/src-tauri/target/release/jarvis-desktop
-       (or click 'JARVIS' in your app launcher — Ctrl+Shift+Space toggles
-       click-through once it's running)
+       (or click 'JARVIS' in your app launcher)
 
   Re-run this script anytime to re-install or update a channel.
   Skip channels with JARVIS_SKIP_{CLI,VOICE,DESKTOP,WEB}=1.
@@ -1285,6 +1362,7 @@ main() {
   c_bold "JARVIS installer"
   detect_invocation
   detect_os
+  detect_fhs
   check_network_prerequisites
   check_prereqs
   # JARVIS_DRY_RUN=1 bails here — useful for verifying the script
