@@ -93,3 +93,22 @@ def test_growing_transcript_extends_the_sequence():
     eng.frame(now=0.1, speaking=True, rms=0.2)
     assert len(eng._seq) > short_len      # extended, not replaced-from-scratch
     assert eng._t0 == 0.0                 # t0 preserved across the extend
+
+
+def test_second_utterance_within_speaking_hold_reanchors_t0():
+    # The 1.2s speaking-hold keeps `speaking` True between back-to-back TTS
+    # segments, so reset() doesn't fire. A FRESH utterance (text that doesn't
+    # extend the previous) must re-anchor t0 so its visemes animate instead of
+    # freezing on the last pose of the previous one.
+    eng = VisemeEngine()
+    eng.set_pending_text("hello world")
+    eng.frame(now=0.0, speaking=True, rms=0.2)         # utterance 1, t0 = 0.0
+    eng.frame(now=0.5, speaking=True, rms=0.2)
+    # new utterance arrives, speaking STILL held True (no falling edge)
+    eng.set_pending_text("food please now")
+    eng.frame(now=1.3, speaking=True, rms=0.2)
+    assert eng._t0 == 1.3                              # re-anchored, not stuck at 0.0
+    # cursor must advance through utterance 2 (not pinned to the last viseme)
+    early = eng.frame(now=1.32, speaking=True, rms=0.2)
+    late = eng.frame(now=1.7, speaking=True, rms=0.2)
+    assert early != late

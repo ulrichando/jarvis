@@ -14,6 +14,11 @@ useGLTF.preload(MODEL_URL)
 const HEAD_ROT = [Math.PI / 2, 0, 0]  // radians, applied to the head group
 const SKIN_TINT = '#cf9468'           // warm golden-caramel (multiplies texture)
 
+// Mouth/viseme morph indices driven every frame (eyes/brows excluded so the
+// static eyeWide + idle blinks aren't fought). Module-level so it isn't
+// reallocated per frame (no per-frame allocation in voice UI).
+const MOUTH = [24, 28, 29, 36, 37, 38, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+
 function Head({ getWeights }) {
   const { scene } = useGLTF(MODEL_URL)
   const headRef = useRef(null)
@@ -51,7 +56,6 @@ function Head({ getWeights }) {
     const dict = idxByTargetRef.current
     const inf = h.morphTargetInfluences
     const targets = (getWeights && getWeights()) || {}
-    const MOUTH = [24, 28, 29, 36, 37, 38, 43, 44, 45, 46, 47, 48, 49, 50, 51]
     for (const n of MOUTH) {
       const key = 'target_' + n
       const i = dict[key]

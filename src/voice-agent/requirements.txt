@@ -133,4 +133,4 @@ psutil~=7.0
 # 3.2 cross-platform desktop-control refactor.
 pywinauto>=0.6.8; platform_system == "Windows"
 
-cmudict  # offline CMU pronunciation dictionary for viseme lip-sync (no model/torch)
+cmudict~=1.1  # offline CMU pronunciation dictionary for viseme lip-sync (no model/torch)
