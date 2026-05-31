@@ -26,6 +26,40 @@ const WS_URL = (() => {
   return tok ? `${base}&token=${encodeURIComponent(tok)}` : base
 })()
 
+// Dev-only face preview (?route=faceonly). With ?jaw=N it forces a jaw value
+// for camera/look tuning; otherwise it polls /face exactly like the kiosk so
+// the full lip-sync chain can be verified in a plain browser (no Tauri/WebKit).
+function FaceOnlyDev() {
+  const weightsRef = useRef({})
+  const p = new URLSearchParams(window.location.search)
+  const forced = p.has('jaw') ? parseFloat(p.get('jaw')) : null
+  const [sz, setSz] = useState(Math.min(window.innerWidth, window.innerHeight))
+  useEffect(() => {
+    const onResize = () => setSz(Math.min(window.innerWidth, window.innerHeight))
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  useEffect(() => {
+    if (forced != null) { weightsRef.current = { target_24: forced }; return }
+    const id = setInterval(async () => {
+      try {
+        const r = await fetch('http://127.0.0.1:8767/face')
+        const d = await r.json()
+        weightsRef.current = (d.weights && Object.keys(d.weights).length)
+          ? d.weights
+          : { target_24: Math.max(0, Math.min(1, (d.level || 0) * 6.0)) }
+      } catch { weightsRef.current = {} }
+    }, 33)
+    return () => clearInterval(id)
+  }, [forced])
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: '#000',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <FaceWebGL size={sz} getWeights={() => weightsRef.current} />
+    </div>
+  )
+}
+
 // ── Minimal WebSocket hook ────────────────────────────────────────────────
 function useJarvisWS(url) {
   const [messages, setMessages] = useState([])
@@ -201,19 +235,12 @@ export default function App() {
     return <KioskHUD />
   }
 
-  // Dev-only: render JUST the WebGL face (no LiveKit), with a forced jaw value
-  // via ?jaw=N — used for headless screenshot tuning of camera/lights/look.
+  // Dev-only: render JUST the WebGL face. With ?jaw=N it forces a jaw value
+  // (look/camera tuning); otherwise it polls /level exactly like the kiosk, so
+  // the lip-sync chain can be verified in a plain browser.
   if (typeof window !== 'undefined' &&
       window.location.search.includes('route=faceonly')) {
-    const p = new URLSearchParams(window.location.search)
-    const jaw = parseFloat(p.get('jaw') || '0')
-    const sz = Math.min(window.innerWidth, window.innerHeight)
-    return (
-      <div style={{ position: 'fixed', inset: 0, background: '#000',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <FaceWebGL size={sz} getJaw={() => jaw} />
-      </div>
-    )
+    return <FaceOnlyDev />
   }
 
   // ChatPanel now runs as its OWN decorated, non-transparent Tauri
