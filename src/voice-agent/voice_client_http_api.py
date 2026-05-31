@@ -123,6 +123,7 @@ class VoiceClientHttpApi:
         app = web.Application()
         app.router.add_get("/status",  self.status)
         app.router.add_get("/level",   self.level)    # fast (~30fps) lip-sync poll
+        app.router.add_get("/face",    self.face)    # per-frame viseme morph weights
         app.router.add_get("/health",  self.status)   # systemd / launch.sh probe
         app.router.add_post("/mute",   self.mute)
         app.router.add_post("/speak",      self.speak)
@@ -181,6 +182,17 @@ class VoiceClientHttpApi:
         so it's cheap at high frequency."""
         return web.json_response({"level": round(self.state.output_level, 4)},
                                  headers=_CORS_HEADERS)
+
+    async def face(self, _: web.Request) -> web.Response:
+        """GET /face — the current frame's ARKit-morph weights
+        {target_N: 0..1} plus the raw level, polled ~30-60fps by the
+        kiosk to drive the WebGL face's visemes. Empty weights = at rest;
+        the kiosk then falls back to amplitude jaw from `level`."""
+        return web.json_response(
+            {"weights": getattr(self.state, "face_weights", {}) or {},
+             "level": round(self.state.output_level, 4)},
+            headers=_CORS_HEADERS,
+        )
 
     async def mute(self, req: web.Request) -> web.Response:
         """POST /mute  body={mute: bool}  → toggle local mic track mute.
