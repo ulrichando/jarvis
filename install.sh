@@ -96,14 +96,16 @@ _check_prereqs_bootstrap() {
 clone_or_update() {
   if [ -d "$INSTALL_DIR/.git" ]; then
     section "Updating existing checkout"
-    git -C "$INSTALL_DIR" fetch --quiet origin master
+    local branch
+    branch="$(git -C "$INSTALL_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "master")"
+    git -C "$INSTALL_DIR" fetch --quiet origin "$branch"
     local stash_ref=""
     if ! git -C "$INSTALL_DIR" diff --quiet 2>/dev/null; then
       local stash_name="jarvis-install-autostash-$(date +%Y%m%d-%H%M%S)"
       git -C "$INSTALL_DIR" stash push --include-untracked -m "$stash_name" >/dev/null 2>&1 && stash_ref="stash@{0}"
       sub "stashed local changes as '$stash_name'"
     fi
-    git -C "$INSTALL_DIR" pull --ff-only origin master || {
+    git -C "$INSTALL_DIR" pull --ff-only origin "$branch" || {
       warn "pull --ff-only failed (merge conflict?); leaving as-is"
       [ -n "$stash_ref" ] && warn "stash preserved — git -C $INSTALL_DIR stash apply"
       return 0

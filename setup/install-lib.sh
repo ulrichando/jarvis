@@ -398,7 +398,9 @@ check_network_prerequisites() {
 clone_or_update() {
   if [ -d "$INSTALL_DIR/.git" ]; then
     section "Updating existing checkout"
-    git -C "$INSTALL_DIR" fetch --quiet origin master
+    local branch
+    branch="$(git -C "$INSTALL_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "master")"
+    git -C "$INSTALL_DIR" fetch --quiet origin "$branch"
 
     # Stash local changes before pulling so --ff-only doesn't fail on
     # uncommitted work. Inspired by Hermes Agent's auto-stash flow.
@@ -409,7 +411,7 @@ clone_or_update() {
       sub "stashed local changes as '$stash_name'"
     fi
 
-    git -C "$INSTALL_DIR" pull --ff-only origin master || {
+    git -C "$INSTALL_DIR" pull --ff-only origin "$branch" || {
       warn "pull --ff-only failed (merge conflict?); leaving checkout as-is"
       # On failure, still try to restore stash if one was created.
       if [ -n "$stash_ref" ]; then
