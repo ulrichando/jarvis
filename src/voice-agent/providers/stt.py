@@ -193,10 +193,22 @@ def _build_deepgram_stt():
             f"Run: pip install livekit-plugins-deepgram"
         )
         return None
+    # Deepgram STREAMING does NOT support language auto-detection (unlike Groq
+    # Whisper): a None/auto language raises "language detection is not supported
+    # in streaming mode" in SpeechStream.__init__, which kills every session
+    # (stt_error, recoverable=False). _stt_language() returns None for the
+    # auto-detect default, so pin a concrete language for Deepgram — default
+    # en-US, override via JARVIS_DEEPGRAM_LANGUAGE. The Whisper fallback rung
+    # keeps auto-detect for non-English.
+    dg_language = (
+        os.environ.get("JARVIS_DEEPGRAM_LANGUAGE", "").strip()
+        or _stt_language()
+        or "en-US"
+    )
     try:
         return deepgram.STT(
             model="nova-3-general",
-            language=_stt_language(),
+            language=dg_language,
             interim_results=True,
             no_delay=True,
             endpointing_ms=300,
