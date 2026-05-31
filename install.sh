@@ -18,6 +18,14 @@
 
 set -euo pipefail
 
+# Path defaults — MUST be declared before sourcing the lib, because the
+# lib functions reference them and set -u kills the script on any unset
+# variable reference. detect_fhs() overrides these; _resolve_paths() fills
+# in $HOME-based defaults lazily.
+INSTALL_DIR="${JARVIS_INSTALL_DIR:-}"
+LOCAL_BIN=""; JARVIS_HOME=""; JARVIS_LOG_DIR=""
+JARVIS_DATA_DIR=""; SYSTEMD_DIR=""; SYSTEMD_SCOPE=""; VA_ENV=""
+
 # ── Source the function library (when inside a checkout) ─────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
 LIB="$SCRIPT_DIR/setup/install-lib.sh"

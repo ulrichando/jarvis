@@ -65,14 +65,14 @@ detect_os() {
 # Set default paths based on $HOME if detect_fhs() hasn't run yet. This
 # allows the test suite to source install.sh and override $HOME afterward.
 _resolve_paths() {
-  [ -z "$INSTALL_DIR" ] && INSTALL_DIR="${JARVIS_INSTALL_DIR:-$HOME/Documents/Projects/jarvis}"
-  [ -z "$LOCAL_BIN" ]   && LOCAL_BIN="$HOME/.local/bin"
-  [ -z "$JARVIS_HOME" ] && JARVIS_HOME="$HOME/.jarvis"
-  [ -z "$JARVIS_LOG_DIR" ] && JARVIS_LOG_DIR="$HOME/.local/share/jarvis/logs"
-  [ -z "$JARVIS_DATA_DIR" ] && JARVIS_DATA_DIR="$HOME/.local/share/jarvis"
-  [ -z "$SYSTEMD_DIR" ] && SYSTEMD_DIR="$HOME/.config/systemd/user"
-  [ -z "$SYSTEMD_SCOPE" ] && SYSTEMD_SCOPE="user"
-  [ -z "$VA_ENV" ] && VA_ENV="$INSTALL_DIR/src/voice-agent/.env"
+  [ -z "${INSTALL_DIR:-}" ] && INSTALL_DIR="${JARVIS_INSTALL_DIR:-$HOME/Documents/Projects/jarvis}"
+  [ -z "${LOCAL_BIN:-}" ]   && LOCAL_BIN="$HOME/.local/bin"
+  [ -z "${JARVIS_HOME:-}" ] && JARVIS_HOME="$HOME/.jarvis"
+  [ -z "${JARVIS_LOG_DIR:-}" ] && JARVIS_LOG_DIR="$HOME/.local/share/jarvis/logs"
+  [ -z "${JARVIS_DATA_DIR:-}" ] && JARVIS_DATA_DIR="$HOME/.local/share/jarvis"
+  [ -z "${SYSTEMD_DIR:-}" ] && SYSTEMD_DIR="$HOME/.config/systemd/user"
+  [ -z "${SYSTEMD_SCOPE:-}" ] && SYSTEMD_SCOPE="user"
+  [ -z "${VA_ENV:-}" ] && VA_ENV="$INSTALL_DIR/src/voice-agent/.env"
 }
 
 # _pkg_mgr_cmd — echo the package-manager install command for $DISTRO.
@@ -93,7 +93,6 @@ _pkg_mgr_cmd() {
 # with system-scoped systemd services instead of user-space paths.
 detect_fhs() {
   _resolve_paths
-_resolve_paths
   JARVIS_FHS="${JARVIS_FHS:-0}"
   [ "$EUID" = "0" ] && JARVIS_FHS=1
 
