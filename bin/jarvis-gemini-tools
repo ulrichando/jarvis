@@ -151,12 +151,6 @@ FRAME_INTERVAL_S = float(
 # English-pin: native-audio Live models infer output language from accent/tone
 # and drift (Google cookbook #1197). language_code is the documented pin.
 GEMINI_LANGUAGE = os.environ.get("JARVIS_GEMINI_LANGUAGE", "en-US")
-# Speech pace: native-audio has NO rate knob, so slow the OUTPUT audio with a
-# pitch-preserving `sox tempo` (<1.0 = slower). 1.0 = unchanged (plain paplay).
-try:
-    GEMINI_SPEECH_TEMPO = float(os.environ.get("JARVIS_GEMINI_SPEECH_TEMPO", "1.0"))
-except (TypeError, ValueError):
-    GEMINI_SPEECH_TEMPO = 0.9
 # Gemini Live voices — defaulted to Orus (deeper, more masculine
 # male baritone, calmer pacing) per user feedback that Puck was too
 # light and too fast. If Orus still feels off, alternatives ordered
@@ -264,22 +258,13 @@ async def open_mic_stream() -> asyncio.subprocess.Process:
 
 
 async def open_speaker_stream() -> asyncio.subprocess.Process:
-    # Default: plain paplay. With JARVIS_GEMINI_SPEECH_TEMPO<1.0, pipe through
-    # `sox … tempo` (pitch-preserving slowdown) — native audio has no rate knob.
-    # Both read raw 24k s16le PCM from stdin, so the write loop is unchanged.
-    if abs(GEMINI_SPEECH_TEMPO - 1.0) < 0.01:
-        args = [
-            "paplay", "--format=s16le", "--channels=1",
-            f"--rate={SPK_SAMPLE_RATE}", "--latency-msec=80", "--raw",
-        ]
-    else:
-        args = [
-            "sox", "-q", "-t", "raw", "-r", str(SPK_SAMPLE_RATE),
-            "-e", "signed", "-b", "16", "-c", "1", "-",
-            "-t", "pulseaudio", "default", "tempo", f"{GEMINI_SPEECH_TEMPO:g}",
-        ]
     return await asyncio.create_subprocess_exec(
-        *args,
+        "paplay",
+        "--format=s16le",
+        "--channels=1",
+        f"--rate={SPK_SAMPLE_RATE}",
+        "--latency-msec=80",
+        "--raw",
         stdin=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
