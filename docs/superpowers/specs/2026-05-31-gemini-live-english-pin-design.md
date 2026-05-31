@@ -1,11 +1,11 @@
-# Gemini Live English-Pin Mitigation
+# Gemini Live — English-Pin + Speech-Pace Fixes
 
 **Date:** 2026-05-31
 **Status:** proposed (design) — awaiting review
-**Scope:** stop JARVIS's Gemini Live direct-mode from answering in random languages (Spanish/French)
-when Ulrich speaks. Two entrypoints — `bin/jarvis-gemini-direct` (pure screen-share dialog) and
-`bin/jarvis-gemini-tools` (Gemini Live + tools) — get the same two changes. **No model change, no new
-dependency.**
+**Scope:** two Gemini Live direct-mode annoyances when Ulrich speaks: (1) JARVIS answers in random
+languages (Spanish/French), and (2) it talks too fast. Two entrypoints — `bin/jarvis-gemini-direct`
+(pure screen-share dialog) and `bin/jarvis-gemini-tools` (Gemini Live + tools) — get the same set of
+changes. **No model change, no new Python dependency** (the pace fix uses `sox`, already installed).
 
 ## Why this — root cause (researched + probed 2026-05-31)
 
@@ -34,9 +34,21 @@ accent, tone, and names** and can switch unprompted. This is a documented, open 
   with and without `language_code`). ⇒ the trigger is **accented audio**, not the words — so this fix
   can only be validated by Ulrich speaking, not by an automated text harness.
 
+### Pace — why "talks too fast" needs an audio fix, not a prompt
+`jarvis-gemini-tools`'s `OPS_BLOCK` already instructs *"speak at a measured, deliberate pace — slower
+than your default"* (lines 195-197) — and it's still too fast, the same native-audio prosody-deafness
+as the language issue. **The Gemini Live `SpeechConfig` has NO speaking-rate/speed/pitch field**
+(verified: only `voice_config`, `language_code`, `multi_speaker_voice_config`) — there is no config
+knob. The only reliable lever is to **time-stretch the output audio** in the playback path. `sox` is
+installed; its `tempo` effect is a pitch-preserving slowdown — verified on raw 24kHz PCM: `tempo=0.9`
+→ ~10% slower, `tempo=0.85` → ~15% slower, pitch unchanged. The playback path is simple: both
+entrypoints pipe Gemini's raw 24kHz s16le PCM straight into `paplay` (`open_speaker_stream()`), so a
+`sox … tempo` stage drops in cleanly.
+
 ## Goal
 
-Make Gemini direct-mode reply in English as reliably as the available (native-audio-only) models allow:
+Make Gemini direct-mode (1) reply in English as reliably as the available (native-audio-only) models
+allow, and (2) speak at a comfortable, slower pace. For (1):
 set the documented language pin + the strongest documented anti-drift instruction. Honest non-goal:
 this is a **strong mitigation, not a guaranteed lock** — native-audio can still occasionally drift;
 the true guarantee (Vertex half-cascade) is a deferred follow-up.
@@ -79,6 +91,26 @@ Stays `gemini-3.1-flash-live-preview` (still env-overridable via the existing
 and held English in the text probes; switching to the 2.5 native-audio variants buys nothing (same
 class).
 
+### Change 4 — slow the speech via a pitch-preserving time-stretch (both files)
+Route Gemini's output PCM through `sox … tempo` before playback, env-gated so the default path is
+untouched when no slowdown is wanted. In `open_speaker_stream()` of both entrypoints:
+```python
+GEMINI_SPEECH_TEMPO = float(os.environ.get("JARVIS_GEMINI_SPEECH_TEMPO", "0.9"))  # <1 = slower
+...
+if abs(GEMINI_SPEECH_TEMPO - 1.0) < 0.01:
+    # unchanged default: paplay reads raw PCM from stdin
+    args = ["paplay", "--format=s16le", f"--rate={SPK_SAMPLE_RATE}", "--channels=1", "--raw"]
+else:
+    # sox reads raw PCM from stdin, applies a pitch-preserving tempo change, plays to PulseAudio
+    args = ["sox", "-q", "-t", "raw", "-r", str(SPK_SAMPLE_RATE), "-e", "signed", "-b", "16",
+            "-c", "1", "-", "-t", "pulseaudio", "default", "tempo", f"{GEMINI_SPEECH_TEMPO:g}"]
+```
+The rest of the playback loop (writing Gemini's audio bytes to `proc.stdin`) is unchanged — both
+`paplay` and `sox` read raw PCM from stdin. Default `0.9` (~10% slower), tunable via
+`JARVIS_GEMINI_SPEECH_TEMPO` (`0.85` ≈ 15% slower; `1.0` disables → exact current paplay path). Keep
+the existing `PACE:` prompt line as a complementary nudge. **Verified:** `sox tempo` streams raw
+24kHz s16le and slows pitch-preserved (0.9 → +11% duration).
+
 ## Deployment
 Gemini direct-mode is **not** the always-on voice-agent service — it's spawned fresh by `jarvis-mode`
 each time the user switches to Gemini mode. So the fix takes effect on the **next "switch to Gemini"**;
@@ -89,18 +121,24 @@ no `jarvis-voice-agent` restart, no in-flight-session risk.
   confirms `gemini-3.1-flash-live-preview` accepts the `SpeechConfig` with `language_code="en-US"`
   without raising (guards against a Deepgram-style "valid-looking config crashes the session" repeat).
 - **Live (Ulrich, required):** switch to Gemini mode, speak normally (accented), confirm replies stay
-  English across a few turns; try `bin/jarvis-gemini-direct` and the tools mode. This is the only real
-  test — the trigger is accented audio, not reproducible in an automated harness.
+  English across a few turns AND the pace feels comfortable; try `bin/jarvis-gemini-direct` and the
+  tools mode. This is the only real test — the language trigger is accented audio (not reproducible in
+  an automated harness) and pace is subjective (tune `JARVIS_GEMINI_SPEECH_TEMPO` to taste).
+- **Pace offline:** the `sox tempo` slowdown is already verified on raw 24kHz PCM (0.9 → +11%
+  duration, pitch preserved); `py_compile` confirms the branch wiring.
 
 ## Out of scope / honest limits
 - Not a *provable* hard-lock — native-audio may still occasionally drift (Google limitation). If it
   does after this, the only remaining lever is a **half-cascade Live model** (`language_code`
   authoritative), which needs **Vertex AI** access — a separate spec/feasibility study, deferred.
 - No change to the base (Claude) supervisor, the Groq/Whisper STT chain, or `src/cli/`.
-- No model swap, no new dependency, no schema change.
+- No model swap, no new Python dependency, no schema change. (`sox` is already on the box.)
 
 ## Risks
 - **Mitigation may be insufficient on heavy accent** — accepted; validated live, and the Vertex path is
   the documented escalation if needed.
 - **Env override with an unsupported `language_code`** would error the Live connect — mitigated by the
   `en-US` default + a doc note; the offline connect-probe catches a bad default before ship.
+- **`sox tempo` adds slight playback latency** (WSOLA lookahead) only when tempo≠1.0 — acceptable for
+  the slowdown; the default path can be restored instantly with `JARVIS_GEMINI_SPEECH_TEMPO=1.0`. A
+  too-low tempo (e.g. <0.7) sounds unnatural — `0.85–0.95` is the sane band.
