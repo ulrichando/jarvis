@@ -240,49 +240,6 @@ fn apply_sharing_ring(rgba: &mut [u8], w: u32, h: u32) {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-/// Get cursor position in physical screen coordinates via xdotool.
-fn cursor_position() -> (i32, i32) {
-    let Ok(out) = std::process::Command::new("xdotool")
-        .args(["getmouselocation", "--shell"])
-        .output()
-    else { return (0, 0) };
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut cx = 0i32;
-    let mut cy = 0i32;
-    for line in text.lines() {
-        if let Some(v) = line.strip_prefix("X=") { cx = v.trim().parse().unwrap_or(0); }
-        if let Some(v) = line.strip_prefix("Y=") { cy = v.trim().parse().unwrap_or(0); }
-    }
-    (cx, cy)
-}
-
-/// Move window to whichever monitor the cursor is on.
-fn snap_to_cursor_monitor(window: &WebviewWindow) {
-    let (cx, cy) = cursor_position();
-    let Ok(monitors) = window.available_monitors() else { return };
-    let target = monitors.iter().find(|m| {
-        let p = m.position();
-        let s = m.size();
-        cx >= p.x && cx < p.x + s.width as i32 &&
-        cy >= p.y && cy < p.y + s.height as i32
-    }).or_else(|| monitors.first());
-
-    if let Some(mon) = target {
-        let size = mon.size();
-        let pos  = mon.position();
-        println!("[JARVIS] Snap to monitor at {}x{}+{}+{} (cursor {},{} )", size.width, size.height, pos.x, pos.y, cx, cy);
-        let _ = window.set_size(PhysicalSize::new(size.width, size.height));
-        let _ = window.set_position(PhysicalPosition::new(pos.x, pos.y));
-    }
-}
-
-/// Raise + focus the X11 window via xdotool (bypasses WM focus policies).
-fn xdotool_raise(win_name: &str) {
-    let _ = std::process::Command::new("xdotool")
-        .args(["search", "--name", win_name, "windowraise", "windowfocus", "--sync"])
-        .spawn();
-}
-
 // ── Tauri commands called from JS ──────────────────────────────────────────
 
 // ── API key management ────────────────────────────────────────────────────
