@@ -64,6 +64,16 @@ ARKIT_TO_TARGET = {
     "mouthStretchLeft":  "target_49",
     "mouthStretchRight": "target_50",
     "tongueOut":         "target_51",
+    # expression layer — canonical ARKit-52 indices (brows / cheeks / frown)
+    "browInnerUp":       "target_0",
+    "browDownLeft":      "target_1",
+    "browDownRight":     "target_2",
+    "browOuterUpLeft":   "target_3",
+    "browOuterUpRight":  "target_4",
+    "cheekSquintLeft":   "target_20",
+    "cheekSquintRight":  "target_21",
+    "mouthFrownLeft":    "target_39",
+    "mouthFrownRight":   "target_40",
 }
 
 # Each viseme -> the mouth pose it holds at full openness (weights 0..1).
@@ -85,6 +95,30 @@ VISEME_TO_ARKIT = {
     "ih":  {"jawOpen": 0.25, "mouthStretchLeft": 0.2, "mouthStretchRight": 0.2},
     "oh":  {"jawOpen": 0.45, "mouthFunnel": 0.5, "mouthPucker": 0.3},
     "ou":  {"jawOpen": 0.3, "mouthFunnel": 0.4, "mouthPucker": 0.7},
+}
+
+
+# Expression presets — each a brow/eye/cheek/mouth pose at full intensity
+# (ARKit names, weights 0..1). The ExpressionEngine blends these from VADER
+# sentiment + punctuation. Disjoint from the viseme mouth morphs by design.
+EXPRESSION_PRESETS = {
+    "warm": {
+        "mouthSmileLeft": 0.5, "mouthSmileRight": 0.5,
+        "cheekSquintLeft": 0.3, "cheekSquintRight": 0.3,
+        "browInnerUp": 0.15,
+    },
+    "serious": {
+        "browDownLeft": 0.3, "browDownRight": 0.3,
+        "mouthFrownLeft": 0.15, "mouthFrownRight": 0.15,
+    },
+    "inquisitive": {
+        "browInnerUp": 0.4, "browOuterUpLeft": 0.4, "browOuterUpRight": 0.4,
+        "eyeWideLeft": 0.2, "eyeWideRight": 0.2,
+    },
+    "emphatic": {
+        "browOuterUpLeft": 0.5, "browOuterUpRight": 0.5,
+        "eyeWideLeft": 0.35, "eyeWideRight": 0.35,
+    },
 }
 
 
