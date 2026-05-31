@@ -45,3 +45,21 @@ def test_resolve_pose_sil_returns_empty():
 
 def test_resolve_pose_unknown_viseme_returns_empty():
     assert vt.resolve_pose("__not_a_viseme__", openness=1.0) == {}
+
+
+def test_expression_arkit_mappings():
+    assert vt.ARKIT_TO_TARGET["browInnerUp"] == "target_0"
+    assert vt.ARKIT_TO_TARGET["browDownLeft"] == "target_1"
+    assert vt.ARKIT_TO_TARGET["browDownRight"] == "target_2"
+    assert vt.ARKIT_TO_TARGET["browOuterUpLeft"] == "target_3"
+    assert vt.ARKIT_TO_TARGET["browOuterUpRight"] == "target_4"
+    assert vt.ARKIT_TO_TARGET["cheekSquintLeft"] == "target_20"
+    assert vt.ARKIT_TO_TARGET["mouthFrownLeft"] == "target_39"
+
+
+def test_expression_presets_valid():
+    assert set(vt.EXPRESSION_PRESETS) == {"warm", "serious", "inquisitive", "emphatic"}
+    for name, pose in vt.EXPRESSION_PRESETS.items():
+        for morph, w in pose.items():
+            assert morph in vt.ARKIT_TO_TARGET, f"{name}:{morph} not mapped"
+            assert 0.0 <= w <= 1.0
