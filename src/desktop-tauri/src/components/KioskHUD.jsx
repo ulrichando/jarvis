@@ -22,7 +22,7 @@ const FACE_URL   = 'http://127.0.0.1:8767/face'
 const STATUS_POLL_MS = 500
 const FACE_POLL_MS    = 33        // ~30 fps; useFrame smooths between samples
 const JAW_GAIN = 6.0              // fallback only: /face.weights empty -> jaw from level
-const AURA_SIZE = 448
+const AURA_SIZE = 576
 
 function deriveAgentState(s) {
   if (!s || s.connected === false) return 'disconnected'
