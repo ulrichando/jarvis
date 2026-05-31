@@ -132,7 +132,7 @@ export default function KioskHUD() {
           cursor: 'none',
         }}
       />
-      {/* JARVIS's face — WebGL (three.js), jaw driven by the /level poll. */}
+      {/* JARVIS's face — WebGL (three.js), morphs driven by the /face poll. */}
       <div
         style={{
           position: 'fixed',
