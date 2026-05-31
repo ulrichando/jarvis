@@ -154,7 +154,7 @@ GEMINI_LANGUAGE = os.environ.get("JARVIS_GEMINI_LANGUAGE", "en-US")
 # Speech pace: native-audio has NO rate knob, so slow the OUTPUT audio with a
 # pitch-preserving `sox tempo` (<1.0 = slower). 1.0 = unchanged (plain paplay).
 try:
-    GEMINI_SPEECH_TEMPO = float(os.environ.get("JARVIS_GEMINI_SPEECH_TEMPO", "0.8"))
+    GEMINI_SPEECH_TEMPO = float(os.environ.get("JARVIS_GEMINI_SPEECH_TEMPO", "0.85"))
 except (TypeError, ValueError):
     GEMINI_SPEECH_TEMPO = 0.9
 # Gemini Live voices — defaulted to Orus (deeper, more masculine
