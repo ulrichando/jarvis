@@ -206,6 +206,33 @@ for i in $(seq 1 15); do
 done
 echo "[jarvis] bridge up on :8765"
 
+# ── Wait for the voice path to be READY (not just the services "active") ──
+# `systemctl is-active` (above) only confirms the process is running; the
+# voice-agent and voice-client both signal systemd READY=1 BEFORE the worker
+# has joined the LiveKit room and the SFU connection is up. Launching the
+# desktop into a not-yet-ready voice path is a big chunk of the "JARVIS works
+# after a relaunch sometimes, not others" intermittency. Poll the voice-client
+# /status until BOTH connected AND agent_present are true (the agent has joined
+# the room and can hear/speak), bounded by a timeout so a genuinely-broken
+# voice path never blocks the desktop forever — it launches anyway with a warn.
+# Override the timeout via JARVIS_VOICE_READY_TIMEOUT (seconds).
+VOICE_READY_TIMEOUT="${JARVIS_VOICE_READY_TIMEOUT:-30}"
+echo "[jarvis] waiting for voice path (connected + agent present, <=${VOICE_READY_TIMEOUT}s)..."
+voice_ready=0
+for i in $(seq 1 "$VOICE_READY_TIMEOUT"); do
+  vstatus=$(curl -s --max-time 1 http://127.0.0.1:8767/status 2>/dev/null)
+  if printf '%s' "$vstatus" | grep -q '"connected": *true' \
+     && printf '%s' "$vstatus" | grep -q '"agent_present": *true'; then
+    voice_ready=1
+    echo "[jarvis] voice path ready after ~${i}s"
+    break
+  fi
+  sleep 1
+done
+if [ "$voice_ready" != 1 ]; then
+  echo "[jarvis] WARN: voice path not ready after ${VOICE_READY_TIMEOUT}s — launching desktop anyway (voice may still come up; check: tail -f ~/.local/share/jarvis/logs/voice-agent.log)" >&2
+fi
+
 # ── Launch desktop ────────────────────────────────────────────────────
 if [ ! -x "$DESKTOP_BIN" ]; then
   echo "[jarvis] desktop binary not found at $DESKTOP_BIN"
