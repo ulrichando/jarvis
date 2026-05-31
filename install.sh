@@ -59,6 +59,63 @@ detect_invocation() {
 # ── Prerequisites ────────────────────────────────────────────────────────
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# ── Distro detection ────────────────────────────────────────────────────
+detect_os() {
+  case "$(uname -s)" in
+    Linux) OS=linux ;;
+    *)     OS=unknown ;;
+  esac
+  DISTRO=unknown
+
+  # Prefer /etc/os-release (POSIX ID + ID_LIKE fields).
+  if [ -f /etc/os-release ]; then
+    local id id_like
+    id="$(grep -E '^ID=' /etc/os-release | sed 's/ID=//;s/"//g' 2>/dev/null || echo "")"
+    id_like="$(grep -E '^ID_LIKE=' /etc/os-release | sed 's/ID_LIKE=//;s/"//g' 2>/dev/null || echo "")"
+    # Map to canonical distro name for package manager selection.
+    case "$id" in
+      ubuntu|debian|linuxmint|pop|elementary|zorin|kali) DISTRO=debian ;;
+      fedora|rhel|centos|rocky|alma)                     DISTRO=fedora  ;;
+      arch|manjaro|endeavouros|garuda|artix|archlinux)   DISTRO=arch    ;;
+      alpine)                                            DISTRO=alpine   ;;
+      opensuse*|sles|suse)                               DISTRO=opensuse ;;
+      nixos)                                             DISTRO=nixos    ;;
+      *)                                                 DISTRO="$id"    ;;
+    esac
+    # Fall back to ID_LIKE if ID didn't match canonical list.
+    if [ "$DISTRO" = "unknown" ] || [ "$DISTRO" != "$id" ]; then
+      case " $id_like " in
+        *"debian"*)  DISTRO=debian  ;;
+        *"fedora"*)  DISTRO=fedora  ;;
+        *"rhel"*)    DISTRO=fedora  ;;
+        *"arch"*)    DISTRO=arch    ;;
+      esac
+    fi
+  else
+    # Last resort: probe package managers by availability.
+    if have apt-get; then   DISTRO=debian
+    elif have dnf; then     DISTRO=fedora
+    elif have pacman; then  DISTRO=arch
+    elif have apk; then     DISTRO=alpine
+    elif have zypper; then  DISTRO=opensuse
+    fi
+  fi
+  sub "detected OS: $OS, distro: $DISTRO"
+}
+
+# _pkg_mgr_cmd — echo the package-manager install command for $DISTRO.
+# Only verb + packages; caller prepends sudo.
+_pkg_mgr_cmd() {
+  case "$DISTRO" in
+    debian)   echo "DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y" ;;
+    fedora)   echo "dnf install -y" ;;
+    arch)     echo "pacman -S --noconfirm" ;;
+    alpine)   echo "apk add" ;;
+    opensuse) echo "zypper install -y" ;;
+    *)        echo "" ;;
+  esac
+}
+
 # ── .env read/write helpers ──────────────────────────────────────────
 # _env_get <file> <VAR> — print the current value of VAR (empty if unset/missing).
 _env_get() {
@@ -333,8 +390,43 @@ clone_or_update() {
   if [ -d "$INSTALL_DIR/.git" ]; then
     section "Updating existing checkout"
     git -C "$INSTALL_DIR" fetch --quiet origin master
-    git -C "$INSTALL_DIR" pull --ff-only origin master || warn "pull --ff-only failed (local changes?); leaving checkout as-is"
+
+    # Stash local changes before pulling so --ff-only doesn't fail on
+    # uncommitted work. Inspired by Hermes Agent's auto-stash flow.
+    local stash_ref=""
+    if ! git -C "$INSTALL_DIR" diff --quiet 2>/dev/null; then
+      local stash_name="jarvis-install-autostash-$(date +%Y%m%d-%H%M%S)"
+      git -C "$INSTALL_DIR" stash push --include-untracked -m "$stash_name" >/dev/null 2>&1 && stash_ref="stash@{0}"
+      sub "stashed local changes as '$stash_name'"
+    fi
+
+    git -C "$INSTALL_DIR" pull --ff-only origin master || {
+      warn "pull --ff-only failed (merge conflict?); leaving checkout as-is"
+      # On failure, still try to restore stash if one was created.
+      if [ -n "$stash_ref" ]; then
+        warn "stash '$stash_name' preserved — run: git -C $INSTALL_DIR stash apply"
+      fi
+      return 0
+    }
     ok "checkout at $(git -C "$INSTALL_DIR" rev-parse --short HEAD)"
+
+    # Offer to restore stashed changes.
+    if [ -n "$stash_ref" ] && _interactive; then
+      if _confirm "  Restore local changes that were stashed? [Y/n] " Y; then
+        if git -C "$INSTALL_DIR" stash apply >/dev/null 2>&1; then
+          git -C "$INSTALL_DIR" stash drop >/dev/null 2>&1 || true
+          ok "local changes restored"
+        else
+          warn "stash apply failed (conflict); stash preserved as '$stash_name'"
+          warn "  git -C $INSTALL_DIR stash drop  # after resolving"
+        fi
+      else
+        warn "stash preserved as '$stash_name' — run: git -C $INSTALL_DIR stash apply to restore"
+      fi
+    elif [ -n "$stash_ref" ]; then
+      warn "non-interactive — stash preserved as '$stash_name'"
+      warn "  git -C $INSTALL_DIR stash apply   # restore when ready"
+    fi
   else
     section "Cloning JARVIS"
     mkdir -p "$(dirname "$INSTALL_DIR")"
@@ -368,9 +460,36 @@ install_cli() {
   ok "launcher shim at $LOCAL_BIN/jarvis-desktop → $INSTALL_DIR/bin/jarvis-desktop"
   ok "launcher shim at $LOCAL_BIN/jarvis-setup → $INSTALL_DIR/bin/jarvis-setup"
 
+  # Shell config injection — auto-add ~/.local/bin to PATH in the user's
+  # shell rc file if it's not already there. Inspired by Hermes Agent's
+  # setup_path().
   case ":$PATH:" in
     *":$LOCAL_BIN:"*) : ;;
-    *) warn "$LOCAL_BIN is not in PATH — add it to your shell rc to use 'jarvis' globally" ;;
+    *)
+      warn "$LOCAL_BIN is not in PATH — offering to add it"
+      if _interactive && [ -n "${SHELL:-}" ]; then
+        local rc_file=""
+        case "${SHELL##*/}" in
+          zsh)  rc_file="$HOME/.zshrc" ;;
+          bash) rc_file="$HOME/.bashrc" ;;
+          fish) rc_file="$HOME/.config/fish/config.fish" ;;
+          *)    rc_file="$HOME/.profile" ;;
+        esac
+        if [ -n "$rc_file" ] && _confirm "  Add $LOCAL_BIN to your PATH in $rc_file? [Y/n] " Y; then
+          mkdir -p "$(dirname "$rc_file")"
+          if [ ! -f "$rc_file" ]; then
+            printf '%s\n' "# JARVIS launcher path" "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> "$rc_file"
+            ok "created $rc_file with PATH entry"
+          elif ! grep -q '\.local/bin' "$rc_file" 2>/dev/null; then
+            printf '\n%s\n' "# JARVIS launcher path" "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> "$rc_file"
+            ok "appended PATH entry to $rc_file"
+          else
+            ok "$rc_file already has a .local/bin PATH entry"
+          fi
+          sub "restart your shell or run: source $rc_file"
+        fi
+      fi
+      ;;
   esac
 }
 
@@ -624,34 +743,51 @@ install_bubblewrap() {
     ok "bubblewrap already installed ($(bwrap --version 2>/dev/null | head -1))"
     return
   fi
-  # bubblewrap is the user-namespace sandbox the bash tool wraps every
-  # subprocess in (tools/bash.py, added 2026-05-17 per enterprise plan
-  # §P0-SEC-7). Without it, the bash tool falls back to unsandboxed
-  # /bin/bash -c — works but loses the ~/.ssh/AWS/GPG tmpfs masks
-  # and the network-namespace gate. apt + pacman covered; other distros
-  # warn-only since the user-namespace approach is universal but
-  # package names vary.
-  if have apt-get && [ "${JARVIS_DRY_RUN:-0}" != "1" ]; then
-    sub "installing bubblewrap via apt..."
-    if sudo -n apt-get install -y bubblewrap >/dev/null 2>&1; then
+  local pkg_cmd; pkg_cmd="$(_pkg_mgr_cmd)"
+  local bubblewrap_pkg="bubblewrap"
+
+  if [ -n "$pkg_cmd" ] && [ "${JARVIS_DRY_RUN:-0}" != "1" ]; then
+    sub "installing bubblewrap via $DISTRO package manager..."
+    if sudo -n sh -c "$pkg_cmd $bubblewrap_pkg" >/dev/null 2>&1; then
       ok "bubblewrap installed"
     else
-      warn "couldn't apt-install bubblewrap (sudo? offline?); the bash tool will run un-sandboxed."
-      warn "to enable: sudo apt install bubblewrap"
-    fi
-  elif have pacman && [ "${JARVIS_DRY_RUN:-0}" != "1" ]; then
-    sub "installing bubblewrap via pacman..."
-    if sudo -n pacman -S --noconfirm bubblewrap >/dev/null 2>&1; then
-      ok "bubblewrap installed"
-    else
-      warn "couldn't pacman-install bubblewrap; the bash tool will run un-sandboxed."
-      warn "to enable: sudo pacman -S bubblewrap"
+      warn "couldn't install bubblewrap (sudo? offline?); the bash tool will run un-sandboxed."
     fi
   else
-    warn "bubblewrap NOT installed (no apt/pacman detected). The bash"
-    warn "tool will run un-sandboxed. Install bubblewrap manually if"
-    warn "you want ~/.ssh/AWS/GPG tmpfs masking + network namespace gate."
-    warn "Documented at: src/voice-agent/tools/bash.py (§P0-SEC-7)"
+    warn "bubblewrap NOT installed (no recognized package manager). The bash tool will run un-sandboxed."
+  fi
+}
+
+# ── System packages (ripgrep + ffmpeg) ──────────────────────────────────
+# Install ripgrep (CLI code-search) and ffmpeg (audio processing) if
+# missing. Warn-only — the installer continues without them. Inspired by
+# Hermes Agent's install_system_packages().
+install_system_packages() {
+  local need=()
+  have rg    || need+=("ripgrep")
+  have ffmpeg || need+=("ffmpeg")
+  [ ${#need[@]} -eq 0 ] && { ok "ripgrep + ffmpeg already present"; return; }
+
+  local pkg_cmd; pkg_cmd="$(_pkg_mgr_cmd)"
+  if [ -z "$pkg_cmd" ]; then
+    warn "no recognized package manager; install manually:"
+    for pkg in "${need[@]}"; do warn "  sudo apt install $pkg  (or your distro's equivalent)"; done
+    return
+  fi
+
+  section "Installing system packages (${need[*]})"
+  sub "via $DISTRO package manager..."
+  if sudo -n sh -c "$pkg_cmd ${need[*]}" >/dev/null 2>&1; then
+    ok "${need[*]} installed"
+  else
+    warn "couldn't install ${need[*]} via $DISTRO pm (sudo? offline?)"
+    # Fallback: cargo install ripgrep if missing
+    if ! have rg && have cargo; then
+      sub "trying cargo install ripgrep..."
+      if cargo install ripgrep >/dev/null 2>&1; then
+        ok "ripgrep installed via cargo"
+      fi
+    fi
   fi
 }
 
@@ -1033,6 +1169,12 @@ print_summary() {
 
   Re-run this script anytime to re-install or update a channel.
   Skip channels with JARVIS_SKIP_{CLI,VOICE,DESKTOP,WEB}=1.
+
+  Other commands:
+    $LOCAL_BIN/jarvis-setup     re-run API key + persona config
+    install.sh --setup           same, from the install script
+    install.sh --ensure browser  install just Playwright Chromium
+    install.sh --ensure voice-deps  reinstall voice-agent deps
 EOF
 }
 
@@ -1040,6 +1182,7 @@ EOF
 main() {
   c_bold "JARVIS installer"
   detect_invocation
+  detect_os
   check_network_prerequisites
   check_prereqs
   # JARVIS_DRY_RUN=1 bails here — useful for verifying the script
@@ -1057,6 +1200,7 @@ main() {
   install_voice_agent
   install_desktop
   install_bubblewrap     # bash-tool sandbox runtime (§P0-SEC-7)
+  install_system_packages  # ripgrep + ffmpeg for CLI code-search + audio
   generate_bridge_token  # ~/.jarvis/local-api-token.env + web .env.local
   ensure_livekit_binary  # fetch livekit-server.bin at install time (not in git)
   setup_livekit_keys
@@ -1129,8 +1273,27 @@ setup_mode() {
   print_summary
 }
 
+# ── --postinstall mode: pip-install user setup ─────────────────────────
+# Designed for users who installed the voice-agent package via pip (e.g.,
+# `pip install jarvis-voice-agent`). Runs only the post-clone steps that
+# need user input or system deps: system packages, browser, systemd units,
+# and configuration. Does NOT clone the repo, create a venv, or build the
+# desktop app — those are assumed to have been handled by pip.
+postinstall_mode() {
+  section "Post-install setup"
+  detect_invocation
+  [ -d "$INSTALL_DIR/.git" ] || die "No checkout at '$INSTALL_DIR'. Run install.sh --postinstall from inside a cloned checkout."
+
+  install_system_packages
+  install_playwright_chromium "$INSTALL_DIR/src/voice-agent"
+  install_systemd_units
+  configure
+  print_summary
+}
+
 # ── Entry point routing ─────────────────────────────────────────────────
-# Three modes: --ensure (targeted deps), --setup (config only), full install.
+# Four modes: --ensure (targeted deps), --setup (config only),
+# --postinstall (pip-install user setup), or full install.
 if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
   case "${1:-}" in
     --ensure|--ensure=*)
@@ -1138,6 +1301,9 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
       ;;
     --setup)
       setup_mode
+      ;;
+    --postinstall)
+      postinstall_mode
       ;;
     *)
       main "$@"
