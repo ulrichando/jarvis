@@ -311,9 +311,11 @@ def _format_result(payload: dict, stderr_tail: str = "") -> str:
     if payload.get("ok"):
         result = str(payload.get("result", "")).strip() or "(browser task finished with no result text)"
         steps = _payload_step_count(payload)
-        if isinstance(steps, int) and steps > 0:
-            return f"{result}\n\n(completed in {steps} browser step{'s' if steps != 1 else ''})"
-        return result
+        suffix = f"\n\n(completed in {steps} browser step{'s' if steps != 1 else ''})" if isinstance(steps, int) and steps > 0 else ""
+        captcha = payload.get("captcha_hint")
+        if captcha:
+            suffix += f"\n\n⚠ Possible {captcha} detected. The result may be incomplete. Consider using computer_use to solve it in the user's visible browser."
+        return result + suffix
     err = str(payload.get("error", "")).strip() or "unknown browser error"
     tail = str(payload.get("stderr_tail", "")).strip() or (stderr_tail or "").strip()
     if tail:

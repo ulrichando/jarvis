@@ -110,3 +110,120 @@ def test_step_table_roundtrip(tmp_path):
         0,
         "element not found",
     )
+
+
+# ---------------------------------------------------------------------------
+# CAPTCHA detection tests (pure pattern matching, no subprocess)
+# ---------------------------------------------------------------------------
+
+
+class _FakeHistory:
+    """Minimal AgentHistoryList stand-in that exposes the methods
+    ``_check_history_for_captcha`` calls."""
+
+    def __init__(self, *, urls=None, content=None, action_results=None, action_names=None):
+        self._urls = urls or []
+        self._content = content or []
+        self._action_results = action_results or []
+        self._action_names = action_names or []
+
+    def urls(self):
+        return self._urls
+
+    def extracted_content(self):
+        return self._content
+
+    def action_results(self):
+        return self._action_results
+
+    def action_names(self):
+        return self._action_names
+
+
+@pytest.fixture
+def captcha_detector(browser_tool):
+    """Direct access to the _check_history_for_captcha function from runner.py.
+
+    Imported fresh each time from the browser_use_bridge package (which is
+    stdlib-only — no browser_use dependency at module scope).
+    """
+    import importlib
+    mod = importlib.import_module("browser_use_bridge.runner")
+    return mod._check_history_for_captcha
+
+
+def test_captcha_detector_url_match(captcha_detector):
+    """A URL containing /captcha/ should be flagged."""
+    hist = _FakeHistory(urls=["https://site.com/captcha/verify"])
+    assert captcha_detector(hist) is not None
+
+
+def test_captcha_detector_url_recaptcha(captcha_detector):
+    """A URL containing recaptcha should be flagged."""
+    hist = _FakeHistory(urls=["https://www.google.com/recaptcha/api2/demo"])
+    assert captcha_detector(hist) is not None
+
+
+def test_captcha_detector_clean_url(captcha_detector):
+    """Normal URLs should return None."""
+    hist = _FakeHistory(urls=[
+        "https://example.com/page",
+        "https://nvidia.com/products",
+    ])
+    assert captcha_detector(hist) is None
+
+
+def test_captcha_detector_content_text(captcha_detector):
+    """Page content containing 'unusual traffic' should be flagged."""
+    hist = _FakeHistory(content=["We've detected unusual traffic from your network"])
+    assert captcha_detector(hist) is not None
+
+
+def test_captcha_detector_content_robot(captcha_detector):
+    """Page content saying 'verify you are human' should be flagged."""
+    hist = _FakeHistory(content=["Please verify you are human to continue"])
+    assert captcha_detector(hist) is not None
+
+
+def test_captcha_detector_clean_content(captcha_detector):
+    """Normal page content should return None."""
+    hist = _FakeHistory(content=["RTX 6000 price: $6,899", "Add to cart", "Search results"])
+    assert captcha_detector(hist) is None
+
+
+def test_captcha_detector_step_errors(captcha_detector):
+    """Step errors containing CAPTCHA patterns should be flagged."""
+    # action_results with an error attribute
+    class FakeAR:
+        def __init__(self, error=""):
+            self.error = error
+
+    results = [
+        None,
+        FakeAR(""),
+        FakeAR("Too many requests. Please complete the captcha to continue."),
+    ]
+    hist = _FakeHistory(action_results=results)
+    assert captcha_detector(hist) is not None
+
+
+def test_captcha_format_result_with_hint(browser_tool):
+    """When the payload carries a captcha_hint, the formatted result includes it."""
+    payload = {
+        "ok": True,
+        "result": "Found the price list.",
+        "steps_count": 10,
+        "captcha_hint": "CAPTCHA in page content",
+    }
+    formatted = browser_tool._format_result(payload)
+    assert "CAPTCHA" in formatted
+    assert "computer_use" in formatted  # mentions fallback
+
+
+def test_captcha_format_result_clean(browser_tool):
+    """Without captcha_hint, the format is unchanged."""
+    payload = {"ok": True, "result": "Found the price.", "steps_count": 5}
+    formatted = browser_tool._format_result(payload)
+    assert "CAPTCHA" not in formatted
+    assert "computer_use" not in formatted
+    assert "found the price" in formatted.lower()

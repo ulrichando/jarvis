@@ -40,6 +40,7 @@ _os.environ.setdefault("BROWSER_USE_LOGGING_LEVEL", "result")
 import asyncio
 import json
 import logging
+import re
 import sys
 import traceback
 from typing import Any, Optional
@@ -117,11 +118,15 @@ def _emit(payload: dict) -> None:
 # ---------------------------------------------------------------------------
 # LLM selection (env-driven; first available key wins)
 # ---------------------------------------------------------------------------
-# Default model per provider — modest, fast, vision-capable models suited to a
-# voice assistant's "do a quick web task" use case. Overridable via env.
+# Default model per provider — modest, fast models suited to a voice
+# assistant's "do a quick web task" use case. Overridable via env.
+# Priority: first present key wins. Kimi is preferred for browser tasks
+# (no extended-thinking issues with tool_choice); Anthropic models may
+# require explicit thinking:disabled when tool_choice=any is used.
 _DEFAULT_MODELS = {
-    "anthropic": "claude-sonnet-4-5-20250929",
     "openai": "gpt-4.1-mini",
+    "kimi": "kimi-k2.6",
+    "anthropic": "claude-haiku-4-5",
     "google": "gemini-2.0-flash",
 }
 
@@ -165,19 +170,40 @@ def _available_llms() -> list:
     model_override = _os.environ.get("JARVIS_BROWSER_MODEL", "").strip() or None
     llms: list = []
 
-    anthropic_key = _os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if anthropic_key:
-        from browser_use import ChatAnthropic
+    # Kimi (OpenAI-compatible via Moonshot) — preferred for browsing
+    # (no extended-thinking tooll_choice conflict).
+    kimi_key = _os.environ.get("KIMI_API_KEY", "").strip()
+    if kimi_key:
+        from browser_use import ChatOpenAI
 
-        model = (model_override if not llms else None) or _DEFAULT_MODELS["anthropic"]
-        llms.append(ChatAnthropic(model=model, api_key=anthropic_key))
+        model = _DEFAULT_MODELS["kimi"]
+        if model_override and not llms:
+            model = model_override
+        llms.append(ChatOpenAI(
+            model=model,
+            api_key=kimi_key,
+            base_url="https://api.moonshot.ai/v1",
+            temperature=None,
+            frequency_penalty=None,
+        ))
 
     openai_key = _os.environ.get("OPENAI_API_KEY", "").strip()
     if openai_key:
         from browser_use import ChatOpenAI
 
-        model = (model_override if not llms else None) or _DEFAULT_MODELS["openai"]
+        model = _DEFAULT_MODELS["openai"]
+        if model_override and not llms:
+            model = model_override
         llms.append(ChatOpenAI(model=model, api_key=openai_key))
+
+    anthropic_key = _os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if anthropic_key:
+        from browser_use import ChatAnthropic
+
+        model = _DEFAULT_MODELS["anthropic"]
+        if model_override and not llms:
+            model = model_override
+        llms.append(ChatAnthropic(model=model, api_key=anthropic_key))
 
     google_key = (
         _os.environ.get("GEMINI_API_KEY", "").strip()
@@ -186,7 +212,9 @@ def _available_llms() -> list:
     if google_key:
         from browser_use import ChatGoogle
 
-        model = (model_override if not llms else None) or _DEFAULT_MODELS["google"]
+        model = _DEFAULT_MODELS["google"]
+        if model_override and not llms:
+            model = model_override
         llms.append(ChatGoogle(model=model, api_key=google_key))
 
     return llms
@@ -205,6 +233,86 @@ def _build_llm():
             "GEMINI_API_KEY / GOOGLE_API_KEY)"
         )
     return llms[0]
+
+
+# ---------------------------------------------------------------------------
+# CAPTCHA detection
+# ---------------------------------------------------------------------------
+
+# URL substrings that indicate a CAPTCHA challenge page.
+_CAPTCHA_URL_PATTERNS = re.compile(
+    r"/(captcha|challenge|recaptcha|verify|human|security_check|"
+    r"browser_check|blocked|denied|access_denied)/",
+    re.I,
+)
+
+# Page text patterns that strongly suggest a CAPTCHA or bot-block.
+_CAPTCHA_TEXT_PATTERNS = re.compile(
+    r"(I['']m\s+not\s+a\s+robot|"
+    r"verify\s+(you\s+are|your)\s+human|"
+    r"complete\s+the\s+captcha|"
+    r"unusual\s+traffic|"
+    r"automated\s+(access|request|query|browser)|"
+    r"enable\s+JavaScript.*cookie|"
+    r"please\s+confirm\s+you\s+are\s+(human|not\s+a\s+robot)|"
+    r"captcha|"
+    r"recaptcha|"
+    r"challenge\s+detected|"
+    r"access\s+denied.*bot|"
+    r"suspicious\s+activity|"
+    r"too\s+many\s+requests)",
+    re.I,
+)
+
+
+def _check_history_for_captcha(history) -> Optional[str]:
+    """Check the AgentHistory for CAPTCHA / bot-block signals.
+
+    Inspects visited URLs and a sample of page content for known CAPTCHA
+    patterns. Returns a short human-readable hint when detected, or None
+    when the history looks clean.
+
+    Best-effort: false positives (e.g. a site mentioning "CAPTCHA" in
+    its sign-up instructions) produce a hint, not a hard error — the
+    caller decides how to act on it.
+    """
+    # 1. Check URLs from the step history.
+    try:
+        urls = history.urls()
+    except Exception:
+        urls = []
+    for url in urls:
+        if url and _CAPTCHA_URL_PATTERNS.search(url):
+            return "CAPTCHA in URL"
+
+    # 2. Check step action names for navigation failures.
+    try:
+        action_names = history.action_names()
+    except Exception:
+        action_names = []
+    # If every navigation step failed or hit a challenge page, flag it.
+    # (action_names includes page text context in browser_use 0.12+)
+
+    # 3. Check extracted content for CAPTCHA text patterns.
+    try:
+        content = history.extracted_content()
+    except Exception:
+        content = []
+    for snippet in content:
+        if snippet and _CAPTCHA_TEXT_PATTERNS.search(snippet):
+            return "CAPTCHA in page content"
+
+    # 4. Check last few action outputs for error patterns matching blocks.
+    try:
+        action_results = history.action_results()
+    except Exception:
+        action_results = []
+    for ar in (action_results or [])[-3:]:  # last 3 steps
+        err = getattr(ar, "error", None) or ""
+        if err and _CAPTCHA_TEXT_PATTERNS.search(err):
+            return "CAPTCHA in step error"
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +368,7 @@ async def _run_task(
         "llm": llm,
         "browser_profile": profile,
         "use_vision": "auto",
+        "use_thinking": False,
         "max_failures": _AGENT_MAX_FAILURES,
         "step_timeout": _AGENT_STEP_TIMEOUT_S,
         "llm_timeout": _AGENT_LLM_TIMEOUT_S,
@@ -272,16 +381,28 @@ async def _run_task(
 
     history = await agent.run(max_steps=max_steps)
 
+    # CAPTCHA detection: check visited URLs and page content for challenge
+    # patterns. When detected, report early so the caller can fall back to
+    # computer_use (visible browser with user solving it) or try a different
+    # approach. Non-fatal: if detection is uncertain, the task result still
+    # carries through.
+    captcha_hint = _check_history_for_captcha(history)
+    if captcha_hint:
+        logger.warning("browser_task: possible CAPTCHA detected (%s)", captcha_hint)
+
     final = history.final_result()
     if final is None or (isinstance(final, str) and not final.strip()):
         final = "(no textual result returned by the browser agent)"
 
-    return {
+    payload = {
         "ok": True,
         "result": str(final),
         "steps": _step_trace(history),
         "steps_count": int(history.number_of_steps()),
     }
+    if captcha_hint:
+        payload["captcha_hint"] = captcha_hint
+    return payload
 
 
 def _step_trace(history) -> list:
