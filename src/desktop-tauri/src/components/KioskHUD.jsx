@@ -22,7 +22,7 @@ const FACE_URL   = 'http://127.0.0.1:8767/face'
 const STATUS_POLL_MS = 500
 const FACE_POLL_MS    = 33        // ~30 fps; useFrame smooths between samples
 const JAW_GAIN = 6.0              // fallback only: /face.weights empty -> jaw from level
-const AURA_SIZE = 576
+const AURA_FRAC = 0.9             // face box = this fraction of the smaller viewport dim
 
 function deriveAgentState(s) {
   if (!s || s.connected === false) return 'disconnected'
@@ -116,8 +116,9 @@ export default function KioskHUD() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  const auraLeft = Math.round((vp.w - AURA_SIZE) / 2)
-  const auraTop  = Math.round((vp.h - AURA_SIZE) / 2)
+  const auraSize = Math.round(Math.min(vp.w, vp.h) * AURA_FRAC)
+  const auraLeft = Math.round((vp.w - auraSize) / 2)
+  const auraTop  = Math.round((vp.h - auraSize) / 2)
 
   return (
     <>
@@ -137,11 +138,11 @@ export default function KioskHUD() {
         style={{
           position: 'fixed',
           top: auraTop, left: auraLeft,
-          width: AURA_SIZE, height: AURA_SIZE,
+          width: auraSize, height: auraSize,
           zIndex: 9999,
         }}
       >
-        <FaceWebGL size={AURA_SIZE} getWeights={() => weightsRef.current} />
+        <FaceWebGL size={auraSize} getWeights={() => weightsRef.current} />
       </div>
       {/* Diagnostic readout */}
       <div
