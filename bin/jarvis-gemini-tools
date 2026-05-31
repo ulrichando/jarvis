@@ -148,6 +148,15 @@ SPK_SAMPLE_RATE = 24000
 FRAME_INTERVAL_S = float(
     os.environ.get("JARVIS_GEMINI_TOOLS_FRAME_INTERVAL_S", "1.0")
 )
+# English-pin: native-audio Live models infer output language from accent/tone
+# and drift (Google cookbook #1197). language_code is the documented pin.
+GEMINI_LANGUAGE = os.environ.get("JARVIS_GEMINI_LANGUAGE", "en-US")
+# Speech pace: native-audio has NO rate knob, so slow the OUTPUT audio with a
+# pitch-preserving `sox tempo` (<1.0 = slower). 1.0 = unchanged (plain paplay).
+try:
+    GEMINI_SPEECH_TEMPO = float(os.environ.get("JARVIS_GEMINI_SPEECH_TEMPO", "0.9"))
+except (TypeError, ValueError):
+    GEMINI_SPEECH_TEMPO = 0.9
 # Gemini Live voices — defaulted to Orus (deeper, more masculine
 # male baritone, calmer pacing) per user feedback that Puck was too
 # light and too fast. If Orus still feels off, alternatives ordered
@@ -188,10 +197,10 @@ ALLOWED_TOOLS = {
 # assembly the supervisor uses, just leaner.
 OPS_BLOCK = (
     "═══ OPS RULES — GEMINI LIVE + TOOLS MODE ═══\n\n"
-    "ALWAYS RESPOND IN ENGLISH. Even if the user's audio sounds like "
-    "another language or has an accent, transcribe and respond in "
-    "English unless explicitly asked to switch. Never reply in any "
-    "language other than English.\n\n"
+    "RESPOND ONLY IN ENGLISH (en-US). NEVER infer or switch language from "
+    "the user's accent, tone, names, or a mishearing — even if the audio "
+    "sounds like another language, ALWAYS reply in English. Never reply in "
+    "any language other than English unless explicitly asked to switch.\n\n"
     "PACE: speak at a measured, deliberate pace — slower than your "
     "default. Use natural pauses between clauses. Don't rush. Brevity "
     "is good, but space the words out instead of compressing them.\n\n"
@@ -255,13 +264,22 @@ async def open_mic_stream() -> asyncio.subprocess.Process:
 
 
 async def open_speaker_stream() -> asyncio.subprocess.Process:
+    # Default: plain paplay. With JARVIS_GEMINI_SPEECH_TEMPO<1.0, pipe through
+    # `sox … tempo` (pitch-preserving slowdown) — native audio has no rate knob.
+    # Both read raw 24k s16le PCM from stdin, so the write loop is unchanged.
+    if abs(GEMINI_SPEECH_TEMPO - 1.0) < 0.01:
+        args = [
+            "paplay", "--format=s16le", "--channels=1",
+            f"--rate={SPK_SAMPLE_RATE}", "--latency-msec=80", "--raw",
+        ]
+    else:
+        args = [
+            "sox", "-q", "-t", "raw", "-r", str(SPK_SAMPLE_RATE),
+            "-e", "signed", "-b", "16", "-c", "1", "-",
+            "-t", "pulseaudio", "default", "tempo", f"{GEMINI_SPEECH_TEMPO:g}",
+        ]
     return await asyncio.create_subprocess_exec(
-        "paplay",
-        "--format=s16le",
-        "--channels=1",
-        f"--rate={SPK_SAMPLE_RATE}",
-        "--latency-msec=80",
-        "--raw",
+        *args,
         stdin=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -431,6 +449,7 @@ async def main() -> int:
         response_modalities=["AUDIO"],
         media_resolution="MEDIA_RESOLUTION_MEDIUM",
         speech_config=types.SpeechConfig(
+            language_code=GEMINI_LANGUAGE,
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(
                     voice_name=VOICE_NAME,
