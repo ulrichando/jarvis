@@ -37,3 +37,10 @@ def test_engine_holds_while_speaking_clears_idle():
     eng.set_pending_text("Fantastic, brilliant work!")
     assert eng.frame(speaking=True)              # non-empty while speaking
     assert eng.frame(speaking=False) == {}       # cleared when idle
+
+
+def test_caps_without_punctuation_is_emphatic():
+    # >=2 all-caps words (>=2 letters) read as emphasis even with no '!'.
+    w = expression_for_text("THIS IS AMAZING")
+    assert w.get("target_17", 0) > 0 or w.get("target_18", 0) > 0   # eyeWide (emphatic)
+    assert "!" not in "THIS IS AMAZING"                              # the trigger was CAPS, not '!'
