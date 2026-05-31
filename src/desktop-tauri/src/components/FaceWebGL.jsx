@@ -104,8 +104,8 @@ function Head({ getWeights }) {
     if (g) {
       const jaw = inf[dict['target_24']] || 0
       const amp = (1 - Math.min(1, jaw * 2)) * 0.026   // ~±1.5° at rest
-      g.rotation.z = HEAD_ROT[2] + Math.sin(now * 0.6) * amp
-      g.rotation.y = Math.sin(now * 0.43) * amp * 0.6
+      g.rotation.z = HEAD_ROT[2]                         // keep the head LEVEL — no roll/tilt
+      g.rotation.y = Math.sin(now * 0.43) * amp * 0.35   // very subtle left/right turn only
     }
 
     // Idle brow flick — only when no content expression is driving the brows.
