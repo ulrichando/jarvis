@@ -113,6 +113,45 @@ _confirm() {
   case "$ans" in [Yy]|[Yy][Ee][Ss]) return 0 ;; *) return 1 ;; esac
 }
 
+# _maybe_set_key <label> <VAR> <file> — prompt for one key, write if non-empty,
+# guarding against silently replacing an existing value.
+_maybe_set_key() {
+  local label="$1" var="$2" file="$3" existing val
+  existing="$(_env_get "$file" "$var")"
+  if [ -n "$existing" ]; then
+    _confirm "  $label ($var) already set — replace? [y/N] " N || return 0
+  fi
+  val="$(_ask_secret "  $label key ($var) [blank=skip]: ")"
+  if [ -n "$val" ]; then
+    _env_upsert "$file" "$var" "$val"
+    ok "$var saved"
+  fi
+}
+
+configure_api_keys() {
+  local root_env="$INSTALL_DIR/.env"
+  local va_env="$INSTALL_DIR/src/voice-agent/.env"
+  sub "API keys — press Enter to skip any provider."
+
+  _maybe_set_key "Anthropic"      ANTHROPIC_API_KEY "$root_env"
+  _maybe_set_key "Groq"           GROQ_API_KEY      "$root_env"
+  _maybe_set_key "Deepgram (STT)" DEEPGRAM_API_KEY  "$va_env"
+
+  if _confirm "  Configure more providers (OpenAI/DeepSeek/Google/Kimi)? [y/N] " N; then
+    _maybe_set_key "OpenAI"   OPENAI_API_KEY   "$root_env"
+    _maybe_set_key "DeepSeek" DEEPSEEK_API_KEY "$root_env"
+    _maybe_set_key "Google"   GOOGLE_API_KEY   "$root_env"
+    _maybe_set_key "Kimi"     KIMI_API_KEY     "$root_env"
+  fi
+
+  local v has_llm=""
+  for v in ANTHROPIC_API_KEY GROQ_API_KEY OPENAI_API_KEY DEEPSEEK_API_KEY GOOGLE_API_KEY KIMI_API_KEY; do
+    [ -n "$(_env_get "$root_env" "$v")" ] && has_llm=1
+  done
+  [ -z "$has_llm" ] && warn "No LLM key set — add one to $root_env before starting the voice agent."
+  return 0
+}
+
 check_prereqs() {
   section "Checking prerequisites"
 

@@ -59,4 +59,21 @@ check "_confirm no" '! ( _JARVIS_TTY="$TTYF" _confirm "p? " Y )'
 printf '\n' > "$TTYF"
 check "_confirm blank honors default Y" '( _JARVIS_TTY="$TTYF" _confirm "p? " Y )'
 
+# ── configure_api_keys ───────────────────────────────────────────────
+T2="$(mktemp -d)"; mkdir -p "$T2/src/voice-agent"
+# answers: anthropic, groq, deepgram, then "n" to extra providers
+printf 'sk-ant-1\nsk-groq-2\ndg-3\nn\n' > "$T2/ans"
+( export INSTALL_DIR="$T2"; _JARVIS_TTY="$T2/ans" configure_api_keys ) >/dev/null 2>&1
+check "anthropic -> root .env"          '[ "$(_env_get "$T2/.env" ANTHROPIC_API_KEY)" = sk-ant-1 ]'
+check "groq -> root .env"               '[ "$(_env_get "$T2/.env" GROQ_API_KEY)" = sk-groq-2 ]'
+check "deepgram -> voice-agent/.env"    '[ "$(_env_get "$T2/src/voice-agent/.env" DEEPGRAM_API_KEY)" = dg-3 ]'
+check "root .env chmod 600"             '[ "$(stat -c %a "$T2/.env")" = 600 ]'
+check "untouched provider stays unset"  '[ -z "$(_env_get "$T2/.env" OPENAI_API_KEY)" ]'
+
+# blank answers skip everything (no .env written for keys)
+T2b="$(mktemp -d)"; mkdir -p "$T2b/src/voice-agent"
+printf '\n\n\nn\n' > "$T2b/ans"
+( export INSTALL_DIR="$T2b"; _JARVIS_TTY="$T2b/ans" configure_api_keys ) >/dev/null 2>&1
+check "blank input sets no anthropic key" '[ -z "$(_env_get "$T2b/.env" ANTHROPIC_API_KEY)" ]'
+
 echo "---"; echo "$FAILS failures"; [ "$FAILS" -eq 0 ]
