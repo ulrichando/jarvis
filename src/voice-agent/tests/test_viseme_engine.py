@@ -66,3 +66,30 @@ def test_reset_clears_pending_text_so_no_stale_replay():
     # replay "hello world".
     out = eng.frame(now=1.0, speaking=True, rms=0.1)
     assert set(out) == {"target_24"}
+
+
+def test_text_arriving_after_speech_start_engages_visemes():
+    # The live case: audio starts, THEN the transcript streams in. The first
+    # frames are amplitude jaw (no text yet); once text lands the engine must
+    # switch to real visemes (more than just the jaw morph) mid-utterance.
+    eng = VisemeEngine()
+    early = eng.frame(now=0.0, speaking=True, rms=0.2)   # no text yet
+    assert set(early) == {"target_24"}                   # amplitude fallback
+    eng.set_pending_text("food")                         # rounded vowel -> pucker/funnel
+    out = eng.frame(now=0.1, speaking=True, rms=0.2)
+    # a real viseme pose drives more than the jaw alone
+    assert len(out) > 1
+    assert all(0.0 <= v <= 1.0 for v in out.values())
+
+
+def test_growing_transcript_extends_the_sequence():
+    # Words stream in; the sequence must extend (so later words are reachable)
+    # while keeping the original t0 so the timeline stays continuous.
+    eng = VisemeEngine()
+    eng.set_pending_text("the")
+    eng.frame(now=0.0, speaking=True, rms=0.2)
+    short_len = len(eng._seq)
+    eng.set_pending_text("the quick brown fox jumps over")
+    eng.frame(now=0.1, speaking=True, rms=0.2)
+    assert len(eng._seq) > short_len      # extended, not replaced-from-scratch
+    assert eng._t0 == 0.0                 # t0 preserved across the extend
