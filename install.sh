@@ -516,13 +516,11 @@ install_cli() {
   ok "launcher shim at $LOCAL_BIN/jarvis-setup → $INSTALL_DIR/bin/jarvis-setup"
 
   # Shell config injection — auto-add ~/.local/bin to PATH in the user's
-  # shell rc file if it's not already there. Inspired by Hermes Agent's
-  # setup_path().
+  # shell rc file. Silent; no prompts. Inspired by Hermes Agent's setup_path().
   case ":$PATH:" in
     *":$LOCAL_BIN:"*) : ;;
     *)
-      warn "$LOCAL_BIN is not in PATH — offering to add it"
-      if _interactive && [ -n "${SHELL:-}" ]; then
+      if [ -n "${SHELL:-}" ]; then
         local rc_file=""
         case "${SHELL##*/}" in
           zsh)  rc_file="$HOME/.zshrc" ;;
@@ -530,18 +528,15 @@ install_cli() {
           fish) rc_file="$HOME/.config/fish/config.fish" ;;
           *)    rc_file="$HOME/.profile" ;;
         esac
-        if [ -n "$rc_file" ] && _confirm "  Add $LOCAL_BIN to your PATH in $rc_file? [Y/n] " Y; then
+        if [ -n "$rc_file" ]; then
           mkdir -p "$(dirname "$rc_file")"
           if [ ! -f "$rc_file" ]; then
             printf '%s\n' "# JARVIS launcher path" "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> "$rc_file"
-            ok "created $rc_file with PATH entry"
+            ok "created $rc_file with PATH entry for $LOCAL_BIN"
           elif ! grep -q '\.local/bin' "$rc_file" 2>/dev/null; then
             printf '\n%s\n' "# JARVIS launcher path" "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> "$rc_file"
             ok "appended PATH entry to $rc_file"
-          else
-            ok "$rc_file already has a .local/bin PATH entry"
           fi
-          sub "restart your shell or run: source $rc_file"
         fi
       fi
       ;;
@@ -928,10 +923,7 @@ install_system_packages() {
     warn "couldn't install ${need[*]} via $DISTRO pm (sudo? offline?)"
     # Fallback: cargo install ripgrep if missing
     if ! have rg && have cargo; then
-      sub "trying cargo install ripgrep..."
-      if cargo install ripgrep >/dev/null 2>&1; then
-        ok "ripgrep installed via cargo"
-      fi
+      cargo install ripgrep >/dev/null 2>&1 && ok "ripgrep installed via cargo"
     fi
   fi
 }
