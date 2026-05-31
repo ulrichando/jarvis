@@ -26,7 +26,7 @@ const EXPRESSION = [0, 1, 2, 3, 4, 20, 21, 39, 40]
 // Resting-face defaults — a friendly look at rest, not a wide-eyed stare.
 const SMILE_REST  = 0.28   // baseline mouthSmile (37/38): gentle default smile
 const EYELID_REST = 0.12   // baseline eyeBlink (13/14): upper lid relaxed toward the iris
-const HEAD_ROLL   = 0.087  // constant roll (rad, ~5°) to counter the GLB's baked head tilt (?roll= adds, dev)
+const HEAD_ROLL   = -0.095 // constant roll (rad) — levels the GLB's baked ~5.5° head tilt (measured; ?roll= adds, dev)
 
 function Head({ getWeights }) {
   const { scene } = useGLTF(MODEL_URL)
