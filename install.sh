@@ -20,6 +20,13 @@ readonly USER_SYSTEMD="$HOME/.config/systemd/user"
 
 INSTALL_DIR="${JARVIS_INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
 
+# ── Platform guard ─────────────────────────────────────────────────────────
+case "$(uname -s)" in
+  Linux)   ;;  # supported
+  Darwin)  die "macOS is not supported by this installer. Use the Windows installer (install.ps1) via a VM or WSL2 on a Windows host." ;;
+  *)       die "Unsupported platform: $(uname -s). JARVIS installers target Linux and Windows only." ;;
+esac
+
 # ── Output helpers ───────────────────────────────────────────────────────
 c_red()    { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 c_green()  { printf '\033[32m%s\033[0m\n' "$*"; }
