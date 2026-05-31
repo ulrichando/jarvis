@@ -134,3 +134,4 @@ psutil~=7.0
 pywinauto>=0.6.8; platform_system == "Windows"
 
 cmudict~=1.1  # offline CMU pronunciation dictionary for viseme lip-sync (no model/torch)
+vaderSentiment~=3.3  # offline lexicon sentiment for the face expression layer (no model/torch)
