@@ -46,6 +46,17 @@ check "_interactive false when SKIP_SETUP=1"     '! ( JARVIS_SKIP_SETUP=1 _inter
 TTYF="$T1/answers"; printf 'x\n' > "$TTYF"
 check "_interactive true with readable _JARVIS_TTY" '( _JARVIS_TTY="$TTYF" JARVIS_NONINTERACTIVE=0 JARVIS_DRY_RUN=0 JARVIS_SKIP_SETUP=0 _interactive )'
 
+# Genuinely headless (no controlling terminal): `[ -r /dev/tty ]` passes via
+# access() but `exec 3</dev/tty` fails ENXIO — _interactive must NOT false-
+# positive into the interactive branch. setsid drops the controlling tty.
+if command -v setsid >/dev/null 2>&1; then
+  setsid bash -c "source '$REPO/install.sh' >/dev/null 2>&1; set +eu; _interactive" </dev/null >/dev/null 2>&1
+  HEADLESS_RC=$?
+  check "_interactive false when headless (setsid, /dev/tty unopenable)" '[ "$HEADLESS_RC" -ne 0 ]'
+else
+  echo "ok - _interactive headless test skipped (no setsid)"
+fi
+
 printf 'typed\n' > "$TTYF"
 check "_ask returns typed value" '[ "$(_JARVIS_TTY="$TTYF" _ask "p: " def)" = typed ]'
 printf '\n' > "$TTYF"

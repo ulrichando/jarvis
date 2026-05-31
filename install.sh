@@ -85,8 +85,14 @@ _interactive() {
   [ "${JARVIS_DRY_RUN:-0}" = "1" ]        && return 1
   [ "${JARVIS_SKIP_SETUP:-0}" = "1" ]     && return 1
   [ -t 0 ] && return 0
-  [ -r "$(_tty_path)" ] && return 0
-  return 1
+  # The device node /dev/tty exists even in a genuinely headless context
+  # (cron/docker/systemd), and `[ -r /dev/tty ]` passes access() but `exec 3<...`
+  # then fails with ENXIO because there is no controlling terminal. Probe
+  # with a disposable subshell that tries the actual open — if it fails we take
+  # the clean non-interactive branch rather than false-positiving into prompts
+  # that will no-op to defaults while emitting scary "No such device" noise.
+  local tty; tty="$(_tty_path)"
+  ( exec 3<"$tty" ) 2>/dev/null || return 1
 }
 
 # Open (once) a persistent read fd on the tty path so sequential prompts
