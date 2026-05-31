@@ -4,9 +4,9 @@ import { useGLTF, Center } from '@react-three/drei'
 import * as THREE from 'three'
 
 // JARVIS's face rendered IN the kiosk with WebGL — no Blender at runtime.
-// Loads a GLB of the FaceCap head (exported once from Blender, includes the
-// jawOpen morph at target index 24) and drives that morph from a jaw value
-// supplied each frame by getJaw() (0..1). No per-frame React state.
+// Loads a GLB of the FaceCap head (exported once from Blender, includes ARKit
+// viseme morphs) and drives mouth morphs from per-frame weights supplied by
+// getWeights() ({target_N: 0..1}). No per-frame React state.
 const MODEL_URL = '/jarvis_head.glb'
 useGLTF.preload(MODEL_URL)
 
@@ -14,20 +14,20 @@ useGLTF.preload(MODEL_URL)
 const HEAD_ROT = [Math.PI / 2, 0, 0]  // radians, applied to the head group
 const SKIN_TINT = '#cf9468'           // warm golden-caramel (multiplies texture)
 
-function Head({ getJaw }) {
+function Head({ getWeights }) {
   const { scene } = useGLTF(MODEL_URL)
   const headRef = useRef(null)
-  const jawIdxRef = useRef(null)
+  const idxByTargetRef = useRef({})   // 'target_24' -> influence index
 
-  // Find the head mesh (the one carrying the jaw morph), tint the skin.
+  // Find the head mesh (carries the jaw morph), build the target->index
+  // map once, tint the skin, set a static eyeWide pose.
   useMemo(() => {
     scene.traverse((o) => {
       if (!o.isMesh) return
       o.frustumCulled = false
       if (o.morphTargetDictionary && 'target_24' in o.morphTargetDictionary) {
         headRef.current = o
-        jawIdxRef.current = o.morphTargetDictionary['target_24']
-        // open the eyes a touch (ARKit eyeWide = target_17/18) — static pose
+        idxByTargetRef.current = o.morphTargetDictionary
         const inf = o.morphTargetInfluences
         const eL = o.morphTargetDictionary['target_17']
         const eR = o.morphTargetDictionary['target_18']
@@ -44,13 +44,20 @@ function Head({ getJaw }) {
 
   useFrame(() => {
     const h = headRef.current
-    const idx = jawIdxRef.current
-    if (h && idx != null && h.morphTargetInfluences) {
-      const target = Math.max(0, Math.min(1, getJaw ? getJaw() : 0))
-      const cur = h.morphTargetInfluences[idx] || 0
-      // open faster than close, like speech
-      const k = target > cur ? 0.4 : 0.25
-      h.morphTargetInfluences[idx] = cur + (target - cur) * k
+    if (!h || !h.morphTargetInfluences) return
+    const dict = idxByTargetRef.current
+    const targets = (getWeights && getWeights()) || {}
+    // Mouth/viseme morphs we drive every frame (eyes/brows excluded so the
+    // static eyeWide + idle blinks aren't fought).
+    const MOUTH = [24, 28, 29, 36, 37, 38, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+    for (const n of MOUTH) {
+      const key = 'target_' + n
+      const i = dict[key]
+      if (i == null) continue
+      const target = Math.max(0, Math.min(1, targets[key] || 0))
+      const cur = h.morphTargetInfluences[i] || 0
+      const k = target > cur ? 0.4 : 0.25     // open fast, close slower
+      h.morphTargetInfluences[i] = cur + (target - cur) * k
     }
   })
 
@@ -63,7 +70,7 @@ function Head({ getJaw }) {
   )
 }
 
-export function FaceWebGL({ size, getJaw }) {
+export function FaceWebGL({ size, getWeights }) {
   return (
     <Canvas
       style={{ width: size, height: size, background: 'transparent' }}
@@ -75,7 +82,7 @@ export function FaceWebGL({ size, getJaw }) {
       <directionalLight position={[1.2, 1.4, 2.0]} intensity={2.2} color="#fff3e3" />
       <directionalLight position={[-1.4, 0.6, 1.2]} intensity={0.7} color="#a8d4ff" />
       <Suspense fallback={null}>
-        <Head getJaw={getJaw} />
+        <Head getWeights={getWeights} />
       </Suspense>
     </Canvas>
   )

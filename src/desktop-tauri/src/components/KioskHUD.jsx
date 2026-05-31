@@ -18,10 +18,10 @@ import { FaceWebGL } from '@/components/FaceWebGL'
 // Centering: explicit pixel offsets from window.innerWidth/innerHeight
 // (vw/vh resolve to a stale viewport on GTK fullscreen).
 const STATUS_URL = 'http://127.0.0.1:8767/status'
-const LEVEL_URL  = 'http://127.0.0.1:8767/level'
+const FACE_URL   = 'http://127.0.0.1:8767/face'
 const STATUS_POLL_MS = 500
-const LEVEL_POLL_MS  = 40        // ~25 fps; useFrame smooths between samples
-const JAW_GAIN = 6.0             // /level peaks ~0.17 on speech -> ~1.0 jaw
+const FACE_POLL_MS    = 33        // ~30 fps; useFrame smooths between samples
+const JAW_GAIN = 6.0              // fallback only: /face.weights empty -> jaw from level
 const AURA_SIZE = 448
 
 function deriveAgentState(s) {
@@ -36,8 +36,9 @@ function deriveAgentState(s) {
 export default function KioskHUD() {
   const [agentState, setAgentState] = useState('connecting')
   const [vp, setVp] = useState({ w: window.innerWidth, h: window.innerHeight })
-  // 0..1 jaw target, updated off-React by the /level poll (no per-frame state).
-  const jawRef = useRef(0)
+  // {target_N: 0..1} for the current frame, updated off-React by the /face
+  // poll (no per-frame re-render, per the reactor-removed rule).
+  const weightsRef = useRef({})
 
   // Track live viewport.
   useEffect(() => {
@@ -87,21 +88,22 @@ export default function KioskHUD() {
     return () => { cancelled = true; clearInterval(id) }
   }, [])
 
-  // Poll /level fast and drive the jaw (off-React — writes a ref, no re-render).
+  // Poll /face fast and drive the morphs (off-React — writes a ref).
   useEffect(() => {
     let cancelled = false
     const id = setInterval(async () => {
       try {
-        const r = await fetch(LEVEL_URL)
+        const r = await fetch(FACE_URL)
         const d = await r.json()
-        if (!cancelled) {
-          const jaw = (d.level || 0) * JAW_GAIN
-          jawRef.current = Math.max(0, Math.min(1, jaw))
-        }
+        if (cancelled) return
+        const w = d.weights && Object.keys(d.weights).length
+          ? d.weights
+          : { target_24: Math.max(0, Math.min(1, (d.level || 0) * JAW_GAIN)) }
+        weightsRef.current = w
       } catch {
-        if (!cancelled) jawRef.current = 0
+        if (!cancelled) weightsRef.current = {}
       }
-    }, LEVEL_POLL_MS)
+    }, FACE_POLL_MS)
     return () => { cancelled = true; clearInterval(id) }
   }, [])
 
@@ -139,7 +141,7 @@ export default function KioskHUD() {
           zIndex: 9999,
         }}
       >
-        <FaceWebGL size={AURA_SIZE} getJaw={() => jawRef.current} />
+        <FaceWebGL size={AURA_SIZE} getWeights={() => weightsRef.current} />
       </div>
       {/* Diagnostic readout */}
       <div
