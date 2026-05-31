@@ -18,6 +18,9 @@ function Head({ getWeights }) {
   const { scene } = useGLTF(MODEL_URL)
   const headRef = useRef(null)
   const idxByTargetRef = useRef({})   // 'target_24' -> influence index
+  const groupRef = useRef(null)        // head group, for sway
+  const blinkRef = useRef({ next: 2.0, t: -1 })  // next blink time, active start
+  const clockRef = useRef(0)
 
   // Find the head mesh (carries the jaw morph), build the target->index
   // map once, tint the skin, set a static eyeWide pose.
@@ -42,28 +45,52 @@ function Head({ getWeights }) {
     })
   }, [scene])
 
-  useFrame(() => {
+  useFrame((_, delta) => {
     const h = headRef.current
     if (!h || !h.morphTargetInfluences) return
     const dict = idxByTargetRef.current
+    const inf = h.morphTargetInfluences
     const targets = (getWeights && getWeights()) || {}
-    // Mouth/viseme morphs we drive every frame (eyes/brows excluded so the
-    // static eyeWide + idle blinks aren't fought).
     const MOUTH = [24, 28, 29, 36, 37, 38, 43, 44, 45, 46, 47, 48, 49, 50, 51]
     for (const n of MOUTH) {
       const key = 'target_' + n
       const i = dict[key]
       if (i == null) continue
       const target = Math.max(0, Math.min(1, targets[key] || 0))
-      const cur = h.morphTargetInfluences[i] || 0
-      const k = target > cur ? 0.4 : 0.25     // open fast, close slower
-      h.morphTargetInfluences[i] = cur + (target - cur) * k
+      const cur = inf[i] || 0
+      const k = target > cur ? 0.4 : 0.25
+      inf[i] = cur + (target - cur) * k
+    }
+
+    // ── idle life ──────────────────────────────────────────────
+    const now = (clockRef.current += delta)
+    // Blink: schedule every 3–6 s; a blink is a ~120 ms close→open.
+    const bl = dict['target_13'], br = dict['target_14']
+    const blink = blinkRef.current
+    if (blink.t < 0 && now >= blink.next) { blink.t = now }
+    let blinkVal = 0
+    if (blink.t >= 0) {
+      const p = (now - blink.t) / 0.12           // 0..1 over 120 ms
+      if (p >= 1) { blink.t = -1; blink.next = now + 3 + Math.random() * 3 }
+      else { blinkVal = Math.sin(p * Math.PI) }  // 0→1→0
+    }
+    if (bl != null) inf[bl] = blinkVal
+    if (br != null) inf[br] = blinkVal
+
+    // Head sway: gentle, damped while the mouth is active so it doesn't
+    // fight visemes.
+    const g = groupRef.current
+    if (g) {
+      const jaw = inf[dict['target_24']] || 0
+      const amp = (1 - Math.min(1, jaw * 2)) * 0.026   // ~±1.5° at rest
+      g.rotation.z = HEAD_ROT[2] + Math.sin(now * 0.6) * amp
+      g.rotation.y = Math.sin(now * 0.43) * amp * 0.6
     }
   })
 
   return (
     <Center>
-      <group rotation={HEAD_ROT}>
+      <group ref={groupRef} rotation={HEAD_ROT}>
         <primitive object={scene} />
       </group>
     </Center>
