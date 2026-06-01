@@ -61,7 +61,30 @@ impl WmctrlAdapter for RealWmctrl {
             ));
         }
         let text = String::from_utf8_lossy(&out.stdout);
+<<<<<<< HEAD
         Ok(parse_wmctrl_lgx(&text))
+=======
+        let mut windows = Vec::new();
+        for line in text.lines() {
+            // splitn(9, ws) so title (col 8) keeps embedded spaces.
+            let cols: Vec<&str> = line.splitn(9, char::is_whitespace).filter(|s| !s.is_empty()).collect();
+            if cols.len() < 9 {
+                continue;
+            }
+            let id = cols[0].to_string();
+            let x = cols[2].parse::<i32>().unwrap_or(0);
+            let y = cols[3].parse::<i32>().unwrap_or(0);
+            let w = cols[4].parse::<i32>().unwrap_or(0);
+            let h = cols[5].parse::<i32>().unwrap_or(0);
+            let wmc = cols[6].to_string();
+            let title = cols[8].to_string();
+            if id.is_empty() || wmc.is_empty() {
+                continue;
+            }
+            windows.push(WindowInfo { id, wm_class: wmc, title, x, y, w, h });
+        }
+        Ok(windows)
+>>>>>>> origin/master
     }
 
     fn minimize(&self, id: &str) -> Result<(), WmctrlError> {
@@ -130,6 +153,7 @@ fn window_on_monitor(w: &WindowInfo, bounds: Option<(i32, i32, i32, i32)>) -> bo
     cx >= mx && cx < mx + mw && cy >= my && cy < my + mh
 }
 
+<<<<<<< HEAD
 /// Parse `wmctrl -lGx` output into `WindowInfo`s.
 ///
 /// Columns: id, desktop, x, y, w, h, wm_class, machine, title. wmctrl
@@ -221,6 +245,8 @@ fn pick_monitor_index(
         .map(|(i, _)| i)
 }
 
+=======
+>>>>>>> origin/master
 pub fn enter_kiosk_impl<A: WmctrlAdapter>(
     adapter: &A,
     state: &mut Option<KioskSnapshot>,
@@ -408,6 +434,7 @@ pub fn mint_livekit_token(identity: String, room: String) -> Result<String, Stri
     Ok(resp_str[body_start + 4..].to_string())
 }
 
+<<<<<<< HEAD
 // ─── Kiosk window placement (X11 EWMH) ─────────────────────────────────────
 
 /// Find the freshly-spawned kiosk window's X11 id via the wmctrl adapter.
@@ -644,6 +671,8 @@ fn place_kiosk_fullscreen(target_x: i32, target_y: i32, w: u32, h: u32) {
         .output();
 }
 
+=======
+>>>>>>> origin/master
 // ─── Tauri commands ────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -721,10 +750,13 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
     let result = WebviewWindowBuilder::new(&app, "kiosk", WebviewUrl::App("index.html?route=kiosk".into()))
         .decorations(false)
         .transparent(false)
+<<<<<<< HEAD
         // Paint the window/webview black at creation so there's no white flash
         // before the page loads (the kiosk is opaque; default webview bg is
         // white). Pairs with the kiosk-route inline style in index.html.
         .background_color(tauri::webview::Color(0, 0, 0, 255))
+=======
+>>>>>>> origin/master
         .always_on_top(true)
         .focused(true)
         .skip_taskbar(true)
@@ -757,6 +789,7 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
         bridge_token.len()
     );
 
+<<<<<<< HEAD
     // Give the WM an initial position hint (harmless; the authoritative
     // placement happens via EWMH below). set_fullscreen is deliberately NOT
     // called here — on X11 it dispatches async through GTK→X11→WM and lands
@@ -764,6 +797,16 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
     // the builder spawns at (0,0) and xfwm4 constrains placement into
     // `_NET_WORKAREA`, which on a stacked multi-monitor layout EXCLUDES the
     // external display. That was the "select external → kiosk on laptop" bug.
+=======
+    // Set position so the WM knows which monitor this window lives on.
+    // Then size. We do NOT call Tauri's set_fullscreen here — on X11 the
+    // builder spawned the window at (0,0) (=eDP-1 / laptop on a typical
+    // laptop+monitor setup), and set_position/set_fullscreen are both async
+    // through GTK→X11→WM. The WM was racing the move and fullscreening on
+    // the original monitor, which produced the "click external → kiosk on
+    // laptop" swap. Instead we move+fullscreen via wmctrl after a short
+    // delay, on a background thread so the main loop isn't blocked.
+>>>>>>> origin/master
     let _ = kiosk_window.set_position(PhysicalPosition::<i32>::new(pos_x, pos_y));
     let _ = kiosk_window.set_size(PhysicalSize::<u32>::new(size_w, size_h));
 
@@ -772,6 +815,7 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
         monitor_idx, pos_x, pos_y, size_w, size_h, scale
     );
 
+<<<<<<< HEAD
     // Fullscreen on the SELECTED monitor on a background thread (so the main
     // loop isn't blocked while we wait for the WM to map the window). Primary
     // path is the EWMH `_NET_WM_FULLSCREEN_MONITORS` client message — race-free
@@ -779,6 +823,28 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
     // current position or the work area. Falls back to wmctrl if unavailable.
     std::thread::spawn(move || {
         place_kiosk_fullscreen(pos_x, pos_y, size_w, size_h);
+=======
+    let title = "J.A.R.V.I.S. \u{2014} kiosk".to_string();
+    std::thread::spawn(move || {
+        // Wait for the window to be mapped by the WM. Empirically ~80ms is
+        // enough on XFCE; we belt-and-suspenders with a second move+
+        // fullscreen pass after another short delay in case the first
+        // raced an unfinished map.
+        std::thread::sleep(std::time::Duration::from_millis(90));
+        let move_arg = format!("0,{},{},{},{}", pos_x, pos_y, size_w, size_h);
+        let _ = std::process::Command::new("wmctrl")
+            .args(["-r", &title, "-e", &move_arg])
+            .output();
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        let _ = std::process::Command::new("wmctrl")
+            .args(["-r", &title, "-b", "add,fullscreen,above"])
+            .output();
+        // Second pass — some WMs reset position on fullscreen toggle.
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        let _ = std::process::Command::new("wmctrl")
+            .args(["-r", &title, "-e", &move_arg])
+            .output();
+>>>>>>> origin/master
     });
 
     // 4. on_window_event handler — if the user kills the window directly
@@ -954,6 +1020,7 @@ mod tests {
     }
 
     #[test]
+<<<<<<< HEAD
     fn parse_wmctrl_lgx_extracts_padded_lines_and_spaced_titles() {
         // EXACT lines captured live (wmctrl right-aligns numerics with multiple
         // spaces). The old splitn(9) parser dropped these as len() < 9.
@@ -1111,6 +1178,8 @@ mod tests {
     }
 
     #[test]
+=======
+>>>>>>> origin/master
     fn enter_graceful_when_wmctrl_missing() {
         let mock = MockWmctrl::new(vec![]);
         *mock.list_fails_with.borrow_mut() = Some(WmctrlError::NotFound);

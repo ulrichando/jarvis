@@ -2,5 +2,18 @@
 # JARVIS CLI entry point — derives root from script location.
 # Do NOT hardcode user paths here.
 set -euo pipefail
+<<<<<<< HEAD
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 exec bash "$ROOT/src/cli/scripts/start.sh" "$@"
+=======
+
+JARVIS_ROOT="/home/ulrich/Documents/Projects/jarvis/src/cli"
+SCRIPTS="$JARVIS_ROOT/scripts"
+
+# `clear` only makes sense when stdout is a TTY (interactive launch). In
+# --print / dispatch_agent subprocess contexts stdout is a pipe and clear
+# exits 1 (esp. when TERM is unset), tripping `set -e` and killing the
+# launcher before the agent loop ever starts.
+[ -t 1 ] && clear || true
+exec bash "$SCRIPTS/start.sh" "$@"
+>>>>>>> origin/master

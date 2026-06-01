@@ -6,6 +6,7 @@ Plan: docs/superpowers/plans/2026-05-27-voice-agent-subagent-dispatch.md
 Single registered tool ``dispatch_agent`` that runs
 ``bin/jarvis --print --agent <type> "<task>"`` as a subprocess to handle one of
 four named CLI agent types: Explore, researcher, code-reviewer, Plan.
+<<<<<<< HEAD
 
 Two delivery modes:
   - **foreground** (default) — synchronous wait with per-type timeout; the
@@ -22,14 +23,21 @@ Two delivery modes:
     separately in their own receive loops). Spec:
     docs/superpowers/specs/2026-05-30-direct-mode-nonblocking-tools-design.md
     (companion fix — supervisor side).
+=======
+Synchronous wait with per-type timeout; a front-loaded ack phrase plays via
+the existing _front_loaded_ack pipeline so the user isn't stranded in silence.
+>>>>>>> origin/master
 
 Environment overrides (operator tuning):
   JARVIS_DISPATCH_AGENT_TIMEOUT_EXPLORE_S       (default 30)
   JARVIS_DISPATCH_AGENT_TIMEOUT_RESEARCHER_S    (default 90)
   JARVIS_DISPATCH_AGENT_TIMEOUT_CODE_REVIEWER_S (default 60)
   JARVIS_DISPATCH_AGENT_TIMEOUT_PLAN_S          (default 60)
+<<<<<<< HEAD
   JARVIS_DISPATCH_AGENT_BG_TIMEOUT_S            (default 600 — background runs)
   JARVIS_BG_TASK_MAX                            (default 3 — concurrent bg cap)
+=======
+>>>>>>> origin/master
 """
 from __future__ import annotations
 
@@ -38,11 +46,17 @@ import json
 import logging
 import os
 import time
+<<<<<<< HEAD
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from pipeline import background_tasks
+=======
+from pathlib import Path
+from typing import Any, Dict
+
+>>>>>>> origin/master
 from .registry import registry, tool_error
 
 logger = logging.getLogger("jarvis.dispatch_agent")
@@ -51,10 +65,13 @@ logger = logging.getLogger("jarvis.dispatch_agent")
 # tools/ -> voice-agent/ -> src/ -> project root -> bin/jarvis
 _BIN_JARVIS = Path(__file__).resolve().parents[3] / "bin" / "jarvis"
 
+<<<<<<< HEAD
 # Where a background task's FULL result is stashed when it's too long to voice
 # in one breath (the spoken announcement carries a summary + a pointer here).
 _BG_RESULTS_DIR = Path(os.path.expanduser("~/.local/share/jarvis/background_tasks"))
 
+=======
+>>>>>>> origin/master
 # Per-type policy. cli_agent is the exact string bin/jarvis --agent expects
 # (per the project's agent registry — verified via bin/jarvis --help).
 _POLICY: Dict[str, Dict[str, Any]] = {
@@ -87,10 +104,14 @@ _POLICY: Dict[str, Dict[str, Any]] = {
 # Single-slot session-id tracker. The agent updates this on every turn start;
 # the dispatcher snapshots it at dispatch time and compares on completion. A
 # swap means the user's turn has been abandoned (barge-in / new conversation)
+<<<<<<< HEAD
 # and the in-flight subagent result should be discarded. NOTE: this only
 # applies to the FOREGROUND path — a background task is explicitly allowed to
 # outlive the turn that started it (that's the whole point), so it never
 # consults the session token.
+=======
+# and the in-flight subagent result should be discarded.
+>>>>>>> origin/master
 _active_session_token: list = [None]
 
 # Side-channel for the agent's _on_function_tools_executed observer.
@@ -101,7 +122,11 @@ _active_session_token: list = [None]
 _last_dispatch: dict = {
     "type": None,    # e.g. "explore" / "researcher" / "code_reviewer" / "plan"
     "ms": None,      # elapsed milliseconds (always populated on exit)
+<<<<<<< HEAD
     "status": None,  # "success"/"timeout"/"error"/"aborted"/"cancelled"/"crashed"/"spawn_failed"/"background_started"
+=======
+    "status": None,  # "success" / "timeout" / "error" / "aborted" / "cancelled" / "crashed" / "spawn_failed"
+>>>>>>> origin/master
 }
 
 
@@ -119,6 +144,7 @@ def _timeout_for(subagent_type: str) -> float:
     return float(pol["default_timeout_s"])
 
 
+<<<<<<< HEAD
 def _bg_timeout() -> float:
     """Background runs get a far longer ceiling than foreground — they're not
     holding the turn open, so a multi-minute researcher/plan is fine."""
@@ -134,11 +160,14 @@ def _bg_timeout() -> float:
     return 600.0
 
 
+=======
+>>>>>>> origin/master
 def _build_argv(subagent_type: str, task: str) -> list[str]:
     cli_agent = _POLICY[subagent_type]["cli_agent"]
     return [str(_BIN_JARVIS), "--print", "--agent", cli_agent, task]
 
 
+<<<<<<< HEAD
 async def _reap(proc) -> None:
     """Best-effort SIGKILL + reap so a timed-out / crashed / cancelled
     subagent never runs orphaned for the rest of its timeout."""
@@ -201,6 +230,17 @@ async def handle_dispatch_agent(args: Dict[str, Any]) -> str:
     background-task watcher. See module docstring.
 
     EVERY foreground exit path writes:
+=======
+async def handle_dispatch_agent(args: Dict[str, Any]) -> str:
+    """Tool handler. Returns either the subagent's stdout (success) or a JSON
+    error object (timeout / non-zero exit / spawn-failure / aborted).
+
+    Front-loaded ack is fired separately by the voice-agent (jarvis_agent.py
+    reads the ack phrase off this module via per-type policy lookup); the
+    handler itself only owns subprocess lifecycle + timeout + telemetry.
+
+    EVERY exit path writes:
+>>>>>>> origin/master
       1. A `[dispatch_agent] exit type=X status=Y ms=Z` log line (try/finally)
       2. The module-level `_last_dispatch` dict — read by jarvis_agent.py's
          `_on_function_tools_executed` observer to capture subagent telemetry
@@ -209,7 +249,10 @@ async def handle_dispatch_agent(args: Dict[str, Any]) -> str:
     subagent_type = (args.get("subagent_type") or "").strip()
     task = (args.get("task") or "").strip()
     description = (args.get("description") or "").strip()
+<<<<<<< HEAD
     background = bool(args.get("background"))
+=======
+>>>>>>> origin/master
 
     # Quick-reject paths (don't write side-channel — these never spawned).
     if subagent_type not in _POLICY:
@@ -219,10 +262,13 @@ async def handle_dispatch_agent(args: Dict[str, Any]) -> str:
     if not task:
         return tool_error("task is required and must be non-empty")
 
+<<<<<<< HEAD
     if background:
         return _start_background(subagent_type, task, description)
 
     # ── Foreground (blocking) path ──────────────────────────────────
+=======
+>>>>>>> origin/master
     # Snapshot the active session token at dispatch time. If it changes by the
     # time the subprocess finishes, the turn was abandoned and we discard.
     dispatch_token = _active_session_token[0]
@@ -236,6 +282,7 @@ async def handle_dispatch_agent(args: Dict[str, Any]) -> str:
         f"description={description!r} task_chars={len(task)}"
     )
 
+<<<<<<< HEAD
     final_status = "unknown"
     try:
         try:
@@ -248,16 +295,76 @@ async def handle_dispatch_agent(args: Dict[str, Any]) -> str:
             final_status = "spawn_failed"
             return tool_error(f"could not start bin/jarvis: {detail}")
         if outcome == "timeout":
+=======
+    # Sentinel — overwritten on each known exit path. If somehow the
+    # function returns without setting this, the finally block logs
+    # "unknown" so we never lose the trace.
+    final_status = "unknown"
+
+    try:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as e:
+            final_status = "spawn_failed"
+            return tool_error(
+                f"could not start bin/jarvis: {type(e).__name__}: {e}"
+            )
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout_s,
+            )
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+>>>>>>> origin/master
             final_status = "timeout"
             return tool_error(
                 f"subagent {subagent_type} ran too long (>{int(timeout_s)}s); aborted"
             )
+<<<<<<< HEAD
         if outcome == "crashed":
             final_status = "crashed"
             logger.warning(
                 f"[dispatch_agent] communicate failed type={subagent_type}: {detail}"
             )
             return tool_error(f"subagent {subagent_type} crashed: {detail}")
+=======
+        except asyncio.CancelledError:
+            # Parent turn task was cancelled (typically a barge-in). Reap the
+            # subprocess before letting the cancellation propagate; otherwise
+            # the subagent runs orphaned for up to the per-type timeout.
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            final_status = "cancelled"
+            raise  # re-raise so livekit-agents knows the task was cancelled
+        except Exception as e:
+            # Catch BrokenPipeError, OSError, anything else from communicate().
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            final_status = "crashed"
+            logger.warning(
+                f"[dispatch_agent] communicate failed type={subagent_type}: "
+                f"{type(e).__name__}: {e}"
+            )
+            return tool_error(
+                f"subagent {subagent_type} crashed: {type(e).__name__}: {e}"
+            )
+>>>>>>> origin/master
 
         # Session-id drift check: if the active token changed during the run,
         # the user's turn is abandoned. Don't return the stale result.
@@ -269,11 +376,19 @@ async def handle_dispatch_agent(args: Dict[str, Any]) -> str:
                 "reason": "session swap during dispatch",
             })
 
+<<<<<<< HEAD
         if rc != 0:
             tail = (stderr.decode("utf-8", errors="replace") or "").strip()[-200:]
             final_status = "error"
             return tool_error(
                 f"subagent {subagent_type} failed (exit {rc}): {tail}"
+=======
+        if proc.returncode != 0:
+            tail = (stderr.decode("utf-8", errors="replace") or "").strip()[-200:]
+            final_status = "error"
+            return tool_error(
+                f"subagent {subagent_type} failed (exit {proc.returncode}): {tail}"
+>>>>>>> origin/master
             )
 
         text = stdout.decode("utf-8", errors="replace").strip()
@@ -289,6 +404,7 @@ async def handle_dispatch_agent(args: Dict[str, Any]) -> str:
         )
 
 
+<<<<<<< HEAD
 # ── Background mode ──────────────────────────────────────────────────
 
 def _start_background(subagent_type: str, task: str, description: str) -> str:
@@ -435,6 +551,8 @@ def _format_completion(label: str, text: str, task_id: str) -> str:
     return f"{lead} {summary}"
 
 
+=======
+>>>>>>> origin/master
 def get_ack_phrase(subagent_type: str) -> str | None:
     """Return the canned ack phrase for a subagent type, or None for unknown."""
     pol = _POLICY.get(subagent_type)
@@ -452,6 +570,7 @@ SCHEMA: Dict[str, Any] = {
         "  - 'researcher'     : deep web research (15-60s). Returns synthesized answer + sources.\n"
         "  - 'code_reviewer'  : review uncommitted diff against project rules (10-30s).\n"
         "  - 'plan'           : design how to implement a feature (10-30s).\n\n"
+<<<<<<< HEAD
         "background (optional, default false): set TRUE for a long task you "
         "want to run WITHOUT blocking the conversation — JARVIS replies "
         "immediately, keeps talking with the user, and voices the result when "
@@ -462,6 +581,11 @@ SCHEMA: Dict[str, Any] = {
         "DO NOT reply 'I'll look into that' WITHOUT actually calling this tool — "
         "claiming dispatch without dispatching is confab. When you start a "
         "background task, don't claim its RESULT until the watcher delivers it."
+=======
+        "DO NOT use for simple lookups the supervisor can handle directly. "
+        "DO NOT reply 'I'll look into that' WITHOUT actually calling this tool — "
+        "claiming dispatch without dispatching is confab."
+>>>>>>> origin/master
     ),
     "parameters": {
         "type": "object",
@@ -472,7 +596,10 @@ SCHEMA: Dict[str, Any] = {
             },
             "task":        {"type": "string", "description": "What the subagent should do, in 1-3 sentences"},
             "description": {"type": "string", "description": "Short 3-5 word label for telemetry"},
+<<<<<<< HEAD
             "background":  {"type": "boolean", "description": "Run without blocking the conversation; result is voiced when done. Default false."},
+=======
+>>>>>>> origin/master
         },
         "required": ["subagent_type", "task", "description"],
     },

@@ -148,7 +148,11 @@ class TestHappyPath:
         create = AsyncMock(return_value=fake)
         monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
 
+<<<<<<< HEAD
         out = _run({"task": "go to news.ycombinator.com and read the top story", "max_steps": 10})
+=======
+        out = _run({"task": "go to HN and read the top story", "max_steps": 10})
+>>>>>>> origin/master
 
         assert "Top story: Hello World" in out
         assert "4 browser steps" in out
@@ -178,7 +182,11 @@ class TestHappyPath:
         monkeypatch.setattr(asyncio, "create_subprocess_exec",
                             AsyncMock(return_value=fake))
 
+<<<<<<< HEAD
         out = _run({"task": "go to example.com and read the page"})
+=======
+        out = _run({"task": "x"})
+>>>>>>> origin/master
         assert "clean" in out
 
 
@@ -194,7 +202,11 @@ class TestFailurePaths:
         monkeypatch.setattr(asyncio, "create_subprocess_exec",
                             AsyncMock(return_value=fake))
 
+<<<<<<< HEAD
         out = _run({"task": "go to example.com and read the page"})
+=======
+        out = _run({"task": "x"})
+>>>>>>> origin/master
         assert "failed" in out.lower()
         assert "no LLM API key set" in out
 
@@ -204,7 +216,11 @@ class TestFailurePaths:
         monkeypatch.setattr(asyncio, "create_subprocess_exec",
                             AsyncMock(return_value=fake))
 
+<<<<<<< HEAD
         out = _run({"task": "go to example.com and read the page"})
+=======
+        out = _run({"task": "x"})
+>>>>>>> origin/master
         assert "timed out" in out.lower()
         # Hung runner must be reaped.
         fake.kill.assert_called_once()
@@ -215,7 +231,11 @@ class TestFailurePaths:
         monkeypatch.setattr(asyncio, "create_subprocess_exec",
                             AsyncMock(return_value=fake))
 
+<<<<<<< HEAD
         out = _run({"task": "go to example.com and read the page"})
+=======
+        out = _run({"task": "x"})
+>>>>>>> origin/master
         assert "no output" in out.lower()
 
     def test_garbled_stdout_returns_clean_error(self, monkeypatch):
@@ -224,7 +244,11 @@ class TestFailurePaths:
         monkeypatch.setattr(asyncio, "create_subprocess_exec",
                             AsyncMock(return_value=fake))
 
+<<<<<<< HEAD
         out = _run({"task": "go to example.com and read the page"})
+=======
+        out = _run({"task": "x"})
+>>>>>>> origin/master
         assert "unparseable" in out.lower()
 
     def test_spawn_failure_returns_clean_error(self, monkeypatch):
@@ -232,7 +256,11 @@ class TestFailurePaths:
         monkeypatch.setattr(asyncio, "create_subprocess_exec",
                             AsyncMock(side_effect=OSError("no exec")))
 
+<<<<<<< HEAD
         out = _run({"task": "go to example.com and read the page"})
+=======
+        out = _run({"task": "x"})
+>>>>>>> origin/master
         assert "failed to start" in out.lower()
 
     def test_empty_task_rejected_before_spawn(self, monkeypatch):
@@ -249,7 +277,11 @@ class TestFailurePaths:
                             lambda: Path("/nonexistent/python"))
         spawn = AsyncMock(side_effect=AssertionError("must not spawn"))
         monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+<<<<<<< HEAD
         out = _run({"task": "go to example.com and read the page"})
+=======
+        out = _run({"task": "real task"})
+>>>>>>> origin/master
         assert "unavailable" in out.lower()
         spawn.assert_not_called()
 

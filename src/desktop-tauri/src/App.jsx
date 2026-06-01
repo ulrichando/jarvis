@@ -3,7 +3,10 @@ import { invoke }  from '@tauri-apps/api/core'
 import { listen }  from '@tauri-apps/api/event'
 import ChatPanel   from './components/ChatPanel.jsx'
 import ChatPanelVscode from './components/ChatPanelVscode.jsx'
+<<<<<<< HEAD
 import { FaceWebGL } from './components/FaceWebGL.jsx'
+=======
+>>>>>>> origin/master
 import VoiceChatPanel from './components/VoiceChatPanel.jsx'
 import KeysSettings from './KeysSettings.jsx'
 import KioskHUD     from './components/KioskHUD.jsx'
@@ -25,6 +28,7 @@ const WS_URL = (() => {
   const tok = (typeof window !== 'undefined' && window.__JARVIS_LOCAL_API_TOKEN) || ''
   return tok ? `${base}&token=${encodeURIComponent(tok)}` : base
 })()
+<<<<<<< HEAD
 
 // Dev-only face preview (?route=faceonly). With ?jaw=N it forces a jaw value
 // for camera/look tuning; otherwise it polls /face exactly like the kiosk so
@@ -59,6 +63,8 @@ function FaceOnlyDev() {
     </div>
   )
 }
+=======
+>>>>>>> origin/master
 
 // ── Minimal WebSocket hook ────────────────────────────────────────────────
 function useJarvisWS(url) {
@@ -235,6 +241,7 @@ export default function App() {
     return <KioskHUD />
   }
 
+<<<<<<< HEAD
   // Dev-only: render JUST the WebGL face. With ?jaw=N it forces a jaw value
   // (look/camera tuning); otherwise it polls /level exactly like the kiosk, so
   // the lip-sync chain can be verified in a plain browser.
@@ -243,6 +250,8 @@ export default function App() {
     return <FaceOnlyDev />
   }
 
+=======
+>>>>>>> origin/master
   // ChatPanel now runs as its OWN decorated, non-transparent Tauri
   // WebviewWindow ("chat" label) — splits it out of the main transparent
   // overlay so the WebKitGTK ghost-frame compositor bug can't bleed old

@@ -40,7 +40,10 @@ _os.environ.setdefault("BROWSER_USE_LOGGING_LEVEL", "result")
 import asyncio
 import json
 import logging
+<<<<<<< HEAD
 import re
+=======
+>>>>>>> origin/master
 import sys
 import traceback
 from typing import Any, Optional
@@ -54,6 +57,7 @@ from typing import Any, Optional
 # dependencies to stderr, and keep a private handle to the genuine stdout for
 # the single result emission at the very end.
 _REAL_STDOUT = sys.stdout
+<<<<<<< HEAD
 
 # Max chars of browser-use's step log to keep for the result JSON's
 # ``stderr_tail`` (legible-failure surfacing — see plan Task 3, Step 3.6).
@@ -108,6 +112,12 @@ def _stderr_tail() -> str:
     return ""
 
 
+=======
+sys.stdout = sys.stderr  # any library print() now lands on stderr
+logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
+
+
+>>>>>>> origin/master
 def _emit(payload: dict) -> None:
     """Write exactly one compact JSON line to the genuine stdout, then flush."""
     _REAL_STDOUT.write(json.dumps(payload, ensure_ascii=False))
@@ -118,6 +128,7 @@ def _emit(payload: dict) -> None:
 # ---------------------------------------------------------------------------
 # LLM selection (env-driven; first available key wins)
 # ---------------------------------------------------------------------------
+<<<<<<< HEAD
 # Default model per provider — modest, fast models suited to a voice
 # assistant's "do a quick web task" use case. Overridable via env.
 # Priority: first present key wins. Kimi is preferred for browser tasks
@@ -127,10 +138,18 @@ _DEFAULT_MODELS = {
     "kimi": "kimi-k2.6",
     "openai": "gpt-4.1-mini",
     "anthropic": "claude-haiku-4-5",
+=======
+# Default model per provider — modest, fast, vision-capable models suited to a
+# voice assistant's "do a quick web task" use case. Overridable via env.
+_DEFAULT_MODELS = {
+    "anthropic": "claude-sonnet-4-5-20250929",
+    "openai": "gpt-4.1-mini",
+>>>>>>> origin/master
     "google": "gemini-2.0-flash",
 }
 
 
+<<<<<<< HEAD
 def _env_int(name: str, default: int) -> int:
     """Read a positive int env var, falling back to *default* on absent/garbage."""
     raw = _os.environ.get(name, "").strip()
@@ -195,15 +214,41 @@ def _available_llms() -> list:
         if model_override and not llms:
             model = model_override
         llms.append(ChatOpenAI(model=model, api_key=openai_key))
+=======
+def _build_llm():
+    """Return a configured browser_use Chat* LLM, or raise RuntimeError.
+
+    Picks the provider by the first present API key. The model id can be
+    overridden with ``JARVIS_BROWSER_MODEL``; otherwise a sane per-provider
+    default is used.
+    """
+    model_override = _os.environ.get("JARVIS_BROWSER_MODEL", "").strip() or None
+>>>>>>> origin/master
 
     anthropic_key = _os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if anthropic_key:
         from browser_use import ChatAnthropic
 
+<<<<<<< HEAD
         model = _DEFAULT_MODELS["anthropic"]
         if model_override and not llms:
             model = model_override
         llms.append(ChatAnthropic(model=model, api_key=anthropic_key))
+=======
+        return ChatAnthropic(
+            model=model_override or _DEFAULT_MODELS["anthropic"],
+            api_key=anthropic_key,
+        )
+
+    openai_key = _os.environ.get("OPENAI_API_KEY", "").strip()
+    if openai_key:
+        from browser_use import ChatOpenAI
+
+        return ChatOpenAI(
+            model=model_override or _DEFAULT_MODELS["openai"],
+            api_key=openai_key,
+        )
+>>>>>>> origin/master
 
     google_key = (
         _os.environ.get("GEMINI_API_KEY", "").strip()
@@ -212,6 +257,7 @@ def _available_llms() -> list:
     if google_key:
         from browser_use import ChatGoogle
 
+<<<<<<< HEAD
         model = _DEFAULT_MODELS["google"]
         if model_override and not llms:
             model = model_override
@@ -313,6 +359,17 @@ def _check_history_for_captcha(history) -> Optional[str]:
             return "CAPTCHA in step error"
 
     return None
+=======
+        return ChatGoogle(
+            model=model_override or _DEFAULT_MODELS["google"],
+            api_key=google_key,
+        )
+
+    raise RuntimeError(
+        "no LLM API key set (need one of ANTHROPIC_API_KEY / OPENAI_API_KEY / "
+        "GEMINI_API_KEY / GOOGLE_API_KEY)"
+    )
+>>>>>>> origin/master
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +391,7 @@ async def _run_task(
     """
     from browser_use import Agent, BrowserProfile
 
+<<<<<<< HEAD
     llms = _available_llms()
     if not llms:
         raise RuntimeError(
@@ -341,6 +399,9 @@ async def _run_task(
             "GEMINI_API_KEY / GOOGLE_API_KEY)"
         )
     llm = llms[0]
+=======
+    llm = _build_llm()
+>>>>>>> origin/master
     if cdp_url:
         # Remote CDP attach. headless/chromium_sandbox are irrelevant — the
         # browser is already running cloud-side; we only connect to it. The
@@ -358,6 +419,7 @@ async def _run_task(
         # avoids namespace-sandbox friction on locked-down hosts; a fresh
         # profile keeps runs hermetic.
         profile = BrowserProfile(headless=headless, chromium_sandbox=False)
+<<<<<<< HEAD
 
     # Reliability params — ONLY those confirmed present on 0.12.9's
     # Agent.__init__ (PARAMS_0_12_6.md). use_vision='auto' is in the
@@ -390,10 +452,17 @@ async def _run_task(
     if captcha_hint:
         logger.warning("browser_task: possible CAPTCHA detected (%s)", captcha_hint)
 
+=======
+    agent = Agent(task=task, llm=llm, browser_profile=profile)
+
+    history = await agent.run(max_steps=max_steps)
+
+>>>>>>> origin/master
     final = history.final_result()
     if final is None or (isinstance(final, str) and not final.strip()):
         final = "(no textual result returned by the browser agent)"
 
+<<<<<<< HEAD
     payload = {
         "ok": True,
         "result": str(final),
@@ -439,6 +508,13 @@ def _step_trace(history) -> list:
             }
         )
     return trace
+=======
+    return {
+        "ok": True,
+        "result": str(final),
+        "steps": int(history.number_of_steps()),
+    }
+>>>>>>> origin/master
 
 
 def _read_request() -> dict:
@@ -478,11 +554,18 @@ def main() -> None:
         _emit(result)
     except Exception as exc:  # noqa: BLE001 — always report as JSON, never crash out
         detail = f"{type(exc).__name__}: {exc}".strip()
+<<<<<<< HEAD
         # Print the traceback to (tee'd) stderr first so it's part of the tail,
         # then attach the captured stderr/step-log tail to the JSON so the parent
         # can surface a legible failure instead of a generic message.
         traceback.print_exc(file=sys.stderr)
         _emit({"ok": False, "error": detail, "stderr_tail": _stderr_tail()})
+=======
+        # Keep a short trailing snippet of the traceback for post-mortem on
+        # stderr; the parent only ever parses stdout.
+        traceback.print_exc(file=sys.stderr)
+        _emit({"ok": False, "error": detail})
+>>>>>>> origin/master
 
 
 if __name__ == "__main__":

@@ -54,11 +54,14 @@ if VOICE_AGENT_DIR not in sys.path:
 # Sanitizers MUST be imported before any LLM SDK code that builds
 # schemas — they install monkey-patches at import time.
 import sanitizers  # noqa: F401  (side-effect import — installs patches)
+<<<<<<< HEAD
 from direct_mode_idle import idle_revert_watch, revert_to_claude
 from reconnect_control import ReconnectController
 
 # jarvis-mode lives next to this script (same bin/ dir); used by the idle watcher.
 JARVIS_MODE_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jarvis-mode")
+=======
+>>>>>>> origin/master
 
 try:
     from google import genai
@@ -148,9 +151,12 @@ SPK_SAMPLE_RATE = 24000
 FRAME_INTERVAL_S = float(
     os.environ.get("JARVIS_GEMINI_TOOLS_FRAME_INTERVAL_S", "1.0")
 )
+<<<<<<< HEAD
 # English-pin: native-audio Live models infer output language from accent/tone
 # and drift (Google cookbook #1197). language_code is the documented pin.
 GEMINI_LANGUAGE = os.environ.get("JARVIS_GEMINI_LANGUAGE", "en-US")
+=======
+>>>>>>> origin/master
 # Gemini Live voices — defaulted to Orus (deeper, more masculine
 # male baritone, calmer pacing) per user feedback that Puck was too
 # light and too fast. If Orus still feels off, alternatives ordered
@@ -191,10 +197,17 @@ ALLOWED_TOOLS = {
 # assembly the supervisor uses, just leaner.
 OPS_BLOCK = (
     "═══ OPS RULES — GEMINI LIVE + TOOLS MODE ═══\n\n"
+<<<<<<< HEAD
     "RESPOND ONLY IN ENGLISH (en-US). NEVER infer or switch language from "
     "the user's accent, tone, names, or a mishearing — even if the audio "
     "sounds like another language, ALWAYS reply in English. Never reply in "
     "any language other than English unless explicitly asked to switch.\n\n"
+=======
+    "ALWAYS RESPOND IN ENGLISH. Even if the user's audio sounds like "
+    "another language or has an accent, transcribe and respond in "
+    "English unless explicitly asked to switch. Never reply in any "
+    "language other than English.\n\n"
+>>>>>>> origin/master
     "PACE: speak at a measured, deliberate pace — slower than your "
     "default. Use natural pauses between clauses. Don't rush. Brevity "
     "is good, but space the words out instead of compressing them.\n\n"
@@ -207,6 +220,7 @@ OPS_BLOCK = (
     "request, CALL the matching tool. Don't say 'I can't do that on "
     "this system' or 'I don't have access' — you do. The tools are "
     "live and run against Ulrich's real Linux desktop.\n\n"
+<<<<<<< HEAD
     "TOOL LADDER (use the highest that fits): 1) a dedicated API/tool "
     "if one exists → 2) browser_task (HEADLESS browser agent, "
     "invisible, DOM-aware, reports back) for web data/navigation — "
@@ -216,6 +230,8 @@ OPS_BLOCK = (
     "own desktop, or it's a native GUI app) → 4) raw clicks/keystrokes "
     "only as a last resort. For 'find/look up/check/search/read X on "
     "the web' use browser_task, NOT computer_use.\n\n"
+=======
+>>>>>>> origin/master
     "Stay in JARVIS's voice as described in the identity prompt above; "
     "speak in short, natural, decisive English phrases. Reference "
     "what's on screen when relevant without announcing the fact "
@@ -364,6 +380,7 @@ async def execute_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
         # is `(args: dict) -> str` or `(args, **kw)`), NOT unpacked
         # kwargs. Passing **args fails immediately on any handler that
         # doesn't accept those specific keys as named parameters.
+<<<<<<< HEAD
         #
         # Mirror tools/_adapter.py:143-158 — async handlers are awaited,
         # SYNC handlers run in a worker thread so a blocking tool (e.g.
@@ -377,6 +394,11 @@ async def execute_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
             # is still awaited rather than left as a coroutine object.
             if inspect.isawaitable(result):
                 result = await result
+=======
+        result = handler(args or {})
+        if inspect.isawaitable(result):
+            result = await result
+>>>>>>> origin/master
     except Exception as e:
         log.warning(f"[gemini-tools] {name} raised: {type(e).__name__}: {e}")
         return {"error": f"{type(e).__name__}: {e}"}
@@ -434,7 +456,10 @@ async def main() -> int:
         response_modalities=["AUDIO"],
         media_resolution="MEDIA_RESOLUTION_MEDIUM",
         speech_config=types.SpeechConfig(
+<<<<<<< HEAD
             language_code=GEMINI_LANGUAGE,
+=======
+>>>>>>> origin/master
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(
                     voice_name=VOICE_NAME,
@@ -490,6 +515,7 @@ async def main() -> int:
         f"(voice={VOICE_NAME}, tools={len(function_declarations)})…"
     )
 
+<<<<<<< HEAD
     # ── Persistent state (survives reconnects) ────────────────────────
     # parec/paplay pipes, the screen grabber, and the activity/audio
     # cells are opened ONCE and kept across reconnects. A reconnect
@@ -722,6 +748,152 @@ async def main() -> int:
             except Exception: pass
     try: sct.close()
     except Exception: pass
+=======
+    async with client.aio.live.connect(model=LIVE_MODEL, config=cfg) as session:
+        log.info("[gemini-tools] connected — talk to JARVIS. Ctrl-C to exit.")
+        status.set_agent_present(True)
+
+        mic_proc = await open_mic_stream()
+        spk_proc = await open_speaker_stream()
+        sct = mss.mss()
+        monitor = sct.monitors[0]
+
+        # Speaking-debouncer task — flips status.speaking back to False
+        # after SPEAKING_DEBOUNCE_S without an audio chunk arriving.
+        # `last_audio_at` is mutable across coroutines (no nonlocal
+        # needed; bound at this scope so the inner sets are visible).
+        last_audio_at = [0.0]  # monotonic seconds; 0.0 = no audio yet
+
+        async def speaking_debounce() -> None:
+            while not stop.is_set():
+                await asyncio.sleep(SPEAKING_DEBOUNCE_S / 2)
+                if last_audio_at[0] == 0.0:
+                    continue
+                if (loop.time() - last_audio_at[0]) >= SPEAKING_DEBOUNCE_S:
+                    if status._speaking:
+                        status.set_speaking(False)
+                        # When speech ends, the user can talk — flip
+                        # the listening indicator on. set_listening is
+                        # also flipped on per-mic-frame below; this
+                        # just covers the immediate post-speech moment.
+                        status.set_listening(True)
+
+        async def pump_mic() -> None:
+            assert mic_proc.stdout is not None
+            while not stop.is_set():
+                chunk = await mic_proc.stdout.readexactly(CHUNK_BYTES)
+                await session.send_realtime_input(
+                    audio=types.Blob(
+                        data=chunk,
+                        mime_type=f"audio/pcm;rate={MIC_SAMPLE_RATE}",
+                    ),
+                )
+
+        async def pump_screen() -> None:
+            while not stop.is_set():
+                try:
+                    jpeg = await asyncio.to_thread(grab_screen_jpeg, sct, monitor)
+                    await session.send_realtime_input(
+                        video=types.Blob(data=jpeg, mime_type="image/jpeg"),
+                    )
+                except Exception as e:
+                    log.warning(f"[gemini-tools] screen send failed: {e}")
+                await asyncio.sleep(FRAME_INTERVAL_S)
+
+        async def drain_replies() -> None:
+            assert spk_proc.stdin is not None
+            while not stop.is_set():
+                async for msg in session.receive():
+                    # Tool calls — Gemini wants us to run a function.
+                    tool_call = getattr(msg, "tool_call", None)
+                    if tool_call is not None and getattr(tool_call, "function_calls", None):
+                        status.set_tool_running(True)
+                        responses: list[types.FunctionResponse] = []
+                        for fc in tool_call.function_calls:
+                            name = fc.name
+                            args = dict(fc.args or {})
+                            log.info(f"[gemini-tools] → {name}({args})")
+                            result = await execute_tool(name, args)
+                            log.info(
+                                f"[gemini-tools]   {name} ← "
+                                f"{json.dumps(result)[:200] if not isinstance(result, str) else result[:200]}"
+                            )
+                            responses.append(types.FunctionResponse(
+                                id=getattr(fc, "id", None),
+                                name=name,
+                                response=result if isinstance(result, dict) else {"result": result},
+                            ))
+                        await session.send_tool_response(function_responses=responses)
+                        status.set_tool_running(False)
+                        continue
+
+                    # Audio output → paplay. Flip indicator state on
+                    # the FIRST chunk of a reply; the debounce task
+                    # flips it back when the chunks stop arriving.
+                    if msg.data:
+                        if not status._speaking:
+                            status.set_speaking(True)
+                            status.set_listening(False)
+                            status.set_agent_thinking(False)
+                        last_audio_at[0] = loop.time()
+                        try:
+                            spk_proc.stdin.write(msg.data)
+                            await spk_proc.stdin.drain()
+                        except (BrokenPipeError, ConnectionResetError):
+                            log.warning("[gemini-tools] paplay pipe closed")
+                            return
+                    if msg.text:
+                        print(msg.text, end="", flush=True)
+                    if msg.server_content is not None:
+                        ot = msg.server_content.output_transcription
+                        if ot and ot.text:
+                            print(ot.text, end="", flush=True)
+
+        # Listening defaults to True once the session is up — Gemini
+        # Live's server-side VAD owns turn-taking, and we don't get an
+        # explicit "user speech started" event, so the indicator stays
+        # green/cyan whenever the model isn't currently speaking. The
+        # `set_speaking(True)` path above flips it off; the debouncer
+        # task flips it back on when audio stops.
+        status.set_listening(True)
+
+        tasks = [
+            asyncio.create_task(pump_mic(),         name="mic"),
+            asyncio.create_task(pump_screen(),      name="screen"),
+            asyncio.create_task(drain_replies(),    name="replies"),
+            asyncio.create_task(speaking_debounce(), name="speaking-debounce"),
+            asyncio.create_task(stop.wait(),        name="stop"),
+        ]
+        try:
+            done, pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            for t in pending:
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+            for t in done:
+                exc = t.exception()
+                if exc and not isinstance(exc, asyncio.CancelledError):
+                    log.warning(
+                        f"[gemini-tools] task {t.get_name()!r} raised: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+        finally:
+            log.info("[gemini-tools] stopping audio + screen subprocesses…")
+            for proc in (mic_proc, spk_proc):
+                try:
+                    proc.terminate()
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
+                except (asyncio.TimeoutError, ProcessLookupError):
+                    try: proc.kill()
+                    except Exception: pass
+            try: sct.close()
+            except Exception: pass
+>>>>>>> origin/master
 
     try:
         await status.stop()

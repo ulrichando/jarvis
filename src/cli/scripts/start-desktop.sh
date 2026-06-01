@@ -206,6 +206,7 @@ for i in $(seq 1 15); do
 done
 echo "[jarvis] bridge up on :8765"
 
+<<<<<<< HEAD
 # ── Wait for the voice path to be READY (not just the services "active") ──
 # `systemctl is-active` (above) only confirms the process is running; the
 # voice-agent and voice-client both signal systemd READY=1 BEFORE the worker
@@ -233,6 +234,8 @@ if [ "$voice_ready" != 1 ]; then
   echo "[jarvis] WARN: voice path not ready after ${VOICE_READY_TIMEOUT}s — launching desktop anyway (voice may still come up; check: tail -f ~/.local/share/jarvis/logs/voice-agent.log)" >&2
 fi
 
+=======
+>>>>>>> origin/master
 # ── Launch desktop ────────────────────────────────────────────────────
 if [ ! -x "$DESKTOP_BIN" ]; then
   echo "[jarvis] desktop binary not found at $DESKTOP_BIN"
@@ -246,6 +249,7 @@ echo "[jarvis] launching desktop..."
 # bun child), then TERM the bridge. pkill -P catches any straggler
 # child of the supervisor if its trap raced the parent's kill.
 trap "kill $PROXY_SUP_PID $BRIDGE_PID 2>/dev/null; pkill -P $PROXY_SUP_PID 2>/dev/null" EXIT
+<<<<<<< HEAD
 # WebKit rendering for tauri:// custom protocol on Linux:
 # - Hardware-accelerated compositing is LEFT ON: we deliberately do NOT
 #   set WEBKIT_DISABLE_COMPOSITING_MODE. The kiosk's WebGL aura-ring
@@ -260,9 +264,24 @@ trap "kill $PROXY_SUP_PID $BRIDGE_PID 2>/dev/null; pkill -P $PROXY_SUP_PID 2>/de
 #   its OWN opaque WebviewWindow. If overlay ghosting returns, either
 #   re-add `WEBKIT_DISABLE_COMPOSITING_MODE=1 \` below (the kiosk aura
 #   will lag again) or switch the kiosk to a non-WebGL visualizer.
+=======
+# WebKit workarounds for tauri:// custom protocol on Linux:
+# - WEBKIT_DISABLE_COMPOSITING_MODE=1: required for transparent overlay
+#   windows on XFCE/X11 (and many other Linux setups). Without it,
+#   WebKitGTK's compositor fails to invalidate the alpha-channel
+#   framebuffer on partial repaints, so old frames bleed through as
+#   "after-image" ghosting whenever the ChatPanel scrolls or remounts.
+#   This is the documented fix per tauri#10566, tauri#12800, tauri#13157,
+#   and what Cursor's Linux build ships. Cost: disables accelerated
+#   compositing inside the webview, which is fine for an HUD/chat UI.
+>>>>>>> origin/master
 # - WEBKIT_DISABLE_DMABUF_RENDERER was previously set here to "fix
 #   blank/error pages" but per tauri#14924 it is itself a known *cause*
 #   of transparent-window ghosting on some Mesa/Nvidia stacks. Removed
 #   2026-05-29 after research; add back only if blank pages reappear.
 DISPLAY=${DISPLAY:-:0} \
+<<<<<<< HEAD
+=======
+  WEBKIT_DISABLE_COMPOSITING_MODE=1 \
+>>>>>>> origin/master
   "$DESKTOP_BIN"

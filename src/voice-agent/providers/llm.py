@@ -940,6 +940,7 @@ _ANTH_DEFAULT_PER_ROUTE: dict[str, tuple[str, str, float]] = {
 }
 
 
+<<<<<<< HEAD
 def resolve_route_primary_model(route: str) -> str:
     """Public: resolve a route's PRIMARY supervisor model id (rung-1 only).
 
@@ -965,6 +966,8 @@ def resolve_route_primary_model(route: str) -> str:
     return spec_default or default_model
 
 
+=======
+>>>>>>> origin/master
 # Routes where the supervisor MUST call a tool — narration-only replies on
 # these are categorically confab. Set via tool_choice="required" on the
 # primary LLM construction; Anthropic maps "required" → {"type":"any"} per

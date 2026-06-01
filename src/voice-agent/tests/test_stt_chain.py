@@ -78,11 +78,16 @@ def test_deepgram_construction_failure_falls_through(monkeypatch):
     monkeypatch.setenv("DEEPGRAM_API_KEY", "test-deepgram")
     monkeypatch.setenv("GROQ_API_KEY", "test-groq")
     from providers.stt import build_stt_chain, BreakeredGroqSTT
+<<<<<<< HEAD
     from providers import stt as _stt_mod
     # Deepgram is now constructed via the language-pinning subclass _DeepgramSTT
     # (so the FallbackAdapter recovery path can't crash on a None language) —
     # patch THAT to simulate a construction failure.
     with patch.object(_stt_mod, "_DeepgramSTT", side_effect=RuntimeError("simulated init fail")):
+=======
+    from livekit.plugins import deepgram as _dg_mod
+    with patch.object(_dg_mod, "STT", side_effect=RuntimeError("simulated init fail")):
+>>>>>>> origin/master
         chain = build_stt_chain()
     assert isinstance(chain, BreakeredGroqSTT)
 
