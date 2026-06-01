@@ -992,16 +992,11 @@ def _mark_thinking_end() -> None:
 # it re-touches _AGENT_THINKING_FILE every `interval_s` seconds — the
 # desktop's 60s TTL becomes a generous floor instead of the operative
 # expiry.
-<<<<<<< HEAD
 async def _thinking_heartbeat(interval_s: float = 3.0, *, session=None) -> None:
-=======
-async def _thinking_heartbeat(interval_s: float = 3.0) -> None:
->>>>>>> origin/master
     """Touch _AGENT_THINKING_FILE every `interval_s` seconds.
 
     On cancellation, unlinks the file so the desktop indicator goes
     green immediately. Idempotent: external unlinks are repaired on
-<<<<<<< HEAD
     the next tick.
 
     Orphan watchdog (2026-05-30): when `session` is given, the heartbeat
@@ -1028,11 +1023,6 @@ async def _thinking_heartbeat(interval_s: float = 3.0) -> None:
                     )
                     _mark_thinking_end()
                     return
-=======
-    the next tick."""
-    try:
-        while True:
->>>>>>> origin/master
             _mark_thinking_start()
             await asyncio.sleep(interval_s)
     except asyncio.CancelledError:
@@ -1047,16 +1037,10 @@ def _start_thinking_heartbeat(session, interval_s: float = 3.0) -> None:
     prior = getattr(session, "_jarvis_thinking_heartbeat", None)
     if prior is not None and not prior.done():
         prior.cancel()
-<<<<<<< HEAD
     _bump_turn_activity(session)  # fresh progress clock for the new turn
     try:
         session._jarvis_thinking_heartbeat = asyncio.create_task(
             _thinking_heartbeat(interval_s=interval_s, session=session)
-=======
-    try:
-        session._jarvis_thinking_heartbeat = asyncio.create_task(
-            _thinking_heartbeat(interval_s=interval_s)
->>>>>>> origin/master
         )
     except Exception as _e:
         logger.debug(f"[heartbeat] start failed: {_e}")
@@ -1073,7 +1057,6 @@ def _cancel_thinking_heartbeat(session) -> None:
     session._jarvis_thinking_heartbeat = None
 
 
-<<<<<<< HEAD
 # Grace before the agent_state-idle backstop cancels the thinking
 # heartbeat (see _on_agent_state). The normal cancel lives in _on_item
 # (final-reply detection), but a turn can end with NO final assistant
@@ -1167,8 +1150,6 @@ def _cancel_pending_idle_heartbeat_cancel(session) -> None:
     session._jarvis_thinking_idle_cancel_task = None
 
 
-=======
->>>>>>> origin/master
 # Per-turn tool-call governor. Without this, the LLM can chain
 # run_jarvis_cli calls indefinitely — observed: misinterpreted user
 # question → CLI #1 ran for 24 s → LLM chained CLI #2 ("fix the
@@ -3850,7 +3831,6 @@ class JarvisAgent(Agent):
         # Base Agent.on_exit is a no-op pass; preserve the contract.
         await super().on_exit()
 
-<<<<<<< HEAD
     async def llm_node(self, chat_ctx, tools, model_settings):
         """Vision-feedback loop (P2a): before generating, inject the post-action
         screen (pixels for a vision-capable model, else a text description) into
@@ -3896,11 +3876,6 @@ class JarvisAgent(Agent):
             computer_use_vision.clear()
         except Exception:
             pass
-=======
-    async def on_user_turn_completed(
-        self, turn_ctx: ChatContext, new_message: ChatMessage,
-    ) -> None:
->>>>>>> origin/master
         # Computer-use safety-confirm channel: if the subagent is
         # waiting on a user yes/no, parse the transcript and resolve
         # its Future. Don't continue normal turn processing — the
@@ -5164,14 +5139,11 @@ def _register_state_tracking_handlers(session) -> None:
     def _on_agent_state(ev) -> None:
         new_state = getattr(ev, "new_state", None)
         old_state = getattr(ev, "old_state", None)
-<<<<<<< HEAD
         # Any return to active work aborts a pending idle backstop-cancel
         # of the thinking heartbeat (scheduled in the idle/listening branch
         # below) — the turn isn't over after all.
         if new_state in ("thinking", "speaking"):
             _cancel_pending_idle_heartbeat_cancel(session)
-=======
->>>>>>> origin/master
         if new_state == "thinking":
             # Heartbeat owns _AGENT_THINKING_FILE now (started in
             # _on_user_input). Don't touch the file here — the framework's
@@ -5268,7 +5240,6 @@ def _register_state_tracking_handlers(session) -> None:
                 session._jarvis_front_ack_task = None
             except Exception:
                 pass
-<<<<<<< HEAD
             # Backstop heartbeat cancel (2026-05-30). _on_item normally
             # cancels the thinking heartbeat on the final assistant reply,
             # but a turn can end with NO final item — e.g. the framework
@@ -5279,8 +5250,6 @@ def _register_state_tracking_handlers(session) -> None:
             # the framework's transient sub-second "listening" between tool
             # calls doesn't cancel mid-turn.
             _schedule_idle_heartbeat_cancel(session)
-=======
->>>>>>> origin/master
 
         # total_audio_ms tracking: accumulate every "speaking" segment
         # within a turn. Multi-segment turn (speaking → thinking →
@@ -5380,10 +5349,7 @@ def _register_state_tracking_handlers(session) -> None:
             calls = list(getattr(ev, "function_calls", None) or [])
             if not calls:
                 return
-<<<<<<< HEAD
             _bump_turn_activity(session)  # tool batch ran = genuine turn progress
-=======
->>>>>>> origin/master
             # Tool-batch completion is no longer a moment we need to
             # re-touch the thinking-flag file — the heartbeat (started
             # in _on_user_input) refreshes it every 3s for the whole
@@ -6173,10 +6139,7 @@ async def entrypoint(ctx: JobContext) -> None:
             except Exception:
                 pass
             if role == "assistant":
-<<<<<<< HEAD
                 _bump_turn_activity(session)  # assistant reply landed = turn progress
-=======
->>>>>>> origin/master
                 # Use the pure classifier to decide what kind of
                 # assistant item this is and how to handle it:
                 #   final_reply / benign_empty → cancel heartbeat (turn done)
@@ -6723,7 +6686,6 @@ async def entrypoint(ctx: JobContext) -> None:
         tools=load_all_livekit_tools(),
     )
 
-<<<<<<< HEAD
     # Give llm_node a handle to the per-route DispatchingLLM for the vision gate's
     # best-effort active-model detection (P2a). Defaults to pixels if absent.
     try:
@@ -6731,8 +6693,6 @@ async def entrypoint(ctx: JobContext) -> None:
     except Exception:
         pass
 
-=======
->>>>>>> origin/master
     # Pre-TTS confab gate (2026-05-24) — wire the LLM factory + tool_specs
     # the gate's retry chain needs. The factory builds a runner for ANY
     # model id from the SPEECH_MODELS registry; the runner uses livekit-
@@ -6886,7 +6846,6 @@ async def entrypoint(ctx: JobContext) -> None:
 
     asyncio.create_task(_cron_pending_watcher())
 
-<<<<<<< HEAD
     # ── Background-task completion watcher ────────────────────────
     # In-session fire-and-forget delivery: dispatch_agent(background=True)
     # spawns a long subagent and drops a spoken announcement into
@@ -6914,8 +6873,6 @@ async def entrypoint(ctx: JobContext) -> None:
 
     asyncio.create_task(_background_task_watcher(), name="bg-task-watcher")
 
-=======
->>>>>>> origin/master
     # Spec B (Plane 3) — pattern detector + spawner background loop.
     # Reads turn_telemetry.db every N seconds (default 30 min), emits
     # intents to ~/.jarvis/auto-mods/queue.jsonl on threshold crossings,

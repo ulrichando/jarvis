@@ -28,22 +28,14 @@ import socket
 import json
 import subprocess
 import time
-<<<<<<< HEAD
 import os
 import sys
 import re
 import signal
-=======
-import math
-import os
-import sys
-import re
->>>>>>> origin/master
 import logging
 import threading
 from pathlib import Path
 
-<<<<<<< HEAD
 # Make `animators` importable whether this is run as a script
 # (python animators/blender_face.py), a module (-m animators.blender_face),
 # or imported — the script's own dir is animators/, so its parent (the
@@ -54,8 +46,6 @@ from animators import face_anim_core as fac
 from animators import blender_scene_setup, blender_frame_server
 from animators.loudness_monitor import LoudnessMonitor
 
-=======
->>>>>>> origin/master
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [face-anim] %(levelname)s %(message)s",
@@ -76,7 +66,6 @@ FRAME_INTERVAL = float(os.getenv("FRAME_INTERVAL", "0.033"))  # ~30 fps
 # Orpheus WAV: 24kHz mono 16-bit = 48,000 bytes/second
 ORPHEUS_BYTES_PER_SEC = 48000
 
-<<<<<<< HEAD
 # Jaw smoothing (asymmetric: opens faster than it closes — reads as speech).
 JAW_SMOOTH_ATTACK = 0.20  # how fast jaw opens when speech starts
 JAW_SMOOTH_DECAY = 0.12  # how fast jaw closes when speech ends
@@ -102,22 +91,6 @@ def write_shapes(values):
         os.replace(tmp, SHAPES_PATH)
     except OSError:
         pass
-=======
-# Animation constants
-JAW_SMOOTH_ATTACK = 0.20  # how fast jaw opens when speech starts
-JAW_SMOOTH_DECAY = 0.12  # how fast jaw closes when speech ends
-MOUTH_VARIATION_SPEED = 8.0  # Hz of natural mouth flutter during speech
-MOUTH_VARIATION_AMOUNT = 0.12  # amplitude of flutter
-JAW_MAX = 1.0  # maximum jaw openness
-
-# ARKit blendshape indices
-JAW_OPEN = 17
-MOUTH_CLOSE = 18
-MOUTH_FUNNEL = 19
-MOUTH_PUCKER = 20
-
-NEUTRAL = {JAW_OPEN: 0.0, MOUTH_CLOSE: 0.0, MOUTH_FUNNEL: 0.0, MOUTH_PUCKER: 0.0}
->>>>>>> origin/master
 
 
 class BlenderConnection:
@@ -165,30 +138,21 @@ class BlenderConnection:
             return None
 
     def set_shape_keys(self, values):
-<<<<<<< HEAD
         """Set shape keys BY NAME. `values` is {shape_key_name: float}."""
-=======
->>>>>>> origin/master
         code_lines = [
             "import bpy",
             "mesh = bpy.data.objects.get('FaceCap_Head')",
             "if mesh and mesh.data.shape_keys:",
             "    sk = mesh.data.shape_keys.key_blocks",
         ]
-<<<<<<< HEAD
         for name, val in values.items():
             code_lines.append(
                 f"    if {name!r} in sk: sk[{name!r}].value = {val:.4f}")
-=======
-        for idx, val in values.items():
-            code_lines.append(f"    sk[{idx}].value = {val:.4f}")
->>>>>>> origin/master
         code_lines.append("    print('ok')")
         code = "\n".join(code_lines)
         result = self.send("execute_code", {"code": code})
         return result is not None
 
-<<<<<<< HEAD
     def get_shape_key_names(self):
         """Return the live FaceCap_Head key_blocks names (for name resolution)."""
         code = (
@@ -207,8 +171,6 @@ class BlenderConnection:
         except json.JSONDecodeError:
             return []
 
-=======
->>>>>>> origin/master
     def close(self):
         if self.sock:
             try:
@@ -330,7 +292,6 @@ def main():
         )
         sys.exit(1)
 
-<<<<<<< HEAD
     # Install / refresh the scene (idempotent) and the MJPEG frame server.
     logger.info("Installing Blender scene + frame server...")
     scene_res = blender_scene_setup.install(blender)
@@ -410,68 +371,6 @@ def main():
                     default=0.0)
                 if max_change > 0.001:
                     write_shapes(values)
-=======
-    # Verify FaceCap_Head exists
-    result = blender.send("execute_code", {
-        "code": (
-            "import bpy; obj = bpy.data.objects.get('FaceCap_Head'); "
-            "print('YES' if obj and obj.data.shape_keys else 'NO')"
-        )
-    })
-    if not result or "YES" not in str(result):
-        logger.error(
-            "FaceCap_Head with shape keys not found in Blender. "
-            "Import the FaceCap model first: uid=29c2a506582a4157bf970bb8721a970c"
-        )
-        sys.exit(1)
-
-    # Start monitoring voice log
-    tracker = SpeechTracker(VOICE_LOG_PATH)
-    tracker.start()
-
-    logger.info("Ready - animating face when Jarvis speaks...")
-
-    current_jaw = 0.0
-    phase = 0.0
-    current_values = dict(NEUTRAL)
-    last_send = 0.0
-
-    try:
-        while True:
-            is_speaking = tracker.is_speaking()
-
-            if is_speaking:
-                # Animate mouth with natural variation
-                phase += MOUTH_VARIATION_SPEED * FRAME_INTERVAL
-                flutter = (
-                    math.sin(phase * 2 * math.pi) * MOUTH_VARIATION_AMOUNT
-                )
-                target_jaw = JAW_MAX + flutter
-                smoothing = JAW_SMOOTH_ATTACK
-            else:
-                target_jaw = 0.0
-                smoothing = JAW_SMOOTH_DECAY
-
-            # Smooth jaw movement
-            current_jaw += (target_jaw - current_jaw) * smoothing
-
-            values = {
-                JAW_OPEN: max(0.0, min(1.0, current_jaw)),
-                MOUTH_CLOSE: max(0.0, 1.0 - current_jaw * 1.5),
-                MOUTH_FUNNEL: current_jaw * 0.25,
-                MOUTH_PUCKER: current_jaw * 0.1,
-            }
-
-            # Send to Blender if changed (throttled to ~30fps)
-            now = time.monotonic()
-            if now - last_send >= FRAME_INTERVAL:
-                max_change = max(
-                    abs(values[k] - current_values.get(k, 0))
-                    for k in values
-                )
-                if max_change > 0.003:
-                    blender.set_shape_keys(values)
->>>>>>> origin/master
                     current_values = values
                     last_send = now
 
@@ -480,14 +379,9 @@ def main():
     except KeyboardInterrupt:
         logger.info("Shutting down...")
     finally:
-<<<<<<< HEAD
         loudness.stop()
         tracker.stop()
         write_shapes(neutral)      # frame server applies neutral next tick
-=======
-        tracker.stop()
-        blender.set_shape_keys(NEUTRAL)
->>>>>>> origin/master
         blender.close()
         logger.info("Face animator stopped, face restored to neutral")
 
