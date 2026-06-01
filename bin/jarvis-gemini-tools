@@ -60,6 +60,8 @@ try:
     from google.genai import types
     import mss
     import PIL.Image
+    import cv2
+    from pathlib import Path
     from tools import registry
     from tools.registry import _check_fn_cached
     from pipeline.prompt_builder import load_soul
@@ -191,7 +193,13 @@ OPS_BLOCK = (
     "default. Use natural pauses between clauses. Don't rush. Brevity "
     "is good, but space the words out instead of compressing them.\n\n"
     "You are running as JARVIS via Gemini Live, with screen vision "
-    "(~1 FPS) and the full JARVIS tool registry — files, terminal, "
+    "(~1 FPS). "
+    + (
+        "You ALSO have a live webcam feed (~1 FPS) — you can see "
+        "Ulrich through the camera. "
+        if os.environ.get("JARVIS_GEMINI_WEBCAM") == "1" else ""
+    ) +
+    "You have the full JARVIS tool registry — files, terminal, "
     "computer_use (vision + GUI driving), browser_task, web search/"
     "fetch, memory, todo, schedule, skills, code search/edit, execute "
     "scratch code, vuln_check, clarify, dispatch_agent. The list is "
@@ -262,6 +270,43 @@ def grab_screen_jpeg(sct: "mss.mss", monitor: dict) -> bytes:
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=80)
     return buf.getvalue()
+
+
+# ── Webcam capture ──────────────────────────────────────────────────
+_webcam_cap: "cv2.VideoCapture | None" = None
+_webcam_index = int(os.environ.get("JARVIS_GEMINI_WEBCAM_INDEX", "0"))
+_webcam_w = int(os.environ.get("JARVIS_GEMINI_WEBCAM_RES", "640x480").split("x")[0])
+_webcam_h = int(os.environ.get("JARVIS_GEMINI_WEBCAM_RES", "640x480").split("x")[1])
+
+
+def _get_webcam() -> "cv2.VideoCapture":
+    global _webcam_cap
+    if _webcam_cap is None:
+        _webcam_cap = cv2.VideoCapture(_webcam_index)
+        _webcam_cap.set(cv2.CAP_PROP_FRAME_WIDTH, _webcam_w)
+        _webcam_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, _webcam_h)
+        if not _webcam_cap.isOpened():
+            raise RuntimeError(f"Cannot open webcam index {_webcam_index}")
+    return _webcam_cap
+
+
+def grab_webcam_jpeg() -> bytes:
+    """Read the latest webcam frame from the person tracker's shared JPEG.
+    The tracker (vision.person_tracker) owns the camera exclusively and
+    writes frames to ~/.jarvis/person_tracker.jpg at ~5 Hz. We only read
+    that file — we never open the camera ourselves, so the tracker and
+    the 3D head can work simultaneously with Gemini vision."""
+    tracker_jpg = Path.home() / ".jarvis" / "person_tracker.jpg"
+    if not tracker_jpg.exists():
+        raise RuntimeError("person_tracker.jpg not found — is the tracker running?")
+    return tracker_jpg.read_bytes()
+
+
+def release_webcam() -> None:
+    global _webcam_cap
+    if _webcam_cap is not None:
+        _webcam_cap.release()
+        _webcam_cap = None
 
 
 # ── Tool-registry adaptation ──────────────────────────────────────────
@@ -513,6 +558,17 @@ async def main() -> int:
                     log.warning(f"[gemini-tools] screen send failed: {e}")
                 await asyncio.sleep(FRAME_INTERVAL_S)
 
+        async def pump_webcam() -> None:
+            while not stop.is_set():
+                try:
+                    jpeg = await asyncio.to_thread(grab_webcam_jpeg)
+                    await session.send_realtime_input(
+                        video=types.Blob(data=jpeg, mime_type="image/jpeg"),
+                    )
+                except Exception as e:
+                    log.warning(f"[gemini-tools] webcam send failed: {e}")
+                await asyncio.sleep(FRAME_INTERVAL_S)
+
         async def drain_replies() -> None:
             assert spk_proc.stdin is not None
             while not stop.is_set():
@@ -576,6 +632,8 @@ async def main() -> int:
             asyncio.create_task(drain_replies(),    name="replies"),
             asyncio.create_task(speaking_debounce(), name="speaking-debounce"),
             asyncio.create_task(stop.wait(),        name="stop"),
+            *([asyncio.create_task(pump_webcam(), name="webcam")]
+              if os.environ.get("JARVIS_GEMINI_WEBCAM", "0") == "1" else []),
         ]
         try:
             done, pending = await asyncio.wait(
@@ -596,7 +654,7 @@ async def main() -> int:
                         f"{type(exc).__name__}: {exc}"
                     )
         finally:
-            log.info("[gemini-tools] stopping audio + screen subprocesses…")
+            log.info("[gemini-tools] stopping audio + screen + webcam subprocesses…")
             for proc in (mic_proc, spk_proc):
                 try:
                     proc.terminate()

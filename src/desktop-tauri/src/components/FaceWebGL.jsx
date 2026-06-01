@@ -11,8 +11,11 @@ const MODEL_URL = '/jarvis_head.glb'
 useGLTF.preload(MODEL_URL)
 
 // Look/orientation knobs — tuned via headless screenshots.
-const HEAD_ROT = [Math.PI / 2, 0, 0]  // radians, applied to the head group
-const SKIN_TINT = '#cf9468'           // warm golden-caramel (multiplies texture)
+const HEAD_BASE_ROT = [Math.PI / 2, 0, 0]  // base orientation (faces camera)
+const HEAD_YAW_MAX   = 0.18   // ±10° left/right when tracking
+const HEAD_PITCH_MAX = 0.12   // ±7° up/down when tracking
+const HEAD_EASE      = 0.08   // easing factor per frame (~60fps)
+const SKIN_TINT = '#cf9468'   // warm golden-caramel (multiplies texture)
 
 // Mouth/viseme morph indices driven every frame (eyes/brows excluded so the
 // static eyeWide + idle blinks aren't fought). Module-level so it isn't
@@ -28,15 +31,17 @@ const SMILE_REST  = 0.28   // baseline mouthSmile (37/38): gentle default smile
 const EYELID_REST = 0.12   // baseline eyeBlink (13/14): upper lid relaxed toward the iris
 const HEAD_ROLL   = -0.095 // constant roll (rad) — levels the GLB's baked ~5.5° head tilt (measured; ?roll= adds, dev)
 
-function Head({ getWeights }) {
+function Head({ getWeights, personTracker }) {
   const { scene } = useGLTF(MODEL_URL)
   const headRef = useRef(null)
   const idxByTargetRef = useRef({})   // 'target_24' -> influence index
-  const groupRef = useRef(null)        // head group, for sway
+  const groupRef = useRef(null)        // head group, for rotation
   const blinkRef = useRef({ next: 2.0, t: -1 })  // next blink time, active start
   const clockRef = useRef(0)
   const browRef = useRef({ next: 5.0, t: -1 })   // idle brow flick
   const dartRef = useRef({ next: 4.0, t: -1, dir: 1 })  // idle eye dart
+  const headYawRef = useRef(0)          // current smoothed head yaw
+  const headPitchRef = useRef(0)        // current smoothed head pitch
   const rollFix = HEAD_ROLL + (parseFloat(new URLSearchParams(window.location.search).get('roll')) || 0)
 
   // Find the head mesh (carries the jaw morph), build the target->index
@@ -120,27 +125,70 @@ function Head({ getWeights }) {
         else inf[ib] = Math.max(inf[ib], Math.sin(p * Math.PI) * 0.18)
       }
     }
-    // Idle eye dart — brief subtle horizontal glance every ~4–8 s.
-    const dart = dartRef.current
-    if (dart.t < 0 && now >= dart.next) { dart.t = now; dart.dir = Math.random() < 0.5 ? -1 : 1 }
-    let gaze = 0
-    if (dart.t >= 0) {
-      const p = (now - dart.t) / 0.5
-      if (p >= 1) { dart.t = -1; dart.next = now + 4 + Math.random() * 4 }
-      else gaze = Math.sin(p * Math.PI) * 0.25 * dart.dir
+    // ── Gaze: person tracker overrides idle eye darts ─────────────
+    // When the voice-client's person tracker detects a face, the eyes
+    // follow it (horizontal + vertical). Otherwise fall back to idle
+    // random glances. Tracker values are 0..1 normalized; map to eye
+    // morph range (≈ ±0.30 horizontal, ≈ ±0.20 vertical).
+    let gazeX = 0, gazeY = 0
+    const pt = personTracker
+    if (pt && pt.person_detected && pt.primary_face) {
+      const cx = pt.primary_face.center_x  // 0..1, 0.5 = center
+      const cy = pt.primary_face.center_y
+      gazeX = (cx - 0.5) * 0.60   // ±0.30 max
+      gazeY = (0.5 - cy) * 0.40   // ±0.20 max (invert: top of frame = look up)
+    } else {
+      // Idle eye dart — brief subtle horizontal glance every ~4–8 s.
+      const dart = dartRef.current
+      if (dart.t < 0 && now >= dart.next) { dart.t = now; dart.dir = Math.random() < 0.5 ? -1 : 1 }
+      if (dart.t >= 0) {
+        const p = (now - dart.t) / 0.5
+        if (p >= 1) { dart.t = -1; dart.next = now + 4 + Math.random() * 4 }
+        else gazeX = Math.sin(p * Math.PI) * 0.25 * dart.dir
+      }
     }
     const lo = dict['target_11'], ro = dict['target_12']  // eyeLookOutLeft/Right
     const li = dict['target_9'],  ri = dict['target_10']  // eyeLookInLeft/Right
-    if (lo != null) inf[lo] = Math.max(0, -gaze)
-    if (ro != null) inf[ro] = Math.max(0,  gaze)
-    if (li != null) inf[li] = Math.max(0,  gaze)
-    if (ri != null) inf[ri] = Math.max(0, -gaze)
+    const lu = dict['target_15'], ru = dict['target_16']  // eyeLookUpLeft/Right
+    const ld = dict['target_17'], rd = dict['target_18']  // eyeLookDown (eyeWide shares 17/18)
+    if (lo != null) inf[lo] = Math.max(0, -gazeX)
+    if (ro != null) inf[ro] = Math.max(0,  gazeX)
+    if (li != null) inf[li] = Math.max(0,  gazeX)
+    if (ri != null) inf[ri] = Math.max(0, -gazeX)
+    // Vertical gaze (only when tracking; idle darts are horizontal-only)
+    if (pt && pt.person_detected && pt.primary_face) {
+      if (lu != null) inf[lu] = Math.max(0, -gazeY)
+      if (ru != null) inf[ru] = Math.max(0, -gazeY)
+      if (ld != null && gazeY > 0) inf[ld] = Math.max(inf[ld] || 0, gazeY)
+      if (rd != null && gazeY > 0) inf[rd] = Math.max(inf[rd] || 0, gazeY)
+    }
+
+    // ── Head rotation: follow the tracked person ─────────────────
+    // Yaw (left/right) from center_x, pitch (up/down) from center_y.
+    // Eased smoothly so the head doesn't snap; natural ~500ms settling.
+    if (pt && pt.person_detected && pt.primary_face) {
+      const targetYaw   = -(pt.primary_face.center_x - 0.5) * HEAD_YAW_MAX * 2
+      const targetPitch = (pt.primary_face.center_y - 0.5) * HEAD_PITCH_MAX * 2
+      headYawRef.current   += (targetYaw   - headYawRef.current)   * HEAD_EASE
+      headPitchRef.current += (targetPitch - headPitchRef.current) * HEAD_EASE
+    } else {
+      // No person — slowly return head to center
+      headYawRef.current   += (0 - headYawRef.current)   * 0.04
+      headPitchRef.current += (0 - headPitchRef.current) * 0.04
+    }
+    if (groupRef.current) {
+      groupRef.current.rotation.set(
+        HEAD_BASE_ROT[0] + headPitchRef.current,
+        HEAD_BASE_ROT[1] + headYawRef.current,
+        HEAD_BASE_ROT[2],
+      )
+    }
   })
 
   return (
     <Center>
       <group rotation={[0, 0, rollFix]}>
-        <group ref={groupRef} rotation={HEAD_ROT}>
+        <group ref={groupRef} rotation={HEAD_BASE_ROT}>
           <primitive object={scene} />
         </group>
       </group>
@@ -148,7 +196,7 @@ function Head({ getWeights }) {
   )
 }
 
-export function FaceWebGL({ size, getWeights }) {
+export function FaceWebGL({ size, getWeights, personTracker }) {
   return (
     <Canvas
       style={{ width: size, height: size, background: 'transparent' }}
@@ -160,7 +208,7 @@ export function FaceWebGL({ size, getWeights }) {
       <directionalLight position={[1.2, 1.4, 2.0]} intensity={2.2} color="#fff3e3" />
       <directionalLight position={[-1.4, 0.6, 1.2]} intensity={0.7} color="#a8d4ff" />
       <Suspense fallback={null}>
-        <Head getWeights={getWeights} />
+        <Head getWeights={getWeights} personTracker={personTracker} />
       </Suspense>
     </Canvas>
   )

@@ -174,7 +174,22 @@ class VoiceClientHttpApi:
         # hasn't been cleared yet (avoids gold→blue→gold flicker between
         # `conversation_item_added` and the speaking-track event).
         self.state.agent_thinking = agent_is_thinking() and not self.state.speaking
-        return web.json_response(asdict(self.state), headers=_CORS_HEADERS)
+        # Person tracker status — read from the JSON file written by
+        # vision.person_tracker (if running). Inline to keep /status a single
+        # coherent snapshot.
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            _tracker_path = _Path.home() / ".jarvis" / "person_tracker.json"
+            if _tracker_path.exists():
+                _tracker = _json.loads(_tracker_path.read_text(encoding="utf-8"))
+            else:
+                _tracker = {"person_detected": False, "primary_face": None, "fps": 0, "error": None}
+        except Exception:
+            _tracker = {"person_detected": False, "primary_face": None, "fps": 0, "error": None}
+        payload = asdict(self.state)
+        payload["person_tracker"] = _tracker
+        return web.json_response(payload, headers=_CORS_HEADERS)
 
     async def level(self, _: web.Request) -> web.Response:
         """GET /level — just the 0..1 output amplitude, polled ~30fps by the

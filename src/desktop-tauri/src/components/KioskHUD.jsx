@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { LiveKitRoom, useTracks } from '@livekit/components-react'
 import { Track } from 'livekit-client'
 import { AgentAudioVisualizerAura } from '@/components/agents-ui/agent-audio-visualizer-aura'
+import { FaceWebGL } from '@/components/FaceWebGL'
 
 // Root component for ?route=kiosk.
 //
@@ -16,6 +17,7 @@ import { AgentAudioVisualizerAura } from '@/components/agents-ui/agent-audio-vis
 // Centering: explicit pixel offsets from window.innerWidth/innerHeight
 // (vw/vh resolve to a stale viewport on GTK fullscreen).
 const STATUS_URL = 'http://127.0.0.1:8767/status'
+const FACE_URL   = 'http://127.0.0.1:8767/face'
 const TOKEN_URL  = 'http://127.0.0.1:8765/api/livekit/token'
 const POLL_MS = 500
 const AURA_SIZE = 448
@@ -49,6 +51,8 @@ export default function KioskHUD() {
   const [conn, setConn] = useState(null)        // { token, url, room }
   const [agentTrack, setAgentTrack] = useState(null)
   const [lkErr, setLkErr] = useState(null)
+  const [personTracker, setPersonTracker] = useState(null)
+  const faceWeightsRef = React.useRef({})
 
   const identity = useMemo(
     () => `kiosk-display-${Math.random().toString(36).slice(2, 8)}`,
@@ -113,14 +117,27 @@ export default function KioskHUD() {
       try {
         const r = await fetch(STATUS_URL)
         const data = await r.json()
-        if (!cancelled) setAgentState(deriveAgentState({ ...data, connected: true }))
+        if (!cancelled) {
+          setAgentState(deriveAgentState({ ...data, connected: true }))
+          if (data.person_tracker) setPersonTracker(data.person_tracker)
+        }
       } catch {
         if (!cancelled) setAgentState('disconnected')
       }
     }
+    // Also poll /face for viseme morph weights (mouth movement)
+    async function tickFace() {
+      try {
+        const r = await fetch(FACE_URL)
+        const data = await r.json()
+        if (!cancelled && data.weights) faceWeightsRef.current = data.weights
+      } catch { /* face endpoint not critical */ }
+    }
     tick()
+    tickFace()
     const id = setInterval(tick, POLL_MS)
-    return () => { cancelled = true; clearInterval(id) }
+    const faceId = setInterval(tickFace, 100)  // ~10 Hz for smooth mouth
+    return () => { cancelled = true; clearInterval(id); clearInterval(faceId) }
   }, [])
 
   // ESC exits kiosk.
@@ -149,25 +166,25 @@ export default function KioskHUD() {
           cursor: 'none',
         }}
       />
-      {/* Visualizer — always rendered. audioTrack is undefined unless
-          LiveKit is connected AND the probe has found the agent track. */}
-      <div
-        style={{
-          position: 'fixed',
-          top: auraTop, left: auraLeft,
-          width: AURA_SIZE, height: AURA_SIZE,
-          zIndex: 9999,
-        }}
-      >
-        <AgentAudioVisualizerAura
-          size="xl"
-          color="#1FD5F9"
-          colorShift={0.05}
-          state={agentState}
-          themeMode="dark"
-          audioTrack={agentTrack || undefined}
-        />
-      </div>
+      {/* 3D Head — centered, tracks person via webcam */}
+      {(() => {
+        const HEAD_SIZE = Math.round(Math.min(vp.w, vp.h) * 0.7)
+        return (
+          <div
+            style={{
+              position: 'fixed',
+              top: Math.round((vp.h - HEAD_SIZE) / 2),
+              left: Math.round((vp.w - HEAD_SIZE) / 2),
+              width: HEAD_SIZE,
+              height: HEAD_SIZE,
+              zIndex: 10001,
+              pointerEvents: 'none',
+            }}
+          >
+            <FaceWebGL size={HEAD_SIZE} personTracker={personTracker} getWeights={() => faceWeightsRef.current} />
+          </div>
+        )
+      })()}
       {/* LiveKit room — rendered only when we have a token. The probe
           inside reports the agent's track back via setAgentTrack. The
           room provides no UI; it's a connection + context. */}
