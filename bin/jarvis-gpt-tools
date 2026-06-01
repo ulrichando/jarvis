@@ -283,14 +283,35 @@ def _get_webcam() -> "cv2.VideoCapture":
     return _webcam_cap
 
 
+def release_webcam() -> None:
+    global _webcam_cap
+    if _webcam_cap is not None:
+        _webcam_cap.release()
+        _webcam_cap = None
+
+
 def grab_webcam_jpeg() -> bytes:
-    """Read the latest webcam frame from the person tracker's shared JPEG.
-    The tracker (vision.person_tracker) owns the camera exclusively and
-    writes frames to ~/.jarvis/person_tracker.jpg at ~5 Hz."""
-    tracker_jpg = Path.home() / ".jarvis" / "person_tracker.jpg"
-    if not tracker_jpg.exists():
-        raise RuntimeError("person_tracker.jpg not found — is the tracker running?")
-    return tracker_jpg.read_bytes()
+    """Capture a single JPEG frame from the webcam on demand.
+
+    Opens the camera via cv2, grabs the latest frame, encodes it as JPEG,
+    and returns the bytes. The camera is opened once (lazy) and kept warm
+    across calls for the session lifetime — it's released on shutdown via
+    release_webcam(). No background tracker needed; the camera is only
+    active while OpenAI is actually using it."""
+    cap = _get_webcam()
+    ret, frame = cap.read()
+    if not ret:
+        raise RuntimeError("Failed to read frame from webcam")
+    h, w = frame.shape[:2]
+    max_dim = max(w, h)
+    if max_dim > 1024:
+        scale = 1024.0 / max_dim
+        new_w, new_h = int(w * scale), int(h * scale)
+        frame = cv2.resize(frame, (new_w, new_h))
+    ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    if not ok:
+        raise RuntimeError("Failed to encode webcam frame as JPEG")
+    return jpeg.tobytes()
 
 
 # ── Tool-registry adaptation (OpenAI schema flavor) ───────────────────
@@ -717,6 +738,8 @@ async def main() -> int:
                     try: proc.kill()
                     except Exception: pass
             try: sct.close()
+            except Exception: pass
+            try: release_webcam()
             except Exception: pass
 
     try:

@@ -50,11 +50,13 @@ done
 
 # Idempotency check — if jarvis-mode reports the desired mode is
 # already active, do nothing (avoid double mute/unmute cycles).
-current="$("$JARVIS_MODE" status 2>/dev/null | head -1 | sed -nE 's/^mode: ([a-z]+).*/\1/p')"
+# Wrap in timeout so a hung jarvis-mode doesn't stall the unit past
+# its TimeoutStartSec.
+current="$(timeout 10 "$JARVIS_MODE" status 2>/dev/null | head -1 | sed -nE 's/^mode: ([a-z]+).*/\1/p')"
 if [[ "$current" == "$desired" ]]; then
     echo "[mode-resume] already in mode '$desired' — no-op"
     exit 0
 fi
 
-echo "[mode-resume] restoring mode → $desired (was: $current)"
-exec "$JARVIS_MODE" "$desired"
+echo "[mode-resume] restoring mode → $desired (was: ${current:-unknown})"
+exec timeout 50 "$JARVIS_MODE" "$desired"
