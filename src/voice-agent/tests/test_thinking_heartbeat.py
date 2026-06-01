@@ -3,10 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-<<<<<<< HEAD
 import types
-=======
->>>>>>> origin/master
 from pathlib import Path
 
 import pytest
@@ -175,7 +172,6 @@ async def test_cancel_helper_unlinks_file(tmp_path, monkeypatch):
     await asyncio.sleep(0.05)
     assert not fake_file.exists()
     assert sess._jarvis_thinking_heartbeat is None
-<<<<<<< HEAD
 
 
 # ── Idle backstop cancel (2026-05-30) ──────────────────────────────────
@@ -400,5 +396,3 @@ async def test_watchdog_inert_without_session(tmp_path, monkeypatch):
         await task
     except asyncio.CancelledError:
         pass
-=======
->>>>>>> origin/master

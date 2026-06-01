@@ -50,7 +50,6 @@ from resilience.circuit_breaker import CircuitOpenError
 logger = logging.getLogger("jarvis.stt")
 
 
-<<<<<<< HEAD
 # Deepgram STREAMING rejects a None/auto language with a fatal, recoverable=False
 # error ("language detection is not supported in streaming mode") that tears down
 # the whole AgentSession before any audio flows — the intermittent "JARVIS can't
@@ -79,8 +78,6 @@ except Exception:  # pragma: no cover - plugin not installed
     _DeepgramSTT = None
 
 
-=======
->>>>>>> origin/master
 def _stt_language():
     """Return the STT language pin.
 
@@ -215,7 +212,6 @@ def _build_deepgram_stt():
             "DEEPGRAM_API_KEY in src/voice-agent/.env to enable streaming STT."
         )
         return None
-<<<<<<< HEAD
     if _DeepgramSTT is None:
         logger.warning(
             "[stt] livekit-plugins-deepgram not installed; "
@@ -239,21 +235,6 @@ def _build_deepgram_stt():
         return _DeepgramSTT(
             model="nova-3-general",
             language=dg_language,
-=======
-    try:
-        from livekit.plugins import deepgram
-    except ImportError as e:
-        logger.warning(
-            f"[stt] livekit-plugins-deepgram not installed ({e}); "
-            f"falling back to Groq Whisper only. "
-            f"Run: pip install livekit-plugins-deepgram"
-        )
-        return None
-    try:
-        return deepgram.STT(
-            model="nova-3-general",
-            language=_stt_language(),
->>>>>>> origin/master
             interim_results=True,
             no_delay=True,
             endpointing_ms=300,

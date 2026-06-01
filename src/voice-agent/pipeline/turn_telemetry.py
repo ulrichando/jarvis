@@ -438,7 +438,6 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_recurring_errors_last_seen
                 ON recurring_errors(last_seen);
         """)
-<<<<<<< HEAD
         # 2026-05-30 — browser_task per-step trace (Web-Nav Phase 1, Task 4).
         # One row per browser_use Agent step surfaced from
         # browser_use_bridge/runner.py via tools/browser.py, so a failed
@@ -459,8 +458,6 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_bts_ts
                 ON browser_task_steps(ts_utc);
         """)
-=======
->>>>>>> origin/master
 
 
 def log_turn(
@@ -619,7 +616,6 @@ def log_computer_use_action(
         return
 
 
-<<<<<<< HEAD
 def record_browser_step(
     *,
     db_path: Path = DEFAULT_DB_PATH,
@@ -665,8 +661,6 @@ def record_browser_step(
         return
 
 
-=======
->>>>>>> origin/master
 def log_launch_attempt(
     *,
     db_path: Path = DEFAULT_DB_PATH,
