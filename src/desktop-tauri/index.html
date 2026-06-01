@@ -26,6 +26,18 @@
         width: 100vw; height: 100vh;
       }
     </style>
+    <script>
+      /* Kiosk route is an OPAQUE window; without this its first paint is the
+         webview default (white) until React mounts and applies the black
+         backdrop — a visible white flash before the face streams in. Paint
+         opaque black immediately (head runs before body), only for kiosk so
+         the transparent main overlay stays transparent. */
+      if (location.search.indexOf('route=kiosk') !== -1) {
+        var s = document.createElement('style');
+        s.textContent = 'html,body,#root{background:#000 !important}';
+        document.head.appendChild(s);
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

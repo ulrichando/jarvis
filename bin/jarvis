@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Global launcher for Jarvis CLI
-# Usage: jarvis [args...]
-# Install: ln -sf /home/ulrich/Documents/Projects/jarvis/bin/jarvis ~/.local/bin/jarvis
-
+# JARVIS CLI entry point — derives root from script location.
+# Do NOT hardcode user paths here.
 set -euo pipefail
+<<<<<<< HEAD
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec bash "$ROOT/src/cli/scripts/start.sh" "$@"
+=======
 
 JARVIS_ROOT="/home/ulrich/Documents/Projects/jarvis/src/cli"
 SCRIPTS="$JARVIS_ROOT/scripts"
@@ -14,3 +16,4 @@ SCRIPTS="$JARVIS_ROOT/scripts"
 # launcher before the agent loop ever starts.
 [ -t 1 ] && clear || true
 exec bash "$SCRIPTS/start.sh" "$@"
+>>>>>>> origin/master

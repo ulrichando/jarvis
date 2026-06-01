@@ -47,7 +47,11 @@ Already rotated automatically (2026-05-04). New keys live in `~/.jarvis/livekit-
 ## 5. Google API key
 
 1. Open <https://console.cloud.google.com/apis/credentials>
+<<<<<<< HEAD
+2. Find `***REMOVED-LEAKED-KEY***`. Click **Delete**.
+=======
 2. Find `REDACTED_GOOGLE_KEY`. Click **Delete**.
+>>>>>>> origin/master
 3. **Create credentials → API key**. Restrict to: Generative Language API + Geolocation API.
 4. Paste into `src/voice-agent/.env`:
    ```

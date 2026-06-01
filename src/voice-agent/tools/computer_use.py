@@ -15,6 +15,26 @@ ImageMagick ``import`` as a fallback). See :mod:`tools.computer_use_backend`.
 ``pyautogui`` / ``python-xlib`` / ``pynput`` are deliberately NOT used — they
 are not installed on this host.
 
+<<<<<<< HEAD
+SOM overlays & element-index targeting (2026-05-31)
+---------------------------------------------------
+``capture(mode='som')`` renders numbered red/orange bounding-box overlays
+on each window from the ``wmctrl`` window list and returns the annotated
+screenshot. The 1-based element index from the overlay can be used directly
+in click / scroll / drag actions instead of guessing pixel coordinates:
+
+  * ``click element=3`` — click the center of window 3
+  * ``scroll element=2 direction='down'`` — scroll over window 2
+  * ``drag from_element=1 to_element=5`` — drag window 1 to window 5
+
+Element-index targeting is more reliable than pixel coordinates because it
+clicks the exact center of the element's bounding box, which doesn't drift
+when window positions change. See ``_render_som_overlays`` in the backend
+for the overlay implementation (PIL/ImageDraw). ``capture(mode='vision')``
+returns a clean screenshot with no overlays.
+
+=======
+>>>>>>> origin/master
 Gating
 ------
 The registry ``check_fn`` (:func:`check_computer_use_requirements`) returns
@@ -99,6 +119,26 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
         "invoking this tool is a hard failure: the user sees nothing "
         "happen and has to ask again. Tool first, words after.\n"
         "\n"
+<<<<<<< HEAD
+        "PREFERRED WORKFLOW (element mode — MOST RELIABLE):\n"
+        "  1. action='capture' mode='som' — captures the screen with\n"
+        "     numbered red/orange overlays on every window. Each window\n"
+        "     has a number; use its index for click/scroll/drag.\n"
+        "  2. Plan the next step from the numbered overlay on the\n"
+        "     screenshot.\n"
+        "  3. Execute via element=12 (click the center of window 12),\n"
+        "     or from_element=5 to_element=8 (drag from window 5 to\n"
+        "     window 8). Element = 1-based index from the SOM capture.\n"
+        "  4. action='capture' mode='vision' to verify via a clean\n"
+        "     screenshot (no overlays).\n"
+        "\n"
+        "FALLBACK WORKFLOW (pixel coordinates — when SOM isn't fresh):\n"
+        "  1. action='capture' mode='vision' to see the raw screen.\n"
+        "  2. Plan the next step from what you see.\n"
+        "  3. Execute via action='focus_app' / 'click' / 'type' / 'key' "
+        "/ 'scroll' using pixel coordinates = [x, y] from the screenshot.\n"
+        "  4. action='capture' again to verify the effect.\n"
+=======
         "PREFERRED WORKFLOW:\n"
         "  1. action='capture' to see the screen and the window list.\n"
         "  2. Plan the next step from what you see.\n"
@@ -106,6 +146,7 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
         "/ 'scroll' using pixel coordinates from the screenshot.\n"
         "  4. action='capture' again to verify the effect actually "
         "happened.\n"
+>>>>>>> origin/master
         "\n"
         "COMMON RECIPES:\n"
         "  - Open a URL in the user's already-running browser (e.g. "
@@ -115,6 +156,11 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
         "app='<title substring>'.\n"
         "  - Read a visible dialog: action='capture' first, then "
         "describe what's there from the screenshot.\n"
+<<<<<<< HEAD
+        "  - Click a specific window by its SOM number: click "
+        "element=3.\n"
+=======
+>>>>>>> origin/master
         "  - See what's running: action='list_apps' returns the window "
         "list.\n"
         "  - Launch an app that ISN'T running yet: focus_app only "
@@ -122,9 +168,25 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
         "application, use the `terminal` tool with `setsid <app> &` "
         "first, then come back here to interact with it.\n"
         "\n"
+<<<<<<< HEAD
+        "Linux/X11 only. Target UI elements by their 1-based element\n"
+        "index from a SOM capture (\"click element=12\"), or by pixel\n"
+        "coordinate (\"click coordinate=[500, 300]\"). Element-index\n"
+        "clicking is more reliable because it clicks the center of the\n"
+        "element's bounding box instead of guessing pixels. Requires\n"
+        "xdotool.\n"
+        "\n"
+        "When NOT to use: for web lookups or web navigation where "
+        "nothing needs to appear on the user's own screen, prefer "
+        "`browser_task` (headless, DOM-aware, more reliable). Use "
+        "computer_use for the VISIBLE desktop — showing something on "
+        "screen, controlling a native GUI app, or when the user "
+        "explicitly wants to watch it happen."
+=======
         "Linux/X11 only. No accessibility tree, so target UI elements "
         "by pixel coordinate read from the latest capture. Coordinates "
         "are screen pixels [x, y]. Requires xdotool."
+>>>>>>> origin/master
     ),
     "parameters": {
         "type": "object",
@@ -144,6 +206,10 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "wait",
                     "list_apps",
                     "focus_app",
+<<<<<<< HEAD
+                    "vision_analyze",
+=======
+>>>>>>> origin/master
                 ],
                 "description": (
                     "Which action to perform. 'capture', 'wait', and "
@@ -155,10 +221,19 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "enum": ["som", "vision", "ax"],
                 "description": (
+<<<<<<< HEAD
+                    "Capture mode. 'som' (default) renders numbered red/orange "
+                    "overlays on every window and returns them with the screenshot "
+                    "— use the element index for click/scroll/drag targeting. "
+                    "'vision' is a plain screenshot with no overlays. 'ax' returns "
+                    "just the window list (no screenshot). Prefer 'som' for "
+                    "element-index targeting, 'vision' for clean verification."
+=======
                     "Capture mode. 'vision' (recommended on Linux) is a plain "
                     "screenshot. 'som'/'ax' additionally return the window list; "
                     "X11 has no accessibility tree so there are no numbered "
                     "element overlays."
+>>>>>>> origin/master
                 ),
             },
             "app": {
@@ -175,6 +250,33 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "maxItems": 2,
                 "description": "Pixel coordinates [x, y] for click/scroll.",
             },
+<<<<<<< HEAD
+            "element": {
+                "type": "integer",
+                "description": (
+                    "1-based window index from a SOM capture. Instead of guessing "
+                    "pixel coordinates, click/scroll the center of the numbered "
+                    "window. Takes priority over coordinate when both are present. "
+                    "Example: element=12 clicks the center of window 12."
+                ),
+            },
+            "from_element": {
+                "type": "integer",
+                "description": (
+                    "1-based source window index for drag (replaces "
+                    "from_coordinate when present). Must be from a recent SOM "
+                    "capture."
+                ),
+            },
+            "to_element": {
+                "type": "integer",
+                "description": (
+                    "1-based target window index for drag (replaces to_coordinate "
+                    "when present). Must be from a recent SOM capture."
+                ),
+            },
+=======
+>>>>>>> origin/master
             "button": {
                 "type": "string",
                 "enum": ["left", "right", "middle"],
@@ -257,7 +359,11 @@ def set_approval_callback(cb) -> None:
     _approval_callback = cb
 
 
+<<<<<<< HEAD
+_SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps", "vision_analyze"})
+=======
 _SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps"})
+>>>>>>> origin/master
 
 _DESTRUCTIVE_ACTIONS = frozenset({
     "click", "double_click", "right_click", "middle_click",
@@ -398,11 +504,28 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> str:
         return json.dumps({"error": f"computer_use backend unavailable: {e}"})
 
     try:
+<<<<<<< HEAD
+        result = _dispatch(backend, action, args)
+=======
         return _dispatch(backend, action, args)
+>>>>>>> origin/master
     except Exception as e:  # noqa: BLE001 — a tool error must not crash the turn
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
 
+<<<<<<< HEAD
+    # Vision-feedback loop (P2a): record the action label for the recent-actions
+    # trail — AFTER dispatch, so only actions that actually ran are recorded.
+    # Best-effort — never break the tool.
+    try:
+        from pipeline import computer_use_vision
+        computer_use_vision.record_action(_summarize_action(action, args))
+    except Exception:
+        pass
+    return result
+
+=======
+>>>>>>> origin/master
 
 def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
     """Return None if approved, or a JSON error string if denied."""
@@ -434,11 +557,29 @@ def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
 
 def _summarize_action(action: str, args: Dict[str, Any]) -> str:
     if action in {"click", "double_click", "right_click", "middle_click"}:
+<<<<<<< HEAD
+        elem = args.get("element")
+        if elem is not None:
+            return f"{action} element={elem}"
+        coord = args.get("coordinate")
+        return f"{action} at {tuple(coord)}" if coord else action
+    if action == "drag":
+        fe = args.get("from_element")
+        te = args.get("to_element")
+        if fe is not None or te is not None:
+            return f"drag element {fe} -> {te}" if fe and te else f"drag element={fe or te}"
+        return f"drag {args.get('from_coordinate')} -> {args.get('to_coordinate')}"
+    if action == "scroll":
+        elem = args.get("element")
+        if elem is not None:
+            return f"scroll element={elem} {args.get('direction', '?')} x{args.get('amount', 3)}"
+=======
         coord = args.get("coordinate")
         return f"{action} at {tuple(coord)}" if coord else action
     if action == "drag":
         return f"drag {args.get('from_coordinate')} -> {args.get('to_coordinate')}"
     if action == "scroll":
+>>>>>>> origin/master
         return f"scroll {args.get('direction', '?')} x{args.get('amount', 3)}"
     if action == "type":
         text = args.get("text", "")
@@ -447,6 +588,12 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
         return f"key {args.get('keys', '')!r}"
     if action == "focus_app":
         return f"focus {args.get('app', '')!r}"
+<<<<<<< HEAD
+    if action == "vision_analyze":
+        app = args.get("app") or ""
+        return f"vision_analyze" + (f" ({app})" if app else "")
+=======
+>>>>>>> origin/master
     return action
 
 
@@ -458,6 +605,50 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         cap = backend.capture(mode=mode, app=args.get("app"))
         return _capture_response(cap)
 
+<<<<<<< HEAD
+    if action == "vision_analyze":
+        """Combine a SOM capture with a structured text description of the
+        screen state. Returns the element list + window geometry in a text
+        summary the supervisor can read directly. Also publishes the frame
+        to the vision cache so the supervisor's ``llm_node`` can inject it
+        as pixel context. Best-effort — never breaks the turn."""
+        cap = backend.capture(mode="som", app=args.get("app"))
+        # Build a structured description from the element list.
+        desc_parts = [
+            f"Screen capture ({cap.width}x{cap.height}) with {len(cap.elements)} window(s)."
+        ]
+        for el in cap.elements:
+            x, y, w, h = el.bounds
+            desc_parts.append(
+                f"  [{el.index}] \"{el.label}\" at ({x},{y}) → ({x+w},{y+h}) "
+                f"({w}x{h}px)"
+            )
+        description = "\n".join(desc_parts)
+        # Publish the SOM frame into the vision cache so the next generation
+        # can see the pixels (SOM overlays included).
+        try:
+            from pipeline import computer_use_vision as _cuv
+            _cuv.publish_capture(
+                png_b64=cap.png_b64, width=cap.width, height=cap.height,
+                action_label="vision_analyze")
+        except Exception:
+            pass
+        payload: Dict[str, Any] = {
+            "ok": True,
+            "action": "vision_analyze",
+            "description": description,
+            "window_count": len(cap.elements),
+            "width": cap.width,
+            "height": cap.height,
+        }
+        if cap.app:
+            payload["app"] = cap.app
+        if cap.window_title:
+            payload["window_title"] = cap.window_title
+        return json.dumps(payload)
+
+=======
+>>>>>>> origin/master
     if action == "wait":
         res = backend.wait(float(args.get("seconds", 1.0)))
         return _text_response(res)
@@ -484,17 +675,30 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             button = "middle"
         else:
             button = button or "left"
+<<<<<<< HEAD
+        element = args.get("element")
+=======
+>>>>>>> origin/master
         coord = args.get("coordinate") or (None, None)
         x = coord[0] if coord and len(coord) >= 1 else None
         y = coord[1] if coord and len(coord) >= 2 else None
         res = backend.click(
+<<<<<<< HEAD
+            element=element, x=x, y=y, button=button or "left", click_count=click_count,
+=======
             x=x, y=y, button=button or "left", click_count=click_count,
+>>>>>>> origin/master
             modifiers=args.get("modifiers"),
         )
         return _text_response(res)
 
     if action == "drag":
         res = backend.drag(
+<<<<<<< HEAD
+            from_element=args.get("from_element"),
+            to_element=args.get("to_element"),
+=======
+>>>>>>> origin/master
             from_xy=tuple(args["from_coordinate"]) if args.get("from_coordinate") else None,
             to_xy=tuple(args["to_coordinate"]) if args.get("to_coordinate") else None,
             button=args.get("button", "left"),
@@ -503,8 +707,15 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         return _text_response(res)
 
     if action == "scroll":
+<<<<<<< HEAD
+        element = args.get("element")
         coord = args.get("coordinate") or (None, None)
         res = backend.scroll(
+            element=element,
+=======
+        coord = args.get("coordinate") or (None, None)
+        res = backend.scroll(
+>>>>>>> origin/master
             direction=args.get("direction", "down"),
             amount=int(args.get("amount", 3)),
             x=coord[0] if coord and len(coord) >= 1 else None,
@@ -574,6 +785,18 @@ def _capture_response(cap: CaptureResult) -> str:
             payload["screen_description"] = desc.strip()
     except Exception:
         pass
+<<<<<<< HEAD
+    # Vision-feedback loop (P2a): publish the frame so JarvisAgent.llm_node can
+    # inject it into the next generation. Best-effort — never break the tool.
+    try:
+        from pipeline import computer_use_vision
+        computer_use_vision.publish_capture(
+            png_b64=cap.png_b64, width=cap.width, height=cap.height,
+            action_label=f"capture/{cap.mode}")
+    except Exception:
+        pass
+=======
+>>>>>>> origin/master
     return json.dumps(payload)
 
 

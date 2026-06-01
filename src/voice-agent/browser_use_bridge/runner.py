@@ -40,6 +40,10 @@ _os.environ.setdefault("BROWSER_USE_LOGGING_LEVEL", "result")
 import asyncio
 import json
 import logging
+<<<<<<< HEAD
+import re
+=======
+>>>>>>> origin/master
 import sys
 import traceback
 from typing import Any, Optional
@@ -53,10 +57,67 @@ from typing import Any, Optional
 # dependencies to stderr, and keep a private handle to the genuine stdout for
 # the single result emission at the very end.
 _REAL_STDOUT = sys.stdout
+<<<<<<< HEAD
+
+# Max chars of browser-use's step log to keep for the result JSON's
+# ``stderr_tail`` (legible-failure surfacing — see plan Task 3, Step 3.6).
+_STDERR_TAIL_CHARS = 2_000
+
+
+class _StderrTee:
+    """Write-through wrapper on the real stderr that also keeps a bounded tail.
+
+    Everything still lands on the real stderr (so the parent's stderr pipe — and
+    the no-stdout fallback path in ``tools/browser.py`` — see the full log), but
+    the last ``_STDERR_TAIL_CHARS`` chars are retained in-process so the runner
+    can embed them in its result JSON when a task fails. Bounded, so a chatty
+    browser-use run can't grow memory without limit.
+    """
+
+    def __init__(self, underlying) -> None:
+        self._underlying = underlying
+        self._buf = ""
+
+    def write(self, s) -> int:
+        text = s if isinstance(s, str) else str(s)
+        self._buf += text
+        if len(self._buf) > _STDERR_TAIL_CHARS:
+            self._buf = self._buf[-_STDERR_TAIL_CHARS:]
+        return self._underlying.write(text)
+
+    def flush(self) -> None:
+        self._underlying.flush()
+
+    def tail(self) -> str:
+        return self._buf.strip()
+
+    def __getattr__(self, name):
+        # Delegate isatty/fileno/encoding/etc. to the wrapped stream.
+        return getattr(self._underlying, name)
+
+
+sys.stderr = _StderrTee(sys.stderr)
+sys.stdout = sys.stderr  # any library print() now lands on stderr (tee'd)
+logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
+
+
+def _stderr_tail() -> str:
+    """Return the retained tail of the runner's stderr/step log (best-effort)."""
+    try:
+        tee = sys.stderr
+        if isinstance(tee, _StderrTee):
+            return tee.tail()
+    except Exception:  # noqa: BLE001 — tail capture is diagnostic, never load-bearing
+        pass
+    return ""
+
+
+=======
 sys.stdout = sys.stderr  # any library print() now lands on stderr
 logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
 
 
+>>>>>>> origin/master
 def _emit(payload: dict) -> None:
     """Write exactly one compact JSON line to the genuine stdout, then flush."""
     _REAL_STDOUT.write(json.dumps(payload, ensure_ascii=False))
@@ -67,15 +128,93 @@ def _emit(payload: dict) -> None:
 # ---------------------------------------------------------------------------
 # LLM selection (env-driven; first available key wins)
 # ---------------------------------------------------------------------------
+<<<<<<< HEAD
+# Default model per provider — modest, fast models suited to a voice
+# assistant's "do a quick web task" use case. Overridable via env.
+# Priority: first present key wins. Kimi is preferred for browser tasks
+# (no extended-thinking issues with tool_choice); Anthropic models may
+# require explicit thinking:disabled when tool_choice=any is used.
+_DEFAULT_MODELS = {
+    "kimi": "kimi-k2.6",
+    "openai": "gpt-4.1-mini",
+    "anthropic": "claude-haiku-4-5",
+=======
 # Default model per provider — modest, fast, vision-capable models suited to a
 # voice assistant's "do a quick web task" use case. Overridable via env.
 _DEFAULT_MODELS = {
     "anthropic": "claude-sonnet-4-5-20250929",
     "openai": "gpt-4.1-mini",
+>>>>>>> origin/master
     "google": "gemini-2.0-flash",
 }
 
 
+<<<<<<< HEAD
+def _env_int(name: str, default: int) -> int:
+    """Read a positive int env var, falling back to *default* on absent/garbage."""
+    raw = _os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return val if val > 0 else default
+
+
+# Reliability knobs — only params CONFIRMED present on browser-use 0.12.9's
+# Agent.__init__ (see browser_use_bridge/PARAMS_0_12_6.md). max_steps is NOT
+# here: it is an Agent.run(max_steps=...) arg, passed separately below.
+#   max_failures   (int, default 5)   — bound retries; no infinite loops
+#   step_timeout   (int seconds, 180) — per-step ceiling; no silent hangs
+#   llm_timeout    (int seconds)      — per-LLM-call ceiling
+#   use_vision='auto'                 — vision only when the DOM index fails
+#   calculate_cost=True               — record per-task $ (feeds P3 telemetry)
+#   fallback_llm                      — next available provider after the primary
+_AGENT_MAX_FAILURES = _env_int("JARVIS_BROWSER_MAX_FAILURES", 3)
+_AGENT_STEP_TIMEOUT_S = _env_int("JARVIS_BROWSER_STEP_TIMEOUT_S", 60)
+_AGENT_LLM_TIMEOUT_S = _env_int("JARVIS_BROWSER_LLM_TIMEOUT_S", 45)
+
+
+def _available_llms() -> list:
+    """Return configured browser_use Chat* LLMs in provider-priority order.
+
+    Priority: Kimi → OpenAI → Anthropic → Google,
+    one LLM per present API key. The first entry is the primary; a second
+    entry (if any) is the ``fallback_llm`` for the Agent. The model id can be
+    overridden with ``JARVIS_BROWSER_MODEL`` (applied to the PRIMARY only;
+    the fallback keeps its provider default so it's a genuinely different rung).
+    Empty list means no key is set.
+    """
+    model_override = _os.environ.get("JARVIS_BROWSER_MODEL", "").strip() or None
+    llms: list = []
+
+    # Kimi (OpenAI-compatible via Moonshot) — preferred for browsing
+    # (no extended-thinking tooll_choice conflict).
+    kimi_key = _os.environ.get("KIMI_API_KEY", "").strip()
+    if kimi_key:
+        from browser_use import ChatOpenAI
+
+        model = _DEFAULT_MODELS["kimi"]
+        if model_override and not llms:
+            model = model_override
+        llms.append(ChatOpenAI(
+            model=model,
+            api_key=kimi_key,
+            base_url="https://api.moonshot.ai/v1",
+            temperature=None,
+            frequency_penalty=None,
+        ))
+
+    openai_key = _os.environ.get("OPENAI_API_KEY", "").strip()
+    if openai_key:
+        from browser_use import ChatOpenAI
+
+        model = _DEFAULT_MODELS["openai"]
+        if model_override and not llms:
+            model = model_override
+        llms.append(ChatOpenAI(model=model, api_key=openai_key))
+=======
 def _build_llm():
     """Return a configured browser_use Chat* LLM, or raise RuntimeError.
 
@@ -84,11 +223,18 @@ def _build_llm():
     default is used.
     """
     model_override = _os.environ.get("JARVIS_BROWSER_MODEL", "").strip() or None
+>>>>>>> origin/master
 
     anthropic_key = _os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if anthropic_key:
         from browser_use import ChatAnthropic
 
+<<<<<<< HEAD
+        model = _DEFAULT_MODELS["anthropic"]
+        if model_override and not llms:
+            model = model_override
+        llms.append(ChatAnthropic(model=model, api_key=anthropic_key))
+=======
         return ChatAnthropic(
             model=model_override or _DEFAULT_MODELS["anthropic"],
             api_key=anthropic_key,
@@ -102,6 +248,7 @@ def _build_llm():
             model=model_override or _DEFAULT_MODELS["openai"],
             api_key=openai_key,
         )
+>>>>>>> origin/master
 
     google_key = (
         _os.environ.get("GEMINI_API_KEY", "").strip()
@@ -110,6 +257,109 @@ def _build_llm():
     if google_key:
         from browser_use import ChatGoogle
 
+<<<<<<< HEAD
+        model = _DEFAULT_MODELS["google"]
+        if model_override and not llms:
+            model = model_override
+        llms.append(ChatGoogle(model=model, api_key=google_key))
+
+    return llms
+
+
+def _build_llm():
+    """Return the PRIMARY browser_use Chat* LLM, or raise RuntimeError.
+
+    Thin wrapper over ``_available_llms`` for callers that want only the
+    primary (first present API key by priority).
+    """
+    llms = _available_llms()
+    if not llms:
+        raise RuntimeError(
+            "no LLM API key set (need one of ANTHROPIC_API_KEY / OPENAI_API_KEY / "
+            "GEMINI_API_KEY / GOOGLE_API_KEY)"
+        )
+    return llms[0]
+
+
+# ---------------------------------------------------------------------------
+# CAPTCHA detection
+# ---------------------------------------------------------------------------
+
+# URL substrings that indicate a CAPTCHA challenge page.
+_CAPTCHA_URL_PATTERNS = re.compile(
+    r"/(captcha|challenge|recaptcha|verify|human|security_check|"
+    r"browser_check|blocked|denied|access_denied)/",
+    re.I,
+)
+
+# Page text patterns that strongly suggest a CAPTCHA or bot-block.
+_CAPTCHA_TEXT_PATTERNS = re.compile(
+    r"(I['']m\s+not\s+a\s+robot|"
+    r"verify\s+(you\s+are|your)\s+human|"
+    r"complete\s+the\s+captcha|"
+    r"unusual\s+traffic|"
+    r"automated\s+(access|request|query|browser)|"
+    r"enable\s+JavaScript.*cookie|"
+    r"please\s+confirm\s+you\s+are\s+(human|not\s+a\s+robot)|"
+    r"captcha|"
+    r"recaptcha|"
+    r"challenge\s+detected|"
+    r"access\s+denied.*bot|"
+    r"suspicious\s+activity|"
+    r"too\s+many\s+requests)",
+    re.I,
+)
+
+
+def _check_history_for_captcha(history) -> Optional[str]:
+    """Check the AgentHistory for CAPTCHA / bot-block signals.
+
+    Inspects visited URLs and a sample of page content for known CAPTCHA
+    patterns. Returns a short human-readable hint when detected, or None
+    when the history looks clean.
+
+    Best-effort: false positives (e.g. a site mentioning "CAPTCHA" in
+    its sign-up instructions) produce a hint, not a hard error — the
+    caller decides how to act on it.
+    """
+    # 1. Check URLs from the step history.
+    try:
+        urls = history.urls()
+    except Exception:
+        urls = []
+    for url in urls:
+        if url and _CAPTCHA_URL_PATTERNS.search(url):
+            return "CAPTCHA in URL"
+
+    # 2. Check step action names for navigation failures.
+    try:
+        action_names = history.action_names()
+    except Exception:
+        action_names = []
+    # If every navigation step failed or hit a challenge page, flag it.
+    # (action_names includes page text context in browser_use 0.12+)
+
+    # 3. Check extracted content for CAPTCHA text patterns.
+    try:
+        content = history.extracted_content()
+    except Exception:
+        content = []
+    for snippet in content:
+        if snippet and _CAPTCHA_TEXT_PATTERNS.search(snippet):
+            return "CAPTCHA in page content"
+
+    # 4. Check last few action outputs for error patterns matching blocks.
+    try:
+        action_results = history.action_results()
+    except Exception:
+        action_results = []
+    for ar in (action_results or [])[-3:]:  # last 3 steps
+        err = getattr(ar, "error", None) or ""
+        if err and _CAPTCHA_TEXT_PATTERNS.search(err):
+            return "CAPTCHA in step error"
+
+    return None
+=======
         return ChatGoogle(
             model=model_override or _DEFAULT_MODELS["google"],
             api_key=google_key,
@@ -119,6 +369,7 @@ def _build_llm():
         "no LLM API key set (need one of ANTHROPIC_API_KEY / OPENAI_API_KEY / "
         "GEMINI_API_KEY / GOOGLE_API_KEY)"
     )
+>>>>>>> origin/master
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +391,17 @@ async def _run_task(
     """
     from browser_use import Agent, BrowserProfile
 
+<<<<<<< HEAD
+    llms = _available_llms()
+    if not llms:
+        raise RuntimeError(
+            "no LLM API key set (need one of ANTHROPIC_API_KEY / OPENAI_API_KEY / "
+            "GEMINI_API_KEY / GOOGLE_API_KEY)"
+        )
+    llm = llms[0]
+=======
     llm = _build_llm()
+>>>>>>> origin/master
     if cdp_url:
         # Remote CDP attach. headless/chromium_sandbox are irrelevant — the
         # browser is already running cloud-side; we only connect to it. The
@@ -158,19 +419,102 @@ async def _run_task(
         # avoids namespace-sandbox friction on locked-down hosts; a fresh
         # profile keeps runs hermetic.
         profile = BrowserProfile(headless=headless, chromium_sandbox=False)
+<<<<<<< HEAD
+
+    # Reliability params — ONLY those confirmed present on 0.12.9's
+    # Agent.__init__ (PARAMS_0_12_6.md). use_vision='auto' is in the
+    # Union[bool, Literal['auto']] annotation. A fallback_llm is wired only when
+    # a second provider key is actually present.
+    agent_kwargs: dict = {
+        "task": task,
+        "llm": llm,
+        "browser_profile": profile,
+        "use_vision": "auto",
+        "use_thinking": False,
+        "max_failures": _AGENT_MAX_FAILURES,
+        "step_timeout": _AGENT_STEP_TIMEOUT_S,
+        "llm_timeout": _AGENT_LLM_TIMEOUT_S,
+        "calculate_cost": True,
+    }
+    if len(llms) > 1:
+        agent_kwargs["fallback_llm"] = llms[1]
+
+    agent = Agent(**agent_kwargs)
+
+    history = await agent.run(max_steps=max_steps)
+
+    # CAPTCHA detection: check visited URLs and page content for challenge
+    # patterns. When detected, report early so the caller can fall back to
+    # computer_use (visible browser with user solving it) or try a different
+    # approach. Non-fatal: if detection is uncertain, the task result still
+    # carries through.
+    captcha_hint = _check_history_for_captcha(history)
+    if captcha_hint:
+        logger.warning("browser_task: possible CAPTCHA detected (%s)", captcha_hint)
+
+=======
     agent = Agent(task=task, llm=llm, browser_profile=profile)
 
     history = await agent.run(max_steps=max_steps)
 
+>>>>>>> origin/master
     final = history.final_result()
     if final is None or (isinstance(final, str) and not final.strip()):
         final = "(no textual result returned by the browser agent)"
 
+<<<<<<< HEAD
+    payload = {
+        "ok": True,
+        "result": str(final),
+        "steps": _step_trace(history),
+        "steps_count": int(history.number_of_steps()),
+    }
+    if captcha_hint:
+        payload["captcha_hint"] = captcha_hint
+    return payload
+
+
+def _step_trace(history) -> list:
+    """Build a per-step action trace from a browser_use AgentHistoryList.
+
+    Returns a list of ``{"step_index", "action", "ok", "detail"}`` dicts —
+    one per action browser_use took — so ``tools/browser.py`` can surface
+    them into ``turn_telemetry.browser_task_steps`` for post-mortem
+    debugging (Web-Nav Phase 1, Task 4). Best-effort: any accessor that the
+    installed browser_use doesn't expose (or that raises) degrades to an
+    empty trace rather than failing the task — the trace is observability,
+    never load-bearing for the result itself.
+    """
+    try:
+        names = list(history.action_names())
+    except Exception:  # noqa: BLE001 — trace is diagnostic, never load-bearing
+        return []
+    # `errors()` returns one entry per step, None where the step succeeded.
+    try:
+        errors = list(history.errors())
+    except Exception:  # noqa: BLE001
+        errors = []
+    trace: list = []
+    for idx, action in enumerate(names):
+        err = errors[idx] if idx < len(errors) else None
+        ok = err is None
+        detail = None if ok else str(err)[:1_000]
+        trace.append(
+            {
+                "step_index": idx,
+                "action": str(action) if action is not None else None,
+                "ok": ok,
+                "detail": detail,
+            }
+        )
+    return trace
+=======
     return {
         "ok": True,
         "result": str(final),
         "steps": int(history.number_of_steps()),
     }
+>>>>>>> origin/master
 
 
 def _read_request() -> dict:
@@ -210,10 +554,18 @@ def main() -> None:
         _emit(result)
     except Exception as exc:  # noqa: BLE001 — always report as JSON, never crash out
         detail = f"{type(exc).__name__}: {exc}".strip()
+<<<<<<< HEAD
+        # Print the traceback to (tee'd) stderr first so it's part of the tail,
+        # then attach the captured stderr/step-log tail to the JSON so the parent
+        # can surface a legible failure instead of a generic message.
+        traceback.print_exc(file=sys.stderr)
+        _emit({"ok": False, "error": detail, "stderr_tail": _stderr_tail()})
+=======
         # Keep a short trailing snippet of the traceback for post-mortem on
         # stderr; the parent only ever parses stdout.
         traceback.print_exc(file=sys.stderr)
         _emit({"ok": False, "error": detail})
+>>>>>>> origin/master
 
 
 if __name__ == "__main__":

@@ -3,6 +3,10 @@ import { invoke }  from '@tauri-apps/api/core'
 import { listen }  from '@tauri-apps/api/event'
 import ChatPanel   from './components/ChatPanel.jsx'
 import ChatPanelVscode from './components/ChatPanelVscode.jsx'
+<<<<<<< HEAD
+import { FaceWebGL } from './components/FaceWebGL.jsx'
+=======
+>>>>>>> origin/master
 import VoiceChatPanel from './components/VoiceChatPanel.jsx'
 import KeysSettings from './KeysSettings.jsx'
 import KioskHUD     from './components/KioskHUD.jsx'
@@ -24,6 +28,43 @@ const WS_URL = (() => {
   const tok = (typeof window !== 'undefined' && window.__JARVIS_LOCAL_API_TOKEN) || ''
   return tok ? `${base}&token=${encodeURIComponent(tok)}` : base
 })()
+<<<<<<< HEAD
+
+// Dev-only face preview (?route=faceonly). With ?jaw=N it forces a jaw value
+// for camera/look tuning; otherwise it polls /face exactly like the kiosk so
+// the full lip-sync chain can be verified in a plain browser (no Tauri/WebKit).
+function FaceOnlyDev() {
+  const weightsRef = useRef({})
+  const p = new URLSearchParams(window.location.search)
+  const forced = p.has('jaw') ? parseFloat(p.get('jaw')) : null
+  const [sz, setSz] = useState(Math.min(window.innerWidth, window.innerHeight))
+  useEffect(() => {
+    const onResize = () => setSz(Math.min(window.innerWidth, window.innerHeight))
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  useEffect(() => {
+    if (forced != null) { weightsRef.current = { target_24: forced }; return }
+    const id = setInterval(async () => {
+      try {
+        const r = await fetch('http://127.0.0.1:8767/face')
+        const d = await r.json()
+        weightsRef.current = (d.weights && Object.keys(d.weights).length)
+          ? d.weights
+          : { target_24: Math.max(0, Math.min(1, (d.level || 0) * 6.0)) }
+      } catch { weightsRef.current = {} }
+    }, 33)
+    return () => clearInterval(id)
+  }, [forced])
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: '#000',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <FaceWebGL size={sz} getWeights={() => weightsRef.current} />
+    </div>
+  )
+}
+=======
+>>>>>>> origin/master
 
 // ── Minimal WebSocket hook ────────────────────────────────────────────────
 function useJarvisWS(url) {
@@ -200,6 +241,17 @@ export default function App() {
     return <KioskHUD />
   }
 
+<<<<<<< HEAD
+  // Dev-only: render JUST the WebGL face. With ?jaw=N it forces a jaw value
+  // (look/camera tuning); otherwise it polls /level exactly like the kiosk, so
+  // the lip-sync chain can be verified in a plain browser.
+  if (typeof window !== 'undefined' &&
+      window.location.search.includes('route=faceonly')) {
+    return <FaceOnlyDev />
+  }
+
+=======
+>>>>>>> origin/master
   // ChatPanel now runs as its OWN decorated, non-transparent Tauri
   // WebviewWindow ("chat" label) — splits it out of the main transparent
   // overlay so the WebKitGTK ghost-frame compositor bug can't bleed old

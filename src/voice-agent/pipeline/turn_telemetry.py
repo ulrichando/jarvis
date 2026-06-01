@@ -438,6 +438,29 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_recurring_errors_last_seen
                 ON recurring_errors(last_seen);
         """)
+<<<<<<< HEAD
+        # 2026-05-30 — browser_task per-step trace (Web-Nav Phase 1, Task 4).
+        # One row per browser_use Agent step surfaced from
+        # browser_use_bridge/runner.py via tools/browser.py, so a failed
+        # browser_task is debuggable post-mortem (which action, which step,
+        # did it succeed). Additive only — mirrors the computer_use_actions
+        # audit pattern; the `turns` schema is untouched. Plan:
+        # docs/superpowers/plans/2026-05-30-web-nav-p1-routing-reliability-observability.md
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS browser_task_steps (
+                id INTEGER PRIMARY KEY,
+                ts_utc TEXT NOT NULL,
+                task TEXT NOT NULL,
+                step_index INTEGER NOT NULL,
+                action TEXT,
+                ok INTEGER NOT NULL,
+                detail TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_bts_ts
+                ON browser_task_steps(ts_utc);
+        """)
+=======
+>>>>>>> origin/master
 
 
 def log_turn(
@@ -596,6 +619,54 @@ def log_computer_use_action(
         return
 
 
+<<<<<<< HEAD
+def record_browser_step(
+    *,
+    db_path: Path = DEFAULT_DB_PATH,
+    task: str,
+    step_index: int,
+    action: Optional[str] = None,
+    ok: bool = True,
+    detail: Optional[str] = None,
+) -> None:
+    """Append one row to the `browser_task_steps` audit table.
+
+    Surfaces a single browser_use Agent step (from
+    browser_use_bridge/runner.py via tools/browser.py) so a failed
+    browser_task is debuggable post-mortem. Failures are swallowed
+    silently — same posture as `log_turn` / `log_computer_use_action`:
+    telemetry must never crash the browser tool. The table is created
+    lazily here too, so a caller that writes before `init_db` ran on a
+    fresh DB still works.
+    """
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS browser_task_steps (
+                    id INTEGER PRIMARY KEY,
+                    ts_utc TEXT NOT NULL,
+                    task TEXT NOT NULL,
+                    step_index INTEGER NOT NULL,
+                    action TEXT,
+                    ok INTEGER NOT NULL,
+                    detail TEXT
+                )"""
+            )
+            conn.execute(
+                """INSERT INTO browser_task_steps
+                   (ts_utc, task, step_index, action, ok, detail)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    task, int(step_index), action, int(ok), detail,
+                ),
+            )
+    except Exception:
+        return
+
+
+=======
+>>>>>>> origin/master
 def log_launch_attempt(
     *,
     db_path: Path = DEFAULT_DB_PATH,

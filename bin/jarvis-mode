@@ -205,6 +205,25 @@ start_direct() {
     # Only forward when it has a real value; otherwise let PulseAudio
     # fall back to $XDG_RUNTIME_DIR/pulse/native.
     #
+<<<<<<< HEAD
+    # Restart=always + RestartSec=2 → 24/7 self-heal for BOTH direct modes
+    # (gemini + openai share this run_args). Gemini/OpenAI Live sessions have
+    # a MAX DURATION: the server sends a GoAway and closes the socket (~every
+    # 10-15min), and the backend exits CLEANLY (exit 0) on that drop.
+    # Restart=on-failure does NOT restart a clean exit → the mode silently
+    # reverted to JARVIS-Claude every session (2026-05-30 bug: "keeps
+    # switching back to claude"). 'always' restarts on ANY exit so the direct
+    # mode auto-recovers; a deliberate `jarvis-mode jarvis|openai` uses
+    # `systemctl stop`, which is NOT a restart, so switching still works.
+    # StartLimitBurst=10/300s still caps a rapid crash-loop (bad/expired key,
+    # spend-cap). NOTE: this restarts the whole process (~7s gap + new Live
+    # session); a seamless in-process reconnect is a future enhancement.
+    local -a run_args=(
+        --user
+        --unit="$scope"
+        -p Restart=always
+        -p RestartSec=2
+=======
     # Restart=on-failure + RestartSec=5 → 24/7 self-heal: if the
     # direct-mode process crashes (network blip, provider 5xx, etc.)
     # systemd restarts it. Clean exits (Ctrl-C / `jarvis-mode jarvis`)
@@ -215,6 +234,7 @@ start_direct() {
         --unit="$scope"
         -p Restart=on-failure
         -p RestartSec=5
+>>>>>>> origin/master
         -p StartLimitBurst=10
         -p StartLimitIntervalSec=300
         --setenv="GOOGLE_API_KEY=$google_key"
@@ -223,14 +243,66 @@ start_direct() {
         --setenv="DISPLAY=${DISPLAY:-:0}"
         --setenv="XAUTHORITY=${XAUTHORITY:-$HOME/.Xauthority}"
         --setenv="XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+<<<<<<< HEAD
+        # Idle auto-revert window (sec) — the backend reverts to JARVIS-Claude
+        # after this much inactivity so Gemini/OpenAI quota stops burning while
+        # nobody's talking. systemd-run gives the unit a clean env, so the var
+        # must be forwarded explicitly or the config has no effect. Default 300
+        # = 5min (matches direct_mode_idle.idle_timeout_s); 0 disables.
+        --setenv="JARVIS_DIRECT_IDLE_TIMEOUT_S=${JARVIS_DIRECT_IDLE_TIMEOUT_S:-300}"
+=======
+>>>>>>> origin/master
     )
     if [[ -n "${PULSE_SERVER:-}" ]]; then
         run_args+=(--setenv="PULSE_SERVER=$PULSE_SERVER")
     fi
+<<<<<<< HEAD
+    # A prior launch that hit the StartLimit (e.g. provider spend-cap /
+    # quota → the backend exits 1, Restart=on-failure retries until
+    # StartLimitBurst, then the transient unit lingers `failed
+    # (start-limit-hit)`) would make systemd-run below collide with
+    # "unit already exists" and the switch would silently no-op forever.
+    # Clear any lingering failed state first so the launch is always clean.
+    systemctl --user reset-failed "$scope" 2>/dev/null || true
+
+    systemd-run "${run_args[@]}" "$bin" >/dev/null
+
+    # Verify the backend actually STAYS up. A single 0.6s check is a trap:
+    # the process looks "active" while importing, then dies a few seconds
+    # later if its first provider handshake is rejected (spend-cap / bad /
+    # expired key), leaving Claude muted with no voice.
+    #
+    # Signal: the unit must stay active(running) AND not restart for the
+    # whole window. We do NOT poll the backend's /status — both backends
+    # bind /status only AFTER a heavy tool-registry + memory import, so on a
+    # loaded box (boot / `jarvis-mode-resume`) it can lag and false-reject a
+    # healthy backend. We also do NOT use the ABSOLUTE NRestarts (cumulative
+    # → false-rejects a fresh start after earlier crashes); we snapshot a
+    # BASELINE right after launch and watch for a DELTA.
+    #
+    # This catches a flap regardless of when it dies: a bad-key process is
+    # rejected on the first handshake, goes inactive during its RestartSec=5
+    # gap (→ is_active fails), and any auto-restart bumps NRestarts above
+    # baseline (→ delta fails). A healthy backend — even a slow-booting one —
+    # stays active with NRestarts flat the entire window. Window 12×0.6s
+    # ≈ 7.2s comfortably exceeds the ~4s a fast-fail takes to surface.
+    local baseline_nr nr healthy=1 i
+    baseline_nr="$(systemctl --user show "$scope" -p NRestarts --value 2>/dev/null || echo 0)"
+    for i in {1..12}; do
+        sleep 0.6
+        nr="$(systemctl --user show "$scope" -p NRestarts --value 2>/dev/null || echo 0)"
+        if ! is_active "$scope" || [[ "${nr:-0}" != "${baseline_nr:-0}" ]]; then
+            healthy=0   # went inactive (died / in restart gap) or restarted → flap
+        fi
+    done
+
+    if (( healthy == 1 )); then
+=======
     systemd-run "${run_args[@]}" "$bin" >/dev/null
     sleep 0.6
 
     if is_active "$scope"; then
+>>>>>>> origin/master
         local pretty
         case "$label" in
             gemini) pretty="Gemini Live" ;;
@@ -242,8 +314,23 @@ start_direct() {
         ensure_jarvis_mute_watchdog
         notify "Switched to $pretty" "Voice: $voice — audio + vision + tools. JARVIS-Claude muted."
     else
+<<<<<<< HEAD
+        # Failed to come up / didn't stay up (usually a provider error —
+        # quota / spend-cap / bad key; check the journal). Roll the
+        # JARVIS-Claude mute BACK so the user is never left voiceless
+        # (Claude muted + direct mode dead), stop the flapping unit, and
+        # clear its failed state so the next attempt starts clean.
+        echo "✗ $label didn't stay up — check 'journalctl --user -u $scope'" >&2
+        echo "  → restoring JARVIS-Claude (unmuting mic)…" >&2
+        systemctl --user stop "$scope" 2>/dev/null || true
+        systemctl --user reset-failed "$scope" 2>/dev/null || true
+        set_jarvis_mute "false" >/dev/null 2>&1 || true
+        write_mode_state "jarvis"
+        notify "Mode switch failed" "$label didn't start (see journalctl). Stayed on JARVIS-Claude."
+=======
         echo "✗ $label didn't register — check 'journalctl --user -u $scope'"
         notify "Mode switch failed" "$label didn't register. See journalctl --user."
+>>>>>>> origin/master
         return 3
     fi
 }

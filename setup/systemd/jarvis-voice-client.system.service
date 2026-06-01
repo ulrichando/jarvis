@@ -1,0 +1,40 @@
+[Unit]
+Description=JARVIS voice client (native PortAudio bridge to LiveKit SFU) — system scope
+After=network-online.target livekit-server.service jarvis-voice-agent.service
+Wants=network-online.target jarvis-voice-agent.service
+Requires=livekit-server.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+WatchdogSec=30s
+User=jarvis
+Group=jarvis
+WorkingDirectory=/opt/jarvis/src/voice-agent
+Environment=JARVIS_HOME=/var/lib/jarvis
+Environment=JARVIS_DATA_DIR=/var/lib/jarvis
+EnvironmentFile=/etc/jarvis/.env
+EnvironmentFile=-/etc/jarvis/voice-agent.env
+EnvironmentFile=-/etc/jarvis/local-api-token.env
+Environment=JARVIS_NEURAL_AEC=1
+Environment=JARVIS_NEURAL_AEC_LATENCY_BUDGET_MS=15
+ExecStart=/opt/jarvis/src/voice-agent/.venv/bin/python /opt/jarvis/src/voice-agent/jarvis_voice_client.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/jarvis/voice-client.log
+StandardError=append:/var/log/jarvis/voice-client.log
+
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

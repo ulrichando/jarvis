@@ -1,0 +1,15 @@
+[Unit]
+Description=JARVIS — daily evolution-gate calibration soak (read-only fitness reading)
+Documentation=file:%h/Documents/Projects/jarvis/docs/superpowers/specs/2026-05-30-evolution-calibration-soak-design.md
+
+[Timer]
+# Daily at 02:30 local (offset from log-rotate's 02:00). Persistent catches up
+# after the laptop was off; the soak dedups per-window so a catch-up run never
+# double-logs the same day.
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+RandomizedDelaySec=600s
+Unit=jarvis-evolution-soak.service
+
+[Install]
+WantedBy=timers.target

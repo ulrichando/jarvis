@@ -13,12 +13,23 @@ using locally-present command-line tools:
   * **Window introspection** (list windows / focus app): ``wmctrl`` + the
     ``xdotool`` window stack.
 
+<<<<<<< HEAD
+Unlike the macOS backend, there is NO accessibility (AX) tree on stock X11.
+``capture(mode='som')`` renders numbered red/orange bounding-box overlays
+on each window from the ``wmctrl`` window list and returns the annotated
+screenshot. Element-index targeting (``click element=3`` / ``scroll
+element=2`` / ``drag from_element=1 to_element=2``) resolves the 1-based
+index to the center of the element's bounding box, which is more reliable
+than guessing pixel coordinates. ``capture(mode='vision')`` returns a clean
+screenshot. ``capture(mode='ax')`` returns the window list only (no image).
+=======
 Unlike the macOS backend, there is NO accessibility (AX) tree on stock X11,
 so ``capture(mode='som')`` and ``mode='ax')`` degrade to a plain screenshot
 plus a window/geometry list — there are no per-element SOM overlays. The
 supervisor LLM (which is vision-capable) drives by pixel coordinates from the
 returned screenshot. Element-index targeting raises a clear "not supported"
 result rather than silently mis-clicking.
+>>>>>>> origin/master
 
 All public methods are synchronous (the abstract contract). Every shell-out is
 wrapped so a missing/locked display surfaces as an ``ActionResult(ok=False)``
@@ -27,6 +38,10 @@ rather than an exception that would crash the turn.
 from __future__ import annotations
 
 import base64
+<<<<<<< HEAD
+import io
+=======
+>>>>>>> origin/master
 import logging
 import os
 import re
@@ -289,6 +304,13 @@ class X11ComputerUseBackend(ComputerUseBackend):
         self._started = False
         # Default subprocess timeout for any xdotool/wmctrl call.
         self._timeout = float(os.environ.get("JARVIS_COMPUTER_USE_TIMEOUT", "10"))
+<<<<<<< HEAD
+        # Cache of the last captured element list (used for element-index
+        # resolution in click / scroll / drag). Populated by capture() when
+        # mode is 'som' or 'ax'. Cleared on every new capture.
+        self._last_elements: List[UIElement] = []
+=======
+>>>>>>> origin/master
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
@@ -343,9 +365,20 @@ class X11ComputerUseBackend(ComputerUseBackend):
     def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
         """Capture the screen as a PNG (base64) plus a best-effort window list.
 
+<<<<<<< HEAD
+        SOM mode (default): renders numbered red rectangles (Set of Markers)
+        for each window element directly onto the screenshot before returning it.
+        The returned ``elements`` list maps 1-based indices to window bounds, so
+        the LLM can target elements by index (``click element=2``) instead of
+        guessing pixel coordinates.
+
+        AX mode: same screenshot + window list, no overlays.
+        Vision mode: screenshot only, no overlay, no window list.
+=======
         X11 has no accessibility tree, so ``som`` / ``ax`` modes do NOT yield
         per-element overlays — they return the same screenshot plus the window
         list in ``elements``. ``vision`` returns the screenshot alone.
+>>>>>>> origin/master
         """
         png_b64: Optional[str] = None
         width = height = 0
@@ -362,6 +395,19 @@ class X11ComputerUseBackend(ComputerUseBackend):
                 app_name = elements[0].app
                 window_title = elements[0].label
 
+<<<<<<< HEAD
+        # Cache elements for element-index resolution by click/scroll/drag.
+        # Cleared on every new capture so stale indices can't survive.
+        self._last_elements = elements
+
+        # SOM mode: render numbered overlays onto the screenshot.
+        if mode == "som" and png_b64 and elements:
+            png_b64, width, height = self._render_som_overlays(
+                png_b64, width, height, elements
+            )
+
+=======
+>>>>>>> origin/master
         png_bytes_len = 0
         if png_b64:
             try:
@@ -380,6 +426,102 @@ class X11ComputerUseBackend(ComputerUseBackend):
             png_bytes_len=png_bytes_len,
         )
 
+<<<<<<< HEAD
+    def _render_som_overlays(
+        self,
+        png_b64: str,
+        width: int,
+        height: int,
+        elements: List[UIElement],
+    ) -> Tuple[Optional[str], int, int]:
+        """Render numbered red rectangles on a screenshot for each window element.
+
+        Uses Pillow (PIL) to draw numbered overlays. Best-effort: returns the
+        original screenshot unchanged on any error (PIL missing, corrupt data,
+        coordinate out of bounds) so a rendering glitch never breaks the capture.
+
+        The overlays use a cycling colour palette so adjacent windows are
+        visually distinct:
+          index odd  → (#FF0000) red rectangle, white text
+          index even → (#E67300) orange rectangle, white text
+        """
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except ImportError:
+            return png_b64, width, height  # PIL not available; pass through
+
+        try:
+            raw = base64.b64decode(png_b64, validate=True)
+            img = Image.open(io.BytesIO(raw))
+            img.load()
+        except Exception:
+            return png_b64, width, height  # corrupt data; pass through
+
+        if img.size[0] == 0 or img.size[1] == 0:
+            return png_b64, width, height
+
+        # Scale factor: the screenshot may have been captured at a different
+        # resolution than the element bounds (mss captures at native display
+        # resolution, so they should match — but be defensive).
+        scale_x = img.size[0] / max(width, 1)
+        scale_y = img.size[1] / max(height, 1)
+
+        draw = ImageDraw.Draw(img)
+
+        # Try to load a small fixed-font for numbering; fall back to
+        # ImageDraw's default (thin, but legible).
+        font = None
+        try:
+            font = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size=14
+            )
+        except Exception:
+            try:
+                font = ImageFont.load_default()
+            except Exception:
+                pass
+
+        colours = ("#FF0000", "#E67300")  # red, orange — alternate per index
+
+        for el in elements:
+            x, y, w, h = el.bounds
+            if w <= 0 or h <= 0:
+                continue
+            # Scale element bounds to screenshot pixel space.
+            sx = int(x * scale_x)
+            sy = int(y * scale_y)
+            sw = max(1, int(w * scale_x))
+            sh = max(1, int(h * scale_y))
+            colour = colours[(el.index - 1) % 2]
+
+            # Rectangle around the window.
+            draw.rectangle([sx, sy, sx + sw, sy + sh], outline=colour, width=3)
+            # Numbered overlay badge at top-left corner.
+            label = str(el.index)
+            bbox = draw.textbbox((0, 0), label, font=font) if font else None
+            tw = (bbox[2] - bbox[0]) if bbox else 12
+            th = (bbox[3] - bbox[1]) if bbox else 10
+            pad = 2
+            badge_x0 = sx - pad
+            badge_y0 = sy - pad
+            badge_x1 = sx + tw + pad
+            badge_y1 = sy + th + pad
+            draw.rectangle(
+                [badge_x0, badge_y0, badge_x1, badge_y1],
+                fill=colour,
+            )
+            if font:
+                draw.text((sx, sy), label, fill="white", font=font)
+            else:
+                draw.text((sx, sy), label, fill="white")
+
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        new_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return new_b64, img.size[0], img.size[1]
+
+=======
+>>>>>>> origin/master
     def _screenshot_b64(self) -> Tuple[Optional[str], int, int]:
         """Return (base64_png, width, height). Prefers mss; falls back to
         ImageMagick ``import``. Returns (None, 0, 0) on failure.
@@ -483,9 +625,63 @@ class X11ComputerUseBackend(ComputerUseBackend):
             pass
         return 0, 0
 
+<<<<<<< HEAD
+    # ── Window filter ─────────────────────────────────────────────────
+    # Windows with _NET_WM_STATE_SKIP_TASKBAR are intentionally hidden
+    # from the user's taskbar (panels, desktop root, tray-minimized apps)
+    # and are excluded from the SOM element list — they're noise, not real
+    # application windows the LLM should target.
+    _SKIP_TASKBAR_ATOM = "_NET_WM_STATE_SKIP_TASKBAR"
+
+    # Cache of {window_hex_id: skip_flag} so we don't xprop every window
+    # on every capture (xprop subprocess is ~2-5ms per call).
+    _skip_cache: dict = {}
+    _SKIP_CACHE_MAX = 200
+
+    @classmethod
+    def _is_skip_taskbar(cls, wid_hex: str) -> bool:
+        """Check if a window has ``_NET_WM_STATE_SKIP_TASKBAR`` via xprop.
+
+        Cached: the window ID -> bool mapping is kept for the lifetime of
+        the backend. If xprop fails (window destroyed between wmctrl and
+        xprop calls) we assume False — the window disappears on the next
+        capture anyway.
+        """
+        if wid_hex in cls._skip_cache:
+            return cls._skip_cache[wid_hex]
+        rc, out, _err = cls._run_static(
+            ["xprop", "-id", wid_hex, "_NET_WM_STATE"]
+        )
+        flag = rc == 0 and cls._SKIP_TASKBAR_ATOM in out
+        if len(cls._skip_cache) < cls._SKIP_CACHE_MAX:
+            cls._skip_cache[wid_hex] = flag
+        return flag
+
+    @staticmethod
+    def _run_static(argv: list[str]) -> tuple[int, str, str]:
+        """Static subprocess runner for classmethods (no instance needed)."""
+        try:
+            proc = subprocess.run(
+                argv, capture_output=True, text=True, timeout=5
+            )
+            return proc.returncode, proc.stdout or "", proc.stderr or ""
+        except Exception:
+            return -1, "", ""
+
+    def _enumerate_windows(self, app: Optional[str]) -> List[UIElement]:
+        """Best-effort window list via ``wmctrl -lpG`` (id, desktop, pid,
+        geometry, host, title). Falls back to empty when wmctrl is absent.
+
+        Filters out known X11 pseudo-windows (desktop root, panel, task
+        bars, popup windows with no title) so the SOM element list shows
+        only real application windows — the LLM sees fewer, more relevant
+        targets and wastes fewer tokens on noise.
+        """
+=======
     def _enumerate_windows(self, app: Optional[str]) -> List[UIElement]:
         """Best-effort window list via ``wmctrl -lpG`` (id, desktop, pid,
         geometry, host, title). Falls back to empty when wmctrl is absent."""
+>>>>>>> origin/master
         if not shutil.which("wmctrl"):
             return []
         rc, out, _err = self._run(["wmctrl", "-lpG"])
@@ -507,6 +703,14 @@ class X11ComputerUseBackend(ComputerUseBackend):
             title = m.group(8)
             if app and app.lower() not in title.lower():
                 continue
+<<<<<<< HEAD
+            # Filter X11 pseudo-windows (panels, root-desktop, tray apps).
+            # Any window with _NET_WM_STATE_SKIP_TASKBAR is hidden from the
+            # taskbar intentionally — don't show it in the element list.
+            if self._is_skip_taskbar(m.group(1)):
+                continue
+=======
+>>>>>>> origin/master
             idx += 1
             elements.append(
                 UIElement(
@@ -522,6 +726,42 @@ class X11ComputerUseBackend(ComputerUseBackend):
         return elements
 
     # ── Pointer ────────────────────────────────────────────────────
+<<<<<<< HEAD
+    def _resolve_element(
+        self, element: Optional[int]
+    ) -> Tuple[Optional[int], Optional[int], Optional[str]]:
+        """Resolve a 1-based element index to pixel (cx, cy) using the last capture's
+        element list, or return (None, None, error) on failure.
+
+        The element list comes from ``_enumerate_windows`` — window-level
+        elements with bounds (x, y, w, h). This method returns the *center* of
+        the element's bounding box, which is the safest click/scroll target.
+        """
+        if element is None:
+            return None, None, None  # no element requested, caller uses raw xy
+        if not self._last_elements:
+            return (
+                None,
+                None,
+                "no element list available — call capture(mode='som') or "
+                "capture(mode='ax') first to build the element index.",
+            )
+        # Element indices are 1-based (seen in the SOM overlay).
+        idx = int(element)
+        if idx < 1 or idx > len(self._last_elements):
+            return (
+                None,
+                None,
+                f"element index {idx} is out of range — the last capture "
+                f"has {len(self._last_elements)} elements (1-{len(self._last_elements)}). "
+                "Recapture with capture(mode='som') to refresh.",
+            )
+        el = self._last_elements[idx - 1]
+        cx, cy = el.center()
+        return int(cx), int(cy), None
+
+=======
+>>>>>>> origin/master
     def _resolve_xy(
         self,
         element: Optional[int],
@@ -530,6 +770,19 @@ class X11ComputerUseBackend(ComputerUseBackend):
     ) -> Tuple[Optional[int], Optional[int], Optional[str]]:
         """Resolve a click/scroll target to (x, y) or an error string.
 
+<<<<<<< HEAD
+        When *element* is given, the element-index (from a SOM capture) takes
+        priority and the *x* / *y* coordinates are ignored. When *element* is
+        None, raw pixel coordinates are used.
+
+        Returns (x, y, None) on success or (None, None, error) on failure.
+        """
+        if element is not None:
+            ex, ey, err = self._resolve_element(element)
+            if err:
+                return None, None, err
+            return ex, ey, None
+=======
         Element-index targeting is NOT supported on X11 (no AX tree); callers
         must pass pixel coordinates. Returns (x, y, None) on success or
         (None, None, error) on failure.
@@ -541,6 +794,7 @@ class X11ComputerUseBackend(ComputerUseBackend):
                 "element-index targeting is unavailable on X11 (no accessibility "
                 "tree); use pixel coordinate=[x, y] from the latest capture instead.",
             )
+>>>>>>> origin/master
         if x is None or y is None:
             return None, None, "missing coordinate=[x, y]."
         return int(x), int(y), None
@@ -587,6 +841,25 @@ class X11ComputerUseBackend(ComputerUseBackend):
         button: str = "left",
         modifiers: Optional[List[str]] = None,
     ) -> ActionResult:
+<<<<<<< HEAD
+        # Resolve element indices to pixel coordinates when given.
+        if from_element is not None:
+            fx, fy, err = self._resolve_element(from_element)
+            if err:
+                return ActionResult(
+                    ok=False, action="drag",
+                    message=f"from_element: {err}",
+                )
+            from_xy = (fx, fy)
+        if to_element is not None:
+            tx, ty, err = self._resolve_element(to_element)
+            if err:
+                return ActionResult(
+                    ok=False, action="drag",
+                    message=f"to_element: {err}",
+                )
+            to_xy = (tx, ty)
+=======
         if from_element is not None or to_element is not None:
             return ActionResult(
                 ok=False,
@@ -594,11 +867,17 @@ class X11ComputerUseBackend(ComputerUseBackend):
                 message="element-index drag is unavailable on X11; use "
                 "from_coordinate / to_coordinate pixel pairs.",
             )
+>>>>>>> origin/master
         if not from_xy or not to_xy:
             return ActionResult(
                 ok=False,
                 action="drag",
+<<<<<<< HEAD
+                message="drag requires from_coordinate and to_coordinate, "
+                "or from_element and to_element.",
+=======
                 message="drag requires from_coordinate and to_coordinate.",
+>>>>>>> origin/master
             )
         btn = _BUTTON_NUM.get(button, "1")
         held = self._press_modifiers(modifiers)
@@ -633,6 +912,17 @@ class X11ComputerUseBackend(ComputerUseBackend):
                 ok=False, action="scroll",
                 message=f"bad direction {direction!r}; use up|down|left|right.",
             )
+<<<<<<< HEAD
+        # Resolve element index first (overrides raw x/y).
+        if element is not None:
+            ex, ey, err = self._resolve_element(element)
+            if err:
+                return ActionResult(
+                    ok=False, action="scroll", message=f"element: {err}",
+                )
+            x, y = ex, ey
+=======
+>>>>>>> origin/master
         ticks = max(1, min(50, int(amount)))
         held = self._press_modifiers(modifiers)
         try:

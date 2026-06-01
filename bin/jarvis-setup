@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# JARVIS setup wizard — re-runnable post-install configuration.
+#
+# Re-runs the API-key prompts, persona setup, and .env template
+# without reinstalling anything. Equivalent to `install.sh --setup`.
+#
+# Usage:
+#   jarvis-setup
+#   JARVIS_INSTALL_DIR=/path/to/jarvis jarvis-setup   # explicit checkout
+#
+# Install: launcher shim at ~/.local/bin/jarvis-setup (created by install.sh)
+
+set -euo pipefail
+
+# ── Locate the install directory ────────────────────────────────────────
+INSTALL_DIR="${JARVIS_INSTALL_DIR:-}"
+if [ -z "$INSTALL_DIR" ]; then
+  # If this script is inside the checkout, derive the root.
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [ -f "$script_dir/CLAUDE.md" ] && grep -q "^# JARVIS" "$script_dir/CLAUDE.md" 2>/dev/null; then
+    INSTALL_DIR="$script_dir"
+  elif [ -d "$script_dir/../src/voice-agent" ]; then
+    INSTALL_DIR="$(cd "$script_dir/.." && pwd)"
+  else
+    # Fall back to the default install path.
+    INSTALL_DIR="$HOME/Documents/Projects/jarvis"
+  fi
+fi
+
+if [ ! -d "$INSTALL_DIR" ] || [ ! -f "$INSTALL_DIR/CLAUDE.md" ]; then
+  echo "Error: install directory not found or invalid: $INSTALL_DIR" >&2
+  echo "Set JARVIS_INSTALL_DIR to the path of your JARVIS checkout." >&2
+  exit 1
+fi
+
+# ── Delegate to install.sh --setup ───────────────────────────────────────
+exec "$INSTALL_DIR/install.sh" --setup
