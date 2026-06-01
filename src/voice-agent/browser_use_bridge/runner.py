@@ -125,7 +125,6 @@ def _emit(payload: dict) -> None:
 # require explicit thinking:disabled when tool_choice=any is used.
 _DEFAULT_MODELS = {
     "kimi": "kimi-k2.6",
-    "deepseek": "deepseek-chat",
     "openai": "gpt-4.1-mini",
     "anthropic": "claude-haiku-4-5",
     "google": "gemini-2.0-flash",
@@ -161,7 +160,7 @@ _AGENT_LLM_TIMEOUT_S = _env_int("JARVIS_BROWSER_LLM_TIMEOUT_S", 45)
 def _available_llms() -> list:
     """Return configured browser_use Chat* LLMs in provider-priority order.
 
-    Priority: Kimi → DeepSeek → OpenAI → Anthropic → Google,
+    Priority: Kimi → OpenAI → Anthropic → Google,
     one LLM per present API key. The first entry is the primary; a second
     entry (if any) is the ``fallback_llm`` for the Agent. The model id can be
     overridden with ``JARVIS_BROWSER_MODEL`` (applied to the PRIMARY only;
@@ -186,20 +185,6 @@ def _available_llms() -> list:
             base_url="https://api.moonshot.ai/v1",
             temperature=None,
             frequency_penalty=None,
-        ))
-
-    # DeepSeek (OpenAI-compatible).
-    deepseek_key = _os.environ.get("DEEPSEEK_API_KEY", "").strip()
-    if deepseek_key:
-        from browser_use import ChatOpenAI
-
-        model = _DEFAULT_MODELS["deepseek"]
-        if model_override and not llms:
-            model = model_override
-        llms.append(ChatOpenAI(
-            model=model,
-            api_key=deepseek_key,
-            base_url="https://api.deepseek.com/v1",
         ))
 
     openai_key = _os.environ.get("OPENAI_API_KEY", "").strip()
