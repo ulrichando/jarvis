@@ -65,18 +65,7 @@ SPK_SAMPLE_RATE = 24000       # Live API spec: 24k mono s16le output
 FRAME_INTERVAL_S = float(
     os.environ.get("JARVIS_GEMINI_DIRECT_FRAME_INTERVAL_S", "1.0")
 )
-<<<<<<< HEAD
-# English-pin: native-audio Live models infer the output language from the
-# user's accent/tone and drift (Google cookbook #1197). language_code is the
-# documented pin; en-US default, env-overridable.
-GEMINI_LANGUAGE = os.environ.get("JARVIS_GEMINI_LANGUAGE", "en-US")
 SYSTEM_INSTRUCTION = (
-    "Respond ONLY in English (en-US). NEVER infer or switch language from "
-    "Ulrich's accent, tone, names, or a mishearing — even if the audio sounds "
-    "like another language, always reply in English. "
-=======
-SYSTEM_INSTRUCTION = (
->>>>>>> origin/master
     "You are Gemini in direct conversation with Ulrich. He's sharing "
     "his screen with you — frames stream in at ~1 FPS. Be natural, "
     "concise, and reference what's on screen when relevant. Don't "
@@ -174,10 +163,6 @@ async def main() -> int:
         response_modalities=["AUDIO"],
         media_resolution="MEDIA_RESOLUTION_MEDIUM",
         speech_config=types.SpeechConfig(
-<<<<<<< HEAD
-            language_code=GEMINI_LANGUAGE,
-=======
->>>>>>> origin/master
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(
                     voice_name=VOICE_NAME,

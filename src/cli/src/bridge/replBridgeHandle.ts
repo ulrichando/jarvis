@@ -34,3 +34,12 @@ export function getSelfBridgeCompatId(): string | undefined {
   const h = getReplBridgeHandle()
   return h ? toCompatSessionId(h.bridgeSessionId) : undefined
 }
+
+/**
+ * True when the REPL bridge handle is set and the bridge is connected.
+ * Used by ToolSearchTool + SendMessageTool to reject operations in outbound-only
+ * (CCR mirror) mode where the bridge exists but has no active session.
+ */
+export function isReplBridgeActive(): boolean {
+  return getReplBridgeHandle() !== null
+}

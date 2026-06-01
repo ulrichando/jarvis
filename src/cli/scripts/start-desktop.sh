@@ -206,36 +206,6 @@ for i in $(seq 1 15); do
 done
 echo "[jarvis] bridge up on :8765"
 
-<<<<<<< HEAD
-# ── Wait for the voice path to be READY (not just the services "active") ──
-# `systemctl is-active` (above) only confirms the process is running; the
-# voice-agent and voice-client both signal systemd READY=1 BEFORE the worker
-# has joined the LiveKit room and the SFU connection is up. Launching the
-# desktop into a not-yet-ready voice path is a big chunk of the "JARVIS works
-# after a relaunch sometimes, not others" intermittency. Poll the voice-client
-# /status until BOTH connected AND agent_present are true (the agent has joined
-# the room and can hear/speak), bounded by a timeout so a genuinely-broken
-# voice path never blocks the desktop forever — it launches anyway with a warn.
-# Override the timeout via JARVIS_VOICE_READY_TIMEOUT (seconds).
-VOICE_READY_TIMEOUT="${JARVIS_VOICE_READY_TIMEOUT:-30}"
-echo "[jarvis] waiting for voice path (connected + agent present, <=${VOICE_READY_TIMEOUT}s)..."
-voice_ready=0
-for i in $(seq 1 "$VOICE_READY_TIMEOUT"); do
-  vstatus=$(curl -s --max-time 1 http://127.0.0.1:8767/status 2>/dev/null)
-  if printf '%s' "$vstatus" | grep -q '"connected": *true' \
-     && printf '%s' "$vstatus" | grep -q '"agent_present": *true'; then
-    voice_ready=1
-    echo "[jarvis] voice path ready after ~${i}s"
-    break
-  fi
-  sleep 1
-done
-if [ "$voice_ready" != 1 ]; then
-  echo "[jarvis] WARN: voice path not ready after ${VOICE_READY_TIMEOUT}s — launching desktop anyway (voice may still come up; check: tail -f ~/.local/share/jarvis/logs/voice-agent.log)" >&2
-fi
-
-=======
->>>>>>> origin/master
 # ── Launch desktop ────────────────────────────────────────────────────
 if [ ! -x "$DESKTOP_BIN" ]; then
   echo "[jarvis] desktop binary not found at $DESKTOP_BIN"
@@ -249,22 +219,6 @@ echo "[jarvis] launching desktop..."
 # bun child), then TERM the bridge. pkill -P catches any straggler
 # child of the supervisor if its trap raced the parent's kill.
 trap "kill $PROXY_SUP_PID $BRIDGE_PID 2>/dev/null; pkill -P $PROXY_SUP_PID 2>/dev/null" EXIT
-<<<<<<< HEAD
-# WebKit rendering for tauri:// custom protocol on Linux:
-# - Hardware-accelerated compositing is LEFT ON: we deliberately do NOT
-#   set WEBKIT_DISABLE_COMPOSITING_MODE. The kiosk's WebGL aura-ring
-#   visualizer needs the GPU to render smoothly; with compositing
-#   disabled it fell back to the CPU path and stuttered badly. Re-enabled
-#   2026-05-29 at the user's request (kiosk-ring lag fix).
-#   TRADE-OFF: WEBKIT_DISABLE_COMPOSITING_MODE=1 was the documented fix
-#   (tauri#10566/#12800/#13157) for "after-image" ghosting on the
-#   TRANSPARENT overlay when the ChatPanel scrolled/remounted. The other
-#   two parts of that fix remain and carry the overlay now: the <html>
-#   rgba(0,0,0,0.01) baseline (index.html) and moving the ChatPanel into
-#   its OWN opaque WebviewWindow. If overlay ghosting returns, either
-#   re-add `WEBKIT_DISABLE_COMPOSITING_MODE=1 \` below (the kiosk aura
-#   will lag again) or switch the kiosk to a non-WebGL visualizer.
-=======
 # WebKit workarounds for tauri:// custom protocol on Linux:
 # - WEBKIT_DISABLE_COMPOSITING_MODE=1: required for transparent overlay
 #   windows on XFCE/X11 (and many other Linux setups). Without it,
@@ -274,14 +228,10 @@ trap "kill $PROXY_SUP_PID $BRIDGE_PID 2>/dev/null; pkill -P $PROXY_SUP_PID 2>/de
 #   This is the documented fix per tauri#10566, tauri#12800, tauri#13157,
 #   and what Cursor's Linux build ships. Cost: disables accelerated
 #   compositing inside the webview, which is fine for an HUD/chat UI.
->>>>>>> origin/master
 # - WEBKIT_DISABLE_DMABUF_RENDERER was previously set here to "fix
 #   blank/error pages" but per tauri#14924 it is itself a known *cause*
 #   of transparent-window ghosting on some Mesa/Nvidia stacks. Removed
 #   2026-05-29 after research; add back only if blank pages reappear.
 DISPLAY=${DISPLAY:-:0} \
-<<<<<<< HEAD
-=======
   WEBKIT_DISABLE_COMPOSITING_MODE=1 \
->>>>>>> origin/master
   "$DESKTOP_BIN"

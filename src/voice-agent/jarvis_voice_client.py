@@ -482,11 +482,24 @@ _http_api_ref: Optional["VoiceClientHttpApi"] = None
 # the callback the stale-STT watchdog needs).
 _watchdog: Optional[LoopWatchdog] = None
 
+# Last time _mic_cb was invoked by PortAudio (monotonic seconds).
+# Updated on the realtime callback thread; read by the mic-health
+# watcher on the asyncio loop. If this timestamp goes stale while
+# unmuted, the capture stream has silently died (ALSA underrun that
+# PortAudio couldn't recover) and we trigger a full reconnect.
+_last_mic_cb_time: float = 0.0
+
 # Process-wide screen-share publisher. Constructed once at module load
 # so the HTTP handler can flip it on/off without worrying about which
 # Room instance is live — the publisher itself takes the Room as a
 # start() argument, so reconnects don't strand state.
 _screen_share = ScreenShare()
+
+# Set by play_subscribed_track when the PortAudio output stream crashes
+# (ALSA underrun / I/O error). run_once() monitors this and triggers a
+# full SFU reconnect so fresh audio streams are opened — without this,
+# the voice-client stays connected but deaf and mute forever.
+_audio_output_crashed = asyncio.Event()
 
 
 async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
@@ -608,7 +621,11 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
             # enough for a conversational pace.
             out.write(pcm)
     except Exception as e:
-        log.warning(f"[playback] stream error: {e}")
+        log.warning(f"[playback] stream error: {e} — triggering reconnect")
+        # Signal run_once() to tear down and reconnect via the
+        # ReconnectLadder. Without this, the SFU stays connected
+        # but the PortAudio streams are dead → JARVIS goes silent.
+        _audio_output_crashed.set()
     finally:
         state.speaking = False
         out.stop()
@@ -985,6 +1002,8 @@ async def run_once(shutdown: asyncio.Event) -> None:
     # talking!" every time JARVIS is the one talking.
     _listening_until = [0.0]  # mutable closure cell; one-element list
     def _mic_cb(indata, frames, _time, status) -> None:
+        global _last_mic_cb_time
+        _last_mic_cb_time = time.monotonic()
         if status:
             log.debug(f"[mic] portaudio status: {status}")
         # Muted (e.g. a direct mode muted JARVIS-Claude) → send NOTHING.
@@ -1134,14 +1153,40 @@ async def run_once(shutdown: asyncio.Event) -> None:
         f"(ns={_APM_NS} agc={_APM_AGC} hpf={_APM_HPF} aec={_APM_AEC})"
     )
 
+    # ── Mic-health watcher ──────────────────────────────────────────
+    # If the PortAudio capture stream dies silently (ALSA underrun →
+    # I/O error that doesn't surface to the callback), the callback
+    # stops firing. After 30 s of no mic frames while unmuted (and not
+    # during TTS playback), trigger a full reconnect. This is a
+    # belt-and-suspenders companion to the playback crash recovery above.
+    _MIC_STARVATION_SEC = 30.0
+    async def _mic_health_watcher() -> None:
+        global _last_mic_cb_time
+        while not room_disconnected.is_set():
+            await asyncio.sleep(5.0)
+            if state.muted:
+                continue  # muted — no frames expected
+            age = time.monotonic() - _last_mic_cb_time
+            if age > _MIC_STARVATION_SEC and _last_mic_cb_time > 0:
+                log.warning(
+                    f"[mic-health] no mic frames for {age:.0f}s — "
+                    f"capture stream may be dead; triggering reconnect"
+                )
+                room_disconnected.set()
+                return
+
+    mic_health_task = asyncio.create_task(_mic_health_watcher(), name="mic-health")
     try:
-        # Block until either the process is shutting down (SIGTERM/INT)
-        # or the SFU dropped us. The supervisor loop above decides what
-        # to do next based on which fired.
+        # Block until the process is shutting down, the SFU dropped us,
+        # or the audio output stream crashed (PortAudio/ALSA I/O error).
+        # The supervisor loop above decides what to do next, with the
+        # ReconnectLadder handling recovery.
+        _audio_output_crashed.clear()  # reset from any prior run
         done, pending = await asyncio.wait(
             [
                 asyncio.create_task(shutdown.wait()),
                 asyncio.create_task(room_disconnected.wait()),
+                asyncio.create_task(_audio_output_crashed.wait()),
             ],
             return_when=asyncio.FIRST_COMPLETED,
         )
@@ -1159,6 +1204,7 @@ async def run_once(shutdown: asyncio.Event) -> None:
             log.warning(f"[teardown] screen-share stop failed: {e}")
         _room_ref = None
         _mic_pub_ref = None
+        mic_health_task.cancel()
         mic_stream.stop()
         mic_pump_task.cancel()
         # Await the cancellation so no frame is mid-capture_frame when the

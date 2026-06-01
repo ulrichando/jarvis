@@ -181,6 +181,8 @@ done
 CLI_CMD=( "$BUN"
   --feature=VOICE_MODE
   --feature=BRIDGE_MODE
+  --feature=AGENT_TRIGGERS
+  --feature=AGENT_TRIGGERS_REMOTE
   --define 'MACRO.VERSION="2.1.107"'
   --define 'MACRO.BUILD_TIME=""'
   --define 'MACRO.PACKAGE_URL="@anthropic-ai/claude-code"'

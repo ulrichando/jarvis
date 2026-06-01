@@ -1,49 +1,4 @@
 #!/usr/bin/env bash
-<<<<<<< HEAD
-# JARVIS one-shot installer — bootstrap.
-#
-# On first run (curl|bash) this bootstrap defines the helpers needed before
-# the repo is cloned, clones the repo, then sources setup/install-lib.sh
-# from the cloned checkout to call main(). When run from an existing checkout
-# the lib is sourced at the top so all functions are available immediately.
-#
-# Usage:
-#   curl -fsSL https://raw.githubusercontent.com/ulrichando/jarvis/master/install.sh | bash
-#   cd jarvis && ./install.sh                           # existing checkout
-#   ./install.sh --setup                                 # config only
-#   ./install.sh --ensure browser                        # targeted dep
-#   ./install.sh --postinstall                           # pip-user setup
-#
-# Skip flags: JARVIS_SKIP_CLI=1 / JARVIS_SKIP_VOICE=1 / JARVIS_SKIP_DESKTOP=1
-# Custom dir:   JARVIS_INSTALL_DIR=/path/to/jarvis
-
-set -euo pipefail
-
-# Path defaults — MUST be declared before sourcing the lib, because the
-# lib functions reference them and set -u kills the script on any unset
-# variable reference. detect_fhs() overrides these; _resolve_paths() fills
-# in $HOME-based defaults lazily.
-INSTALL_DIR="${JARVIS_INSTALL_DIR:-}"
-LOCAL_BIN=""; JARVIS_HOME=""; JARVIS_LOG_DIR=""
-JARVIS_DATA_DIR=""; SYSTEMD_DIR=""; SYSTEMD_SCOPE=""; VA_ENV=""
-
-# ── Source the function library (when inside a checkout) ─────────────────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
-LIB="$SCRIPT_DIR/setup/install-lib.sh"
-[ -f "$LIB" ] && source "$LIB"
-
-# If LIB wasn't found above (curl|bash before clone), these bootstrap-only
-# functions handle the clone. After clone, main() re-sources the lib from
-# the cloned checkout. Test suite sources install.sh from a checkout, so
-# the lib is loaded above — bootstrap functions below must not conflict.
-
-# ── Constants ────────────────────────────────────────────────────────────
-readonly REPO_URL="https://github.com/ulrichando/jarvis.git"
-readonly NODE_VERSION="22"
-INSTALL_DIR="${JARVIS_INSTALL_DIR:-}"
-
-# ── Output helpers (needed before clone) ─────────────────────────────────
-=======
 # JARVIS one-shot installer — CLI + Voice Agent + Desktop (Tauri) + Web.
 #
 # Usage:
@@ -66,7 +21,6 @@ readonly USER_SYSTEMD="$HOME/.config/systemd/user"
 INSTALL_DIR="${JARVIS_INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
 
 # ── Output helpers ───────────────────────────────────────────────────────
->>>>>>> origin/master
 c_red()    { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 c_green()  { printf '\033[32m%s\033[0m\n' "$*"; }
 c_yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
@@ -78,18 +32,10 @@ warn()     { c_yellow "  ⚠ $*"; }
 err()      { c_red   "  ✗ $*"; }
 die()      { err "$*"; exit 1; }
 
-<<<<<<< HEAD
-# ── Primitives ───────────────────────────────────────────────────────────
-have() { command -v "$1" >/dev/null 2>&1; }
-
-# ── Detect invocation context ────────────────────────────────────────────
-detect_invocation() {
-=======
 # ── Detect: are we piped from curl, or inside an existing checkout? ──────
 detect_invocation() {
   # If $0 ends in "install.sh" AND a sibling CLAUDE.md mentions JARVIS,
   # treat the script's dir as the existing checkout.
->>>>>>> origin/master
   local script_dir
   if [ -f "${BASH_SOURCE[0]:-/dev/null}" ]; then
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -103,35 +49,16 @@ detect_invocation() {
   return 0
 }
 
-<<<<<<< HEAD
-# ── Platform guard ─────────────────────────────────────────────────────────
-case "$(uname -s)" in
-  Linux)   ;;  # supported
-  Darwin)  die "macOS is not supported. JARVIS targets Linux and Windows only." ;;
-  *)       die "Unsupported platform: $(uname -s). JARVIS installers target Linux and Windows only." ;;
-esac
-
-# ── Bootstrapping prereq check ─────────────────────────────────────────
-# Minimal check before clone. Full check happens in lib's check_prereqs().
-_check_prereqs_bootstrap() {
-=======
 # ── Prerequisites ────────────────────────────────────────────────────────
 have() { command -v "$1" >/dev/null 2>&1; }
 
 check_prereqs() {
   section "Checking prerequisites"
 
->>>>>>> origin/master
   local missing=()
   for cmd in git curl python3; do
     if have "$cmd"; then ok "$cmd"; else err "$cmd not found"; missing+=("$cmd"); fi
   done
-<<<<<<< HEAD
-  if have bun; then ok "bun"; else warn "bun not found — will install via curl"; missing+=("bun"); fi
-  if have node; then ok "node"; else warn "node not found"; missing+=("node"); fi
-  if [ ${#missing[@]} -gt 0 ]; then
-    warn "Some prerequisites missing — installing them now if possible."
-=======
 
   # Bun — install via official script if missing
   if have bun; then
@@ -166,7 +93,6 @@ check_prereqs() {
   if [ ${#missing[@]} -gt 0 ]; then
     err "Missing: ${missing[*]} — install them and rerun this script."
     exit 1
->>>>>>> origin/master
   fi
 }
 
@@ -174,28 +100,9 @@ check_prereqs() {
 clone_or_update() {
   if [ -d "$INSTALL_DIR/.git" ]; then
     section "Updating existing checkout"
-<<<<<<< HEAD
-    local branch
-    branch="$(git -C "$INSTALL_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "master")"
-    git -C "$INSTALL_DIR" fetch --quiet origin "$branch"
-    local stash_ref=""
-    if ! git -C "$INSTALL_DIR" diff --quiet 2>/dev/null; then
-      local stash_name="jarvis-install-autostash-$(date +%Y%m%d-%H%M%S)"
-      git -C "$INSTALL_DIR" stash push --include-untracked -m "$stash_name" >/dev/null 2>&1 && stash_ref="stash@{0}"
-      sub "stashed local changes as '$stash_name'"
-    fi
-    git -C "$INSTALL_DIR" pull --ff-only origin "$branch" || {
-      warn "pull --ff-only failed (merge conflict?); leaving as-is"
-      [ -n "$stash_ref" ] && warn "stash preserved — git -C $INSTALL_DIR stash apply"
-      return 0
-    }
-    ok "updated to $(git -C "$INSTALL_DIR" rev-parse --short HEAD)"
-    [ -n "$stash_ref" ] && sub "stash preserved; run: git stash apply to restore"
-=======
     git -C "$INSTALL_DIR" fetch --quiet origin master
     git -C "$INSTALL_DIR" pull --ff-only origin master || warn "pull --ff-only failed (local changes?); leaving checkout as-is"
     ok "checkout at $(git -C "$INSTALL_DIR" rev-parse --short HEAD)"
->>>>>>> origin/master
   else
     section "Cloning JARVIS"
     mkdir -p "$(dirname "$INSTALL_DIR")"
@@ -204,35 +111,6 @@ clone_or_update() {
   fi
 }
 
-<<<<<<< HEAD
-# ── Entry point ──────────────────────────────────────────────────────────
-# Guard: only run when executed directly, not when sourced (e.g. by tests).
-if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
-
-  detect_invocation
-
-  # For curl|bash: INSTALL_DIR is empty; default if not set by detect_invocation.
-  [ -z "$INSTALL_DIR" ] && INSTALL_DIR="${JARVIS_INSTALL_DIR:-$HOME/Documents/Projects/jarvis}"
-
-  # Clone if this is a fresh install or update.
-  if [ ! -f "$INSTALL_DIR/setup/install-lib.sh" ]; then
-    _check_prereqs_bootstrap
-    clone_or_update
-  fi
-
-  # Source the function library from the (now present) checkout.
-  LIB="$INSTALL_DIR/setup/install-lib.sh"
-  if [ -f "$LIB" ]; then
-    source "$LIB"
-  else
-    die "Library not found at $LIB. Clone may have failed."
-  fi
-
-  # Hand off to the lib's entry routing — same args we received.
-  _entry_route "$@"
-
-fi
-=======
 # ── Channel: CLI ─────────────────────────────────────────────────────────
 install_cli() {
   if [ "${JARVIS_SKIP_CLI:-0}" = "1" ]; then warn "skipping CLI (JARVIS_SKIP_CLI=1)"; return; fi
@@ -876,4 +754,3 @@ main() {
 }
 
 main "$@"
->>>>>>> origin/master
