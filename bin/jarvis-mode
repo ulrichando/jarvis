@@ -252,8 +252,8 @@ start_direct() {
         # must be forwarded explicitly or the config has no effect. Default 300
         # = 5min (matches direct_mode_idle.idle_timeout_s); 0 disables.
         --setenv="JARVIS_DIRECT_IDLE_TIMEOUT_S=${JARVIS_DIRECT_IDLE_TIMEOUT_S:-300}"
-        --setenv="JARVIS_GEMINI_WEBCAM=${JARVIS_GEMINI_WEBCAM:-1}"
-        --setenv="JARVIS_OPENAI_WEBCAM=${JARVIS_OPENAI_WEBCAM:-1}"
+        --setenv="JARVIS_GEMINI_WEBCAM=${JARVIS_GEMINI_WEBCAM:-0}"
+        --setenv="JARVIS_OPENAI_WEBCAM=${JARVIS_OPENAI_WEBCAM:-0}"
     )
     if [[ -n "${PULSE_SERVER:-}" ]]; then
         run_args+=(--setenv="PULSE_SERVER=$PULSE_SERVER")

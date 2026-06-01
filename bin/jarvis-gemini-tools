@@ -176,6 +176,8 @@ ALLOWED_TOOLS = {
     "dispatch_agent",
     # Specialty
     "vuln_check", "clarify",
+    # Webcam — live feed on demand (start/stop, camera only active between calls)
+    "webcam_start", "webcam_stop",
 }
 
 # Operations block — kept tight on purpose. The SOUL prompt (slot #1)
@@ -291,15 +293,28 @@ def _get_webcam() -> "cv2.VideoCapture":
 
 
 def grab_webcam_jpeg() -> bytes:
-    """Read the latest webcam frame from the person tracker's shared JPEG.
-    The tracker (vision.person_tracker) owns the camera exclusively and
-    writes frames to ~/.jarvis/person_tracker.jpg at ~5 Hz. We only read
-    that file — we never open the camera ourselves, so the tracker and
-    the 3D head can work simultaneously with Gemini vision."""
-    tracker_jpg = Path.home() / ".jarvis" / "person_tracker.jpg"
-    if not tracker_jpg.exists():
-        raise RuntimeError("person_tracker.jpg not found — is the tracker running?")
-    return tracker_jpg.read_bytes()
+    """Capture a single JPEG frame from the webcam on demand.
+
+    Opens the camera via cv2, grabs the latest frame, encodes it as JPEG,
+    and returns the bytes. The camera is opened once (lazy) and kept warm
+    across calls for the session lifetime — it's released on shutdown via
+    release_webcam(). No background tracker needed; the camera is only
+    active while Gemini is actually using it."""
+    cap = _get_webcam()
+    ret, frame = cap.read()
+    if not ret:
+        raise RuntimeError("Failed to read frame from webcam")
+    # Resize to max 1024px on the longest side to match screen JPEG sizing
+    h, w = frame.shape[:2]
+    max_dim = max(w, h)
+    if max_dim > 1024:
+        scale = 1024.0 / max_dim
+        new_w, new_h = int(w * scale), int(h * scale)
+        frame = cv2.resize(frame, (new_w, new_h))
+    ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    if not ok:
+        raise RuntimeError("Failed to encode webcam frame as JPEG")
+    return jpeg.tobytes()
 
 
 def release_webcam() -> None:
@@ -372,6 +387,32 @@ def build_gemini_function_declarations() -> list[types.FunctionDeclaration]:
             parameters=params,
         ))
         log.info(f"[gemini-tools] registered tool: {entry.name}")
+
+    # Built-in tools (not in the registry, handled inline in drain_replies)
+    if "webcam_start" in ALLOWED_TOOLS:
+        decls.append(types.FunctionDeclaration(
+            name="webcam_start",
+            description=(
+                "Start the live webcam feed (~1 FPS). Call this ONLY when the "
+                "user explicitly asks you to look at them or see something "
+                "through the camera (e.g., 'can you see me?', 'look at me', "
+                "'what am I holding?'). The camera LED will turn on. After you "
+                "answer the visual question, call webcam_stop to turn it off. "
+                "NEVER call this unsolicited — only when the user asks to be seen."
+            ),
+            parameters={"type": "object", "properties": {}},
+        ))
+        decls.append(types.FunctionDeclaration(
+            name="webcam_stop",
+            description=(
+                "Stop the live webcam feed. Call this after you've answered a "
+                "visual question and no longer need the camera. The camera LED "
+                "will turn off. Always call this when you're done looking."
+            ),
+            parameters={"type": "object", "properties": {}},
+        ))
+        log.info("[gemini-tools] registered built-in tools: webcam_start, webcam_stop")
+
     return decls
 
 
@@ -558,17 +599,6 @@ async def main() -> int:
                     log.warning(f"[gemini-tools] screen send failed: {e}")
                 await asyncio.sleep(FRAME_INTERVAL_S)
 
-        async def pump_webcam() -> None:
-            while not stop.is_set():
-                try:
-                    jpeg = await asyncio.to_thread(grab_webcam_jpeg)
-                    await session.send_realtime_input(
-                        video=types.Blob(data=jpeg, mime_type="image/jpeg"),
-                    )
-                except Exception as e:
-                    log.warning(f"[gemini-tools] webcam send failed: {e}")
-                await asyncio.sleep(FRAME_INTERVAL_S)
-
         async def drain_replies() -> None:
             assert spk_proc.stdin is not None
             while not stop.is_set():
@@ -582,7 +612,28 @@ async def main() -> int:
                             name = fc.name
                             args = dict(fc.args or {})
                             log.info(f"[gemini-tools] → {name}({args})")
-                            result = await execute_tool(name, args)
+
+                            # Built-in webcam_start / webcam_stop — toggle
+                            # the live feed on demand. Camera only active
+                            # between these two calls.
+                            if name == "webcam_start":
+                                if webcam_active.is_set():
+                                    result = {"result": "Webcam feed is already active."}
+                                else:
+                                    webcam_active.set()
+                                    log.info("[gemini-tools] webcam live feed ON")
+                                    result = {"result": "Webcam live feed started. I can now see you through the camera."}
+                            elif name == "webcam_stop":
+                                if not webcam_active.is_set():
+                                    result = {"result": "Webcam feed is already stopped."}
+                                else:
+                                    webcam_active.clear()
+                                    try: release_webcam()
+                                    except Exception: pass
+                                    log.info("[gemini-tools] webcam live feed OFF")
+                                    result = {"result": "Webcam feed stopped. Camera is now off."}
+                            else:
+                                result = await execute_tool(name, args)
                             log.info(
                                 f"[gemini-tools]   {name} ← "
                                 f"{json.dumps(result)[:200] if not isinstance(result, str) else result[:200]}"
@@ -626,14 +677,32 @@ async def main() -> int:
         # task flips it back on when audio stops.
         status.set_listening(True)
 
+        # Webcam live feed — idle by default. The model calls webcam_start /
+        # webcam_stop tools to toggle the feed on/off. The pump task always
+        # runs but only captures frames when the event is set.
+        webcam_active = asyncio.Event()
+
+        async def pump_webcam_on_demand() -> None:
+            while not stop.is_set():
+                if webcam_active.is_set():
+                    try:
+                        jpeg = await asyncio.to_thread(grab_webcam_jpeg)
+                        await session.send_realtime_input(
+                            video=types.Blob(data=jpeg, mime_type="image/jpeg"),
+                        )
+                    except Exception as e:
+                        log.warning(f"[gemini-tools] webcam send failed: {e}")
+                        # Don't auto-stop on error — transient failures
+                        # (lighting, brief occlusion) are normal.
+                await asyncio.sleep(FRAME_INTERVAL_S)
+
         tasks = [
-            asyncio.create_task(pump_mic(),         name="mic"),
-            asyncio.create_task(pump_screen(),      name="screen"),
-            asyncio.create_task(drain_replies(),    name="replies"),
-            asyncio.create_task(speaking_debounce(), name="speaking-debounce"),
-            asyncio.create_task(stop.wait(),        name="stop"),
-            *([asyncio.create_task(pump_webcam(), name="webcam")]
-              if os.environ.get("JARVIS_GEMINI_WEBCAM", "0") == "1" else []),
+            asyncio.create_task(pump_mic(),              name="mic"),
+            asyncio.create_task(pump_screen(),           name="screen"),
+            asyncio.create_task(pump_webcam_on_demand(), name="webcam"),
+            asyncio.create_task(drain_replies(),         name="replies"),
+            asyncio.create_task(speaking_debounce(),     name="speaking-debounce"),
+            asyncio.create_task(stop.wait(),             name="stop"),
         ]
         try:
             done, pending = await asyncio.wait(
@@ -663,6 +732,8 @@ async def main() -> int:
                     try: proc.kill()
                     except Exception: pass
             try: sct.close()
+            except Exception: pass
+            try: release_webcam()
             except Exception: pass
 
     try:
