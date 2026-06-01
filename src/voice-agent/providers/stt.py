@@ -50,6 +50,37 @@ from resilience.circuit_breaker import CircuitOpenError
 logger = logging.getLogger("jarvis.stt")
 
 
+<<<<<<< HEAD
+# Deepgram STREAMING rejects a None/auto language with a fatal, recoverable=False
+# error ("language detection is not supported in streaming mode") that tears down
+# the whole AgentSession before any audio flows — the intermittent "JARVIS can't
+# hear after a restart" bug. The construction-time `language=` pin in
+# `_build_deepgram_stt` only protects the FIRST connect; LiveKit's FallbackAdapter
+# calls `stt.stream(language=self._language)` on both its main and RECOVERY paths,
+# where `self._language` can be None (the AgentSession's default). Deepgram's
+# `_sanitize_options` treats None as "given" (`is_given(None)` is True) and so
+# sets `config.language = LanguageCode(None)` -> None -> the fatal crash. This
+# subclass closes the gap at the single chokepoint: coerce a falsy/auto language
+# back to NOT_GIVEN so EVERY stream (incl. the recovery re-construct) falls through
+# to the pinned construction language. Guarded import -> None (Whisper-only) when
+# the plugin isn't installed, matching `_build_deepgram_stt`'s degradation.
+try:
+    from livekit.agents.types import NOT_GIVEN as _NOT_GIVEN
+    from livekit.agents.utils import is_given as _is_given
+    from livekit.plugins import deepgram as _deepgram
+
+    class _DeepgramSTT(_deepgram.STT):
+        def _sanitize_options(self, *, language=_NOT_GIVEN):
+            if not _is_given(language) or not language:
+                language = _NOT_GIVEN   # use the pinned construction language (en-US)
+            return super()._sanitize_options(language=language)
+except Exception:  # pragma: no cover - plugin not installed
+    _deepgram = None
+    _DeepgramSTT = None
+
+
+=======
+>>>>>>> origin/master
 def _stt_language():
     """Return the STT language pin.
 
@@ -184,6 +215,31 @@ def _build_deepgram_stt():
             "DEEPGRAM_API_KEY in src/voice-agent/.env to enable streaming STT."
         )
         return None
+<<<<<<< HEAD
+    if _DeepgramSTT is None:
+        logger.warning(
+            "[stt] livekit-plugins-deepgram not installed; "
+            "falling back to Groq Whisper only. "
+            "Run: pip install livekit-plugins-deepgram"
+        )
+        return None
+    # Deepgram STREAMING does NOT support language auto-detection (unlike Groq
+    # Whisper): a None/auto language raises "language detection is not supported
+    # in streaming mode" in SpeechStream.__init__, which kills every session
+    # (stt_error, recoverable=False). _stt_language() returns None for the
+    # auto-detect default, so pin a concrete language for Deepgram — default
+    # en-US, override via JARVIS_DEEPGRAM_LANGUAGE. The Whisper fallback rung
+    # keeps auto-detect for non-English.
+    dg_language = (
+        os.environ.get("JARVIS_DEEPGRAM_LANGUAGE", "").strip()
+        or _stt_language()
+        or "en-US"
+    )
+    try:
+        return _DeepgramSTT(
+            model="nova-3-general",
+            language=dg_language,
+=======
     try:
         from livekit.plugins import deepgram
     except ImportError as e:
@@ -197,6 +253,7 @@ def _build_deepgram_stt():
         return deepgram.STT(
             model="nova-3-general",
             language=_stt_language(),
+>>>>>>> origin/master
             interim_results=True,
             no_delay=True,
             endpointing_ms=300,

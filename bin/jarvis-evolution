@@ -1,0 +1,161 @@
+#!/usr/bin/env -S /home/ulrich/Documents/Projects/jarvis/src/voice-agent/.venv/bin/python -u
+"""jarvis-evolution — read-only CLI for the self-evolution fitness gate.
+
+Subcommands:
+  score    [--since ISO] [--until ISO] [--log]   compute + print a fitness
+           reading over live telemetry (read-only). Writes to the evolution
+           ledger ONLY if --log AND env JARVIS_EVOLUTION_GATE is truthy.
+  backtest --bad <since> <until> --good <since> <until>
+           score both windows, print them, exit non-zero unless
+           good.composite > bad.composite (the gate failing its own
+           calibration is an error).
+  ledger   [--limit N]                            print recent ledger readings.
+
+Reads turn_telemetry.db read-only; the only thing it ever writes is its own
+evolution_ledger.db, and only under the --log + env gate. No import-time side
+effects in the voice-agent runtime — this is a standalone tool.
+"""
+from __future__ import annotations
+import argparse
+import datetime as _dt
+import os
+import sys
+
+sys.path.insert(0, "/home/ulrich/Documents/Projects/jarvis/src/voice-agent")
+
+from evolution import backtest as _bt   # noqa: E402
+from evolution import ledger as _led     # noqa: E402
+from evolution import soak as _soak      # noqa: E402
+
+
+def _now_utc_iso() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _print_reading(reading, *, since=None, until=None) -> None:
+    print(f"n_turns:   {reading.n_turns}")
+    if since or until:
+        print(f"window:    {since or '(start)'} .. {until or '(now)'}")
+    print(f"composite: {reading.composite}")
+    print("per-axis:")
+    for axis, val in reading.per_axis.items():
+        print(f"  {axis:<13} {val:.4f}")
+    print("guardrails:")
+    if reading.guardrail_flags:
+        for axis, violated in reading.guardrail_flags.items():
+            print(f"  {axis:<13} {'VIOLATED' if violated else 'ok'}")
+    else:
+        print("  (none)")
+    print(f"result:    {'PASS' if reading.passed else 'FAIL'}")
+
+
+def _cmd_score(args: argparse.Namespace) -> int:
+    reading = _bt.score_window(since=args.since, until=args.until)
+    _print_reading(reading, since=args.since, until=args.until)
+    gate_on = bool(os.environ.get("JARVIS_EVOLUTION_GATE"))
+    if args.log and gate_on:
+        rid = _led.append_reading(
+            ts_utc=_now_utc_iso(), window_start=args.since, window_end=args.until,
+            n_turns=reading.n_turns, per_axis=reading.per_axis, composite=reading.composite,
+            guardrail_flags=reading.guardrail_flags, passed=reading.passed)
+        print(f"[ledger] appended reading id={rid}")
+    elif args.log and not gate_on:
+        print("[ledger] --log requested but JARVIS_EVOLUTION_GATE is not set; not writing.")
+    return 0
+
+
+def _cmd_backtest(args: argparse.Namespace) -> int:
+    bad_since, bad_until = args.bad
+    good_since, good_until = args.good
+    rows = _bt.compare_windows([
+        ("BAD", bad_since, bad_until),
+        ("GOOD", good_since, good_until),
+    ])
+    by_label = {r["label"]: r for r in rows}
+    for r in rows:
+        print(f"=== {r['label']} window ({r['n_turns']} turns) ===")
+        print(f"  composite: {r['composite']}  passed: {r['passed']}")
+        for axis, val in r["per_axis"].items():
+            print(f"  {axis:<13} {val:.4f}")
+        print()
+    good = by_label["GOOD"]
+    bad = by_label["BAD"]
+    if not (good["composite"] > bad["composite"]):
+        print(f"CALIBRATION FAILED: good({good['composite']}) "
+              f"not greater than bad({bad['composite']})")
+        return 1
+    print(f"CALIBRATION OK: good({good['composite']}) > bad({bad['composite']})")
+    return 0
+
+
+def _cmd_ledger(args: argparse.Namespace) -> int:
+    rows = _led.read_readings(limit=args.limit)
+    if not rows:
+        print("(ledger empty)")
+        return 0
+    for r in rows:
+        print(f"id={r['id']} ts={r['ts_utc']} n_turns={r['n_turns']} "
+              f"composite={r['composite']} passed={r['passed']} "
+              f"window={r.get('window_start')}..{r.get('window_end')}")
+    return 0
+
+
+def _cmd_soak(args: argparse.Namespace) -> int:
+    now = _dt.datetime.now().astimezone()          # local, tz-aware
+    gate_on = bool(os.environ.get("JARVIS_EVOLUTION_GATE"))
+    res = _soak.run_soak(now=now, gate_on=gate_on)
+    print(f"window:    {res['since']} .. {res['until']}")
+    if res["action"] == "already_logged":
+        print("[soak] already logged this window; skipping (idempotent).")
+        return 0
+    print(f"composite: {res['composite']}  passed: {res['passed']}  n_turns: {res['n_turns']}")
+    if res["action"] == "no_gate":
+        print("[soak] JARVIS_EVOLUTION_GATE not set; computed but not written.")
+    else:  # logged
+        print(f"[ledger] appended reading id={res['reading_id']}")
+    return 0
+
+
+def _cmd_trend(args: argparse.Namespace) -> int:
+    rows = _led.read_readings(limit=args.limit)
+    if not rows:
+        print("(ledger empty — no readings yet; run the soak or wait for the timer)")
+        return 0
+    print(_soak.format_trend_table(rows))
+    return 0
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(prog="jarvis-evolution",
+                                description="Read-only self-evolution fitness gate CLI.")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sp = sub.add_parser("score", help="compute a fitness reading over live telemetry")
+    sp.add_argument("--since", default=None, help="ISO start bound (inclusive)")
+    sp.add_argument("--until", default=None, help="ISO end bound (inclusive)")
+    sp.add_argument("--log", action="store_true",
+                    help="append to the ledger (requires JARVIS_EVOLUTION_GATE env)")
+    sp.set_defaults(func=_cmd_score)
+
+    bp = sub.add_parser("backtest", help="score a known-bad vs known-good window")
+    bp.add_argument("--bad", nargs=2, metavar=("SINCE", "UNTIL"), required=True)
+    bp.add_argument("--good", nargs=2, metavar=("SINCE", "UNTIL"), required=True)
+    bp.set_defaults(func=_cmd_backtest)
+
+    lp = sub.add_parser("ledger", help="print recent ledger readings")
+    lp.add_argument("--limit", type=int, default=50)
+    lp.set_defaults(func=_cmd_ledger)
+
+    kp = sub.add_parser("soak", help="score the previous local day + log it (gated)")
+    kp.set_defaults(func=_cmd_soak)
+
+    tp = sub.add_parser("trend", help="print a per-axis trend table of ledger readings")
+    tp.add_argument("--limit", type=int, default=30)
+    tp.set_defaults(func=_cmd_trend)
+
+    args = p.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

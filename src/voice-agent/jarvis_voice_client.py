@@ -42,6 +42,10 @@ Env (from voice-agent/.env, inherited by the systemd unit):
 from __future__ import annotations
 
 import asyncio
+<<<<<<< HEAD
+from collections import deque
+=======
+>>>>>>> origin/master
 import faulthandler
 import json
 import logging
@@ -51,7 +55,11 @@ import sys
 import threading
 import time
 import traceback
+<<<<<<< HEAD
+from dataclasses import dataclass, asdict, field
+=======
 from dataclasses import dataclass, asdict
+>>>>>>> origin/master
 from pathlib import Path
 from typing import Optional
 
@@ -142,6 +150,16 @@ from audio.apm_reverse_stream import APMDelayEstimator, ReverseRefRingBuffer
 _reverse_estimator = APMDelayEstimator()
 _reverse_ringbuf = ReverseRefRingBuffer(capacity_frames=64)
 
+<<<<<<< HEAD
+# ── Viseme lip-sync engine (kiosk talking face) ──
+# Module-level singleton; survives LiveKit reconnects. Fed the agent's TTS
+# transcript via set_pending_text() and ticked per playback frame via frame().
+from lipsync import VisemeEngine, ExpressionEngine
+_viseme_engine = VisemeEngine()
+_expression_engine = ExpressionEngine()
+
+=======
+>>>>>>> origin/master
 # ── L3 DTLN neural residual filter (2026-05-22, Phase B Task 10 wiring) ──
 # Module-level lazy singleton. The first call to `_get_dtln()` from the
 # mic callback triggers the load (TFLite interpreters + SHA verification,
@@ -413,6 +431,14 @@ class ClientState:
     muted:         bool = False       # local mic track muted
     listening:     bool = False       # local speaker (us) is talking
     speaking:      bool = False       # remote agent is talking
+<<<<<<< HEAD
+    output_level:  float = 0.0        # 0..1 RMS of played TTS — drives kiosk face lip-sync
+    # Current frame's ARKit-morph weights {target_N: 0..1} for the kiosk
+    # face's visemes. Updated by the playback loop via the VisemeEngine;
+    # published on GET /face. Empty dict = mouth at rest.
+    face_weights:  dict = field(default_factory=dict)
+=======
+>>>>>>> origin/master
     # Active CLI model ID (e.g., "deepseek-chat", "qwen/qwen3-32b").
     # Read straight from CLI_MODEL_FILE on every /status hit, so the
     # tray sees changes the same instant they're written.
@@ -571,6 +597,27 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
                 _speaking_until[0] = time.monotonic() + _SPEAKING_HOLD_S
             elif time.monotonic() > _speaking_until[0]:
                 state.speaking = False
+<<<<<<< HEAD
+            # Output amplitude (0..1, normalized RMS) of the played TTS frame —
+            # the kiosk WebGL face polls /level and drives the jaw morph from
+            # this. Lightly smoothed; cheap (one np.sqrt per 10ms frame).
+            _lvl = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2))) / 32768.0
+            state.output_level += (_lvl - state.output_level) * 0.5
+            # Face morphs: viseme mouth shapes (text + RMS) merged with the
+            # expression layer (brows/eyes/cheeks/smile-frown from sentiment).
+            # Disjoint morphs, so the union is clean. Never raises into audio.
+            try:
+                _vw = _viseme_engine.frame(
+                    now=time.monotonic(),
+                    speaking=state.speaking,
+                    rms=state.output_level,
+                )
+                state.face_weights = {**_vw, **_expression_engine.frame(state.speaking)}
+            except Exception as e:
+                log.debug(f"[face] frame failed: {e}")
+                state.face_weights = {}
+=======
+>>>>>>> origin/master
             # write() is non-blocking-ish — it copies into PortAudio's
             # internal ring, the audio thread drains. If we ever fall
             # behind, it returns a buffer-underflow warning; harmless
@@ -754,9 +801,27 @@ async def run_once(shutdown: asyncio.Event) -> None:
             log.debug(f"[stream-drain] byte stream from {participant_identity} ended: {e}")
 
     async def _drain_text_stream(reader, participant_identity: str) -> None:
+<<<<<<< HEAD
+        # The agent's TTS transcript streams in word-by-word on
+        # lk.transcription, roughly in sync with the audio. Feed it to the
+        # viseme engine INCREMENTALLY (the accumulated text on each chunk) so
+        # the face's visemes engage as the words are spoken — not only at
+        # stream end. Only the agent's transcript drives the face, never our
+        # own STT echoed back under the local identity.
+        is_agent = participant_identity != IDENTITY
+        try:
+            buf = []
+            async for chunk in reader:
+                buf.append(chunk)
+                if is_agent:
+                    _txt = "".join(buf)
+                    _viseme_engine.set_pending_text(_txt)
+                    _expression_engine.set_pending_text(_txt)
+=======
         try:
             async for _ in reader:
                 pass
+>>>>>>> origin/master
         except Exception as e:
             log.debug(f"[stream-drain] text stream from {participant_identity} ended: {e}")
 
@@ -817,7 +882,14 @@ async def run_once(shutdown: asyncio.Event) -> None:
 
     # Publish mic. Must be done AFTER connect — the AudioSource isn't
     # known to the SFU until the track is created + published.
+<<<<<<< HEAD
+    # Pin the AudioSource to THIS run_once loop. The mic pump is now the sole
+    # caller of capture_frame; binding the source's future-loop here avoids a
+    # silent off-loop wedge (every frame would drop, looking like backpressure).
+    source = rtc.AudioSource(SAMPLE_RATE, NUM_CHANNELS, loop=loop)
+=======
     source = rtc.AudioSource(SAMPLE_RATE, NUM_CHANNELS)
+>>>>>>> origin/master
     mic_track = rtc.LocalAudioTrack.create_audio_track("mic", source)
     mic_pub = await room.local_participant.publish_track(
         mic_track,
@@ -873,9 +945,59 @@ async def run_once(shutdown: asyncio.Event) -> None:
         # old_track is implicitly dropped; the SFU has already replaced
         # the subscription on the agent side.
 
+<<<<<<< HEAD
+    # ── Mic → SFU bridge: FULLY DECOUPLED from the event loop ──────────
+    # The PortAudio callback runs on a realtime thread ~100×/s and MUST NOT
+    # schedule per-frame work on the asyncio loop: source.capture_frame
+    # back-pressures whenever the SFU isn't draining the mic (muted in a
+    # direct mode, or no agent consumer), and ANY per-frame loop scheduling
+    # (run_coroutine_threadsafe OR call_soon_threadsafe) then floods the loop
+    # → it can't serve the :8767 control endpoint (mode-switch mute hangs)
+    # or ping the systemd watchdog (SIGABRT). Root-cause fix (2026-05-29):
+    # the callback only appends to a bounded, thread-safe deque (append/len/
+    # popleft are atomic under the GIL; maxlen auto-drops the OLDEST frame
+    # when full — inaudible, and correct under backpressure). One pump task
+    # drains it and is the SOLE caller of capture_frame (≤1 in-flight). The
+    # loop never does per-frame work, so backpressure cannot saturate it.
+    _MIC_RING_MAX = 50  # 50 × 10ms ≈ 500ms jitter buffer before dropping oldest
+    _mic_ring: "deque[rtc.AudioFrame]" = deque(maxlen=_MIC_RING_MAX)
+    _mic_drops = [0]
+
+    async def _mic_pump() -> None:
+        # Sole consumer of source.capture_frame. Under backpressure it blocks
+        # here, the ring fills, and the realtime callback's maxlen append
+        # drops the oldest — bounded, with ZERO loop involvement. The short
+        # sleep runs only when the ring is momentarily empty (frames flow
+        # continuously, so that's rare). Drop count surfaced here, off the
+        # 10ms realtime hot path. Uses the stable `source` (same AudioSource
+        # survives mic republish — see _republish_mic_track).
+        pumped = 0
+        last_drops = 0
+        while True:
+            if not _mic_ring:
+                await asyncio.sleep(0.005)
+                continue
+            try:
+                frame = _mic_ring.popleft()
+            except IndexError:
+                continue
+            pumped += 1
+            if pumped % 500 == 0 and _mic_drops[0] != last_drops:
+                log.warning(
+                    f"[mic] dropped {_mic_drops[0]} frame(s) total under SFU "
+                    f"backpressure (ring bounded at {_MIC_RING_MAX})"
+                )
+                last_drops = _mic_drops[0]
+            try:
+                await source.capture_frame(frame)
+            except Exception as e:
+                log.debug(f"[mic] capture_frame failed (harmless mid-rotation): {e}")
+
+=======
     # PortAudio callback runs in a realtime thread. Marshal each frame
     # back to the asyncio loop so capture_frame (which awaits) runs on
     # the right thread. run_coroutine_threadsafe is exactly that bridge.
+>>>>>>> origin/master
     #
     # If WebRTC APM is enabled (`_apm` non-None), the frame is passed
     # through `process_stream` for NS + AGC + HPF (+ optional AEC) BEFORE
@@ -897,6 +1019,19 @@ async def run_once(shutdown: asyncio.Event) -> None:
     def _mic_cb(indata, frames, _time, status) -> None:
         if status:
             log.debug(f"[mic] portaudio status: {status}")
+<<<<<<< HEAD
+        # Muted (e.g. a direct mode muted JARVIS-Claude) → send NOTHING.
+        # Capturing into a muted, undrained LiveKit track back-pressures the
+        # AudioSource and floods the event loop with per-frame work, which
+        # starves the HTTP control server (:8767 /mute,/status) + the watchdog
+        # heartbeat — making the NEXT mode-switch's mute call hang ~30s (the
+        # recurring 2026-05-29 "can't switch modes" trap). Muted means we
+        # shouldn't be publishing mic audio anyway, so drop here at the source.
+        if state.muted:
+            state.listening = False  # don't latch the tray indicator through a mute
+            return
+=======
+>>>>>>> origin/master
         # RMS on raw audio (pre-APM, pre-AGC) for the listening detector.
         if not state.speaking and len(indata):
             raw_rms = float(np.sqrt(np.mean(indata.astype(np.float32) ** 2)))
@@ -999,7 +1134,20 @@ async def run_once(shutdown: asyncio.Event) -> None:
             )
             if not _should_publish_during_speak(profile=_current_profile, defense=_defense):
                 return
+<<<<<<< HEAD
+        # Hand the frame to the pump via the bounded, thread-safe deque —
+        # NO loop scheduling at all (no call_soon / run_coroutine_threadsafe),
+        # which is what keeps the event loop free under backpressure so the
+        # :8767 control endpoint + the watchdog heartbeat stay alive. append
+        # and len are atomic under the GIL; maxlen drops the oldest frame if
+        # the pump is behind. Count drops for visibility (the pump logs them,
+        # off this realtime hot path).
+        if len(_mic_ring) >= _MIC_RING_MAX:
+            _mic_drops[0] += 1
+        _mic_ring.append(frame)
+=======
         asyncio.run_coroutine_threadsafe(source.capture_frame(frame), loop)
+>>>>>>> origin/master
 
     mic_stream = sd.InputStream(
         samplerate=SAMPLE_RATE,
@@ -1012,6 +1160,15 @@ async def run_once(shutdown: asyncio.Event) -> None:
         # pipewire-pulse so other apps can share the mic concurrently.
         device=AUDIO_INPUT_DEVICE,
     )
+<<<<<<< HEAD
+    # Start the single mic-pump consumer BEFORE the stream so no callback
+    # frame is appended to the ring before a consumer exists. Bounds in-flight
+    # capture_frame to 1 so SFU backpressure can never pile up tasks/RAM and
+    # — with the fully-decoupled deque bridge — never saturates the loop
+    # (2026-05-29/30 :8767 + watchdog root cause).
+    mic_pump_task = asyncio.create_task(_mic_pump(), name="mic-pump")
+=======
+>>>>>>> origin/master
     mic_stream.start()
     log.info(
         f"[mic] capture started device={AUDIO_INPUT_DEVICE!r} "
@@ -1045,6 +1202,16 @@ async def run_once(shutdown: asyncio.Event) -> None:
         _room_ref = None
         _mic_pub_ref = None
         mic_stream.stop()
+<<<<<<< HEAD
+        mic_pump_task.cancel()
+        # Await the cancellation so no frame is mid-capture_frame when the
+        # room/source go away (this teardown runs on every reconnect blip).
+        try:
+            await mic_pump_task
+        except asyncio.CancelledError:
+            pass
+=======
+>>>>>>> origin/master
         mic_stream.close()
         await room.disconnect()
 

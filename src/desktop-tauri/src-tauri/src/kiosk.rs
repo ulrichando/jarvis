@@ -61,6 +61,9 @@ impl WmctrlAdapter for RealWmctrl {
             ));
         }
         let text = String::from_utf8_lossy(&out.stdout);
+<<<<<<< HEAD
+        Ok(parse_wmctrl_lgx(&text))
+=======
         let mut windows = Vec::new();
         for line in text.lines() {
             // splitn(9, ws) so title (col 8) keeps embedded spaces.
@@ -81,6 +84,7 @@ impl WmctrlAdapter for RealWmctrl {
             windows.push(WindowInfo { id, wm_class: wmc, title, x, y, w, h });
         }
         Ok(windows)
+>>>>>>> origin/master
     }
 
     fn minimize(&self, id: &str) -> Result<(), WmctrlError> {
@@ -149,6 +153,100 @@ fn window_on_monitor(w: &WindowInfo, bounds: Option<(i32, i32, i32, i32)>) -> bo
     cx >= mx && cx < mx + mw && cy >= my && cy < my + mh
 }
 
+<<<<<<< HEAD
+/// Parse `wmctrl -lGx` output into `WindowInfo`s.
+///
+/// Columns: id, desktop, x, y, w, h, wm_class, machine, title. wmctrl
+/// right-aligns the numeric columns and pads with MULTIPLE spaces, so the
+/// previous `splitn(9, char::is_whitespace).filter(non-empty)` was wrong:
+/// `splitn` counts the empty strings between padding spaces toward its
+/// 9-piece budget, so a padded line collapsed to ~5 fields and got dropped
+/// by the `len() < 9` guard — silently hiding the kiosk window (and every
+/// other window) from `find_kiosk_xid` and the minimize logic. We instead
+/// peel the first 8 whitespace-delimited fields and keep the remainder as
+/// the title (which may contain spaces, e.g. "J.A.R.V.I.S. — kiosk").
+fn parse_wmctrl_lgx(text: &str) -> Vec<WindowInfo> {
+    let mut windows = Vec::new();
+    for line in text.lines() {
+        let mut rest = line;
+        let mut fields: [&str; 8] = [""; 8];
+        let mut complete = true;
+        for f in fields.iter_mut() {
+            rest = rest.trim_start();
+            match rest.find(char::is_whitespace) {
+                Some(i) => {
+                    *f = &rest[..i];
+                    rest = &rest[i..];
+                }
+                None => {
+                    complete = false;
+                    break;
+                }
+            }
+        }
+        if !complete {
+            continue; // fewer than 8 fields + a title → not a window row
+        }
+        let id = fields[0].to_string();
+        let x = fields[2].parse::<i32>().unwrap_or(0);
+        let y = fields[3].parse::<i32>().unwrap_or(0);
+        let w = fields[4].parse::<i32>().unwrap_or(0);
+        let h = fields[5].parse::<i32>().unwrap_or(0);
+        let wmc = fields[6].to_string();
+        // fields[1] = desktop, fields[7] = machine — unused.
+        let title = rest.trim().to_string();
+        if id.is_empty() || wmc.is_empty() {
+            continue;
+        }
+        windows.push(WindowInfo { id, wm_class: wmc, title, x, y, w, h });
+    }
+    windows
+}
+
+/// Parse a wmctrl/X11 window id (e.g. "0x06400003") into a numeric XID.
+/// Tolerates surrounding whitespace and a missing "0x" prefix.
+fn parse_xid(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let hex = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
+    u64::from_str_radix(hex, 16).ok()
+}
+
+/// Pick the monitor whose top-left origin best matches `(target_x, target_y)`.
+/// `monitors` entries are `(x, y, w, h)` in RandR/Xinerama index order — the
+/// SAME index space that `_NET_WM_FULLSCREEN_MONITORS` expects. Prefers an
+/// exact origin match; otherwise falls back to the closest origin by Manhattan
+/// distance (guards against logical-vs-physical rounding between Tauri's
+/// reported position and the RandR geometry). Returns the index into
+/// `monitors`, or None if the slice is empty.
+fn pick_monitor_index(
+    monitors: &[(i32, i32, i32, i32)],
+    target_x: i32,
+    target_y: i32,
+) -> Option<usize> {
+    if monitors.is_empty() {
+        return None;
+    }
+    if let Some(i) = monitors
+        .iter()
+        .position(|&(x, y, _, _)| x == target_x && y == target_y)
+    {
+        return Some(i);
+    }
+    monitors
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, &(x, y, _, _))| {
+            // Cast to i64 before subtracting so distant origins can't overflow i32.
+            (x as i64 - target_x as i64).abs() + (y as i64 - target_y as i64).abs()
+        })
+        .map(|(i, _)| i)
+}
+
+=======
+>>>>>>> origin/master
 pub fn enter_kiosk_impl<A: WmctrlAdapter>(
     adapter: &A,
     state: &mut Option<KioskSnapshot>,
@@ -336,6 +434,245 @@ pub fn mint_livekit_token(identity: String, room: String) -> Result<String, Stri
     Ok(resp_str[body_start + 4..].to_string())
 }
 
+<<<<<<< HEAD
+// ─── Kiosk window placement (X11 EWMH) ─────────────────────────────────────
+
+/// Find the freshly-spawned kiosk window's X11 id via the wmctrl adapter.
+/// Matches the kiosk title specifically so we never pick up the main overlay
+/// ("J.A.R.V.I.S.") or the chat window ("J.A.R.V.I.S. — Chat").
+#[cfg(target_os = "linux")]
+fn find_kiosk_xid<A: WmctrlAdapter>(adapter: &A) -> Option<u64> {
+    let windows = adapter.list_visible_windows().ok()?;
+    windows
+        .iter()
+        .find(|w| w.title.contains("J.A.R.V.I.S. \u{2014} kiosk") || w.title == "kiosk")
+        .and_then(|w| parse_xid(&w.id))
+}
+
+/// Does `window`'s `property` (an array of Atoms) contain `needle`?
+/// Used to confirm the WM advertises `_NET_WM_FULLSCREEN_MONITORS` in
+/// `_NET_SUPPORTED` before we rely on it.
+#[cfg(target_os = "linux")]
+fn x11_atom_in_property(
+    xlib: &x11_dl::xlib::Xlib,
+    display: *mut x11_dl::xlib::Display,
+    window: std::os::raw::c_ulong,
+    property: std::os::raw::c_ulong,
+    needle: std::os::raw::c_ulong,
+) -> bool {
+    use std::os::raw::{c_int, c_uchar, c_ulong};
+    use std::ptr;
+
+    let mut actual_type: c_ulong = 0;
+    let mut actual_format: c_int = 0;
+    let mut nitems: c_ulong = 0;
+    let mut bytes_after: c_ulong = 0;
+    let mut prop: *mut c_uchar = ptr::null_mut();
+    // Success == 0. Request up to 4096 longs (plenty for _NET_SUPPORTED).
+    let status = unsafe {
+        (xlib.XGetWindowProperty)(
+            display,
+            window,
+            property,
+            0,
+            4096,
+            x11_dl::xlib::False,
+            x11_dl::xlib::AnyPropertyType as c_ulong,
+            &mut actual_type,
+            &mut actual_format,
+            &mut nitems,
+            &mut bytes_after,
+            &mut prop,
+        )
+    };
+    if status != 0 || prop.is_null() || actual_format != 32 {
+        if !prop.is_null() {
+            unsafe { (xlib.XFree)(prop as *mut _) };
+        }
+        return false;
+    }
+    let atoms = unsafe { std::slice::from_raw_parts(prop as *const c_ulong, nitems as usize) };
+    let found = atoms.iter().any(|&a| a == needle);
+    unsafe { (xlib.XFree)(prop as *mut _) };
+    found
+}
+
+/// Fullscreen the window `xid` on the monitor whose origin matches
+/// `(target_x, target_y)`, using the EWMH `_NET_WM_FULLSCREEN_MONITORS`
+/// primitive. This is race-free: the WM spans the EXACT RandR monitor
+/// regardless of where the window currently sits or what `_NET_WORKAREA`
+/// says — which is why it fixes the "select external → kiosk on laptop"
+/// bug that move-then-fullscreen could not. On a stacked multi-monitor
+/// layout xfwm4 refuses to move a window onto a monitor that sits outside
+/// the work area, then fullscreens it on the laptop. Verified live on
+/// xfwm4 + stacked dual-monitor 2026-05-29.
+///
+/// Returns Ok(monitor_index_used) or Err (caller falls back to wmctrl).
+#[cfg(target_os = "linux")]
+fn x11_fullscreen_on_monitor(xid: u64, target_x: i32, target_y: i32) -> Result<i32, String> {
+    use std::os::raw::{c_int, c_long, c_ulong};
+    use std::ptr;
+
+    let xlib = x11_dl::xlib::Xlib::open().map_err(|e| format!("xlib open: {:?}", e))?;
+    let xrandr = x11_dl::xrandr::Xrandr::open().map_err(|e| format!("xrandr open: {:?}", e))?;
+
+    let display = unsafe { (xlib.XOpenDisplay)(ptr::null()) };
+    if display.is_null() {
+        return Err("XOpenDisplay returned null".into());
+    }
+
+    // All display-using work happens in this inner closure so we can close the
+    // display exactly once afterwards, on every (Ok/Err) path.
+    let inner = || -> Result<i32, String> {
+        let root = unsafe { (xlib.XDefaultRootWindow)(display) };
+
+        // 1. Enumerate RandR monitors. Their index order is the index space
+        //    that `_NET_WM_FULLSCREEN_MONITORS` and `xrandr --listmonitors`
+        //    both use.
+        let mut n: c_int = 0;
+        let mons_ptr = unsafe { (xrandr.XRRGetMonitors)(display, root, x11_dl::xlib::True, &mut n) };
+        if mons_ptr.is_null() || n <= 0 {
+            return Err("XRRGetMonitors returned none".into());
+        }
+        let rects: Vec<(i32, i32, i32, i32)> = {
+            let mons = unsafe { std::slice::from_raw_parts(mons_ptr, n as usize) };
+            let v = mons
+                .iter()
+                .map(|m| (m.x as i32, m.y as i32, m.width as i32, m.height as i32))
+                .collect();
+            unsafe { (xrandr.XRRFreeMonitors)(mons_ptr) };
+            v
+        };
+        let idx = pick_monitor_index(&rects, target_x, target_y)
+            .ok_or_else(|| "no monitor matched target origin".to_string())?
+            as c_long;
+
+        // 2. Intern the atoms we need.
+        let intern = |name: &str| -> c_ulong {
+            let c = std::ffi::CString::new(name).unwrap();
+            unsafe { (xlib.XInternAtom)(display, c.as_ptr(), x11_dl::xlib::False) }
+        };
+        let net_supported = intern("_NET_SUPPORTED");
+        let fs_monitors = intern("_NET_WM_FULLSCREEN_MONITORS");
+        let net_wm_state = intern("_NET_WM_STATE");
+        let state_fullscreen = intern("_NET_WM_STATE_FULLSCREEN");
+        let state_above = intern("_NET_WM_STATE_ABOVE");
+
+        // 3. Bail to the wmctrl fallback if the WM doesn't advertise the hint
+        //    (sending it would be a silent no-op).
+        if !x11_atom_in_property(&xlib, display, root, net_supported, fs_monitors) {
+            return Err("_NET_WM_FULLSCREEN_MONITORS not in _NET_SUPPORTED".into());
+        }
+
+        // 4. Send a format-32 ClientMessage to the root window (so the WM,
+        //    not the client, applies it).
+        let send = |message_type: c_ulong, longs: [c_long; 5]| {
+            let mut data = x11_dl::xlib::ClientMessageData::new();
+            for (i, v) in longs.iter().enumerate() {
+                data.set_long(i, *v);
+            }
+            let mut ev = x11_dl::xlib::XEvent {
+                client_message: x11_dl::xlib::XClientMessageEvent {
+                    type_: x11_dl::xlib::ClientMessage,
+                    serial: 0,
+                    send_event: x11_dl::xlib::True,
+                    display,
+                    window: xid as c_ulong,
+                    message_type,
+                    format: 32,
+                    data,
+                },
+            };
+            unsafe {
+                (xlib.XSendEvent)(
+                    display,
+                    root,
+                    x11_dl::xlib::False,
+                    x11_dl::xlib::SubstructureRedirectMask | x11_dl::xlib::SubstructureNotifyMask,
+                    &mut ev,
+                );
+                (xlib.XFlush)(display);
+            }
+        };
+
+        // Pin the fullscreen monitor span: l[0..4] = top/bottom/left/right
+        // monitor index (same monitor on all four = single-monitor span),
+        // l[4] = source indication (1 = application).
+        send(fs_monitors, [idx, idx, idx, idx, 1]);
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        // _NET_WM_STATE: l[0] = _NET_WM_STATE_ADD(1), l[1] = property,
+        // l[2] = second property (0), l[3] = source indication (1).
+        send(net_wm_state, [1, state_fullscreen as c_long, 0, 1, 0]);
+        send(net_wm_state, [1, state_above as c_long, 0, 1, 0]);
+        unsafe { (xlib.XFlush)(display) };
+
+        Ok(idx as i32)
+    };
+
+    let result = inner();
+    unsafe { (xlib.XCloseDisplay)(display) };
+    result
+}
+
+/// Background-thread worker: fullscreen the freshly-spawned kiosk window on
+/// the monitor whose origin is `(target_x, target_y)`. Primary path is the
+/// EWMH `_NET_WM_FULLSCREEN_MONITORS` client message; falls back to the legacy
+/// wmctrl move+fullscreen (also the only path on non-Linux). `w`/`h` are used
+/// only by the fallback.
+fn place_kiosk_fullscreen(target_x: i32, target_y: i32, w: u32, h: u32) {
+    let title = "J.A.R.V.I.S. \u{2014} kiosk";
+
+    #[cfg(target_os = "linux")]
+    {
+        // Wait for the WM to map + register the kiosk window, then grab its
+        // XID (≤ ~560 ms; the window is brand-new).
+        let adapter = RealWmctrl;
+        let mut xid = None;
+        for _ in 0..8 {
+            std::thread::sleep(std::time::Duration::from_millis(70));
+            if let Some(id) = find_kiosk_xid(&adapter) {
+                xid = Some(id);
+                break;
+            }
+        }
+        if let Some(xid) = xid {
+            match x11_fullscreen_on_monitor(xid, target_x, target_y) {
+                Ok(idx) => {
+                    eprintln!(
+                        "[kiosk] EWMH fullscreen on RandR monitor {} (xid {:#x})",
+                        idx, xid
+                    );
+                    return;
+                }
+                Err(e) => eprintln!(
+                    "[kiosk] EWMH fullscreen failed ({}); falling back to wmctrl",
+                    e
+                ),
+            }
+        } else {
+            eprintln!("[kiosk] kiosk window XID not found; falling back to wmctrl");
+        }
+    }
+
+    // Fallback: legacy wmctrl move+fullscreen. Known to mis-place on stacked
+    // multi-monitor layouts (the bug above), but better than no fullscreen on
+    // a WM that lacks `_NET_WM_FULLSCREEN_MONITORS`.
+    let move_arg = format!("0,{},{},{},{}", target_x, target_y, w, h);
+    let _ = std::process::Command::new("wmctrl")
+        .args(["-r", title, "-e", &move_arg])
+        .output();
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    let _ = std::process::Command::new("wmctrl")
+        .args(["-r", title, "-b", "add,fullscreen,above"])
+        .output();
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    let _ = std::process::Command::new("wmctrl")
+        .args(["-r", title, "-e", &move_arg])
+        .output();
+}
+
+=======
+>>>>>>> origin/master
 // ─── Tauri commands ────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -413,6 +750,13 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
     let result = WebviewWindowBuilder::new(&app, "kiosk", WebviewUrl::App("index.html?route=kiosk".into()))
         .decorations(false)
         .transparent(false)
+<<<<<<< HEAD
+        // Paint the window/webview black at creation so there's no white flash
+        // before the page loads (the kiosk is opaque; default webview bg is
+        // white). Pairs with the kiosk-route inline style in index.html.
+        .background_color(tauri::webview::Color(0, 0, 0, 255))
+=======
+>>>>>>> origin/master
         .always_on_top(true)
         .focused(true)
         .skip_taskbar(true)
@@ -445,6 +789,15 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
         bridge_token.len()
     );
 
+<<<<<<< HEAD
+    // Give the WM an initial position hint (harmless; the authoritative
+    // placement happens via EWMH below). set_fullscreen is deliberately NOT
+    // called here — on X11 it dispatches async through GTK→X11→WM and lands
+    // on whichever monitor the window currently sits on, which is the laptop:
+    // the builder spawns at (0,0) and xfwm4 constrains placement into
+    // `_NET_WORKAREA`, which on a stacked multi-monitor layout EXCLUDES the
+    // external display. That was the "select external → kiosk on laptop" bug.
+=======
     // Set position so the WM knows which monitor this window lives on.
     // Then size. We do NOT call Tauri's set_fullscreen here — on X11 the
     // builder spawned the window at (0,0) (=eDP-1 / laptop on a typical
@@ -453,6 +806,7 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
     // the original monitor, which produced the "click external → kiosk on
     // laptop" swap. Instead we move+fullscreen via wmctrl after a short
     // delay, on a background thread so the main loop isn't blocked.
+>>>>>>> origin/master
     let _ = kiosk_window.set_position(PhysicalPosition::<i32>::new(pos_x, pos_y));
     let _ = kiosk_window.set_size(PhysicalSize::<u32>::new(size_w, size_h));
 
@@ -461,6 +815,15 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
         monitor_idx, pos_x, pos_y, size_w, size_h, scale
     );
 
+<<<<<<< HEAD
+    // Fullscreen on the SELECTED monitor on a background thread (so the main
+    // loop isn't blocked while we wait for the WM to map the window). Primary
+    // path is the EWMH `_NET_WM_FULLSCREEN_MONITORS` client message — race-free
+    // because the WM spans the exact RandR monitor regardless of the window's
+    // current position or the work area. Falls back to wmctrl if unavailable.
+    std::thread::spawn(move || {
+        place_kiosk_fullscreen(pos_x, pos_y, size_w, size_h);
+=======
     let title = "J.A.R.V.I.S. \u{2014} kiosk".to_string();
     std::thread::spawn(move || {
         // Wait for the window to be mapped by the WM. Empirically ~80ms is
@@ -481,6 +844,7 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
         let _ = std::process::Command::new("wmctrl")
             .args(["-r", &title, "-e", &move_arg])
             .output();
+>>>>>>> origin/master
     });
 
     // 4. on_window_event handler — if the user kills the window directly
@@ -656,6 +1020,166 @@ mod tests {
     }
 
     #[test]
+<<<<<<< HEAD
+    fn parse_wmctrl_lgx_extracts_padded_lines_and_spaced_titles() {
+        // EXACT lines captured live (wmctrl right-aligns numerics with multiple
+        // spaces). The old splitn(9) parser dropped these as len() < 9.
+        let text = "\
+0x0640089d  0 0    35   200  200  jarvis-desktop.Jarvis-desktop  Moon J.A.R.V.I.S. \u{2014} kiosk
+0x05800004  0 841  2195 2560 1565 code.Code             Moon jarvis - Visual Studio Code
+0x06400003  0 841  2195 2560 1600 jarvis-desktop.Jarvis-desktop  Moon J.A.R.V.I.S.";
+        let ws = parse_wmctrl_lgx(text);
+        assert_eq!(ws.len(), 3, "all three rows must parse");
+
+        let kiosk = &ws[0];
+        assert_eq!(kiosk.id, "0x0640089d");
+        assert_eq!(kiosk.wm_class, "jarvis-desktop.Jarvis-desktop");
+        assert_eq!(kiosk.title, "J.A.R.V.I.S. \u{2014} kiosk"); // title keeps spaces + em-dash
+        assert_eq!((kiosk.x, kiosk.y, kiosk.w, kiosk.h), (0, 35, 200, 200));
+
+        // Title with embedded spaces and a hyphen is preserved intact.
+        assert_eq!(ws[1].title, "jarvis - Visual Studio Code");
+        assert_eq!((ws[1].x, ws[1].y, ws[1].w, ws[1].h), (841, 2195, 2560, 1565));
+
+        // The main overlay must NOT be mistaken for the kiosk.
+        assert_eq!(ws[2].title, "J.A.R.V.I.S.");
+
+        // End-to-end: find_kiosk_xid picks the kiosk, not the main overlay.
+        struct Stub(Vec<WindowInfo>);
+        impl WmctrlAdapter for Stub {
+            fn list_visible_windows(&self) -> Result<Vec<WindowInfo>, WmctrlError> {
+                Ok(self.0.clone())
+            }
+            fn minimize(&self, _: &str) -> Result<(), WmctrlError> { Ok(()) }
+            fn unminimize(&self, _: &str) -> Result<(), WmctrlError> { Ok(()) }
+        }
+        assert_eq!(find_kiosk_xid(&Stub(ws)), Some(0x0640_089d));
+    }
+
+    #[test]
+    fn parse_wmctrl_lgx_skips_garbage_lines() {
+        assert!(parse_wmctrl_lgx("").is_empty());
+        assert!(parse_wmctrl_lgx("too few fields here\n").is_empty());
+    }
+
+    #[test]
+    fn parse_xid_handles_hex_forms() {
+        assert_eq!(parse_xid("0x06400003"), Some(0x0640_0003));
+        assert_eq!(parse_xid("  0x05800004 "), Some(0x0580_0004));
+        assert_eq!(parse_xid("06400003"), Some(0x0640_0003)); // no 0x prefix
+        assert_eq!(parse_xid("nothex"), None);
+        assert_eq!(parse_xid(""), None);
+    }
+
+    #[test]
+    fn pick_monitor_index_exact_origin_match() {
+        // Live stacked layout: idx0 = laptop @ (841,2160), idx1 = external @ (0,0).
+        let mons = vec![(841, 2160, 2560, 1600), (0, 0, 3840, 2160)];
+        assert_eq!(pick_monitor_index(&mons, 0, 0), Some(1)); // external
+        assert_eq!(pick_monitor_index(&mons, 841, 2160), Some(0)); // laptop
+    }
+
+    #[test]
+    fn pick_monitor_index_falls_back_to_closest_origin() {
+        let mons = vec![(841, 2160, 2560, 1600), (0, 0, 3840, 2160)];
+        // Slight offset (e.g. logical-vs-physical rounding) still resolves right.
+        assert_eq!(pick_monitor_index(&mons, 3, 2), Some(1));
+        assert_eq!(pick_monitor_index(&mons, 840, 2161), Some(0));
+    }
+
+    #[test]
+    fn pick_monitor_index_empty_is_none() {
+        assert_eq!(pick_monitor_index(&[], 0, 0), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn find_kiosk_xid_matches_kiosk_title_only() {
+        let mock = MockWmctrl::new(vec![
+            WindowInfo {
+                id: "0x06400003".into(),
+                wm_class: "jarvis-desktop.Jarvis-desktop".into(),
+                title: "J.A.R.V.I.S.".into(), // main overlay — must NOT match
+                ..Default::default()
+            },
+            WindowInfo {
+                id: "0x06400099".into(),
+                wm_class: "jarvis-desktop.Jarvis-desktop".into(),
+                title: "J.A.R.V.I.S. \u{2014} kiosk".into(), // the kiosk
+                ..Default::default()
+            },
+        ]);
+        assert_eq!(find_kiosk_xid(&mock), Some(0x0640_0099));
+    }
+
+    /// Live end-to-end check of the PRODUCTION `x11_fullscreen_on_monitor`
+    /// against the real WM. Targets the external monitor origin (0,0) — the
+    /// exact case that used to land on the laptop. Ignored by default (needs
+    /// a live X11 display + WM; briefly flashes a window). Run with:
+    ///   cargo test live_ewmh_fullscreen -- --ignored --nocapture
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "live: needs X11 display + WM; flashes a window on the external monitor"]
+    fn live_ewmh_fullscreen_lands_on_target_monitor() {
+        use std::os::raw::{c_int, c_uint, c_ulong};
+        use std::ptr;
+
+        let xlib = x11_dl::xlib::Xlib::open().expect("xlib open");
+        let d = unsafe { (xlib.XOpenDisplay)(ptr::null()) };
+        assert!(!d.is_null(), "no X display");
+        let screen = unsafe { (xlib.XDefaultScreen)(d) };
+        let root = unsafe { (xlib.XDefaultRootWindow)(d) };
+        let black = unsafe { (xlib.XBlackPixel)(d, screen) };
+        let win = unsafe { (xlib.XCreateSimpleWindow)(d, root, 60, 60, 400, 300, 0, black, black) };
+        let title = std::ffi::CString::new("J.A.R.V.I.S. \u{2014} kiosk").unwrap();
+        unsafe {
+            (xlib.XStoreName)(d, win, title.as_ptr());
+            (xlib.XMapWindow)(d, win);
+            (xlib.XSync)(d, x11_dl::xlib::False);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(700));
+
+        // Target the EXTERNAL monitor origin (0,0).
+        let idx = x11_fullscreen_on_monitor(win, 0, 0).expect("fullscreen call");
+        std::thread::sleep(std::time::Duration::from_millis(600));
+
+        let (mut rx, mut ry, mut child): (c_int, c_int, c_ulong) = (0, 0, 0);
+        unsafe {
+            (xlib.XTranslateCoordinates)(d, win, root, 0, 0, &mut rx, &mut ry, &mut child);
+        }
+        let (mut gx, mut gy): (c_int, c_int) = (0, 0);
+        let (mut gw, mut gh, mut gb, mut gd): (c_uint, c_uint, c_uint, c_uint) = (0, 0, 0, 0);
+        let mut rret: c_ulong = 0;
+        unsafe {
+            (xlib.XGetGeometry)(
+                d, win, &mut rret, &mut gx, &mut gy, &mut gw, &mut gh, &mut gb, &mut gd,
+            );
+        }
+        let cx = rx + gw as c_int / 2;
+        let cy = ry + gh as c_int / 2;
+        unsafe {
+            (xlib.XDestroyWindow)(d, win);
+            (xlib.XFlush)(d);
+            (xlib.XCloseDisplay)(d);
+        }
+
+        eprintln!(
+            "[live] monitor_idx={} root_pos=({},{}) size={}x{} center=({},{})",
+            idx, rx, ry, gw, gh, cx, cy
+        );
+        // External monitor DP-1 is (0,0) 3840x2160 — center must lie inside it,
+        // NOT on the laptop (which starts at x=841, y=2160).
+        assert!(
+            cx >= 0 && cx < 3840 && cy >= 0 && cy < 2160,
+            "kiosk did NOT land on the external monitor: center=({},{})",
+            cx,
+            cy
+        );
+    }
+
+    #[test]
+=======
+>>>>>>> origin/master
     fn enter_graceful_when_wmctrl_missing() {
         let mock = MockWmctrl::new(vec![]);
         *mock.list_fails_with.borrow_mut() = Some(WmctrlError::NotFound);

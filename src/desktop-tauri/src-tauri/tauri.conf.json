@@ -33,7 +33,11 @@
       }
     ],
     "security": {
+<<<<<<< HEAD
+      "csp": "default-src 'self' ipc: https://tauri.localhost http://ipc.localhost; connect-src 'self' ipc: https://tauri.localhost http://ipc.localhost http://127.0.0.1:8765 ws://127.0.0.1:8765 http://127.0.0.1:8767 ws://127.0.0.1:8767 http://127.0.0.1:8768 http://127.0.0.1:8769 http://127.0.0.1:7880 ws://127.0.0.1:7880; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://127.0.0.1:8770; font-src 'self' data: https://fonts.gstatic.com; media-src 'self' blob: mediastream:"
+=======
       "csp": "default-src 'self' ipc: https://tauri.localhost http://ipc.localhost; connect-src 'self' ipc: https://tauri.localhost http://ipc.localhost http://127.0.0.1:8765 ws://127.0.0.1:8765 http://127.0.0.1:8767 ws://127.0.0.1:8767 http://127.0.0.1:8768 http://127.0.0.1:8769 http://127.0.0.1:7880 ws://127.0.0.1:7880; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset:; font-src 'self' data: https://fonts.gstatic.com; media-src 'self' blob: mediastream:"
+>>>>>>> origin/master
     }
   }
 }
