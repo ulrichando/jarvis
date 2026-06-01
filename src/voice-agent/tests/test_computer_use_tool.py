@@ -11,10 +11,7 @@ had none either — it returned a screenshot for the agent to plan over).
 """
 from __future__ import annotations
 
-<<<<<<< HEAD
 import base64
-=======
->>>>>>> origin/master
 import json
 import sys
 from pathlib import Path
@@ -283,7 +280,6 @@ def test_noop_backend_is_available_and_records():
     b.capture(mode="vision")
     b.click(x=1, y=1)
     assert [c[0] for c in b.calls] == ["capture", "click"]
-<<<<<<< HEAD
 
 
 # ---------------------------------------------------------------------------
@@ -561,5 +557,3 @@ def test_vision_analyze_with_app_filter(noop_available):
         {"action": "vision_analyze", "app": "Chrome"}
     ))
     assert out["ok"] is True
-=======
->>>>>>> origin/master

@@ -22,10 +22,7 @@ import asyncio
 import json
 import logging
 import os
-<<<<<<< HEAD
 import re
-=======
->>>>>>> origin/master
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -56,14 +53,11 @@ _TASK_TIMEOUT_S = 180.0
 # Default step budget if the supervisor doesn't specify one.
 _DEFAULT_MAX_STEPS = 25
 
-<<<<<<< HEAD
 # How many trailing chars of the runner's stderr/step log to surface on a
 # failed task, so the supervisor (and post-mortem reader) gets a legible reason
 # instead of a generic "Browser task failed".
 _STDERR_TAIL_CHARS = 2_000
 
-=======
->>>>>>> origin/master
 # Opt-in: names a registered, available cloud-browser provider (kind "browser")
 # whose remote CDP browser browser_task should drive instead of launching a
 # LOCAL browser. UNSET/EMPTY (the default) → the local subprocess path runs
@@ -160,7 +154,6 @@ def _resolve_browser_provider() -> Optional[Any]:
 _BROWSER_TASK_SCHEMA = {
     "name": "browser_task",
     "description": (
-<<<<<<< HEAD
         "Drive a REAL web browser HEADLESSLY in the background to do a web task "
         "end-to-end, then report back a short text summary (there is NO visible "
         "window — the user does not watch it work). Use this for any web data/"
@@ -173,16 +166,6 @@ _BROWSER_TASK_SCHEMA = {
         "(include the destination/site and exactly what to find or do). The "
         "browser may take up to ~3 minutes; you'll get back a short summary of "
         "what it found or did."
-=======
-        "Drive a REAL web browser to accomplish a natural-language task end to "
-        "end (navigate, click, type, read pages, fill forms, extract info). Use "
-        "for things that need live browsing — checking a site, looking something "
-        "up that web_search can't answer, filling out a web form, pulling current "
-        "info off a page. Give a complete, self-contained instruction (e.g. 'Go "
-        "to news.ycombinator.com and tell me the top 3 story titles'). The "
-        "browser runs headless in the background and may take up to ~3 minutes; "
-        "you'll get back a short summary of what it found or did."
->>>>>>> origin/master
     ),
     "parameters": {
         "type": "object",
@@ -222,7 +205,6 @@ def _coerce_max_steps(value) -> int:
     return max(1, steps)
 
 
-<<<<<<< HEAD
 # ---------------------------------------------------------------------------
 # Reliability helpers (pure — unit-tested in tests/test_browser_task_reliability.py)
 # ---------------------------------------------------------------------------
@@ -342,36 +324,15 @@ def _format_result(payload: dict, stderr_tail: str = "") -> str:
 
 
 async def _run_runner(python_path: Path, request: bytes, task: str = "") -> str:
-=======
-def _format_result(payload: dict) -> str:
-    """Turn the runner's JSON payload into a concise string for the supervisor."""
-    if payload.get("ok"):
-        result = str(payload.get("result", "")).strip() or "(browser task finished with no result text)"
-        steps = payload.get("steps")
-        if isinstance(steps, int) and steps > 0:
-            return f"{result}\n\n(completed in {steps} browser step{'s' if steps != 1 else ''})"
-        return result
-    err = str(payload.get("error", "")).strip() or "unknown browser error"
-    return f"Browser task failed: {err}"
-
-
-async def _run_runner(python_path: Path, request: bytes) -> str:
->>>>>>> origin/master
     """Spawn the isolated browser_use runner with *request*, return a summary.
 
     Shared by the local-default and the opt-in remote-CDP paths — the only
     difference between them is whether *request* carries a ``cdp_url`` key.
-<<<<<<< HEAD
     *task* is the plain-English task text, used only to label the per-step
     telemetry rows written from the parsed payload (best-effort, never
     load-bearing). Never raises: timeout, a crashed subprocess, or garbled
     output all map to a clear human-readable error string so a failed browser
     task can't crash the voice turn.
-=======
-    Never raises: timeout, a crashed subprocess, or garbled output all map to a
-    clear human-readable error string so a failed browser task can't crash the
-    voice turn.
->>>>>>> origin/master
     """
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -405,7 +366,6 @@ async def _run_runner(python_path: Path, request: bytes) -> str:
         logger.warning("browser_task: subprocess communication failed: %s", exc)
         return tool_error(f"browser task failed: {exc}")
 
-<<<<<<< HEAD
     stderr_full = (stderr_b or b"").decode("utf-8", errors="replace").strip()
     stderr_tail = stderr_full[-_STDERR_TAIL_CHARS:]
 
@@ -415,15 +375,6 @@ async def _run_runner(python_path: Path, request: bytes) -> str:
             "browser_task: runner produced no stdout (rc=%s); stderr tail: %s",
             proc.returncode,
             stderr_tail[-300:],
-=======
-    stdout_text = (stdout_b or b"").decode("utf-8", errors="replace").strip()
-    if not stdout_text:
-        stderr_tail = (stderr_b or b"").decode("utf-8", errors="replace").strip()[-300:]
-        logger.warning(
-            "browser_task: runner produced no stdout (rc=%s); stderr tail: %s",
-            proc.returncode,
-            stderr_tail,
->>>>>>> origin/master
         )
         return tool_error(
             "browser task produced no output "
@@ -442,15 +393,11 @@ async def _run_runner(python_path: Path, request: bytes) -> str:
     if not isinstance(payload, dict):
         return tool_error("browser task returned an unexpected result shape")
 
-<<<<<<< HEAD
     # Surface the per-step trace into telemetry before formatting the reply
     # (best-effort, silent — telemetry never breaks the tool).
     _record_steps(task, payload)
 
     return _format_result(payload, stderr_tail)
-=======
-    return _format_result(payload)
->>>>>>> origin/master
 
 
 async def _handle_browser_task(args: dict) -> str:
@@ -469,7 +416,6 @@ async def _handle_browser_task(args: dict) -> str:
     if not task:
         return tool_error("browser_task requires a non-empty 'task'")
 
-<<<<<<< HEAD
     # Reject a destination-less / goal-less task before paying the subprocess
     # cost; the reason is something the supervisor can use to refine the request.
     valid, reason = _validate_task(task)
@@ -480,9 +426,6 @@ async def _handle_browser_task(args: dict) -> str:
     # the budget from the task string (quick lookup vs multi-page flow).
     override = _coerce_max_steps(args["max_steps"]) if "max_steps" in args else None
     max_steps = _adaptive_max_steps(task, override)
-=======
-    max_steps = _coerce_max_steps(args.get("max_steps", _DEFAULT_MAX_STEPS))
->>>>>>> origin/master
 
     python_path = _isolated_python()
     if not python_path.exists():
@@ -498,11 +441,7 @@ async def _handle_browser_task(args: dict) -> str:
     provider = _resolve_browser_provider()
     if provider is None:
         request = json.dumps(request_obj, ensure_ascii=False).encode("utf-8")
-<<<<<<< HEAD
         return await _run_runner(python_path, request, task)
-=======
-        return await _run_runner(python_path, request)
->>>>>>> origin/master
 
     # Opt-in remote path: open a CDP session, drive it, always close it.
     task_id = uuid.uuid4().hex[:12]
@@ -534,11 +473,7 @@ async def _handle_browser_task(args: dict) -> str:
     request = json.dumps(request_obj, ensure_ascii=False).encode("utf-8")
 
     try:
-<<<<<<< HEAD
         return await _run_runner(python_path, request, task)
-=======
-        return await _run_runner(python_path, request)
->>>>>>> origin/master
     finally:
         if session_id:
             try:
