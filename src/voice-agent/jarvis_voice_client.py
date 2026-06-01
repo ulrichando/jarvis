@@ -1373,6 +1373,20 @@ async def main() -> None:
     _http_api_ref = http_api
     http_runner = await http_api.start_server()
 
+    # ── Person tracker (webcam → avatar gaze) ─────────────────────────
+    # Starts a background daemon thread that captures webcam frames, runs
+    # face detection, and writes the primary face position to
+    # ~/.jarvis/person_tracker.json. The /status endpoint surfaces this
+    # so the kiosk face (FaceWebGL.jsx) can adjust its gaze to "look at"
+    # the detected person. Opt-in: JARVIS_PERSON_TRACKER=1.
+    if os.environ.get("JARVIS_PERSON_TRACKER", "0") == "1":
+        try:
+            from vision.person_tracker import start as _start_tracker
+            _start_tracker(daemon=True)
+            log.info("[tracker] person tracker started (webcam → avatar gaze)")
+        except Exception as _e:
+            log.warning(f"[tracker] failed to start: {_e}")
+
     # Supervisor loop — two-tier ReconnectLadder on transient errors so
     # a blip in the SFU (or a reboot) doesn't leave the client dead.
     # Tier 1: cheap resume() attempts with exponential backoff + jitter.

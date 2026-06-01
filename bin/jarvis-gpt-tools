@@ -59,6 +59,8 @@ try:
     import websockets
     import mss
     import PIL.Image
+    import cv2
+    from pathlib import Path
     from tools import registry
     from tools.registry import _check_fn_cached
     from pipeline.prompt_builder import load_soul
@@ -169,6 +171,19 @@ VISION_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+# Webcam-specific vision trigger
+WEBCAM_REGEX = re.compile(
+    r"\b("
+    r"camera|cam|webcam|face|me\b|myself|"
+    r"what\s+(?:do|can)\s+you\s+see|"
+    r"can\s+you\s+see\s+(?:me|us|my|the|this|that|any|some|a\s+person)|"
+    r"look\s+at\s+(?:me|us|the\s+camera)|"
+    r"am\s+i\s+(?:wearing|holding|here|in\s+front|visible)|"
+    r"do\s+(?:you\s+)?(?:recognize|know\s+who)"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 OPS_BLOCK = (
     "═══ OPS RULES — OPENAI REALTIME + TOOLS MODE ═══\n\n"
@@ -180,7 +195,8 @@ OPS_BLOCK = (
     "default. Use natural pauses between clauses. Don't rush. Brevity "
     "is good, but space the words out instead of compressing them.\n\n"
     "You are running as JARVIS via OpenAI Realtime, with on-demand "
-    "screen vision and the full JARVIS tool registry — files, "
+    "screen vision AND webcam vision, plus the full JARVIS tool "
+    "registry — files, "
     "terminal, computer_use (vision + GUI driving), browser_task, "
     "web search/fetch, memory, todo, schedule, skills, code search/"
     "edit, execute scratch code, vuln_check, clarify, dispatch_agent. "
@@ -247,6 +263,34 @@ def grab_screen_jpeg(sct: "mss.mss", monitor: dict) -> bytes:
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=75)
     return buf.getvalue()
+
+
+# ── Webcam capture (same pattern as jarvis-gemini-tools) ────────────
+_webcam_cap: "cv2.VideoCapture | None" = None
+_webcam_index = int(os.environ.get("JARVIS_OPENAI_WEBCAM_INDEX", "0"))
+_webcam_w = int(os.environ.get("JARVIS_OPENAI_WEBCAM_RES", "640x480").split("x")[0])
+_webcam_h = int(os.environ.get("JARVIS_OPENAI_WEBCAM_RES", "640x480").split("x")[1])
+
+
+def _get_webcam() -> "cv2.VideoCapture":
+    global _webcam_cap
+    if _webcam_cap is None:
+        _webcam_cap = cv2.VideoCapture(_webcam_index)
+        _webcam_cap.set(cv2.CAP_PROP_FRAME_WIDTH, _webcam_w)
+        _webcam_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, _webcam_h)
+        if not _webcam_cap.isOpened():
+            raise RuntimeError(f"Cannot open webcam index {_webcam_index}")
+    return _webcam_cap
+
+
+def grab_webcam_jpeg() -> bytes:
+    """Read the latest webcam frame from the person tracker's shared JPEG.
+    The tracker (vision.person_tracker) owns the camera exclusively and
+    writes frames to ~/.jarvis/person_tracker.jpg at ~5 Hz."""
+    tracker_jpg = Path.home() / ".jarvis" / "person_tracker.jpg"
+    if not tracker_jpg.exists():
+        raise RuntimeError("person_tracker.jpg not found — is the tracker running?")
+    return tracker_jpg.read_bytes()
 
 
 # ── Tool-registry adaptation (OpenAI schema flavor) ───────────────────
@@ -485,6 +529,37 @@ async def main() -> int:
             last_image_item_id = "__PENDING__"
             log.info(f"[gpt-tools] injected screen frame ({reason})")
 
+        async def maybe_inject_webcam_frame(reason: str) -> None:
+            """Grab a webcam JPEG and append it as a user message item."""
+            nonlocal last_image_item_id
+            try:
+                jpeg = await asyncio.to_thread(grab_webcam_jpeg)
+            except Exception as e:
+                log.warning(f"[gpt-tools] webcam grab failed ({reason}): {e}")
+                return
+            b64 = base64.b64encode(jpeg).decode("ascii")
+            if last_image_item_id and last_image_item_id != "__PENDING__":
+                try:
+                    await ws.send(json.dumps({
+                        "type": "conversation.item.delete",
+                        "item_id": last_image_item_id,
+                    }))
+                except Exception:
+                    pass
+            await ws.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{
+                        "type": "input_image",
+                        "image_url": f"data:image/jpeg;base64,{b64}",
+                    }],
+                },
+            }))
+            last_image_item_id = "__PENDING__"
+            log.info(f"[gpt-tools] injected webcam frame ({reason})")
+
         async def drain_replies() -> None:
             nonlocal last_image_item_id
             assert spk_proc.stdin is not None
@@ -549,6 +624,9 @@ async def main() -> int:
                     transcript = (evt.get("transcript") or "").strip()
                     if transcript and VISION_REGEX.search(transcript):
                         await maybe_inject_screen_frame(f"transcript={transcript[:60]!r}")
+                    if (os.environ.get("JARVIS_OPENAI_WEBCAM") == "1"
+                            and transcript and WEBCAM_REGEX.search(transcript)):
+                        await maybe_inject_webcam_frame(f"transcript={transcript[:60]!r}")
 
                 # Track image-item id so we can delete it next turn.
                 elif etype == "conversation.item.created":

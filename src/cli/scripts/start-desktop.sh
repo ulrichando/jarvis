@@ -131,12 +131,27 @@ sleep 1
 # preload runs in parallel with the bun startups.
 for unit in jarvis-voice-agent.service jarvis-voice-client.service; do
   if systemctl --user list-unit-files "$unit" --quiet 2>/dev/null; then
-    if ! systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+    if systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+      echo "[jarvis] $unit already running"
+    else
       if systemctl --user start "$unit" 2>/dev/null; then
         echo "[jarvis] started $unit"
       else
         echo "[jarvis] WARN: failed to start $unit (see journalctl --user -u $unit)" >&2
       fi
+    fi
+  fi
+done
+# Double-check after a short settle — the old instance's Quit handler
+# may still be in-flight (systemctl stop spawned asynchronously), so
+# a first-check pass can race it and leave services dead. Wait for the
+# async stop to finish, then start anything still down.
+sleep 2
+for unit in jarvis-voice-agent.service jarvis-voice-client.service; do
+  if systemctl --user list-unit-files "$unit" --quiet 2>/dev/null; then
+    if ! systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+      echo "[jarvis] $unit still down (post-settle) — starting"
+      systemctl --user start "$unit" 2>/dev/null || true
     fi
   fi
 done

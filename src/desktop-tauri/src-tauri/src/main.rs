@@ -2422,15 +2422,27 @@ fn main() {
                             // a unit isn't installed via systemd (some
                             // services have a fallback nohup launch path),
                             // systemctl returns non-zero and we still exit.
-                            let _ = std::process::Command::new("systemctl")
-                                .args([
-                                    "--user", "stop",
-                                    "jarvis-voice-agent",
-                                    "jarvis-voice-client",
-                                    "jarvis-bridge",
-                                    "jarvis-proxy",
-                                ])
-                                .spawn();
+                            // Only tear down services when this is the last
+                            // desktop instance. If the user is restarting
+                            // the app (close + reopen), keep voice alive
+                            // so the new instance is immediately ready.
+                            // Count our own process in the pgrep tally.
+                            let count = std::process::Command::new("pgrep")
+                                .args(["-cf", "jarvis-desktop"])
+                                .output()
+                                .map(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().unwrap_or(1))
+                                .unwrap_or(1);
+                            if count <= 1 {
+                                let _ = std::process::Command::new("systemctl")
+                                    .args([
+                                        "--user", "stop",
+                                        "jarvis-voice-agent",
+                                        "jarvis-voice-client",
+                                        "jarvis-bridge",
+                                        "jarvis-proxy",
+                                    ])
+                                    .spawn();
+                            }
                             // Give systemctl ~500 ms to issue SIGTERMs
                             // so the voice-agent has a chance to clean up
                             // SFU room state. Without this, the room can
