@@ -1,12 +1,5 @@
 #!/usr/bin/env bash
-<<<<<<< HEAD
-# JARVIS desktop launcher — derives root from script location.
-set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-exec bash "$ROOT/src/cli/scripts/start-desktop.sh" "$@"
-=======
 # Global launcher for Jarvis Desktop
 # Usage: jarvis-desktop [deepseek|groq|openai|gemini|ollama]
 
 exec bash /home/ulrich/Documents/Projects/jarvis/src/cli/scripts/start-desktop.sh "$@"
->>>>>>> origin/master

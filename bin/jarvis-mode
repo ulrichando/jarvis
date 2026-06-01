@@ -179,9 +179,25 @@ start_direct() {
         echo "error: $bin not executable" >&2
         return 2
     fi
+
+    # ── Safety net ──────────────────────────────────────────────────
+    # Once we mute JARVIS-Claude, we MUST either launch the replacement
+    # successfully OR unmute. Any exit after the mute call (script error,
+    # crash, signal) will trigger this trap and restore the mic so the
+    # user is never left voiceless.
+    _muted_for_direct=0
+    _trap_unmute_on_failure() {
+        if (( _muted_for_direct == 1 )); then
+            echo "  → safety net: unmuting JARVIS-Claude (script exited after muting)…" >&2
+            set_jarvis_mute "false" >/dev/null 2>&1 || true
+        fi
+    }
+    trap _trap_unmute_on_failure EXIT
+
     echo "→ muting JARVIS-Claude mic + stopping any in-flight TTS…"
     set_jarvis_mute "true" || true
     stop_jarvis_tts
+    _muted_for_direct=1
 
     # Forward provider API keys from ~/.jarvis/keys.env if the caller
     # didn't already export them — systemd --user env is usually empty.
@@ -205,7 +221,6 @@ start_direct() {
     # Only forward when it has a real value; otherwise let PulseAudio
     # fall back to $XDG_RUNTIME_DIR/pulse/native.
     #
-<<<<<<< HEAD
     # Restart=always + RestartSec=2 → 24/7 self-heal for BOTH direct modes
     # (gemini + openai share this run_args). Gemini/OpenAI Live sessions have
     # a MAX DURATION: the server sends a GoAway and closes the socket (~every
@@ -223,18 +238,6 @@ start_direct() {
         --unit="$scope"
         -p Restart=always
         -p RestartSec=2
-=======
-    # Restart=on-failure + RestartSec=5 → 24/7 self-heal: if the
-    # direct-mode process crashes (network blip, provider 5xx, etc.)
-    # systemd restarts it. Clean exits (Ctrl-C / `jarvis-mode jarvis`)
-    # are NOT restarts. --collect dropped so the unit isn't removed
-    # on first stop, letting Restart kick in.
-    local -a run_args=(
-        --user
-        --unit="$scope"
-        -p Restart=on-failure
-        -p RestartSec=5
->>>>>>> origin/master
         -p StartLimitBurst=10
         -p StartLimitIntervalSec=300
         --setenv="GOOGLE_API_KEY=$google_key"
@@ -243,20 +246,16 @@ start_direct() {
         --setenv="DISPLAY=${DISPLAY:-:0}"
         --setenv="XAUTHORITY=${XAUTHORITY:-$HOME/.Xauthority}"
         --setenv="XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-<<<<<<< HEAD
         # Idle auto-revert window (sec) — the backend reverts to JARVIS-Claude
         # after this much inactivity so Gemini/OpenAI quota stops burning while
         # nobody's talking. systemd-run gives the unit a clean env, so the var
         # must be forwarded explicitly or the config has no effect. Default 300
         # = 5min (matches direct_mode_idle.idle_timeout_s); 0 disables.
         --setenv="JARVIS_DIRECT_IDLE_TIMEOUT_S=${JARVIS_DIRECT_IDLE_TIMEOUT_S:-300}"
-=======
->>>>>>> origin/master
     )
     if [[ -n "${PULSE_SERVER:-}" ]]; then
         run_args+=(--setenv="PULSE_SERVER=$PULSE_SERVER")
     fi
-<<<<<<< HEAD
     # A prior launch that hit the StartLimit (e.g. provider spend-cap /
     # quota → the backend exits 1, Restart=on-failure retries until
     # StartLimitBurst, then the transient unit lingers `failed
@@ -281,7 +280,7 @@ start_direct() {
     # BASELINE right after launch and watch for a DELTA.
     #
     # This catches a flap regardless of when it dies: a bad-key process is
-    # rejected on the first handshake, goes inactive during its RestartSec=5
+    # rejected on the first handshake, goes inactive during its RestartSec=2
     # gap (→ is_active fails), and any auto-restart bumps NRestarts above
     # baseline (→ delta fails). A healthy backend — even a slow-booting one —
     # stays active with NRestarts flat the entire window. Window 12×0.6s
@@ -297,12 +296,6 @@ start_direct() {
     done
 
     if (( healthy == 1 )); then
-=======
-    systemd-run "${run_args[@]}" "$bin" >/dev/null
-    sleep 0.6
-
-    if is_active "$scope"; then
->>>>>>> origin/master
         local pretty
         case "$label" in
             gemini) pretty="Gemini Live" ;;
@@ -313,8 +306,10 @@ start_direct() {
         write_mode_state "$label"
         ensure_jarvis_mute_watchdog
         notify "Switched to $pretty" "Voice: $voice — audio + vision + tools. JARVIS-Claude muted."
+        # Success — disarm the safety trap
+        _muted_for_direct=0
+        trap - EXIT
     else
-<<<<<<< HEAD
         # Failed to come up / didn't stay up (usually a provider error —
         # quota / spend-cap / bad key; check the journal). Roll the
         # JARVIS-Claude mute BACK so the user is never left voiceless
@@ -327,10 +322,9 @@ start_direct() {
         set_jarvis_mute "false" >/dev/null 2>&1 || true
         write_mode_state "jarvis"
         notify "Mode switch failed" "$label didn't start (see journalctl). Stayed on JARVIS-Claude."
-=======
-        echo "✗ $label didn't register — check 'journalctl --user -u $scope'"
-        notify "Mode switch failed" "$label didn't register. See journalctl --user."
->>>>>>> origin/master
+        # Safety trap already handles unmute, but be explicit
+        _muted_for_direct=0
+        trap - EXIT
         return 3
     fi
 }

@@ -1756,3 +1756,7 @@ export function setPromptId(id: string | null): void {
   STATE.promptId = id
 }
 
+// Re-export isReplBridgeActive so callers (ToolSearchTool, SendMessageTool)
+// can import it from bootstrap/state.js as they expect.
+export { isReplBridgeActive } from '../bridge/replBridgeHandle.js'
+

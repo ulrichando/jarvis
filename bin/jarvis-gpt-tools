@@ -47,10 +47,6 @@ import os
 import re
 import signal
 import sys
-<<<<<<< HEAD
-import time
-=======
->>>>>>> origin/master
 from typing import Any, Optional
 
 VOICE_AGENT_DIR = "/home/ulrich/Documents/Projects/jarvis/src/voice-agent"
@@ -59,14 +55,6 @@ if VOICE_AGENT_DIR not in sys.path:
 
 import sanitizers  # noqa: F401  (side-effect import)
 
-<<<<<<< HEAD
-from direct_mode_idle import idle_revert_watch
-
-# jarvis-mode lives next to this script (same bin/ dir); used by the idle watcher.
-JARVIS_MODE_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jarvis-mode")
-
-=======
->>>>>>> origin/master
 try:
     import websockets
     import mss
@@ -136,25 +124,7 @@ def load_recent_turns(limit: int = 8) -> str:
 
 # ── Config ───────────────────────────────────────────────────────────
 
-<<<<<<< HEAD
-# gpt-realtime-2 (2026): OpenAI's most capable realtime model — more
-# reliable + parallel tool calls, spoken "preambles" (narrates while
-# acting), configurable reasoning effort, image input. Upgraded from the
-# original "gpt-realtime" (2025-08-28) on 2026-05-29 after the older model
-# was slow + silent on multi-step desktop tasks. Verified: accepts our
-# session config, calls a tool in ~1.1s and speaks the result at ~1.6s.
-MODEL = os.environ.get("JARVIS_GPT_TOOLS_MODEL", "gpt-realtime-2")
-# Reasoning effort (gpt-realtime-2+ only; the original gpt-realtime rejects
-# session.reasoning). Per OpenAI's realtime prompting guide: "low" =
-# responsive + basic reasoning (good default), "medium" = multi-step tasks.
-# We desktop-navigate (multi-step) but the user wants Gemini-like speed, so
-# "low" by default; bump to "medium" via JARVIS_GPT_TOOLS_REASONING if tool
-# reliability matters more than latency. Verified 2026-05-29: accepted shape
-# is session.reasoning.effort (the flat reasoning_effort is rejected).
-REASONING_EFFORT = os.environ.get("JARVIS_GPT_TOOLS_REASONING", "low")
-=======
 MODEL = os.environ.get("JARVIS_GPT_TOOLS_MODEL", "gpt-realtime")
->>>>>>> origin/master
 # GA Realtime requires input rate ≥ 24 kHz (it rejected 16k with
 # `integer_below_min_value: Expected >= 24000`). Both directions at
 # 24k; let parec resample from whatever the source default is.
@@ -218,40 +188,6 @@ OPS_BLOCK = (
     "actionable request, CALL the matching tool. Don't say 'I can't "
     "do that' — you can. The tools are live and run against Ulrich's "
     "real Linux desktop.\n\n"
-<<<<<<< HEAD
-    "TOOL EXECUTION — finish the job and keep talking:\n"
-    "• PREAMBLE: right before a tool call that takes a moment, say ONE "
-    "short, natural line ('I'll open that now', 'Checking the screen') and "
-    "then call it immediately — no filler like 'let me think' or 'please "
-    "wait'.\n"
-    "• REASON briefly before a multi-step or GUI task, then execute every "
-    "step. For a simple one-shot command, just act.\n"
-    "• COMPLETE the whole request. Multi-step goals need several tool "
-    "calls in a row — keep going until it's actually done; do NOT stop "
-    "after the first step. To OPEN A WEBSITE VISIBLY on Ulrich's screen, "
-    "pass the URL straight to the browser — terminal(command='google-"
-    "chrome https://www.youtube.com', background=true) — which opens it "
-    "directly (a new tab if Chrome is already running). That is far more "
-    "reliable than typing into the address bar.\n"
-    "• TOOL LADDER (use the highest that fits): 1) a dedicated API/tool "
-    "if one exists → 2) browser_task (HEADLESS browser agent, invisible, "
-    "DOM-aware, reports back) for web data/navigation — look up / check / "
-    "search / read / compare / fill a form / post → 3) computer_use to "
-    "control the VISIBLE screen, ONLY when an on-screen effect is "
-    "required (the user wants to SEE it on their own desktop, or it's a "
-    "native GUI app) → 4) raw clicks/keystrokes only as a last resort. "
-    "For 'find/look up/check/search/read X on the web' use browser_task, "
-    "NOT computer_use.\n"
-    "• Launch desktop apps with terminal background=true — NOT "
-    "'setsid …&' or 'nohup …' (those are rejected). Drive the GUI with "
-    "computer_use only AFTER the window is open (capture first so you can "
-    "see it).\n"
-    "• After a tool returns: on success, confirm what happened in ONE "
-    "short sentence. On failure, explain briefly in plain language and try "
-    "another way — never go silent mid-task, and never read out raw error "
-    "text.\n\n"
-=======
->>>>>>> origin/master
     "Stay in JARVIS's voice as described in the identity prompt above; "
     "speak in short, natural, decisive English phrases.\n\n"
     "Screen vision is fed only when the user references visual content. "
@@ -367,32 +303,12 @@ async def execute_tool(name: str, args: dict[str, Any]) -> Any:
     entry = registry.registry.get_entry(name)
     if entry is None:
         return {"error": f"unknown tool: {name}"}
-<<<<<<< HEAD
-    handler = entry.handler
-    try:
-        # JARVIS handlers take dict positionally (sig: `(args: dict)`),
-        # NOT unpacked kwargs.
-        #
-        # Mirror tools/_adapter.py:143-158 — async handlers are awaited,
-        # SYNC handlers run in a worker thread so a blocking tool (e.g.
-        # the sync handle_computer_use) can't freeze the event loop and
-        # stall the Realtime keepalive → session drop.
-        if inspect.iscoroutinefunction(handler):
-            result = await handler(args or {})
-        else:
-            result = await asyncio.to_thread(handler, args or {})
-            # Defensive: a sync-declared handler that returns a coroutine
-            # is still awaited rather than left as a coroutine object.
-            if inspect.isawaitable(result):
-                result = await result
-=======
     try:
         # JARVIS handlers take dict positionally (sig: `(args: dict)`),
         # NOT unpacked kwargs.
         result = entry.handler(args or {})
         if inspect.isawaitable(result):
             result = await result
->>>>>>> origin/master
     except Exception as e:
         log.warning(f"[gpt-tools] {name} raised: {type(e).__name__}: {e}")
         return {"error": f"{type(e).__name__}: {e}"}
@@ -433,14 +349,6 @@ async def main() -> int:
         stop.set()
 
     loop = asyncio.get_running_loop()
-<<<<<<< HEAD
-    last_activity = [loop.time()]  # monotonic; reset on speech/model/tool activity
-    # Tools now run OFF the receive loop (spawned tasks), so two may be
-    # in flight at once — a bare bool would clear `tool_running` too
-    # early. Track an inflight COUNTER; `tool_running` is `count > 0`.
-    tool_inflight = [0]
-=======
->>>>>>> origin/master
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _stop, sig)
 
@@ -483,49 +391,6 @@ async def main() -> int:
         #     rejected as unknown parameters.
         #   * `output_modalities` replaces `modalities` and only
         #     accepts ["audio"] / ["text"] for this model.
-<<<<<<< HEAD
-        session_cfg = {
-            "type": "realtime",
-            "model": MODEL,
-            "output_modalities": ["audio"],
-            "instructions": build_system_instruction(),
-            "audio": {
-                "input": {
-                    "format": {"type": "audio/pcm", "rate": MIC_SAMPLE_RATE},
-                    # near_field: the mic is a desktop webcam/headset, not a
-                    # far-room array — cuts steady background noise so VAD +
-                    # transcription don't fire on it. Shape validated 2026-05-29.
-                    "noise_reduction": {"type": "near_field"},
-                    # gpt-4o-transcribe > whisper-1 for the input transcript
-                    # (drives the vision-trigger regex + the on-screen text).
-                    "transcription": {"model": "gpt-4o-transcribe"},
-                    "turn_detection": {
-                        "type": "server_vad",
-                        "threshold": 0.5,
-                        "prefix_padding_ms": 300,
-                        "silence_duration_ms": 500,
-                        "create_response": True,
-                    },
-                },
-                "output": {
-                    "format": {"type": "audio/pcm", "rate": SPK_SAMPLE_RATE},
-                    "voice": VOICE_NAME,
-                },
-            },
-            "tools": tool_list,
-            "tool_choice": "auto",
-        }
-        # Reasoning effort is gpt-realtime-2+ only — the original gpt-realtime
-        # rejects session.reasoning with unknown_parameter. Gate on the model
-        # family so an env override back to gpt-realtime still works.
-        if "realtime-2" in MODEL:
-            session_cfg["reasoning"] = {"effort": REASONING_EFFORT}
-        await ws.send(json.dumps({"type": "session.update", "session": session_cfg}))
-        log.info(
-            f"[gpt-tools] session configured — talk. Ctrl-C to exit. "
-            f"(reasoning={'off' if 'realtime-2' not in MODEL else REASONING_EFFORT})"
-        )
-=======
         await ws.send(json.dumps({
             "type": "session.update",
             "session": {
@@ -555,7 +420,6 @@ async def main() -> int:
             },
         }))
         log.info("[gpt-tools] session configured — talk. Ctrl-C to exit.")
->>>>>>> origin/master
         status.set_agent_present(True)
         # Mic open by default in a Realtime session — show the
         # "ready to listen" state immediately. Updated on per-turn
@@ -584,49 +448,6 @@ async def main() -> int:
                     "audio": base64.b64encode(chunk).decode("ascii"),
                 }))
 
-<<<<<<< HEAD
-        async def _run_tool(cid: str, name: str, args: dict) -> None:
-            """Run one tool call OFF the receive loop and deliver the result on
-            the same session. Spawned (not awaited) by `drain_replies` so the
-            receive loop keeps reading `ws` and the Realtime keepalive stays
-            serviced while the tool runs. Preserves the OpenAI send shape —
-            `conversation.item.create` of type `function_call_output` then
-            `response.create` — plus an inflight COUNTER so overlapping tool
-            calls don't clear `tool_running` early, and a guarded send so a
-            session that dropped mid-tool just drops the stale response."""
-            tool_inflight[0] += 1
-            status.set_tool_running(True)
-            last_activity[0] = loop.time()
-            try:
-                log.info(f"[gpt-tools] → {name}({args})")
-                result = await execute_tool(name, args)
-                last_activity[0] = loop.time()
-                short = json.dumps(result)[:200] if not isinstance(result, str) else result[:200]
-                log.info(f"[gpt-tools]   {name} ← {short}")
-                output_str = result if isinstance(result, str) else json.dumps(result)
-                try:
-                    await ws.send(json.dumps({
-                        "type": "conversation.item.create",
-                        "item": {
-                            "type": "function_call_output",
-                            "call_id": cid,
-                            "output": output_str,
-                        },
-                    }))
-                    # Kick off the next response so the model speaks
-                    # the result.
-                    await ws.send(json.dumps({"type": "response.create"}))
-                except Exception as e:
-                    log.warning(
-                        f"[gpt-tools] tool_response send failed (session dropped?): "
-                        f"{type(e).__name__}: {e}"
-                    )
-            finally:
-                tool_inflight[0] -= 1
-                status.set_tool_running(tool_inflight[0] > 0)
-
-=======
->>>>>>> origin/master
         async def maybe_inject_screen_frame(reason: str) -> None:
             """Grab a screen JPEG and append it as a user message
             item, deleting the previous one to keep context lean."""
@@ -637,20 +458,8 @@ async def main() -> int:
                 log.warning(f"[gpt-tools] screen grab failed ({reason}): {e}")
                 return
             b64 = base64.b64encode(jpeg).decode("ascii")
-<<<<<<< HEAD
-            # Delete the PREVIOUS frame so screenshots don't pile up in
-            # context (each is ~300KB → fast context bloat that degrades
-            # multi-step screen tasks). GUARD: never send a delete for the
-            # unresolved "__PENDING__" placeholder (or None). Doing so
-            # caused the recurring item_delete_invalid_item_id server error
-            # (2026-05-29) when a second visual phrase triggered injection
-            # before the first frame's conversation.item.created echo
-            # resolved its real id.
-            if last_image_item_id and last_image_item_id != "__PENDING__":
-=======
             if last_image_item_id:
                 # Fire-and-forget delete of the previous frame.
->>>>>>> origin/master
                 try:
                     await ws.send(json.dumps({
                         "type": "conversation.item.delete",
@@ -669,32 +478,16 @@ async def main() -> int:
                     }],
                 },
             }))
-<<<<<<< HEAD
-            # The real (server-assigned) id arrives via the
-            # conversation.item.created echo, resolved in drain_replies;
-            # placeholder until then (and never deleted while placeholder).
-=======
             # We don't get the new item_id back until the
             # conversation.item.created event arrives — captured in
             # drain_replies. Mark "pending so the next created event
             # claims it."
->>>>>>> origin/master
             last_image_item_id = "__PENDING__"
             log.info(f"[gpt-tools] injected screen frame ({reason})")
 
         async def drain_replies() -> None:
-<<<<<<< HEAD
-            nonlocal last_image_item_id, spk_proc
-            assert spk_proc.stdin is not None
-            # Barge-in tracking: the assistant audio item currently playing
-            # and when it started — so on interrupt we can tell the server how
-            # much was actually heard (conversation.item.truncate).
-            cur_item_id: Optional[str] = None
-            speak_start = 0.0
-=======
             nonlocal last_image_item_id
             assert spk_proc.stdin is not None
->>>>>>> origin/master
             async for raw in ws:
                 if stop.is_set():
                     return
@@ -708,23 +501,13 @@ async def main() -> int:
                 if etype == "response.audio.delta" or etype == "response.output_audio.delta":
                     b = evt.get("delta") or evt.get("audio") or ""
                     if b:
-<<<<<<< HEAD
-                        cur_item_id = evt.get("item_id") or cur_item_id
-=======
->>>>>>> origin/master
                         # Flip indicator state on the first delta of a
                         # reply. agent_thinking clears here in case the
                         # transition straight from user speech was too
                         # fast for the dedicated event to land.
                         if not status._speaking:
                             status.set_speaking(True)
-<<<<<<< HEAD
-                            last_activity[0] = loop.time()
                             status.set_agent_thinking(False)
-                            speak_start = time.monotonic()
-=======
-                            status.set_agent_thinking(False)
->>>>>>> origin/master
                         try:
                             spk_proc.stdin.write(base64.b64decode(b))
                             await spk_proc.stdin.drain()
@@ -737,48 +520,9 @@ async def main() -> int:
                 # that Gemini Live doesn't expose, so the indicator
                 # is more responsive on OpenAI mode.
                 elif etype == "input_audio_buffer.speech_started":
-<<<<<<< HEAD
-                    last_activity[0] = loop.time()
-                    status.set_listening(True)
-                    # BARGE-IN: user talking over the model. The server cancels
-                    # its own response on VAD, but WE must (a) stop the
-                    # already-buffered speaker audio — paplay holds up to ~1s in
-                    # its pipe and would keep talking over the user — and (b)
-                    # tell the server how much was actually heard via
-                    # conversation.item.truncate, so its context matches what
-                    # the user got (else it "remembers" saying things never
-                    # heard). Fully guarded: a failure here must never kill the
-                    # event loop.
-                    if status._speaking and cur_item_id:
-                        played_ms = max(0, int((time.monotonic() - speak_start) * 1000))
-                        try:
-                            await ws.send(json.dumps({
-                                "type": "conversation.item.truncate",
-                                "item_id": cur_item_id,
-                                "content_index": 0,
-                                "audio_end_ms": played_ms,
-                            }))
-                        except Exception as e:
-                            log.warning(f"[gpt-tools] truncate failed: {e}")
-                        try:
-                            # paplay has no mid-stream flush → kill + respawn so
-                            # its buffered audio stops ~immediately (~ms; the
-                            # next reply opens on the fresh stream).
-                            spk_proc.kill()
-                            await spk_proc.wait()
-                            spk_proc = await open_speaker_stream()
-                        except Exception as e:
-                            log.warning(f"[gpt-tools] speaker flush failed: {e}")
-                        cur_item_id = None
-                        log.info(f"[gpt-tools] barge-in: truncated at {played_ms}ms + flushed speaker")
-                    status.set_speaking(False)
-                elif etype == "input_audio_buffer.speech_stopped":
-                    last_activity[0] = loop.time()
-=======
                     status.set_listening(True)
                     status.set_speaking(False)
                 elif etype == "input_audio_buffer.speech_stopped":
->>>>>>> origin/master
                     status.set_listening(False)
                     status.set_agent_thinking(True)
 
@@ -787,10 +531,6 @@ async def main() -> int:
                 elif etype == "response.created":
                     status.set_agent_thinking(True)
                 elif etype in ("response.done", "response.completed"):
-<<<<<<< HEAD
-                    cur_item_id = None
-=======
->>>>>>> origin/master
                     status.set_speaking(False)
                     status.set_agent_thinking(False)
                     status.set_listening(True)
@@ -810,20 +550,10 @@ async def main() -> int:
                     if transcript and VISION_REGEX.search(transcript):
                         await maybe_inject_screen_frame(f"transcript={transcript[:60]!r}")
 
-<<<<<<< HEAD
-                # Resolve the "__PENDING__" placeholder to the real
-                # server-assigned image item id so the NEXT injection can
-                # delete it. Only claims an item that carries input_image
-                # content, so it can't grab a user audio/text turn by mistake.
-                elif etype == "conversation.item.created":
-                    if last_image_item_id == "__PENDING__":
-                        item = evt.get("item") or {}
-=======
                 # Track image-item id so we can delete it next turn.
                 elif etype == "conversation.item.created":
                     item = evt.get("item") or {}
                     if last_image_item_id == "__PENDING__":
->>>>>>> origin/master
                         content = item.get("content") or []
                         if any(c.get("type") == "input_image" for c in content):
                             last_image_item_id = item.get("id")
@@ -845,17 +575,6 @@ async def main() -> int:
                         args = json.loads(args_str) if args_str else {}
                     except Exception:
                         args = {}
-<<<<<<< HEAD
-                    # Run the tool OFF the receive loop (spawned task) so this
-                    # loop keeps reading `ws` and the Realtime keepalive stays
-                    # serviced for the tool's whole duration. Awaiting it inline
-                    # parked the receive loop → session drop on long tasks.
-                    last_activity[0] = loop.time()
-                    asyncio.create_task(
-                        _run_tool(cid, name, args),
-                        name="tool-call",
-                    )
-=======
                     log.info(f"[gpt-tools] → {name}({args})")
                     status.set_tool_running(True)
                     result = await execute_tool(name, args)
@@ -874,7 +593,6 @@ async def main() -> int:
                     # Kick off the next response so the model speaks
                     # the result.
                     await ws.send(json.dumps({"type": "response.create"}))
->>>>>>> origin/master
 
                 # Some Realtime variants emit response.output_item.added
                 # with the function call's name; remember it so we have
@@ -893,15 +611,6 @@ async def main() -> int:
         tasks = [
             asyncio.create_task(pump_mic(),      name="mic"),
             asyncio.create_task(drain_replies(), name="replies"),
-<<<<<<< HEAD
-            asyncio.create_task(idle_revert_watch(
-                get_idle_s=lambda: loop.time() - last_activity[0],
-                is_tool_running=lambda: status._tool_running,
-                jarvis_mode_path=JARVIS_MODE_BIN,
-                stop=stop, log=log, label="gpt-tools",
-            ), name="idle-revert"),
-=======
->>>>>>> origin/master
             asyncio.create_task(stop.wait(),     name="stop"),
         ]
         try:
