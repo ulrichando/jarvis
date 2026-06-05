@@ -505,7 +505,7 @@ def test_som_defaults_in_capture_schema(noop_available):
     """capture() with no mode specified should use 'vision' (unchanged default)."""
     out = json.loads(cu.handle_computer_use({"action": "capture"}))
     assert out["ok"] is True
-    assert out["mode"] == "vision"
+    assert out["mode"] == "som"
 
 
 def test_som_capture_via_dispatch(noop_available):

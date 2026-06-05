@@ -158,6 +158,18 @@ class ComputerUseBackend(ABC):
     def list_apps(self) -> List[Dict[str, Any]]: ...
 
     @abstractmethod
+    def move_cursor(
+        self,
+        *,
+        element: Optional[int] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+    ) -> ActionResult: ...
+
+    @abstractmethod
+    def get_cursor_position(self) -> ActionResult: ...
+
+    @abstractmethod
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult: ...
 
     def wait(self, seconds: float) -> ActionResult:
@@ -605,28 +617,36 @@ class X11ComputerUseBackend(ComputerUseBackend):
     # application windows the LLM should target.
     _SKIP_TASKBAR_ATOM = "_NET_WM_STATE_SKIP_TASKBAR"
 
-    # Cache of {window_hex_id: skip_flag} so we don't xprop every window
-    # on every capture (xprop subprocess is ~2-5ms per call).
+    # Cache of {window_hex_id: (skip_flag, timestamp)} so we don't xprop
+    # every window on every capture (xprop subprocess is ~2-5ms per call).
+    # Entries older than _SKIP_CACHE_TTL_S seconds are rechecked — window
+    # state can change between captures (e.g., dialog opens, app restarts).
     _skip_cache: dict = {}
     _SKIP_CACHE_MAX = 200
+    _SKIP_CACHE_TTL_S = 30  # re-probe windows whose state is older than this
 
     @classmethod
     def _is_skip_taskbar(cls, wid_hex: str) -> bool:
         """Check if a window has ``_NET_WM_STATE_SKIP_TASKBAR`` via xprop.
 
-        Cached: the window ID -> bool mapping is kept for the lifetime of
-        the backend. If xprop fails (window destroyed between wmctrl and
-        xprop calls) we assume False — the window disappears on the next
-        capture anyway.
+        Cached with a TTL: window state can change (dialog opens, app
+        restarts, panel toggles), so entries older than _SKIP_CACHE_TTL_S
+        seconds are re-probed. If xprop fails (window destroyed between
+        wmctrl and xprop calls) we assume False — the window disappears
+        on the next capture anyway.
         """
+        import time as _time
+        now = _time.time()
         if wid_hex in cls._skip_cache:
-            return cls._skip_cache[wid_hex]
+            flag, ts = cls._skip_cache[wid_hex]
+            if now - ts < cls._SKIP_CACHE_TTL_S:
+                return flag
         rc, out, _err = cls._run_static(
             ["xprop", "-id", wid_hex, "_NET_WM_STATE"]
         )
         flag = rc == 0 and cls._SKIP_TASKBAR_ATOM in out
         if len(cls._skip_cache) < cls._SKIP_CACHE_MAX:
-            cls._skip_cache[wid_hex] = flag
+            cls._skip_cache[wid_hex] = (flag, now)
         return flag
 
     @staticmethod
@@ -910,6 +930,65 @@ class X11ComputerUseBackend(ComputerUseBackend):
             )
         return out
 
+    def move_cursor(
+        self,
+        *,
+        element: Optional[int] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+    ) -> ActionResult:
+        """Move the mouse cursor without clicking — needed for hover effects,
+        tooltip triggers, and positioning before a separate click action."""
+        if element is not None:
+            target = self._resolve_element(element)
+            if target is None:
+                return ActionResult(
+                    ok=False, action="mouse_move",
+                    message=f"element {element} not found in cache — call capture first",
+                )
+            x, y = target
+        if x is None or y is None:
+            return ActionResult(
+                ok=False, action="mouse_move",
+                message="mouse_move requires element or coordinate=[x, y]",
+            )
+        rc, _o, e = self._run(["xdotool", "mousemove", str(x), str(y)])
+        ok = rc == 0
+        return ActionResult(
+            ok=ok, action="mouse_move",
+            message=(f"cursor moved to ({x}, {y})" if ok
+                     else f"mousemove failed: {e}"),
+            meta={"x": x, "y": y},
+        )
+
+    def get_cursor_position(self) -> ActionResult:
+        """Return the current mouse cursor coordinates."""
+        rc, out, e = self._run(["xdotool", "getmouselocation", "--shell"])
+        if rc != 0:
+            return ActionResult(
+                ok=False, action="cursor_position",
+                message=f"xdotool getmouselocation failed: {e}",
+            )
+        x = y = None
+        for line in out.splitlines():
+            line = line.strip()
+            if line.startswith("X="):
+                try: x = int(line.split("=", 1)[1])
+                except ValueError: pass
+            elif line.startswith("Y="):
+                try: y = int(line.split("=", 1)[1])
+                except ValueError: pass
+        if x is not None and y is not None:
+            return ActionResult(
+                ok=True, action="cursor_position",
+                message=f"cursor at ({x}, {y})",
+                meta={"x": x, "y": y},
+            )
+        return ActionResult(
+            ok=False, action="cursor_position",
+            message=f"could not parse position from: {out[:100]}",
+        )
+
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         """Activate the first window whose title matches *app* (substring).
 
@@ -988,3 +1067,13 @@ class NoopBackend(ComputerUseBackend):
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         self.calls.append(("focus_app", {"app": app, "raise": raise_window}))
         return ActionResult(ok=True, action="focus_app")
+
+    def move_cursor(self, *, element=None, x=None, y=None) -> ActionResult:
+        self.calls.append(("move_cursor", {"element": element, "x": x, "y": y}))
+        return ActionResult(ok=True, action="mouse_move",
+                           meta={"x": x or 0, "y": y or 0})
+
+    def get_cursor_position(self) -> ActionResult:
+        self.calls.append(("get_cursor_position", {}))
+        return ActionResult(ok=True, action="cursor_position",
+                           meta={"x": 500, "y": 300})
