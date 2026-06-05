@@ -178,6 +178,7 @@ def make_dispatch_handler(
                     runtime_id_block = prompt_state.get("runtime_id_block", "")
                     new_volatile_suffix = (
                         runtime_id_block + new_memory_block + new_breaker_block
+                        + prompt_state.get("recent_sessions_block", "")
                     )
                     from providers.prompt_cache import assemble_with_marker
                     new_instructions = assemble_with_marker(
@@ -194,6 +195,7 @@ def make_dispatch_handler(
                         + new_memory_block
                         + new_breaker_block
                         + prompt_state.get("skill_catalog_block", "")
+                        + prompt_state.get("recent_sessions_block", "")
                     )
 
                 async def _push_instructions():

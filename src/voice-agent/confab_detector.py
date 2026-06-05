@@ -9,9 +9,12 @@ pattern-match against it to produce fresh confabulations.
 Self-reinforcing pollution inside the session — and the telemetry
 row falsely marks the turn as a clean success during soak analysis.
 
-(The legacy persistent store `~/.jarvis/conversations.db` was
-retired in Phase 12 — see voice_client_watchdog.py:204 — so there
-is no longer a cross-session recall feed from a confab to scrub.)
+(The persistent store `~/.jarvis/conversations.db` was revived for
+cross-session conversation recall — see pipeline/conversation_store.py.
+The confab detector remains a write-time structural fix: refuse to save
+assistant turns that look like confabulations before they contaminate
+chat_ctx. The conversation store writes happen downstream and are not
+affected by this detector.)
 
 This module is the structural fix: refuse to save assistant turns
 that look like confabulations in the first place, before they
