@@ -6,7 +6,9 @@ The gate fires when ALL hold:
   1. route is TASK_* or REASONING (BANTER + EMOTIONAL bypass)
   2. response text matches confab_detector._STRONG_CLAIMS via
      looks_like_completion_claim (already public — commit 976749de)
-  3. this turn's tool_calls list is EMPTY (no tool fired)
+  3. this turn's tool_calls list is EMPTY OR tool results haven't
+     landed in chat_ctx yet (the LLM voiced "Done" before the tool
+     actually completed — the user's voice outpaces the browser)
   4. no _NEGATION_PATTERNS in the text (handled by
      looks_like_completion_claim)
 
@@ -102,6 +104,7 @@ def should_gate(
     route: str,
     text: str,
     tool_calls: list[Any] | None,
+    has_tool_results: bool = False,
 ) -> GateVerdict:
     """Decide whether THIS completed turn needs a retry.
 
@@ -110,8 +113,12 @@ def should_gate(
 
     Routes BANTER and EMOTIONAL always bypass — they never make tool
     claims. TASK_* and REASONING are inspected:
-      - if tool_calls is non-empty → the LLM actually acted → not a confab
-      - if text matches a completion claim AND no tool fired → CONFAB
+      - if tool_calls is non-empty AND tool results have landed in
+        chat_ctx → the LLM acted AND saw the result → not a confab
+      - if tool_calls is non-empty but no tool results yet → the LLM
+        voiced "Done" before the tool finished → POTENTIAL CONFAB
+      - if text matches a completion claim AND (no tools called OR
+        tools called but no results) → CONFAB
       - otherwise → clean
     """
     if gate_disabled():
@@ -127,21 +134,41 @@ def should_gate(
         logger.info(f"[pre_tts_gate] route={route} verdict=unknown_route")
         return GateVerdict(False, "unknown_route")
 
-    if tool_calls:
+    if tool_calls and has_tool_results:
+        # Tools were called AND results landed — the LLM actually acted
+        # and saw the outcome before speaking. Not a confab.
         logger.info(
-            f"[pre_tts_gate] route={route} verdict=tool_called "
+            f"[pre_tts_gate] route={route} verdict=tool_called_with_results "
             f"(n_calls={len(tool_calls)})"
         )
-        return GateVerdict(False, "tool_called")
+        return GateVerdict(False, "tool_called_with_results")
+
+    if tool_calls and not has_tool_results:
+        # Tools were called but results haven't landed in chat_ctx yet.
+        # The LLM might be voicing "Done!" before the tool finished.
+        # Don't short-circuit — fall through to the completion-claim check.
+        logger.info(
+            f"[pre_tts_gate] route={route} tools_called_but_no_results "
+            f"(n_calls={len(tool_calls)}) — checking for premature claims"
+        )
 
     looks, pattern = looks_like_completion_claim(text)
     if not looks:
-        logger.info(f"[pre_tts_gate] route={route} verdict=no_claim")
+        if tool_calls and not has_tool_results:
+            logger.info(
+                f"[pre_tts_gate] route={route} verdict=no_claim "
+                f"(tools called, no results, but text is not a claim)"
+            )
+        else:
+            logger.info(f"[pre_tts_gate] route={route} verdict=no_claim")
         return GateVerdict(False, "no_claim")
 
     # Trip path — agent filter will log a WARNING when it actually
     # runs the retry chain, so we don't double-log here.
-    return GateVerdict(True, "confab_detected", pattern_matched=pattern)
+    reason = "confab_detected"
+    if tool_calls and not has_tool_results:
+        reason = "confab_detected_premature_claim"
+    return GateVerdict(True, reason, pattern_matched=pattern)
 
 
 def telemetry_state_for_clean(verdict: GateVerdict) -> str:
@@ -160,6 +187,8 @@ def telemetry_state_for_clean(verdict: GateVerdict) -> str:
     if verdict.reason == "unknown_route":
         return CONFAB_STATE_CLEAN_UNKNOWN_ROUTE
     if verdict.reason == "tool_called":
+        return CONFAB_STATE_CLEAN_TOOL_CALLED
+    if verdict.reason == "tool_called_with_results":
         return CONFAB_STATE_CLEAN_TOOL_CALLED
     if verdict.reason == "no_claim":
         return CONFAB_STATE_CLEAN_NO_CLAIM
@@ -283,8 +312,13 @@ async def run_retry_chain(
             continue
 
         # confab_detected — re-run the gate on the retry result.
+        # Pass has_tool_results=True: the retry LLM was told to call
+        # tools and respond after results. If it produced tool_calls,
+        # we trust it acted (the alternative — gating the retry itself
+        # — would escalate endlessly).
         verdict = should_gate(
             route=route, text=retry_text, tool_calls=retry_tool_calls,
+            has_tool_results=True,
         )
         if not verdict.should_retry:
             logger.info(
