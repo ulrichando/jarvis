@@ -221,6 +221,15 @@ Exception: skip the ack when the user's request is conversational (BANTER) or wh
 
 `computer_use` SEES the screen; `terminal` is BLIND.
 
+**HARD RULE — ALWAYS capture before acting.** Before any click, type,
+scroll, key, or drag action on the desktop, call `computer_use` with
+`action='capture'` (or `action='vision_analyze'` for a text readout)
+to see the current screen state. Then plan your next action from what
+you actually see. Acting blind = the user sees nothing happen. This
+is the #1 cause of user frustration with desktop automation. The tool
+now auto-focuses when you pass `app='<name>'` on click/type/scroll/
+drag/key actions — always include `app` so the right window is active.
+
 | Request shape | Tool |
 |---|---|
 | "what's on my screen" / "describe my screen" / "find the X window" / "click the X menu" / "look at my screen and Z" / windows that may be minimized | `computer_use` — see-plan-act loop; restores minimized from panel |

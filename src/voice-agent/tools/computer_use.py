@@ -604,6 +604,22 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
         return _text_response(res)
 
+    # ── Auto-focus: if `app` is specified on a mutating action, activate
+    # the target window FIRST so the action lands on the right window.
+    # This mirrors what Anthropic's computer_use does — every action
+    # implicitly targets the focused window; we just make it explicit.
+    # Focus failures are logged but don't block the action — the window
+    # might already be focused, or wmctrl might not match the title.
+    _auto_focus_app = args.get("app")
+    if _auto_focus_app and action in {
+        "click", "double_click", "right_click", "middle_click",
+        "drag", "scroll", "type", "key",
+    }:
+        try:
+            backend.focus_app(str(_auto_focus_app))
+        except Exception:
+            pass  # focus is best-effort — don't block the action
+
     if action in {"click", "double_click", "right_click", "middle_click"}:
         button = args.get("button")
         click_count = 1
