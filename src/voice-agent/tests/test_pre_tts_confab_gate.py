@@ -38,14 +38,15 @@ def test_gate_bypasses_emotional():
 
 
 def test_gate_clean_when_tool_called():
-    """If a tool fired, the claim is legitimate post-tool narration."""
+    """If a tool fired AND results landed, the claim is legitimate post-tool narration."""
     verdict = should_gate(
         route="TASK_DESKTOP",
         text="Chrome is open.",
         tool_calls=[{"name": "computer_use", "args": {}}],
+        has_tool_results=True,
     )
     assert verdict.should_retry is False
-    assert verdict.reason == "tool_called"
+    assert verdict.reason == "tool_called_with_results"
 
 
 def test_gate_clean_when_no_claim():
@@ -312,8 +313,8 @@ def test_should_gate_logs_every_decision(caplog):
     gate.should_gate(route="BANTER", text="hi", tool_calls=[])
     # unknown_route
     gate.should_gate(route="WHATEVER", text="hi", tool_calls=[])
-    # tool_called
-    gate.should_gate(route="TASK_OTHER", text="Done — X.", tool_calls=[{"x": 1}])
+    # tool_called_with_results (tools + results = clean)
+    gate.should_gate(route="TASK_OTHER", text="Done — X.", tool_calls=[{"x": 1}], has_tool_results=True)
     # no_claim
     gate.should_gate(route="TASK_OTHER", text="The forecast is sunny.", tool_calls=[])
 
@@ -322,7 +323,7 @@ def test_should_gate_logs_every_decision(caplog):
     assert len(info_records) >= 4
     # And each carries its verdict reason in the message.
     reasons_found = {r.message for r in info_records}
-    for needle in ("bypass_route", "unknown_route", "tool_called", "no_claim"):
+    for needle in ("bypass_route", "unknown_route", "tool_called_with_results", "no_claim"):
         assert any(needle in m for m in reasons_found), f"missing log line for verdict reason {needle!r}"
 
 

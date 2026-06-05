@@ -3592,8 +3592,36 @@ async def pre_tts_confab_gate_filter(text):
     route = getattr(sess, "_jarvis_route", None) or ""
     tool_calls = list(getattr(sess, "_jarvis_tool_calls_this_turn", None) or [])
 
+    # Check whether tool results have landed in chat_ctx for this turn.
+    # Without tool results, the LLM might be voicing "Done!" before the
+    # tool actually completed — the user hears the claim before the
+    # action finishes. We scan the last 8 chat_ctx items for a
+    # FunctionCallOutput or tool_result to confirm the tool finished.
+    has_tool_results = False
+    if tool_calls:
+        try:
+            chat_ctx = sess.current_agent.chat_ctx if sess.current_agent else None
+            if chat_ctx is not None:
+                items = list(getattr(chat_ctx, "items", None) or [])
+                # Scan last 8 items for a tool result matching this turn's calls.
+                for item in reversed(items[-8:]):
+                    # LiveKit FunctionCallOutput type
+                    fc_output = getattr(item, "output", None)
+                    call_id = getattr(item, "call_id", None)
+                    if fc_output is not None and call_id is not None:
+                        has_tool_results = True
+                        break
+                    # Dict fallback (some paths use plain dicts)
+                    if isinstance(item, dict):
+                        if item.get("output") and item.get("call_id"):
+                            has_tool_results = True
+                            break
+        except Exception:
+            pass  # can't check chat_ctx — be permissive
+
     verdict = _pre_tts_should_gate(
         route=route, text=buffer, tool_calls=tool_calls,
+        has_tool_results=has_tool_results,
     )
 
     if not verdict.should_retry:
