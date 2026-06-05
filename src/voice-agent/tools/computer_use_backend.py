@@ -40,6 +40,7 @@ import tempfile
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -157,6 +158,12 @@ class ComputerUseBackend(ABC):
 
     @abstractmethod
     def list_apps(self) -> List[Dict[str, Any]]: ...
+
+    @abstractmethod
+    def list_available_apps(self) -> List[Dict[str, Any]]: ...
+
+    @abstractmethod
+    def launch_app(self, command: str) -> ActionResult: ...
 
     @abstractmethod
     def move_cursor(
@@ -1122,6 +1129,154 @@ class X11ComputerUseBackend(ComputerUseBackend):
             )
         return out
 
+    # ── App discovery: scan .desktop files ─────────────────────────
+
+    # %-codes that desktop-file Exec lines use as argument placeholders.
+    # Stripped to get the bare binary name.
+    _DESKTOP_EXEC_STRIP = re.compile(
+        r"(%[fFuUdDnNickvm]|%[@]|%\S)", re.I
+    )
+
+    @classmethod
+    def _parse_desktop_file(cls, path: Path) -> Optional[Dict[str, Any]]:
+        """Parse a single .desktop file, returning {name, command, category, icon}
+        or None for NoDisplay/Hidden entries."""
+        try:
+            text = path.read_text(errors="ignore")
+        except Exception:
+            return None
+        # Only parse the [Desktop Entry] section.
+        in_entry = False
+        name = cmd = categories = icon = ""
+        hidden = nodisplay = False
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("["):
+                in_entry = line.strip() == "[Desktop Entry]"
+                continue
+            if not in_entry:
+                continue
+            if "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip().lower()
+            val = val.strip()
+            if key == "name" and not name:
+                name = val
+            elif key == "exec" and not cmd:
+                cmd = val
+            elif key == "categories":
+                categories = val
+            elif key == "icon" and not icon:
+                icon = val
+            elif key == "nodisplay":
+                nodisplay = val.lower() == "true"
+            elif key == "hidden":
+                hidden = val.lower() == "true"
+        if hidden or nodisplay or not name:
+            return None
+        # Extract the bare command: strip path args and %-codes.
+        if cmd:
+            # Split on first space to get the binary
+            parts = cmd.split(None, 1)
+            binary = parts[0] if parts else cmd
+            # Resolve full path if relative
+            if "/" not in binary:
+                resolved = shutil.which(binary)
+                if resolved:
+                    binary = resolved
+            # Clean up %-codes from the rest
+            if len(parts) > 1:
+                args = cls._DESKTOP_EXEC_STRIP.sub("", parts[1]).strip()
+                cmd = f"{binary} {args}" if args else binary
+            else:
+                cmd = binary
+        # Derive a human-readable category label.
+        cat = ""
+        cats_lower = categories.lower()
+        if "filemanager" in cats_lower or "file-manager" in cats_lower:
+            cat = "file_manager"
+        elif "webbrowser" in cats_lower or "web-browser" in cats_lower:
+            cat = "browser"
+        elif "terminalemulator" in cats_lower or "terminal-emulator" in cats_lower:
+            cat = "terminal"
+        elif "settings" in cats_lower:
+            cat = "settings"
+        elif "texteditor" in cats_lower or "text-editor" in cats_lower:
+            cat = "text_editor"
+        elif "development" in cats_lower or "ide" in cats_lower:
+            cat = "development"
+        elif "audio" in cats_lower or "video" in cats_lower or "player" in cats_lower:
+            cat = "media"
+        elif "graphics" in cats_lower or "image" in cats_lower:
+            cat = "graphics"
+        elif "office" in cats_lower or "spreadsheet" in cats_lower or "word" in cats_lower:
+            cat = "office"
+        elif "chat" in cats_lower or "messaging" in cats_lower or "im" in cats_lower:
+            cat = "chat"
+        elif "network" in cats_lower:
+            cat = "network"
+        return {
+            "name": name,
+            "command": cmd.split()[0] if cmd else "",
+            "full_command": cmd,
+            "category": cat,
+            "icon": icon,
+        }
+
+    def list_available_apps(self) -> List[Dict[str, Any]]:
+        """Scan .desktop files to discover installed applications. Returns
+        a list of {name, command, category, icon} for each visible desktop
+        entry. Gives the supervisor ground truth about what's actually
+        installed instead of guessing from training-data defaults."""
+        seen: set[str] = set()
+        results: List[Dict[str, Any]] = []
+        search_dirs = [
+            Path("/usr/share/applications"),
+            Path.home() / ".local" / "share" / "applications",
+        ]
+        for search_dir in search_dirs:
+            if not search_dir.is_dir():
+                continue
+            for entry in sorted(search_dir.iterdir()):
+                if not entry.suffix == ".desktop":
+                    continue
+                info = self._parse_desktop_file(entry)
+                if info is None:
+                    continue
+                # Dedupe by command — same app may have multiple .desktop files.
+                key = info["command"]
+                if key and key not in seen:
+                    seen.add(key)
+                    results.append(info)
+        return results
+
+    # ── App launch ──────────────────────────────────────────────────
+
+    def launch_app(self, command: str) -> ActionResult:
+        """Launch *command* via ``setsid`` so it detaches from the voice-agent
+        process and survives the turn. Resolves bare names via ``which`` first.
+        Returns ok/error — does NOT focus the window (caller handles that)."""
+        cmd = command.strip()
+        if not cmd:
+            return ActionResult(ok=False, action="launch",
+                               message="launch requires a non-empty command")
+        # Resolve bare binary names to full path so setsid can find them.
+        if "/" not in cmd:
+            resolved = shutil.which(cmd)
+            if resolved:
+                cmd = resolved
+        rc, _out, err = self._run(["setsid", cmd, "&"])
+        ok = rc == 0
+        return ActionResult(
+            ok=ok, action="launch",
+            message=(f"launched {command!r}" if ok
+                     else f"launch failed: {err}"),
+            meta={"command": command},
+        )
+
     def move_cursor(
         self,
         *,
@@ -1256,6 +1411,15 @@ class NoopBackend(ComputerUseBackend):
     def list_apps(self) -> List[Dict[str, Any]]:
         self.calls.append(("list_apps", {}))
         return []
+
+    def list_available_apps(self) -> List[Dict[str, Any]]:
+        self.calls.append(("list_available_apps", {}))
+        return []
+
+    def launch_app(self, command: str) -> ActionResult:
+        self.calls.append(("launch", {"command": command}))
+        return ActionResult(ok=True, action="launch",
+                           meta={"command": command})
 
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         self.calls.append(("focus_app", {"app": app, "raise": raise_window}))

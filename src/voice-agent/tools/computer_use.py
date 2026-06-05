@@ -189,7 +189,9 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "key_up",
                     "wait",
                     "list_apps",
+                    "list_available_apps",
                     "focus_app",
+                    "launch",
                     "vision_analyze",
                     "mouse_move",
                     "cursor_position",
@@ -304,6 +306,17 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "type": "number",
                 "description": "Seconds to wait (action='wait') or hold (action='hold_key'). Max 30.",
             },
+            "command": {
+                "type": "string",
+                "description": (
+                    "Binary name or full path to launch (action='launch'). "
+                    "Uses setsid to detach from the voice-agent process, so "
+                    "the app survives the turn. The app is focused "
+                    "automatically after launch. Prefer the simple binary "
+                    "name (e.g. 'thunar', 'firefox', 'gnome-terminal') — "
+                    "use list_available_apps to discover what's installed."
+                ),
+            },
             "raise_window": {
                 "type": "boolean",
                 "description": "action='focus_app' only. Accepted for parity.",
@@ -344,13 +357,14 @@ def set_approval_callback(cb) -> None:
     _approval_callback = cb
 
 
-_SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps", "vision_analyze", "cursor_position"})
+_SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps", "list_available_apps",
+                         "vision_analyze", "cursor_position"})
 
 _DESTRUCTIVE_ACTIONS = frozenset({
     "click", "double_click", "right_click", "middle_click", "triple_click",
     "left_mouse_down", "left_mouse_up",
     "drag", "scroll", "type", "key", "hold_key", "key_down", "key_up",
-    "focus_app", "mouse_move",
+    "focus_app", "launch", "mouse_move",
 })
 
 # ── Permission tiers (Gap 9) ───────────────────────────────────────
@@ -385,6 +399,82 @@ def _action_allowed_in_tier(action: str, tier: str) -> bool:
     if tier == "interact":
         return action in _TIER_INTERACT
     return True  # defensive — unknown tier, allow
+
+
+# ── Desktop environment detection ────────────────────────────────────
+# Maps DE names to their canonical default apps. The supervisor uses this
+# to know what's actually installed instead of guessing from training data
+# (which defaults to GNOME/Nautilus).
+_DE_DEFAULTS: Dict[str, Dict[str, str]] = {
+    "xfce":    {"file_manager": "thunar",   "terminal": "xfce4-terminal",
+                 "browser": "firefox",       "settings": "xfce4-settings-manager"},
+    "gnome":   {"file_manager": "nautilus", "terminal": "gnome-terminal",
+                 "browser": "firefox",       "settings": "gnome-control-center"},
+    "kde":     {"file_manager": "dolphin",  "terminal": "konsole",
+                 "browser": "firefox",       "settings": "systemsettings"},
+    "plasma":  {"file_manager": "dolphin",  "terminal": "konsole",
+                 "browser": "firefox",       "settings": "systemsettings"},
+    "lxde":    {"file_manager": "pcmanfm",  "terminal": "lxterminal",
+                 "browser": "firefox",       "settings": "lxappearance"},
+    "lxqt":    {"file_manager": "pcmanfm-qt", "terminal": "qterminal",
+                 "browser": "firefox",       "settings": "lxqt-config"},
+    "cinnamon": {"file_manager": "nemo",    "terminal": "gnome-terminal",
+                 "browser": "firefox",       "settings": "cinnamon-settings"},
+    "mate":    {"file_manager": "caja",     "terminal": "mate-terminal",
+                 "browser": "firefox",       "settings": "mate-control-center"},
+    "budgie":  {"file_manager": "nautilus", "terminal": "gnome-terminal",
+                 "browser": "firefox",       "settings": "gnome-control-center"},
+    "deepin":  {"file_manager": "dde-file-manager", "terminal": "deepin-terminal",
+                 "browser": "firefox",       "settings": "dde-control-center"},
+}
+
+_DE_CACHE: Optional[Dict[str, Any]] = None
+
+
+def _detect_desktop_environment() -> Dict[str, Any]:
+    """Return the detected desktop environment and its default apps.
+    Cached — the DE doesn't change during a session."""
+    global _DE_CACHE
+    if _DE_CACHE is not None:
+        return _DE_CACHE
+    de_name = (
+        os.environ.get("XDG_CURRENT_DESKTOP", "") or
+        os.environ.get("XDG_SESSION_DESKTOP", "") or
+        os.environ.get("DESKTOP_SESSION", "") or
+        ""
+    ).strip().lower()
+    # Normalize compound values like "XFCE" or "ubuntu:GNOME"
+    if ":" in de_name:
+        de_name = de_name.split(":")[-1]
+    de_key = de_name
+    defaults = _DE_DEFAULTS.get(de_key, {})
+    _DE_CACHE = {
+        "desktop_environment": de_name or "unknown",
+        "default_apps": defaults,
+    }
+    return _DE_CACHE
+
+
+def _remember_app_launch(command: str) -> None:
+    """Persist a successful app-launch command so the supervisor learns
+    the app→binary mapping across sessions. Best-effort — never breaks
+    the tool if memory write fails."""
+    try:
+        from pipeline.memory_extractor import _publish_event_async
+        label = command.split("/")[-1] if "/" in command else command
+        _publish_event_async(
+            "memory.value.upserted",
+            {
+                "type": "app_launch",
+                "key": f"app_launch:{label}",
+                "value": f"The '{label}' application launches via '{command}' on this machine.",
+                "category": "app_launch",
+                "source": "computer_use",
+            },
+        )
+        logger.info("[app-launch] remembered: %s → %s", label, command)
+    except Exception:
+        pass
 
 # Hard-blocked key combos — destructive regardless of approval level. Linux/X11
 # equivalents of the upstream macOS list (logout / lock / kill-session).
@@ -627,6 +717,10 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
         return f"mouse_move to {tuple(coord)}" if coord else "mouse_move"
     if action == "focus_app":
         return f"focus {args.get('app', '')!r}"
+    if action == "launch":
+        return f"launch {args.get('command', '')!r}"
+    if action == "list_available_apps":
+        return "list_available_apps"
     if action == "vision_analyze":
         app = args.get("app") or ""
         return f"vision_analyze" + (f" ({app})" if app else "")
@@ -691,7 +785,33 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
 
     if action == "list_apps":
         apps = backend.list_apps()
-        return json.dumps({"apps": apps, "count": len(apps)})
+        de_info = _detect_desktop_environment()
+        return json.dumps({"apps": apps, "count": len(apps), **de_info})
+
+    if action == "list_available_apps":
+        apps = backend.list_available_apps()
+        de_info = _detect_desktop_environment()
+        return json.dumps({"available_apps": apps, "count": len(apps), **de_info})
+
+    if action == "launch":
+        command = args.get("command", "").strip()
+        if not command:
+            return json.dumps({"error": "launch requires `command`"})
+        res = backend.launch_app(command)
+        result = json.loads(_text_response(res))
+        # Best-effort auto-focus after launch: wait briefly and try to
+        # activate the new window by the command name.
+        if res.ok:
+            try:
+                import time as _time
+                _time.sleep(0.5)
+                backend.focus_app(command)
+            except Exception:
+                pass
+            # Procedural memory: remember this app→command mapping so the
+            # supervisor doesn't have to be guided again next time.
+            _remember_app_launch(command)
+        return json.dumps(result)
 
     if action == "focus_app":
         app = args.get("app")
