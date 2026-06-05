@@ -110,7 +110,8 @@ class ComputerUseBackend(ABC):
     def is_available(self) -> bool: ...
 
     @abstractmethod
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult: ...
+    def capture(self, mode: str = "som", app: Optional[str] = None,
+                region: Optional[List[int]] = None) -> CaptureResult: ...
 
     @abstractmethod
     def click(
@@ -168,6 +169,37 @@ class ComputerUseBackend(ABC):
 
     @abstractmethod
     def get_cursor_position(self) -> ActionResult: ...
+
+    @abstractmethod
+    def mouse_down(
+        self,
+        *,
+        element: Optional[int] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        button: str = "left",
+        modifiers: Optional[List[str]] = None,
+    ) -> ActionResult: ...
+
+    @abstractmethod
+    def mouse_up(
+        self,
+        *,
+        element: Optional[int] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        button: str = "left",
+        modifiers: Optional[List[str]] = None,
+    ) -> ActionResult: ...
+
+    @abstractmethod
+    def hold_key(self, keys: str, seconds: float = 1.0) -> ActionResult: ...
+
+    @abstractmethod
+    def key_down(self, keys: str) -> ActionResult: ...
+
+    @abstractmethod
+    def key_up(self, keys: str) -> ActionResult: ...
 
     @abstractmethod
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult: ...
@@ -359,7 +391,8 @@ class X11ComputerUseBackend(ComputerUseBackend):
             self._xdo("keyup", sym)
 
     # ── Capture ────────────────────────────────────────────────────
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
+    def capture(self, mode: str = "som", app: Optional[str] = None,
+                region: Optional[List[int]] = None) -> CaptureResult:
         """Capture the screen as a PNG (base64) plus a best-effort window list.
 
         SOM mode (default): renders numbered red rectangles (Set of Markers)
@@ -370,12 +403,25 @@ class X11ComputerUseBackend(ComputerUseBackend):
 
         AX mode: same screenshot + window list, no overlays.
         Vision mode: screenshot only, no overlay, no window list.
+
+        Region: optional [x1, y1, x2, y2] crops the screenshot to that sub-region
+        at 1:1 pixel mapping (no downscale) — the "zoom" equivalent for reading
+        small text or inspecting UI details.
         """
         png_b64: Optional[str] = None
         width = height = 0
 
         if mode != "ax":
             png_b64, width, height = self._screenshot_b64()
+            # Region crop: extract a sub-rectangle from the full screenshot at
+            # 1:1 pixel mapping. Done BEFORE SOM overlay rendering so overlays
+            # are drawn relative to the cropped region.
+            if region is not None and png_b64 and len(region) == 4:
+                png_b64, width, height = self._crop_png(
+                    png_b64, width, height,
+                    int(region[0]), int(region[1]),
+                    int(region[2]), int(region[3]),
+                )
 
         elements: List[UIElement] = []
         app_name = ""
@@ -610,6 +656,33 @@ class X11ComputerUseBackend(ComputerUseBackend):
             pass
         return 0, 0
 
+    @staticmethod
+    def _crop_png(png_b64: str, orig_w: int, orig_h: int,
+                  x1: int, y1: int, x2: int, y2: int) -> Tuple[Optional[str], int, int]:
+        """Crop a base64 PNG to the sub-rectangle [x1,y1,x2,y2]. Returns the
+        cropped PNG (base64) + new (width, height), or (None,0,0) on error.
+        No downscale — the crop is at 1:1 pixel mapping (the "zoom" equivalent)."""
+        try:
+            raw = base64.b64decode(png_b64, validate=True)
+        except Exception:
+            return None, 0, 0
+        try:
+            from PIL import Image
+            img = Image.open(io.BytesIO(raw))
+            img.load()
+            # Clamp to image bounds.
+            x1 = max(0, min(x1, orig_w - 1))
+            y1 = max(0, min(y1, orig_h - 1))
+            x2 = max(x1 + 1, min(x2, orig_w))
+            y2 = max(y1 + 1, min(y2, orig_h))
+            cropped = img.crop((x1, y1, x2, y2))
+            buf = io.BytesIO()
+            cropped.save(buf, format="PNG")
+            new_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            return new_b64, cropped.size[0], cropped.size[1]
+        except Exception:
+            return None, 0, 0
+
     # ── Window filter ─────────────────────────────────────────────────
     # Windows with _NET_WM_STATE_SKIP_TASKBAR are intentionally hidden
     # from the user's taskbar (panels, desktop root, tray-minimized apps)
@@ -798,6 +871,64 @@ class X11ComputerUseBackend(ComputerUseBackend):
             meta={"x": rx, "y": ry, "button": button, "click_count": click_count},
         )
 
+    def mouse_down(
+        self,
+        *,
+        element: Optional[int] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        button: str = "left",
+        modifiers: Optional[List[str]] = None,
+    ) -> ActionResult:
+        """Press a mouse button without releasing — raw mousedown, needed for
+        canvas drawing, drag-handle interactions, and games."""
+        rx, ry, err = self._resolve_xy(element, x, y)
+        if err:
+            return ActionResult(ok=False, action="mouse_down", message=err)
+        btn = _BUTTON_NUM.get(button, "1")
+        held = self._press_modifiers(modifiers)
+        try:
+            self._xdo("mousemove", "--sync", str(rx), str(ry))
+            rc, _out, e = self._xdo("mousedown", btn)
+        finally:
+            self._release_modifiers(held)
+        ok = rc == 0
+        return ActionResult(
+            ok=ok, action="mouse_down",
+            message=("" if ok else f"xdotool mousedown failed: {e}"),
+            meta={"x": rx, "y": ry, "button": button},
+        )
+
+    def mouse_up(
+        self,
+        *,
+        element: Optional[int] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        button: str = "left",
+        modifiers: Optional[List[str]] = None,
+    ) -> ActionResult:
+        """Release a previously-pressed mouse button — pairs with mouse_down."""
+        # mouse_up is typically relative to current cursor position; coords are
+        # optional (if given, move there first before releasing).
+        if element is not None or (x is not None and y is not None):
+            rx, ry, err = self._resolve_xy(element, x, y)
+            if err:
+                return ActionResult(ok=False, action="mouse_up", message=err)
+            self._xdo("mousemove", "--sync", str(rx), str(ry))
+        btn = _BUTTON_NUM.get(button, "1")
+        held = self._press_modifiers(modifiers)
+        try:
+            rc, _out, e = self._xdo("mouseup", btn)
+        finally:
+            self._release_modifiers(held)
+        ok = rc == 0
+        return ActionResult(
+            ok=ok, action="mouse_up",
+            message=("" if ok else f"xdotool mouseup failed: {e}"),
+            meta={"button": button},
+        )
+
     def drag(
         self,
         *,
@@ -913,6 +1044,67 @@ class X11ComputerUseBackend(ComputerUseBackend):
             ok=ok,
             action="key",
             message=("" if ok else f"xdotool key failed: {e}"),
+            meta={"keys": keysym},
+        )
+
+    def hold_key(self, keys: str, seconds: float = 1.0) -> ActionResult:
+        """Hold a key (or combo) for *seconds* then release — needed for game
+        controls, long-press shortcuts, and accessibility features."""
+        keysym = parse_key_combo_to_xdotool(keys)
+        if not keysym:
+            return ActionResult(
+                ok=False, action="hold_key",
+                message=f"could not parse key combo {keys!r}.",
+            )
+        secs = max(0.05, min(float(seconds), 30.0))
+        rc, _out, e = self._xdo("keydown", "--clearmodifiers", keysym)
+        if rc != 0:
+            return ActionResult(
+                ok=False, action="hold_key",
+                message=f"xdotool keydown failed: {e}",
+            )
+        time.sleep(secs)
+        rc2, _out2, e2 = self._xdo("keyup", "--clearmodifiers", keysym)
+        ok = rc2 == 0
+        return ActionResult(
+            ok=ok, action="hold_key",
+            message=(f"held {keysym!r} for {secs:.2f}s" if ok
+                     else f"xdotool keyup failed: {e2}"),
+            meta={"keys": keysym, "seconds": secs},
+        )
+
+    def key_down(self, keys: str) -> ActionResult:
+        """Press (and hold) a key or combo — raw keydown, no auto-release.
+        Pairs with key_up for composable modifier sequences, e.g.
+        key_down('ctrl') → click(...) → key_up('ctrl') for Ctrl+click
+        multi-select."""
+        keysym = parse_key_combo_to_xdotool(keys)
+        if not keysym:
+            return ActionResult(
+                ok=False, action="key_down",
+                message=f"could not parse key combo {keys!r}.",
+            )
+        rc, _out, e = self._xdo("keydown", "--clearmodifiers", keysym)
+        ok = rc == 0
+        return ActionResult(
+            ok=ok, action="key_down",
+            message=(f"key_down {keysym!r}" if ok else f"xdotool keydown failed: {e}"),
+            meta={"keys": keysym},
+        )
+
+    def key_up(self, keys: str) -> ActionResult:
+        """Release a previously-pressed key or combo — pairs with key_down."""
+        keysym = parse_key_combo_to_xdotool(keys)
+        if not keysym:
+            return ActionResult(
+                ok=False, action="key_up",
+                message=f"could not parse key combo {keys!r}.",
+            )
+        rc, _out, e = self._xdo("keyup", "--clearmodifiers", keysym)
+        ok = rc == 0
+        return ActionResult(
+            ok=ok, action="key_up",
+            message=(f"key_up {keysym!r}" if ok else f"xdotool keyup failed: {e}"),
             meta={"keys": keysym},
         )
 
@@ -1035,8 +1227,9 @@ class NoopBackend(ComputerUseBackend):
     def is_available(self) -> bool:
         return True
 
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
-        self.calls.append(("capture", {"mode": mode, "app": app}))
+    def capture(self, mode: str = "som", app: Optional[str] = None,
+                region: Optional[List[int]] = None) -> CaptureResult:
+        self.calls.append(("capture", {"mode": mode, "app": app, "region": region}))
         return CaptureResult(mode=mode, width=1024, height=768, png_b64=None,
                              elements=[], app=app or "", window_title="")
 
@@ -1077,3 +1270,29 @@ class NoopBackend(ComputerUseBackend):
         self.calls.append(("get_cursor_position", {}))
         return ActionResult(ok=True, action="cursor_position",
                            meta={"x": 500, "y": 300})
+
+    def mouse_down(self, *, element=None, x=None, y=None, button="left",
+                   modifiers=None) -> ActionResult:
+        self.calls.append(("mouse_down", {"element": element, "x": x, "y": y,
+                                           "button": button, "modifiers": modifiers}))
+        return ActionResult(ok=True, action="mouse_down",
+                           meta={"x": x or 0, "y": y or 0, "button": button})
+
+    def mouse_up(self, *, element=None, x=None, y=None, button="left",
+                 modifiers=None) -> ActionResult:
+        self.calls.append(("mouse_up", {"element": element, "x": x, "y": y,
+                                         "button": button, "modifiers": modifiers}))
+        return ActionResult(ok=True, action="mouse_up", meta={"button": button})
+
+    def hold_key(self, keys: str, seconds: float = 1.0) -> ActionResult:
+        self.calls.append(("hold_key", {"keys": keys, "seconds": seconds}))
+        return ActionResult(ok=True, action="hold_key",
+                           meta={"keys": keys, "seconds": seconds})
+
+    def key_down(self, keys: str) -> ActionResult:
+        self.calls.append(("key_down", {"keys": keys}))
+        return ActionResult(ok=True, action="key_down", meta={"keys": keys})
+
+    def key_up(self, keys: str) -> ActionResult:
+        self.calls.append(("key_up", {"keys": keys}))
+        return ActionResult(ok=True, action="key_up", meta={"keys": keys})

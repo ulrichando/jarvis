@@ -185,6 +185,48 @@ _BROWSER_TASK_SCHEMA = {
                 ),
                 "default": _DEFAULT_MAX_STEPS,
             },
+            "flash_mode": {
+                "type": "boolean",
+                "description": (
+                    "Skip the LLM reasoning/evaluation step per action for ~40% "
+                    "faster execution. Use for simple, unambiguous scraping tasks "
+                    "(e.g. 'extract all prices from this product page'). Do NOT "
+                    "use for multi-step flows or tasks that need visual feedback."
+                ),
+            },
+            "max_actions_per_step": {
+                "type": "integer",
+                "description": (
+                    "Maximum browser actions the agent can take per LLM call "
+                    "(default browser-use value). Raise to 3-5 to batch multiple "
+                    "fields in one step on long forms. Lower to 1 for deliberate "
+                    "step-by-step navigation."
+                ),
+                "minimum": 1,
+                "maximum": 10,
+            },
+            "initial_actions": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": (
+                    "Pre-run browser actions executed BEFORE the first LLM step. "
+                    "Each action is a dict with an action type, e.g. "
+                    "{\"navigate\": {\"url\": \"https://example.com\"}} or "
+                    "{\"click\": {\"index\": 5}}. Useful for setting up the "
+                    "starting page before the main task begins, saving an LLM "
+                    "round-trip on simple navigation setup."
+                ),
+            },
+            "sensitive_data": {
+                "type": "object",
+                "description": (
+                    "Credentials, passwords, or API keys the browser agent "
+                    "needs for the task (e.g. {'username': '...', 'password': "
+                    "'...'}). Passed securely to the browser runner — never "
+                    "logged or exposed in telemetry. Only include fields the "
+                    "task actually needs."
+                ),
+            },
         },
         "required": ["task"],
     },
@@ -435,7 +477,15 @@ async def _handle_browser_task(args: dict) -> str:
     if not _RUNNER_PATH.exists():
         return tool_error(f"browser tool unavailable: runner not found at {_RUNNER_PATH}")
 
-    request_obj = {"task": task, "max_steps": max_steps, "headless": True}
+    request_obj: dict = {"task": task, "max_steps": max_steps, "headless": True}
+    # Forward optional browser-use features when the supervisor sets them.
+    for key in ("flash_mode", "max_actions_per_step"):
+        if key in args:
+            request_obj[key] = args[key]
+    if args.get("initial_actions") and isinstance(args["initial_actions"], list):
+        request_obj["initial_actions"] = args["initial_actions"]
+    if args.get("sensitive_data") and isinstance(args["sensitive_data"], dict):
+        request_obj["sensitive_data"] = args["sensitive_data"]
 
     # Default path: no configured provider → local subprocess, unchanged.
     provider = _resolve_browser_provider()

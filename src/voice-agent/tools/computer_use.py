@@ -177,10 +177,16 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "double_click",
                     "right_click",
                     "middle_click",
+                    "triple_click",
+                    "left_mouse_down",
+                    "left_mouse_up",
                     "drag",
                     "scroll",
                     "type",
                     "key",
+                    "hold_key",
+                    "key_down",
+                    "key_up",
                     "wait",
                     "list_apps",
                     "focus_app",
@@ -296,21 +302,23 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
             },
             "seconds": {
                 "type": "number",
-                "description": "Seconds to wait (action='wait'). Max 30.",
+                "description": "Seconds to wait (action='wait') or hold (action='hold_key'). Max 30.",
             },
             "raise_window": {
                 "type": "boolean",
                 "description": "action='focus_app' only. Accepted for parity.",
             },
-            "button": {
-                "type": "string",
-                "enum": ["left", "right", "middle"],
-                "description": "Mouse button for click/double_click actions. Default 'left'.",
-            },
-            "modifiers": {
+            "region": {
                 "type": "array",
-                "items": {"type": "string"},
-                "description": "Modifier keys to hold during the action, e.g. ['ctrl', 'shift'].",
+                "items": {"type": "integer"},
+                "minItems": 4,
+                "maxItems": 4,
+                "description": (
+                    "Capture a sub-region of the screen [x1, y1, x2, y2] at 1:1 "
+                    "pixel mapping (no downscale). Useful for reading small text "
+                    "or inspecting UI details at full resolution. Only applies "
+                    "to action='capture'."
+                ),
             },
         },
         "required": ["action"],
@@ -339,9 +347,44 @@ def set_approval_callback(cb) -> None:
 _SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps", "vision_analyze", "cursor_position"})
 
 _DESTRUCTIVE_ACTIONS = frozenset({
-    "click", "double_click", "right_click", "middle_click",
-    "drag", "scroll", "type", "key", "focus_app", "mouse_move",
+    "click", "double_click", "right_click", "middle_click", "triple_click",
+    "left_mouse_down", "left_mouse_up",
+    "drag", "scroll", "type", "key", "hold_key", "key_down", "key_up",
+    "focus_app", "mouse_move",
 })
+
+# ── Permission tiers (Gap 9) ───────────────────────────────────────
+# Controlled via JARVIS_COMPUTER_USE_TIER env var. Default "full" (no
+# restriction). Operators can lock down to:
+#   view     — read-only screen/window introspection (safe actions only)
+#   interact — view + mouse actions only (no keyboard — type/key/hold_key
+#              are blocked, preventing destructive shell commands)
+#   full     — all actions (default)
+# Keyboard actions excluded from the "interact" tier.
+_KEYBOARD_ACTIONS = frozenset({"type", "key", "hold_key", "key_down", "key_up"})
+
+# Actions allowed in the "interact" tier: everything except keyboard.
+_TIER_INTERACT = _SAFE_ACTIONS | (_DESTRUCTIVE_ACTIONS - _KEYBOARD_ACTIONS)
+
+
+def _resolve_tier() -> str:
+    """Return the effective permission tier (view|interact|full)."""
+    tier = os.environ.get("JARVIS_COMPUTER_USE_TIER", "full").strip().lower()
+    if tier in ("view", "interact", "full"):
+        return tier
+    logger.warning("Unknown JARVIS_COMPUTER_USE_TIER=%r, treating as full", tier)
+    return "full"
+
+
+def _action_allowed_in_tier(action: str, tier: str) -> bool:
+    """Return True if *action* is permitted at the given *tier*."""
+    if tier == "full":
+        return True
+    if tier == "view":
+        return action in _SAFE_ACTIONS
+    if tier == "interact":
+        return action in _TIER_INTERACT
+    return True  # defensive — unknown tier, allow
 
 # Hard-blocked key combos — destructive regardless of approval level. Linux/X11
 # equivalents of the upstream macOS list (logout / lock / kill-session).
@@ -440,6 +483,18 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> str:
     if not action:
         return json.dumps({"error": "missing `action`"})
 
+    # Permission tier gate (Gap 9). Blocks actions above the configured tier
+    # BEFORE any safety check or dispatch. Default "full" = no restriction.
+    tier = _resolve_tier()
+    if not _action_allowed_in_tier(action, tier):
+        return json.dumps({
+            "error": f"action {action!r} blocked by tier '{tier}'",
+            "hint": (
+                f"JARVIS_COMPUTER_USE_TIER={tier} — this action requires a "
+                "higher tier. Set to 'full' to allow all actions."
+            ),
+        })
+
     # Defensive availability re-check (check_fn gates registration, but the
     # display can vanish between turns).
     if not x11_backend_available():
@@ -457,7 +512,7 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> str:
                 "hint": "Dangerous shell patterns cannot be typed via computer_use.",
             })
 
-    if action == "key":
+    if action in {"key", "hold_key", "key_down", "key_up"}:
         combo = _canon_key_combo(args.get("keys", "") or "")
         for blocked in _BLOCKED_KEY_COMBOS:
             if blocked and blocked.issubset(combo):
@@ -522,12 +577,24 @@ def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
 
 
 def _summarize_action(action: str, args: Dict[str, Any]) -> str:
-    if action in {"click", "double_click", "right_click", "middle_click"}:
+    if action in {"click", "double_click", "right_click", "middle_click", "triple_click"}:
         elem = args.get("element")
         if elem is not None:
             return f"{action} element={elem}"
         coord = args.get("coordinate")
         return f"{action} at {tuple(coord)}" if coord else action
+    if action == "left_mouse_down":
+        elem = args.get("element")
+        if elem is not None:
+            return f"mouse_down element={elem}"
+        coord = args.get("coordinate")
+        return f"mouse_down at {tuple(coord)}" if coord else "mouse_down"
+    if action == "left_mouse_up":
+        elem = args.get("element")
+        if elem is not None:
+            return f"mouse_up element={elem}"
+        coord = args.get("coordinate")
+        return f"mouse_up at {tuple(coord)}" if coord else "mouse_up"
     if action == "drag":
         fe = args.get("from_element")
         te = args.get("to_element")
@@ -544,6 +611,20 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
         return f"type {text[:60]!r}" + ("..." if len(text) > 60 else "")
     if action == "key":
         return f"key {args.get('keys', '')!r}"
+    if action == "hold_key":
+        keys = args.get("keys", "")
+        secs = args.get("seconds", 1.0)
+        return f"hold_key {keys!r} for {secs}s"
+    if action == "key_down":
+        return f"key_down {args.get('keys', '')!r}"
+    if action == "key_up":
+        return f"key_up {args.get('keys', '')!r}"
+    if action == "mouse_move":
+        elem = args.get("element")
+        if elem is not None:
+            return f"mouse_move element={elem}"
+        coord = args.get("coordinate")
+        return f"mouse_move to {tuple(coord)}" if coord else "mouse_move"
     if action == "focus_app":
         return f"focus {args.get('app', '')!r}"
     if action == "vision_analyze":
@@ -557,7 +638,10 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         mode = str(args.get("mode", "som"))
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
-        cap = backend.capture(mode=mode, app=args.get("app"))
+        region = args.get("region")
+        if region is not None and (not isinstance(region, (list, tuple)) or len(region) != 4):
+            return json.dumps({"error": "region must be [x1, y1, x2, y2]"})
+        cap = backend.capture(mode=mode, app=args.get("app"), region=region)
         return _capture_response(cap)
 
     if action == "vision_analyze":
@@ -645,8 +729,10 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
     # might already be focused, or wmctrl might not match the title.
     _auto_focus_app = args.get("app")
     if _auto_focus_app and action in {
-        "click", "double_click", "right_click", "middle_click",
-        "drag", "scroll", "type", "key", "mouse_move",
+        "click", "double_click", "right_click", "middle_click", "triple_click",
+        "left_mouse_down", "left_mouse_up",
+        "drag", "scroll", "type", "key", "hold_key", "key_down", "key_up",
+        "mouse_move",
     }:
         try:
             backend.focus_app(str(_auto_focus_app))
@@ -704,6 +790,64 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
 
     if action == "key":
         res = backend.key(args.get("keys", "") or "")
+        return _text_response(res)
+
+    if action == "hold_key":
+        keys = args.get("keys", "")
+        if not keys:
+            return json.dumps({"error": "hold_key requires `keys`"})
+        seconds = float(args.get("seconds", 1.0))
+        res = backend.hold_key(keys, seconds=seconds)
+        return _text_response(res)
+
+    if action == "key_down":
+        keys = args.get("keys", "")
+        if not keys:
+            return json.dumps({"error": "key_down requires `keys`"})
+        res = backend.key_down(keys)
+        return _text_response(res)
+
+    if action == "key_up":
+        keys = args.get("keys", "")
+        if not keys:
+            return json.dumps({"error": "key_up requires `keys`"})
+        res = backend.key_up(keys)
+        return _text_response(res)
+
+    if action == "triple_click":
+        button = args.get("button", "left")
+        element = args.get("element")
+        coord = args.get("coordinate") or (None, None)
+        x = coord[0] if coord and len(coord) >= 1 else None
+        y = coord[1] if coord and len(coord) >= 2 else None
+        res = backend.click(
+            element=element, x=x, y=y, button=button, click_count=3,
+            modifiers=args.get("modifiers"),
+        )
+        return _text_response(res)
+
+    if action == "left_mouse_down":
+        button = args.get("button", "left")
+        element = args.get("element")
+        coord = args.get("coordinate") or (None, None)
+        x = coord[0] if coord and len(coord) >= 1 else None
+        y = coord[1] if coord and len(coord) >= 2 else None
+        res = backend.mouse_down(
+            element=element, x=x, y=y, button=button,
+            modifiers=args.get("modifiers"),
+        )
+        return _text_response(res)
+
+    if action == "left_mouse_up":
+        button = args.get("button", "left")
+        element = args.get("element")
+        coord = args.get("coordinate") or (None, None)
+        x = coord[0] if coord and len(coord) >= 1 else None
+        y = coord[1] if coord and len(coord) >= 2 else None
+        res = backend.mouse_up(
+            element=element, x=x, y=y, button=button,
+            modifiers=args.get("modifiers"),
+        )
         return _text_response(res)
 
     return json.dumps({"error": f"unknown action {action!r}"})
