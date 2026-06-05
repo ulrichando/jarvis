@@ -44,7 +44,7 @@ _ISOLATED_PY_REL = (".jarvis", "browser-use-venv", "bin", "python")
 _RUNNER_PATH = Path(__file__).resolve().parent.parent / "browser_use_bridge" / "runner.py"
 
 # LLM keys the runner can use; at least one must be present for the tool to arm.
-_LLM_ENV_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+_LLM_ENV_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "KIMI_API_KEY")
 
 # Hard ceiling on a single browser task (seconds). Long enough for a multi-step
 # web flow, short enough that a hung browser can't wedge the supervisor turn.

@@ -114,7 +114,7 @@ class TestCheckFn:
         monkeypatch.setattr(browser, "_isolated_python",
                             lambda: Path("/nonexistent/python"))
         monkeypatch.setattr(Path, "exists", lambda self: True)
-        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        for key in browser._LLM_ENV_KEYS:
             monkeypatch.delenv(key, raising=False)
         assert browser._check_browser_available() is False
 
@@ -122,13 +122,13 @@ class TestCheckFn:
         monkeypatch.setattr(browser, "_isolated_python",
                             lambda: Path("/nonexistent/python"))
         monkeypatch.setattr(Path, "exists", lambda self: True)
-        for key in ("OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        for key in browser._LLM_ENV_KEYS:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         assert browser._check_browser_available() is True
 
     def test_has_llm_key_detects_each_provider(self, monkeypatch):
-        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        for key in browser._LLM_ENV_KEYS:
             monkeypatch.delenv(key, raising=False)
         assert browser._has_llm_key() is False
         monkeypatch.setenv("GOOGLE_API_KEY", "g-test")

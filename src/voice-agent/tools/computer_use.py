@@ -185,6 +185,8 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "list_apps",
                     "focus_app",
                     "vision_analyze",
+                    "mouse_move",
+                    "cursor_position",
                 ],
                 "description": (
                     "Which action to perform. 'capture', 'wait', and "
@@ -300,6 +302,16 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "type": "boolean",
                 "description": "action='focus_app' only. Accepted for parity.",
             },
+            "button": {
+                "type": "string",
+                "enum": ["left", "right", "middle"],
+                "description": "Mouse button for click/double_click actions. Default 'left'.",
+            },
+            "modifiers": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Modifier keys to hold during the action, e.g. ['ctrl', 'shift'].",
+            },
         },
         "required": ["action"],
     },
@@ -324,11 +336,11 @@ def set_approval_callback(cb) -> None:
     _approval_callback = cb
 
 
-_SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps", "vision_analyze"})
+_SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps", "vision_analyze", "cursor_position"})
 
 _DESTRUCTIVE_ACTIONS = frozenset({
     "click", "double_click", "right_click", "middle_click",
-    "drag", "scroll", "type", "key", "focus_app",
+    "drag", "scroll", "type", "key", "focus_app", "mouse_move",
 })
 
 # Hard-blocked key combos — destructive regardless of approval level. Linux/X11
@@ -542,7 +554,7 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
 
 def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> str:
     if action == "capture":
-        mode = str(args.get("mode", "vision"))
+        mode = str(args.get("mode", "som"))
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
         cap = backend.capture(mode=mode, app=args.get("app"))
@@ -604,6 +616,27 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
         return _text_response(res)
 
+    if action == "cursor_position":
+        # Read-only: return current mouse coordinates from xdotool.
+        res = backend.get_cursor_position()
+        return json.dumps({
+            "ok": res.ok,
+            "action": "cursor_position",
+            "x": res.meta.get("x") if res.ok else None,
+            "y": res.meta.get("y") if res.ok else None,
+            "message": res.message,
+        })
+
+    if action == "mouse_move":
+        # Move cursor without clicking — needed for hover, tooltips,
+        # and positioning before a separate click action.
+        element = args.get("element")
+        coord = args.get("coordinate") or (None, None)
+        x = coord[0] if coord and len(coord) >= 1 else None
+        y = coord[1] if coord and len(coord) >= 2 else None
+        res = backend.move_cursor(element=element, x=x, y=y)
+        return _text_response(res)
+
     # ── Auto-focus: if `app` is specified on a mutating action, activate
     # the target window FIRST so the action lands on the right window.
     # This mirrors what Anthropic's computer_use does — every action
@@ -613,7 +646,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
     _auto_focus_app = args.get("app")
     if _auto_focus_app and action in {
         "click", "double_click", "right_click", "middle_click",
-        "drag", "scroll", "type", "key",
+        "drag", "scroll", "type", "key", "mouse_move",
     }:
         try:
             backend.focus_app(str(_auto_focus_app))
