@@ -267,7 +267,11 @@ def _check_history_for_captcha(history) -> Optional[str]:
 
 
 async def _run_task(
-    task: str, max_steps: int, headless: bool, cdp_url: Optional[str] = None
+    task: str, max_steps: int, headless: bool, cdp_url: Optional[str] = None,
+    flash_mode: Optional[bool] = None,
+    max_actions_per_step: Optional[int] = None,
+    initial_actions: Optional[list] = None,
+    sensitive_data: Optional[dict] = None,
 ) -> dict:
     from browser_use import Agent, BrowserProfile
 
@@ -301,6 +305,23 @@ async def _run_task(
     }
     if len(llms) > 1:
         agent_kwargs["fallback_llm"] = llms[1]
+    # Gap 5: flash_mode → skip LLM evaluation per step for simple tasks (~40% faster).
+    if flash_mode:
+        agent_kwargs["use_thinking"] = False
+        # browser-use has a dedicated flash_mode parameter in newer versions.
+        try:
+            agent_kwargs["flash_mode"] = True
+        except Exception:
+            pass
+    # Gap 6: max_actions_per_step → batch multiple fields in one LLM step.
+    if max_actions_per_step is not None:
+        agent_kwargs["max_actions_per_step"] = int(max_actions_per_step)
+    # Gap 7: initial_actions → pre-run browser commands before the first LLM call.
+    if initial_actions:
+        agent_kwargs["initial_actions"] = list(initial_actions)
+    # Gap 8: sensitive_data → credentials/keys passed to the agent securely.
+    if sensitive_data:
+        agent_kwargs["sensitive_data"] = dict(sensitive_data)
 
     agent = Agent(**agent_kwargs)
 
@@ -381,7 +402,28 @@ def main() -> None:
         raw_cdp = req.get("cdp_url")
         cdp_url = raw_cdp.strip() if isinstance(raw_cdp, str) and raw_cdp.strip() else None
 
-        result = asyncio.run(_run_task(task.strip(), max_steps, headless, cdp_url))
+        flash_mode = req.get("flash_mode")
+        flash_mode = bool(flash_mode) if flash_mode is not None else None
+
+        max_actions = req.get("max_actions_per_step")
+        try:
+            max_actions = int(max_actions) if max_actions is not None else None
+        except (TypeError, ValueError):
+            max_actions = None
+
+        initial = req.get("initial_actions")
+        initial_actions = list(initial) if isinstance(initial, list) else None
+
+        secrets = req.get("sensitive_data")
+        sensitive_data = dict(secrets) if isinstance(secrets, dict) else None
+
+        result = asyncio.run(_run_task(
+            task.strip(), max_steps, headless, cdp_url,
+            flash_mode=flash_mode,
+            max_actions_per_step=max_actions,
+            initial_actions=initial_actions,
+            sensitive_data=sensitive_data,
+        ))
         _emit(result)
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}".strip()

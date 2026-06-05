@@ -128,7 +128,8 @@ def test_schema_shape():
     assert params["type"] == "object"
     assert params["required"] == ["action"]
     enum = params["properties"]["action"]["enum"]
-    for expected in ("capture", "click", "type", "key", "scroll", "drag",
+    for expected in ("capture", "click", "triple_click", "left_mouse_down",
+                     "left_mouse_up", "type", "key", "hold_key", "scroll", "drag",
                      "focus_app", "list_apps", "wait"):
         assert expected in enum
 
@@ -164,7 +165,11 @@ def test_capture_dispatch(noop_available):
     assert out["ok"] is True
     assert out["action"] == "capture"
     assert out["mode"] == "vision"
-    assert ("capture", {"mode": "vision", "app": None}) in noop_available.calls
+    # The capture call now includes region=None in its kwargs.
+    cap_call = next((c for c in noop_available.calls if c[0] == "capture"), None)
+    assert cap_call is not None
+    assert cap_call[1]["mode"] == "vision"
+    assert cap_call[1]["app"] is None
 
 
 def test_click_dispatch_records_call(noop_available):
@@ -557,3 +562,262 @@ def test_vision_analyze_with_app_filter(noop_available):
         {"action": "vision_analyze", "app": "Chrome"}
     ))
     assert out["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# Gap 1: left_mouse_down / left_mouse_up
+# ---------------------------------------------------------------------------
+
+
+def test_mouse_down_dispatch(noop_available):
+    """left_mouse_down should forward to backend.mouse_down."""
+    out = json.loads(cu.handle_computer_use(
+        {"action": "left_mouse_down", "coordinate": [300, 400], "button": "left"}
+    ))
+    assert out["ok"] is True
+    kw = noop_available.calls[-1][1]
+    assert kw.get("x") == 300 and kw.get("y") == 400
+    assert kw.get("button") == "left"
+
+
+def test_mouse_down_with_element(noop_available):
+    """left_mouse_down with element index forwards to backend."""
+    out = json.loads(cu.handle_computer_use(
+        {"action": "left_mouse_down", "element": 2}
+    ))
+    assert out["ok"] is True
+    kw = noop_available.calls[-1][1]
+    assert kw.get("element") == 2
+
+
+def test_mouse_up_dispatch(noop_available):
+    """left_mouse_up should forward to backend.mouse_up."""
+    out = json.loads(cu.handle_computer_use(
+        {"action": "left_mouse_up", "button": "right"}
+    ))
+    assert out["ok"] is True
+    kw = noop_available.calls[-1][1]
+    assert kw.get("button") == "right"
+
+
+def test_mouse_down_defaults_to_left(noop_available):
+    """left_mouse_down without explicit button defaults to left."""
+    out = json.loads(cu.handle_computer_use(
+        {"action": "left_mouse_down", "coordinate": [10, 20]}
+    ))
+    assert out["ok"] is True
+    kw = noop_available.calls[-1][1]
+    assert kw.get("button") == "left"
+
+
+# ---------------------------------------------------------------------------
+# Gap 2: hold_key
+# ---------------------------------------------------------------------------
+
+
+def test_hold_key_dispatch(noop_available):
+    """hold_key should forward to backend.hold_key."""
+    out = json.loads(cu.handle_computer_use(
+        {"action": "hold_key", "keys": "Right", "seconds": 2.0}
+    ))
+    assert out["ok"] is True
+    kw = noop_available.calls[-1][1]
+    assert kw.get("keys") == "Right"
+    assert kw.get("seconds") == 2.0
+
+
+def test_hold_key_missing_keys_errors(noop_available):
+    """hold_key without keys should return an error."""
+    out = json.loads(cu.handle_computer_use({"action": "hold_key"}))
+    assert "error" in out
+
+
+def test_hold_key_blocked_combo(noop_available):
+    """hold_key with a blocked combo should be rejected early."""
+    out = json.loads(cu.handle_computer_use(
+        {"action": "hold_key", "keys": "ctrl+alt+BackSpace"}
+    ))
+    assert "blocked key combo" in out["error"]
+
+
+# ---------------------------------------------------------------------------
+# Gap 3: triple_click
+# ---------------------------------------------------------------------------
+
+
+def test_triple_click_dispatch(noop_available):
+    """triple_click should set click_count=3."""
+    out = json.loads(cu.handle_computer_use(
+        {"action": "triple_click", "coordinate": [100, 200]}
+    ))
+    assert out["ok"] is True
+    kw = noop_available.calls[-1][1]
+    assert kw.get("click_count") == 3
+
+
+def test_triple_click_with_element(noop_available):
+    """triple_click with element index."""
+    out = json.loads(cu.handle_computer_use(
+        {"action": "triple_click", "element": 1}
+    ))
+    assert out["ok"] is True
+    kw = noop_available.calls[-1][1]
+    assert kw.get("element") == 1
+    assert kw.get("click_count") == 3
+
+
+# ---------------------------------------------------------------------------
+# Gap 4: region zoom capture
+# ---------------------------------------------------------------------------
+
+
+def test_capture_with_region_zoom(noop_available):
+    """capture with a region should crop to the specified rect."""
+    out = json.loads(cu.handle_computer_use(
+        {"action": "capture", "mode": "vision", "region": [100, 200, 500, 600]}
+    ))
+    assert out["ok"] is True
+    kw = noop_available.calls[-1][1]
+    assert kw.get("region") == [100, 200, 500, 600]
+
+
+def test_capture_bad_region_errors(noop_available):
+    """capture with a malformed region should error."""
+    out = json.loads(cu.handle_computer_use(
+        {"action": "capture", "region": [1, 2, 3]}
+    ))
+    assert "error" in out
+
+
+# ---------------------------------------------------------------------------
+# New action safety checks
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Gap 10: key_down / key_up
+# ---------------------------------------------------------------------------
+
+
+def test_key_down_dispatch(noop_available):
+    """key_down should forward to backend.key_down."""
+    out = json.loads(cu.handle_computer_use(
+        {"action": "key_down", "keys": "ctrl"}
+    ))
+    assert out["ok"] is True
+    kw = noop_available.calls[-1][1]
+    assert kw.get("keys") == "ctrl"
+
+
+def test_key_up_dispatch(noop_available):
+    """key_up should forward to backend.key_up."""
+    out = json.loads(cu.handle_computer_use(
+        {"action": "key_up", "keys": "ctrl"}
+    ))
+    assert out["ok"] is True
+    kw = noop_available.calls[-1][1]
+    assert kw.get("keys") == "ctrl"
+
+
+def test_key_down_blocked_combo(noop_available):
+    """key_down with blocked combo should be rejected."""
+    out = json.loads(cu.handle_computer_use(
+        {"action": "key_down", "keys": "ctrl+alt+BackSpace"}
+    ))
+    assert "blocked key combo" in out["error"]
+
+
+def test_key_down_missing_keys_errors(noop_available):
+    """key_down without keys should error."""
+    out = json.loads(cu.handle_computer_use({"action": "key_down"}))
+    assert "error" in out
+
+
+def test_key_up_missing_keys_errors(noop_available):
+    """key_up without keys should error."""
+    out = json.loads(cu.handle_computer_use({"action": "key_up"}))
+    assert "error" in out
+
+
+# ---------------------------------------------------------------------------
+# Gap 9: Permission tiers (view / interact / full)
+# ---------------------------------------------------------------------------
+
+
+def test_tier_view_blocks_destructive_actions(monkeypatch, noop_available):
+    """view tier should block all destructive actions."""
+    monkeypatch.setenv("JARVIS_COMPUTER_USE_TIER", "view")
+    for action in ("click", "type", "key", "scroll", "focus_app"):
+        out = json.loads(cu.handle_computer_use({"action": action, "coordinate": [1, 1]}))
+        assert "error" in out, f"{action} should be blocked in view tier"
+        assert "blocked by tier" in out.get("error", "")
+
+
+def test_tier_view_allows_safe_actions(monkeypatch, noop_available):
+    """view tier should allow read-only actions."""
+    monkeypatch.setenv("JARVIS_COMPUTER_USE_TIER", "view")
+    for action in ("capture", "list_apps", "cursor_position"):
+        out = json.loads(cu.handle_computer_use({"action": action}))
+        assert "error" not in out, f"{action} should be allowed in view tier"
+
+
+def test_tier_interact_blocks_keyboard(monkeypatch, noop_available):
+    """interact tier should block keyboard actions but allow mouse."""
+    monkeypatch.setenv("JARVIS_COMPUTER_USE_TIER", "interact")
+    for action in ("type", "key", "hold_key", "key_down", "key_up"):
+        args: dict = {"action": action}
+        if action != "type":
+            args["keys"] = "Right"
+        out = json.loads(cu.handle_computer_use(args))
+        assert "blocked by tier" in out.get("error", ""), (
+            f"{action} should be blocked in interact tier"
+        )
+
+
+def test_tier_interact_allows_mouse(monkeypatch, noop_available):
+    """interact tier should allow mouse-only actions."""
+    monkeypatch.setenv("JARVIS_COMPUTER_USE_TIER", "interact")
+    for action in ("click", "double_click", "scroll", "mouse_move", "drag",
+                   "left_mouse_down", "left_mouse_up", "triple_click"):
+        out = json.loads(cu.handle_computer_use(
+            {"action": action, "coordinate": [100, 200]}
+        ))
+        assert out.get("ok") is True, f"{action} should be allowed in interact tier"
+
+
+def test_tier_full_allows_everything(monkeypatch, noop_available):
+    """full tier (default) allows all actions."""
+    monkeypatch.setenv("JARVIS_COMPUTER_USE_TIER", "full")
+    for action in ("type", "key", "hold_key", "key_down", "key_up",
+                   "click", "capture"):
+        args: dict = {"action": action}
+        if action in ("key", "hold_key", "key_down", "key_up"):
+            args["keys"] = "Right"
+        elif action == "type":
+            args["text"] = "hello"
+        out = json.loads(cu.handle_computer_use(args))
+        assert out.get("ok") is True, f"{action} should be allowed in full tier"
+
+
+def test_tier_default_is_full(monkeypatch, noop_available):
+    """When JARVIS_COMPUTER_USE_TIER is unset, all actions should work."""
+    monkeypatch.delenv("JARVIS_COMPUTER_USE_TIER", raising=False)
+    out = json.loads(cu.handle_computer_use(
+        {"action": "type", "text": "hello"}
+    ))
+    assert out.get("ok") is True
+
+
+def test_new_destructive_actions_require_approval(monkeypatch, noop_available):
+    """triple_click, left_mouse_down, left_mouse_up, hold_key, key_down, key_up all need approval."""
+    for action in ("triple_click", "left_mouse_down", "left_mouse_up",
+                   "hold_key", "key_down", "key_up"):
+        monkeypatch.setattr(cu, "_approval_callback", lambda *a: "deny")
+        args: dict = {"action": action}
+        if action in ("hold_key", "key_down", "key_up"):
+            args["keys"] = "Right"
+        else:
+            args["coordinate"] = [1, 1]
+        out = json.loads(cu.handle_computer_use(args))
+        assert out["error"] == "denied by user", f"{action} should require approval"
+        cu._always_allow = set()  # reset per-action approval
