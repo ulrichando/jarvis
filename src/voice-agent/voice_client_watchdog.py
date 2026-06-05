@@ -208,8 +208,9 @@ class LoopWatchdog:
         LiveKit room + job dispatch).
 
         Updated 2026-05-17 per enterprise plan §P0-DATA-9:
-        conversations.db retired Phase 12; turn_telemetry.db is the
-        live per-turn-write signal."""
+        conversations.db was revived for cross-session recall
+        (see pipeline/conversation_store.py); turn_telemetry.db remains
+        the live per-turn-write signal for this watchdog's health check."""
         # Wait past the first STALE_STT_SEC window before starting
         # checks so a fresh startup doesn't false-fire before the
         # first turn.

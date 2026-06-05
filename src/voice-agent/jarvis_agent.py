@@ -236,10 +236,13 @@ import resilience.track_guard as _track_guard
 _track_guard.install()
 
 # ── Conversation persistence ──────────────────────────────────────────
-# Voice turns are not persisted. Conversation state is in-memory per
-# session (AgentSession.chat_ctx, trimmed to CTX_MAX_TURNS).
-# turn_telemetry.db (~/.local/share/jarvis/) is a SEPARATE path covering
-# per-turn metrics only.
+# Every voice turn is persisted to ~/.jarvis/conversations.db (or
+# $JARVIS_CONVERSATION_PATH) — see pipeline.conversation_store.
+# Per-session lifecycle (begin_session / end_session / auto_title from
+# first utterance) plus per-turn message logging with idempotent upsert.
+# Recent-session summaries are injected into the system prompt at session
+# start; deep lookup is available via the recall_conversation tool.
+# turn_telemetry.db is a SEPARATE path covering per-turn metrics only.
 
 # ── Memory layer (durable user-facts that survive chat deletion) ──────
 # File-backed, deliberate-writes model. Two stores — MEMORY.md + USER.md
@@ -3820,6 +3823,14 @@ class JarvisAgent(Agent):
             memory_provider.begin_session(session_id)
         except Exception as e:  # noqa: BLE001 — memory must never break entry
             logger.debug(f"[memory] begin_session skipped: {e}")
+        # Begin the conversation persistence session (~/.jarvis/conversations.db).
+        try:
+            from pipeline import conversation_store
+            sid = getattr(self.session, "_jarvis_convo_session_id", None)
+            if sid:
+                conversation_store.begin_session(sid)
+        except Exception as e:  # noqa: BLE001 — persistence must never break entry
+            logger.debug(f"[conversation] begin_session skipped: {e}")
 
     async def on_exit(self) -> None:
         # End the cloud MemoryProvider session (no-op when the layer is off).
@@ -3828,6 +3839,14 @@ class JarvisAgent(Agent):
             memory_provider.end_session()
         except Exception as e:  # noqa: BLE001 — memory must never break exit
             logger.debug(f"[memory] end_session skipped: {e}")
+        # End the conversation persistence session.
+        try:
+            from pipeline import conversation_store
+            sid = getattr(self.session, "_jarvis_convo_session_id", None)
+            if sid:
+                conversation_store.end_session(sid)
+        except Exception as e:  # noqa: BLE001 — persistence must never break exit
+            logger.debug(f"[conversation] end_session skipped: {e}")
         # Base Agent.on_exit is a no-op pass; preserve the contract.
         await super().on_exit()
 
@@ -4065,6 +4084,22 @@ class JarvisAgent(Agent):
         # Turn accepted — stamp the interaction time so follow-ups within
         # the quiet-hours window don't need a vocative.
         _touch_interaction()
+
+        # Auto-title the conversation session from the first user utterance.
+        # The store's auto_title() enforces first-writer-wins (WHERE title
+        # IS NULL), so this is idempotent across retries and edge cases.
+        try:
+            from pipeline import conversation_store
+            sid = getattr(self.session, "_jarvis_convo_session_id", None)
+            turn_n = int(getattr(self.session, "_jarvis_turn_count", 0))
+            if sid and turn_n == 0:
+                # turn_count is still 0 here (not yet incremented by the
+                # dispatcher), so this fires on the very first utterance.
+                raw_title = raw.strip()[:100] if raw else text[:100]
+                if raw_title:
+                    conversation_store.auto_title(sid, raw_title)
+        except Exception:
+            pass
 
         # Short-input ambiguity gate. Inverted 2026-05-10: the gate now
         # uses a small explicit blocklist of known confab-trigger
@@ -4305,6 +4340,41 @@ class JarvisAgent(Agent):
                     turn_ctx.add_message(role="user", content=f"[context from memory] {ctx}")
         except Exception as e:  # noqa: BLE001 — memory must never break a turn
             logger.debug(f"[memory] auto-recall skipped: {e}")
+
+        # ── Conversation-store auto-recall ───────────────────────────
+        # Gated same as the cloud memory provider above. When the user
+        # seems to be referencing a past conversation (is_recall_query),
+        # search the persisted conversation store and inject matching
+        # turns as context. Uses asyncio.to_thread so the SQLite read
+        # never blocks the event loop. No-op when conversations.db has
+        # no prior sessions or is unavailable. Hard timeout at 1.5s.
+        try:
+            from pipeline import conversation_store
+            if conversation_store.DEFAULT_DB_PATH.exists() and turn_router.is_recall_query(text):
+                async def _convo_recall() -> str:
+                    results = await asyncio.to_thread(
+                        conversation_store.recall_conversation,
+                        query=text,
+                        limit=3,
+                    )
+                    if not results:
+                        return ""
+                    lines = [
+                        f"[{r['role']}] {r['session_title']} ({r.get('ts','')[:10]}): {r['text'][:200]}"
+                        for r in results[:3]
+                    ]
+                    return "\n".join(lines)
+
+                ctx = await asyncio.wait_for(_convo_recall(), timeout=1.5)
+                if ctx:
+                    turn_ctx.add_message(
+                        role="user",
+                        content=f"[context from past conversations]\n{ctx}",
+                    )
+        except asyncio.TimeoutError:
+            pass  # auto-recall timeout — turn proceeds without injected context
+        except Exception as e:
+            logger.debug(f"[conversation] auto-recall skipped: {e}")
 
         # Live screen-share awareness (2026-05-28). When the screen-share
         # observer has a fresh cached description, inject it into the
@@ -5562,6 +5632,29 @@ def _build_memory_block() -> str:
         return ""
 
 
+def _build_recent_sessions_block() -> str:
+    """Build a compact recent-sessions summary for the system prompt.
+
+    Queries ``~/.jarvis/conversations.db`` for the last 5 sessions (ended
+    within the last 7 days or still active) and returns a compact block
+    with relative time, title, and turn count. Returns "" when the DB
+    has no prior sessions or is unavailable.
+
+    Goes into the volatile suffix (changes per-session) so the stable
+    prefix cache is never invalidated. The block is small (~200-500 chars)
+    — deep lookup uses the ``recall_conversation`` tool instead.
+    """
+    try:
+        from pipeline import conversation_store
+        block = conversation_store.get_recent_sessions(limit=5)
+        if not block:
+            return ""
+        return "\n\n" + block
+    except Exception as e:
+        logger.warning(f"[conversation] recent-sessions block failed: {e}")
+        return ""
+
+
 # _build_pending_proposals_block — deleted 2026-05-12 alongside the
 # rest of the log_analyzer subsystem. Autonomous evolution doesn't
 # need a pending-review nag injected into the supervisor prompt.
@@ -5597,6 +5690,7 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
       - stable_prefix       : SOUL + JARVIS_INSTRUCTIONS + skill_catalog
                               (cache-eligible, session-stable)
       - volatile_suffix     : runtime_id + memory_block + breaker_block
+                              + recent_sessions_block
                               (changes mid-session)
       - instructions_prefix : SOUL + JARVIS_INSTRUCTIONS + runtime-id
                               (legacy key — preserved for turn_dispatcher
@@ -5605,6 +5699,7 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
       - memory_block        : frozen MEMORY.md + USER.md snapshot (or "")
       - breaker_block       : upstream-provider health (or "")
       - skill_catalog_block : skill catalog text (session-stable)
+      - recent_sessions_block: compact recent-sessions summary (or "")
       - initial_instructions: the assembled full system prompt
                               (= stable_prefix + marker + volatile_suffix)
     """
@@ -5630,6 +5725,11 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
     instructions_prefix = SOUL + "\n\n" + JARVIS_INSTRUCTIONS + runtime_id_block
 
     memory_block = _build_memory_block()
+
+    # Recent conversation sessions — compact summary injected so the
+    # supervisor knows what was recently discussed. Queries
+    # conversations.db; returns "" when no prior sessions exist.
+    recent_sessions_block = _build_recent_sessions_block()
 
     # Audit-rec F (2026-05-09): inject breaker status into the prompt
     # so the supervisor knows when to acknowledge upstream-provider
@@ -5657,7 +5757,7 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
         + JARVIS_INSTRUCTIONS
         + skill_catalog_block
     )
-    volatile_suffix = runtime_id_block + memory_block + breaker_block
+    volatile_suffix = runtime_id_block + memory_block + breaker_block + recent_sessions_block
 
     # Late import keeps the module's top-level import graph clean — this
     # symbol is only consumed by `_build_initial_prompt_state` and the
@@ -5683,6 +5783,7 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
         "memory_block":         memory_block,
         "breaker_block":        breaker_block,
         "skill_catalog_block":  skill_catalog_block,
+        "recent_sessions_block": recent_sessions_block,
         "initial_instructions": initial_instructions,
     }
 
@@ -5765,6 +5866,13 @@ async def entrypoint(ctx: JobContext) -> None:
         init_db(DEFAULT_DB_PATH)
     except Exception as e:
         logger.warning(f"[telemetry] init_db failed: {e}")
+
+    # Initialize conversation persistence SQLite. Failures are silent.
+    try:
+        from pipeline import conversation_store
+        conversation_store.init_db()
+    except Exception as e:
+        logger.warning(f"[conversation] init_db failed: {e}")
 
     # Install the auto-mod error telemetry handler. Captures recurring
     # exceptions from this process for the auto-mod error-driven scanner
@@ -6016,11 +6124,12 @@ async def entrypoint(ctx: JobContext) -> None:
         ],
     )
 
-    # Conversation does not persist between sessions. Voice turns live
-    # only in the in-session chat_ctx (trimmed to CTX_MAX_TURNS). The
-    # session_id is generated for log correlation / telemetry only.
+    # Per-session conversation id for persistence to conversations.db.
+    # Stored on the session object so on_enter / on_exit / _on_item can
+    # read it without threading it through every call site.
     convo_session_id = str(uuid.uuid4())
-    logger.info(f"[session] {convo_session_id} — conversation in-memory only")
+    session._jarvis_convo_session_id = convo_session_id
+    logger.info(f"[session] {convo_session_id} — conversation persisted to conversations.db")
 
     # Per-session language context — tracks detected language + confidence
     # from STT events so DispatchingTTS can pick the matching voice per turn.
@@ -6140,6 +6249,57 @@ async def entrypoint(ctx: JobContext) -> None:
                 pass
             if role == "assistant":
                 _bump_turn_activity(session)  # assistant reply landed = turn progress
+
+                # ── Persist this turn to conversations.db (fire-and-forget) ──
+                # Both user and assistant messages are written here, keyed by
+                # (session_id, role, turn_sequence). The UNIQUE constraint in
+                # the messages table makes this idempotent — if the assistant
+                # branch fires multiple times per turn (interstitial items),
+                # the second write is silently dropped.
+                try:
+                    from pipeline import conversation_store
+                    sid = getattr(session, "_jarvis_convo_session_id", None)
+                    if sid:
+                        turn_n = int(getattr(session, "_jarvis_turn_count", 0))
+                        if turn_n > 0:
+                            # User message
+                            user_text_val = getattr(
+                                session, "_jarvis_turn_user_text", ""
+                            ) or ""
+                            if user_text_val.strip():
+                                conversation_store.log_turn(
+                                    session_id=sid,
+                                    role="user",
+                                    text=user_text_val,
+                                    turn_sequence=turn_n,
+                                )
+                            # Assistant message
+                            text_val = text or ""
+                            if text_val.strip():
+                                tc_json = None
+                                raw_tc = (
+                                    getattr(
+                                        session, "_jarvis_tool_calls_this_turn", None
+                                    )
+                                    or []
+                                )
+                                if raw_tc:
+                                    import json as _json_tc
+                                    try:
+                                        tc_json = _json_tc.dumps(raw_tc)
+                                    except Exception:
+                                        pass
+                                conversation_store.log_turn(
+                                    session_id=sid,
+                                    role="assistant",
+                                    text=text_val,
+                                    turn_sequence=turn_n,
+                                    tool_calls_json=tc_json,
+                                )
+                except Exception:
+                    pass
+                # ── End conversation persistence ─────────────────────────
+
                 # Use the pure classifier to decide what kind of
                 # assistant item this is and how to handle it:
                 #   final_reply / benign_empty → cancel heartbeat (turn done)

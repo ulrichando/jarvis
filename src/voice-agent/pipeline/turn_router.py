@@ -457,6 +457,34 @@ _RECALL_PATTERNS = [
         r"\bdid\s+i\s+(?:tell|say|mention)\b",
         re.IGNORECASE,
     ),
+    # Broader recall patterns (2026-06-05): catch natural recall-like
+    # phrasing that doesn't fit the narrower patterns above. Anchored to
+    # question/imperative forms — must NOT match statements like
+    # "you're able to recall previous conversation."
+    re.compile(
+        r"\b(?:can|do|did|will|would|could)\s+(?:you|we)\s+(?:recall|search|look\s+(?:up|through|into))\s+(?:(?:our|your|the|past|prior|previous|that)\s+){0,2}(?:conversation|memory|memories|history|session|chat)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:please\s+)?(?:recall|search)\s+(?:our|your|the)\s+(?:conversation|memory|history)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bwhat\s+was\s+(?:that|the)\s+(?:thing\s+)?(?:we|i|you)\s+(?:talked|said|discussed|mentioned)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bwhat\s+(?:did|do)\s+(?:we|i|you)\s+(?:talk|discuss)\s+(?:about\s+)?(?:earlier|yesterday|before|last\s+(?:time|night|week))",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bremind\s+me\s+(?:what|about)\s+(?:we|i|you)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bcheck\s+(?:your|the)\s+(?:past|prior|conversation)\s+(?:history|log|memory)",
+        re.IGNORECASE,
+    ),
 ]
 
 
