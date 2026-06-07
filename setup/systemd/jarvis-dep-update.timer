@@ -1,0 +1,14 @@
+[Unit]
+Description=JARVIS — weekly dependency auto-update trigger
+Documentation=file:/home/ulrich/Documents/Projects/jarvis/scripts/jarvis-dep-update.sh
+
+[Timer]
+# Weekly on Monday at 05:00 local (early morning, low chance of conflict).
+# Randomized delay spreads the fire time across a 1h window.
+OnCalendar=Mon *-*-* 05:00:00
+RandomizedDelaySec=3600s
+Persistent=true
+Unit=jarvis-dep-update.service
+
+[Install]
+WantedBy=timers.target
