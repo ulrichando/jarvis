@@ -1,0 +1,15 @@
+[Unit]
+Description=JARVIS — daily dependency staleness check trigger
+Documentation=file:/home/ulrich/Documents/Projects/jarvis/scripts/jarvis-dep-check.sh
+
+[Timer]
+# Daily at 03:00 local time (after log-rotate at 02:00, before the workday).
+# RandomizedDelaySec spreads the fire time across a 20-min window so we
+# never hit a :00 stampede, even with the off-hour pick.
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=1200s
+Persistent=true
+Unit=jarvis-dep-check.service
+
+[Install]
+WantedBy=timers.target

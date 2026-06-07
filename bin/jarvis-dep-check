@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# jarvis-dep-check — check or report voice-agent dependency health
+#
+# Usage:
+#   jarvis-dep-check check        Run the check script immediately
+#   jarvis-dep-check status       Show the last check result (human-readable)
+#   jarvis-dep-check status -j    Show the last check result (JSON)
+#   jarvis-dep-check update --dry-run   Show what auto-update would do
+#   jarvis-dep-check update       Run auto-update (respects JARVIS_DEP_AUTO_UPDATE=1 gate)
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+VA_DIR="${REPO_ROOT}/src/voice-agent"
+VENV_PY="${VA_DIR}/.venv/bin/python"
+
+cmd="${1:-status}"
+shift || true
+
+case "$cmd" in
+    check)
+        exec bash "${REPO_ROOT}/scripts/jarvis-dep-check.sh" "$@"
+        ;;
+    status)
+        exec "$VENV_PY" -c "
+import sys, json
+from pathlib import Path
+sys.path.insert(0, '${VA_DIR}')
+from pipeline.dep_check_reader import get_latest_result, get_summary
+
+result = get_latest_result()
+if result is None:
+    print('No check has run yet. Run: jarvis-dep-check check')
+    sys.exit(1)
+
+if '-j' in sys.argv or '--json' in sys.argv:
+    print(json.dumps(result, indent=2, default=str))
+else:
+    print(get_summary())
+    # Show details for non-ok status
+    missing = result.get('missing', [])
+    skew = result.get('skew', [])
+    outdated = result.get('outdated', [])
+    for m in missing:
+        print(f'  MISSING: {m[\"name\"]} (declared in {m.get(\"declared_in\",\"?\")})')
+    for s in skew:
+        print(f'  SKEW: {s[\"plugin\"]}=={s[\"plugin_version\"]} vs {s[\"base\"]}=={s[\"base_version\"]}')
+    if outdated:
+        for o in outdated[:20]:
+            print(f'  OUTDATED: {o[\"name\"]} {o.get(\"installed\",\"?\")} → {o.get(\"latest\",\"?\")}')
+        if len(outdated) > 20:
+            print(f'  ... and {len(outdated) - 20} more')
+"
+        ;;
+    update)
+        if [[ "${JARVIS_DEP_AUTO_UPDATE:-0}" != "1" ]]; then
+            echo "Auto-update is disabled. Set JARVIS_DEP_AUTO_UPDATE=1 to enable."
+            echo "Or use --dry-run to see what would be updated."
+            exit 1
+        fi
+        exec bash "${REPO_ROOT}/scripts/jarvis-dep-update.sh" "$@"
+        ;;
+    *)
+        echo "Usage: jarvis-dep-check {check|status|update}"
+        echo ""
+        echo "  check        Run the dependency health check immediately"
+        echo "  status       Show the last check result"
+        echo "  status -j    Show the last check result as JSON"
+        echo "  update       Run auto-update (needs JARVIS_DEP_AUTO_UPDATE=1)"
+        echo "  update --dry-run  Show what would be updated without touching the venv"
+        exit 1
+        ;;
+esac

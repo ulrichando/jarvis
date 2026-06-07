@@ -799,6 +799,95 @@ def test_tier_full_allows_everything(monkeypatch, noop_available):
         assert out.get("ok") is True, f"{action} should be allowed in full tier"
 
 
+def test_dismiss_popup_dispatch(noop_available):
+    """dismiss_popup scans for dialogs, sends Escape as safe fallback when
+    no dialogs are found. Should NOT send blind Alt+F4."""
+    out = json.loads(cu.handle_computer_use({"action": "dismiss_popup"}))
+    assert out["ok"] is True
+    assert out["action"] == "dismiss_popup"
+    # NoopBackend.list_apps returns [] → no dialogs found → Escape only
+    key_calls = [c for c in noop_available.calls if c[0] == "key"]
+    assert len(key_calls) == 1
+    assert key_calls[0][1].get("keys") == "Escape"
+    # Should NOT have called Alt+F4 (no dialog identified)
+    alt_f4_calls = [
+        c for c in key_calls
+        if c[1].get("keys") == "Alt+F4"
+    ]
+    assert len(alt_f4_calls) == 0
+    # Should include strategy info
+    assert "strategy" in out
+
+
+def test_close_window_dispatch(noop_available):
+    """close_window without name falls back to Alt+F4 on focused window."""
+    out = json.loads(cu.handle_computer_use({"action": "close_window"}))
+    assert out["ok"] is True
+    # NoopBackend.close_window() without name records close_window call
+    # with method="Alt+F4" (real X11Backend delegates to key("Alt+F4"))
+    close_calls = [c for c in noop_available.calls if c[0] == "close_window"]
+    assert len(close_calls) == 1
+    assert close_calls[0][1].get("name") == ""
+
+
+def test_close_window_with_name(noop_available):
+    """close_window with name should use wmctrl -c path."""
+    out = json.loads(cu.handle_computer_use({
+        "action": "close_window", "name": "Error Dialog",
+    }))
+    assert out["ok"] is True
+    # Should have called close_window, not key
+    close_calls = [c for c in noop_available.calls if c[0] == "close_window"]
+    assert len(close_calls) == 1
+    assert close_calls[0][1].get("name") == "Error Dialog"
+
+
+def test_find_dialog_windows_title_keywords():
+    """Dialog windows should be detected by title keywords."""
+    apps = [
+        {"title": "Error — Something went wrong", "window_id": 1,
+         "bounds": [100, 100, 400, 300]},
+        {"title": "File Manager", "window_id": 2,
+         "bounds": [0, 0, 1920, 1080]},
+        {"title": "Authentication Required", "window_id": 3,
+         "bounds": [500, 200, 350, 250]},
+    ]
+    dialogs = cu._find_dialog_windows(apps)
+    # "Error" (score 3) + size <10% (score 2) = 5 → included
+    # "Authentication Required" (score 3) + size <10% (score 2) = 5 → included
+    # "File Manager" = 0 → excluded
+    assert len(dialogs) == 2
+    titles = [d["title"] for d in dialogs]
+    assert "Error — Something went wrong" in titles
+    assert "Authentication Required" in titles
+
+
+def test_find_dialog_windows_empty():
+    """No dialogs returns empty list."""
+    apps = [
+        {"title": "File Manager", "window_id": 1,
+         "bounds": [0, 0, 1920, 1080]},
+        {"title": "Terminal", "window_id": 2,
+         "bounds": [0, 0, 1920, 1080]},
+    ]
+    dialogs = cu._find_dialog_windows(apps)
+    assert len(dialogs) == 0
+
+
+def test_find_dialog_windows_sorted_by_score():
+    """Higher-confidence dialogs should sort first."""
+    apps = [
+        {"title": "Message about updates", "window_id": 1,
+         "bounds": [500, 400, 600, 400]},   # score 1 only, size >30% area → ~1
+        {"title": "Error — Critical Failure", "window_id": 2,
+         "bounds": [200, 100, 300, 200]},    # score 3 + size <10% area = 5
+    ]
+    dialogs = cu._find_dialog_windows(apps)
+    assert len(dialogs) >= 1
+    # Error should be first (highest score)
+    assert "Error" in dialogs[0]["title"]
+
+
 def test_tier_default_is_full(monkeypatch, noop_available):
     """When JARVIS_COMPUTER_USE_TIER is unset, all actions should work."""
     monkeypatch.delenv("JARVIS_COMPUTER_USE_TIER", raising=False)

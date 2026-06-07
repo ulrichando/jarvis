@@ -253,6 +253,7 @@ install_systemd_units() {
   # have ExecStartPre fallbacks too — this is belt-and-suspenders.
   mkdir -p "$HOME/.local/share/jarvis/logs"   # voice-agent + livekit-server log dest
   mkdir -p "$HOME/.jarvis/snapshots"           # hourly backup snapshots
+  mkdir -p "$HOME/.jarvis/dep-check"           # dependency health check results
   chmod 700 "$HOME/.jarvis/snapshots"          # contains telemetry detail
 
   local sed_path_subs=(
@@ -274,7 +275,9 @@ install_systemd_units() {
   for src in \
       jarvis-backup-local.service jarvis-backup-local.timer \
       jarvis-log-rotate.service jarvis-log-rotate.timer \
-      jarvis-retention-prune.service jarvis-retention-prune.timer; do
+      jarvis-retention-prune.service jarvis-retention-prune.timer \
+      jarvis-dep-check.service jarvis-dep-check.timer \
+      jarvis-dep-update.service; do
     if [ -f "$INSTALL_DIR/setup/systemd/$src" ]; then
       sed "${sed_path_subs[@]}" "$INSTALL_DIR/setup/systemd/$src" > "$USER_SYSTEMD/$src"
       ok "installed unit: $USER_SYSTEMD/$src"
@@ -296,7 +299,7 @@ install_systemd_units() {
   # immediately (they don't depend on .env or running provider APIs).
   # First fire happens per OnCalendar (hourly / 02:00 daily / 03:00
   # monthly-1st); Persistent=true catches up if laptop was off.
-  for unit in jarvis-backup-local.timer jarvis-log-rotate.timer jarvis-retention-prune.timer; do
+  for unit in jarvis-backup-local.timer jarvis-log-rotate.timer jarvis-retention-prune.timer jarvis-dep-check.timer; do
     if [ -f "$USER_SYSTEMD/$unit" ]; then
       systemctl --user enable --now "$unit" >/dev/null 2>&1 \
         && ok "enabled + started $unit" \

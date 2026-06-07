@@ -68,8 +68,9 @@ import json
 import logging
 import os
 import re
+import subprocess
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from tools.computer_use_backend import (
     ActionResult,
@@ -192,6 +193,8 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "list_available_apps",
                     "focus_app",
                     "launch",
+                    "dismiss_popup",
+                    "close_window",
                     "vision_analyze",
                     "mouse_move",
                     "cursor_position",
@@ -333,6 +336,16 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "to action='capture'."
                 ),
             },
+            "name": {
+                "type": "string",
+                "description": (
+                    "Window title substring to close (action='close_window'). "
+                    "Uses wmctrl -c for a polite close that apps can intercept "
+                    "(unsaved-changes prompts, etc.). When omitted, sends Alt+F4 "
+                    "to the currently-focused window — for error dialogs, prefer "
+                    "dismiss_popup instead."
+                ),
+            },
         },
         "required": ["action"],
     },
@@ -364,7 +377,7 @@ _DESTRUCTIVE_ACTIONS = frozenset({
     "click", "double_click", "right_click", "middle_click", "triple_click",
     "left_mouse_down", "left_mouse_up",
     "drag", "scroll", "type", "key", "hold_key", "key_down", "key_up",
-    "focus_app", "launch", "mouse_move",
+    "focus_app", "launch", "dismiss_popup", "close_window", "mouse_move",
 })
 
 # ── Permission tiers (Gap 9) ───────────────────────────────────────
@@ -375,7 +388,7 @@ _DESTRUCTIVE_ACTIONS = frozenset({
 #              are blocked, preventing destructive shell commands)
 #   full     — all actions (default)
 # Keyboard actions excluded from the "interact" tier.
-_KEYBOARD_ACTIONS = frozenset({"type", "key", "hold_key", "key_down", "key_up"})
+_KEYBOARD_ACTIONS = frozenset({"type", "key", "hold_key", "key_down", "key_up", "close_window"})
 
 # Actions allowed in the "interact" tier: everything except keyboard.
 _TIER_INTERACT = _SAFE_ACTIONS | (_DESTRUCTIVE_ACTIONS - _KEYBOARD_ACTIONS)
@@ -719,12 +732,121 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
         return f"focus {args.get('app', '')!r}"
     if action == "launch":
         return f"launch {args.get('command', '')!r}"
+    if action == "dismiss_popup":
+        return "dismiss_popup"
+    if action == "close_window":
+        name = args.get("name", "")
+        return f"close_window {name!r}" if name else "close_window (focused)"
     if action == "list_available_apps":
         return "list_available_apps"
     if action == "vision_analyze":
         app = args.get("app") or ""
         return f"vision_analyze" + (f" ({app})" if app else "")
     return action
+
+
+# ── Dialog / popup window detection ────────────────────────────────────
+# Used by dismiss_popup to target the RIGHT window instead of blindly
+# firing Escape+Alt+F4 at whatever has focus (which is how VS Code gets
+# closed by mistake when a popup appears).
+
+# Title keywords for dialog-likelihood scoring.
+_DIALOG_KEYWORDS: Dict[str, int] = {
+    # High confidence (score 3) — almost certainly a dialog
+    "error": 3, "warning": 3, "crash report": 3, "authentication required": 3,
+    # Medium confidence (score 2) — likely a dialog or prompt
+    "alert": 2, "confirm": 2, "dialog": 2, "popup": 2, "question": 2,
+    "prompt": 2, "unsaved": 2, "permission": 2,
+    # Low confidence (score 1) — could be part of a regular window title
+    "message": 1, "notice": 1, "notification": 1, "save": 1,
+    "close": 1, "exit": 1, "password": 1,
+}
+
+
+def _get_screen_size() -> Tuple[int, int]:
+    """Get screen dimensions via xdotool. Returns (1920, 1080) on failure."""
+    try:
+        rc, out, _ = subprocess.run(
+            ["xdotool", "getdisplaygeometry"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if rc == 0:
+            parts = out.strip().split()
+            if len(parts) >= 2:
+                return int(parts[0]), int(parts[1])
+    except Exception:
+        pass
+    return 1920, 1080
+
+
+def _check_window_is_dialog(wid: int) -> bool:
+    """Check _NET_WM_WINDOW_TYPE for DIALOG or POPUP_MENU via xprop.
+    Returns False on any failure (missing xprop, window gone, etc.)."""
+    try:
+        rc, out, _ = subprocess.run(
+            ["xprop", "-id", f"0x{wid:x}", "_NET_WM_WINDOW_TYPE"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if rc == 0:
+            out_lower = out.lower()
+            if "_net_wm_window_type_dialog" in out_lower:
+                return True
+            if "_net_wm_window_type_popup_menu" in out_lower:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _find_dialog_windows(apps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Identify likely popup/dialog windows from a window list.
+
+    Uses three heuristics, each contributing to a score:
+      1. Title keywords (Error, Warning, Dialog, etc.)
+      2. Window size relative to screen (dialogs are small)
+      3. _NET_WM_WINDOW_TYPE_DIALOG via xprop (strongest signal)
+
+    Returns windows with score >= 3, sorted highest-first.
+    Windows with xprop DIALOG type are always included (score += 5).
+    """
+    screen_w, screen_h = _get_screen_size()
+    screen_area = screen_w * screen_h
+
+    scored: List[Tuple[int, Dict[str, Any]]] = []
+    for app in apps:
+        title = app.get("title", "").lower()
+        bounds = app.get("bounds", [0, 0, 0, 0])
+        w, h = bounds[2], bounds[3]
+        wid = app.get("window_id", 0)
+        score = 0
+
+        # 1. Title keyword scoring
+        for kw, weight in _DIALOG_KEYWORDS.items():
+            if kw in title:
+                score += weight
+
+        # 2. Size heuristic — dialogs are typically <40% of screen
+        if w > 0 and h > 0 and screen_area > 0:
+            area_ratio = (w * h) / screen_area
+            if area_ratio < 0.1:
+                score += 2  # tiny window — very likely a dialog
+            elif area_ratio < 0.3:
+                score += 1  # small window — could be a dialog
+
+        # 3. xprop window type (only for promising candidates — saves
+        #    subprocess calls on every window)
+        if score >= 2 and wid > 0:
+            try:
+                if _check_window_is_dialog(wid):
+                    score += 5  # definitive: WM says it's a dialog
+            except Exception:
+                pass
+
+        if score >= 3:
+            scored.append((score, app))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [a for _, a in scored]
 
 
 def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> str:
@@ -812,6 +934,96 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             # supervisor doesn't have to be guided again next time.
             _remember_app_launch(command)
         return json.dumps(result)
+
+    if action == "dismiss_popup":
+        # Smart popup dismissal — find the dialog window FIRST, then
+        # target IT specifically. Never blindly Alt+F4 whatever has
+        # focus (that's how VS Code gets closed by mistake).
+        #
+        # Strategy ladder (all targeted at the dialog, not global):
+        #   1. Find dialog → focus → Escape (most dialogs)
+        #   2. Still there? → wmctrl -c (polite WM_DELETE_WINDOW)
+        #   3. Still there? → focus dialog + Alt+F4 (last resort)
+        #   4. No dialog found? → Escape only (safe — never Alt+F4)
+        import time as _time
+
+        apps_before = backend.list_apps()
+        dialogs = _find_dialog_windows(apps_before)
+
+        if dialogs:
+            dlg = dialogs[0]
+            dlg_title = dlg.get("title", "")
+            dlg_wid = dlg.get("window_id", 0)
+
+            # Strategy 1: focus the dialog, send Escape
+            backend.focus_app(dlg_title)
+            _time.sleep(0.1)
+            backend.key("Escape")
+            _time.sleep(0.2)
+
+            # Verify: did the dialog disappear?
+            apps_after = backend.list_apps()
+            still_there = any(
+                a.get("window_id") == dlg_wid
+                for a in apps_after
+            )
+            if not still_there:
+                return json.dumps({
+                    "ok": True,
+                    "action": "dismiss_popup",
+                    "message": f"dismissed popup {dlg_title!r} with Escape",
+                    "strategy": "Escape",
+                })
+
+            # Strategy 2: polite close on the specific dialog window
+            backend.close_window(name=dlg_title)
+            _time.sleep(0.2)
+            apps_after2 = backend.list_apps()
+            still_there2 = any(
+                a.get("window_id") == dlg_wid
+                for a in apps_after2
+            )
+            if not still_there2:
+                return json.dumps({
+                    "ok": True,
+                    "action": "dismiss_popup",
+                    "message": f"dismissed popup {dlg_title!r} with wmctrl -c",
+                    "strategy": "wmctrl -c",
+                })
+
+            # Strategy 3: focus the dialog and Alt+F4 (targeted — not blind)
+            backend.focus_app(dlg_title)
+            _time.sleep(0.1)
+            backend.key("Alt+F4")
+            return json.dumps({
+                "ok": True,
+                "action": "dismiss_popup",
+                "message": f"sent Alt+F4 to popup {dlg_title!r} — capture to verify",
+                "strategy": "Alt+F4 (targeted)",
+            })
+
+        # No dialog identified — send Escape only (safe fallback).
+        # Do NOT Alt+F4 — we don't know what has focus.
+        backend.key("Escape")
+        return json.dumps({
+            "ok": True,
+            "action": "dismiss_popup",
+            "message": "Escape sent (no dialog window identified — "
+                       "capture to verify)",
+            "strategy": "Escape (fallback — no dialog found)",
+        })
+
+    if action == "close_window":
+        # Close a window. When `name` is given, sends WM_DELETE_WINDOW
+        # to the first window whose title matches (polite close via
+        # wmctrl -c). Without a name, falls back to Alt+F4 on the
+        # currently-focused window — use with caution.
+        name = args.get("name", "").strip()
+        if name:
+            res = backend.close_window(name=name)
+        else:
+            res = backend.close_window()  # Alt+F4 on focused window
+        return _text_response(res)
 
     if action == "focus_app":
         app = args.get("app")

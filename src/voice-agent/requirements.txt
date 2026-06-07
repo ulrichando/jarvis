@@ -6,7 +6,7 @@
 #   source .venv/bin/activate
 #   pip install -r requirements.txt
 
-livekit-agents[silero,openai,groq,anthropic]~=1.5
+livekit-agents[silero,openai,groq,anthropic,google]~=1.5
 
 # Deepgram Nova-3 streaming STT — primary STT path as of 2026-05-18
 # for fast barge-in. Without this, Groq Whisper Turbo (final-only)
