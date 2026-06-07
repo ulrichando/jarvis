@@ -1,0 +1,33 @@
+[Unit]
+Description=JARVIS — daily dependency staleness check
+Documentation=file:/home/ulrich/Documents/Projects/jarvis/scripts/jarvis-dep-check.sh
+After=network.target
+
+[Service]
+Type=oneshot
+# Feature gate: set JARVIS_DEP_CHECK_DISABLED=1 to skip all checks
+Environment="JARVIS_DEP_CHECK_FULL=0"
+Environment="JARVIS_DEP_CHECK_VOICE=1"
+ExecStartPre=/bin/mkdir -p %h/.local/share/jarvis/logs %h/.jarvis/dep-check
+ExecStart=/home/ulrich/Documents/Projects/jarvis/scripts/jarvis-dep-check.sh
+TimeoutStartSec=120
+StandardOutput=append:%h/.local/share/jarvis/logs/dep-check.log
+StandardError=append:%h/.local/share/jarvis/logs/dep-check.log
+# Sandbox: readonly home except for write paths the script needs.
+# The script only runs pip list/show (local) — no network needed.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/jarvis/logs
+ReadWritePaths=%h/.jarvis/dep-check
+ReadWritePaths=%h/.jarvis/cron
+ReadWritePaths=/home/ulrich/Documents/Projects/jarvis/src/voice-agent/.venv
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+RestrictSUIDSGID=yes
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @reboot @module @swap @debug @raw-io
+SystemCallErrorNumber=EPERM
+
+# No [Install] — triggered by timer only

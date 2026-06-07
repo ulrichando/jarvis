@@ -1,0 +1,33 @@
+[Unit]
+Description=JARVIS — weekly dependency auto-update
+Documentation=file:/home/ulrich/Documents/Projects/jarvis/scripts/jarvis-dep-update.sh
+After=network.target
+
+[Service]
+Type=oneshot
+# Double-gate: ExecStartPre checks the env var so the timer can be
+# enabled but inert until JARVIS_DEP_AUTO_UPDATE=1 is set.
+Environment="JARVIS_DEP_AUTO_UPDATE=0"
+Environment="JARVIS_DEP_AUTO_UPDATE_DRY_RUN=0"
+ExecStartPre=/bin/bash -c '[ "$JARVIS_DEP_AUTO_UPDATE" = "1" ] || exit 0'
+ExecStartPre=/bin/mkdir -p %h/.local/share/jarvis/logs %h/.jarvis/dep-check
+ExecStart=/home/ulrich/Documents/Projects/jarvis/scripts/jarvis-dep-update.sh
+TimeoutStartSec=600
+StandardOutput=append:%h/.local/share/jarvis/logs/dep-update.log
+StandardError=append:%h/.local/share/jarvis/logs/dep-update.log
+# Needs network for pip install and venv write access
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/jarvis/logs
+ReadWritePaths=%h/.jarvis/dep-check
+ReadWritePaths=%h/.jarvis/cron
+ReadWritePaths=/home/ulrich/Documents/Projects/jarvis/src/voice-agent/.venv
+LockPersonality=yes
+RestrictSUIDSGID=yes
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @reboot @module @swap @debug @raw-io
+SystemCallErrorNumber=EPERM
+
+# No [Install] — triggered by timer only (when manually enabled)

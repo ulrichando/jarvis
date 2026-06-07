@@ -215,6 +215,16 @@ class ComputerUseBackend(ABC):
         time.sleep(max(0.0, min(seconds, 30.0)))
         return ActionResult(ok=True, action="wait", message=f"waited {seconds:.2f}s")
 
+    def close_window(self, name: str = "") -> ActionResult:
+        """Close a window. Default: Alt+F4 on currently-focused window.
+        Backends that support named close (e.g. via wmctrl -c) override this."""
+        if name:
+            return ActionResult(
+                ok=False, action="close_window",
+                message="named close not supported by this backend",
+            )
+        return self.key("Alt+F4")
+
 
 # ---------------------------------------------------------------------------
 # Availability helpers (used by the tool's check_fn)
@@ -1359,6 +1369,28 @@ class X11ComputerUseBackend(ComputerUseBackend):
             meta={"app": app},
         )
 
+    def close_window(self, name: str = "") -> ActionResult:
+        """Close a window. When *name* is given, sends WM_DELETE_WINDOW to the
+        first window whose title matches via ``wmctrl -c`` (polite close that
+        apps can intercept — unsaved-changes prompts, etc.). Without a name,
+        falls back to Alt+F4 on the currently-focused window."""
+        if name:
+            if not shutil.which("wmctrl"):
+                return ActionResult(
+                    ok=False, action="close_window",
+                    message="wmctrl not available for named close",
+                )
+            rc, _out, e = self._run(["wmctrl", "-c", name])
+            ok = rc == 0
+            return ActionResult(
+                ok=ok, action="close_window",
+                message=(f"close sent to window matching {name!r}" if ok
+                         else f"close_window failed for {name!r}: {e}"),
+                meta={"name": name, "method": "wmctrl -c"},
+            )
+        # No name — close whatever has focus via Alt+F4.
+        return self.key("Alt+F4")
+
 
 # ---------------------------------------------------------------------------
 # Test / CI stub backend
@@ -1424,6 +1456,11 @@ class NoopBackend(ComputerUseBackend):
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         self.calls.append(("focus_app", {"app": app, "raise": raise_window}))
         return ActionResult(ok=True, action="focus_app")
+
+    def close_window(self, name: str = "") -> ActionResult:
+        self.calls.append(("close_window", {"name": name}))
+        return ActionResult(ok=True, action="close_window",
+                          meta={"name": name, "method": "wmctrl -c" if name else "Alt+F4"})
 
     def move_cursor(self, *, element=None, x=None, y=None) -> ActionResult:
         self.calls.append(("move_cursor", {"element": element, "x": x, "y": y}))
