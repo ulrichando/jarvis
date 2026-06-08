@@ -766,12 +766,12 @@ _DIALOG_KEYWORDS: Dict[str, int] = {
 def _get_screen_size() -> Tuple[int, int]:
     """Get screen dimensions via xdotool. Returns (1920, 1080) on failure."""
     try:
-        rc, out, _ = subprocess.run(
+        result = subprocess.run(
             ["xdotool", "getdisplaygeometry"],
             capture_output=True, text=True, timeout=2,
         )
-        if rc == 0:
-            parts = out.strip().split()
+        if result.returncode == 0:
+            parts = result.stdout.strip().split()
             if len(parts) >= 2:
                 return int(parts[0]), int(parts[1])
     except Exception:
@@ -783,12 +783,12 @@ def _check_window_is_dialog(wid: int) -> bool:
     """Check _NET_WM_WINDOW_TYPE for DIALOG or POPUP_MENU via xprop.
     Returns False on any failure (missing xprop, window gone, etc.)."""
     try:
-        rc, out, _ = subprocess.run(
+        result = subprocess.run(
             ["xprop", "-id", f"0x{wid:x}", "_NET_WM_WINDOW_TYPE"],
             capture_output=True, text=True, timeout=3,
         )
-        if rc == 0:
-            out_lower = out.lower()
+        if result.returncode == 0:
+            out_lower = result.stdout.lower()
             if "_net_wm_window_type_dialog" in out_lower:
                 return True
             if "_net_wm_window_type_popup_menu" in out_lower:

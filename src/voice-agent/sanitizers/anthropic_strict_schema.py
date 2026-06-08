@@ -113,8 +113,13 @@ def install() -> None:
     try:
         from livekit.agents.llm import ToolContext
     except Exception as e:
-        logger.warning(f"[anthropic-strict-schema] ToolContext import failed: {e}")
-        _INSTALLED = True
+        logger.warning(
+            f"[anthropic-strict-schema] ToolContext import failed — patch NOT installed: {e}. "
+            f"All Anthropic tool calls will return 400 until this is resolved."
+        )
+        # Do NOT set _INSTALLED = True — the patch did nothing.
+        # Leaving it False means a future call to install() will retry,
+        # and the loud warning will appear on every startup until fixed.
         return
 
     orig_parse = ToolContext.parse_function_tools
