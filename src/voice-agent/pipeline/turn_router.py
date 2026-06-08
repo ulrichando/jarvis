@@ -286,7 +286,10 @@ def detect_emotion(transcript: str, audio: AudioMeta) -> Emotion:
 
 
 import asyncio
+import logging
 from typing import Awaitable, Callable
+
+logger = logging.getLogger(__name__)
 
 _VALID_ROUTES = {
     "BANTER",
@@ -417,7 +420,10 @@ async def classify_turn(
     prompt = ROUTER_PROMPT_TEMPLATE.format(history=pretty, emotion=emotion)
     try:
         raw = await asyncio.wait_for(groq_call(prompt), timeout=timeout_ms / 1000)
-    except (asyncio.TimeoutError, Exception):
+    except asyncio.TimeoutError:
+        return "TASK_OTHER"
+    except Exception:
+        logger.warning("classify_turn: router LLM call failed", exc_info=True)
         return "TASK_OTHER"
     return route_from_classifier_output(raw)
 

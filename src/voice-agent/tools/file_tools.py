@@ -191,7 +191,7 @@ def _ensure_tracker(session_id: str) -> dict:
         _read_tracker[session_id] = td = {
             "last_key": None,
             "consecutive": 0,
-            "read_history": set(),
+            "read_history": [],
             "dedup": {},
             "dedup_hits": {},
             "read_timestamps": {},
@@ -207,12 +207,7 @@ def _cap_tracker(td: dict) -> None:
     """Evict oldest entries once per-task containers exceed their caps."""
     rh = td.get("read_history")
     if rh is not None and len(rh) > _READ_HISTORY_CAP:
-        excess = len(rh) - _READ_HISTORY_CAP
-        for _ in range(excess):
-            try:
-                rh.pop()
-            except KeyError:
-                break
+        del rh[: len(rh) - _READ_HISTORY_CAP]
 
     for key in ("dedup", "dedup_hits", "read_timestamps"):
         d = td.get(key)
@@ -410,7 +405,7 @@ def _read_file_impl(path: str, offset: int = 1, limit: int = 500,
     read_key = ("read", path, offset, limit)
     with _read_tracker_lock:
         td["dedup_hits"].pop(dedup_key, None)
-        td["read_history"].add((path, offset, limit))
+        td["read_history"].append((path, offset, limit))
         if td["last_key"] == read_key:
             td["consecutive"] += 1
         else:

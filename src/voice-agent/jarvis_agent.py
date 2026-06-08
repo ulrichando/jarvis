@@ -3191,6 +3191,10 @@ async def grep_files(pattern: str, path: str = ".", glob: str = "") -> str:
         out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
     except asyncio.TimeoutError:
         proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            proc.kill()
         return "Search timed out after 30 seconds. Ask the user to narrow the scope (e.g. add a glob filter or smaller path)."
     except Exception as e:
         return f"Search failed [{type(e).__name__}]. Tell the user briefly."
