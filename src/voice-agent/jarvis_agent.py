@@ -903,7 +903,24 @@ def read_cli_model() -> str:
 # (memory_block / learned_rules_block / breaker_status_block) are
 # appended at update_instructions time in entrypoint().
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
-JARVIS_INSTRUCTIONS = (_PROMPTS_DIR / "supervisor.md").read_text(encoding="utf-8")
+# Fallback mirrors load_soul's DEFAULT_SOUL pattern: a missing/unreadable
+# supervisor.md must NOT crash the worker at import (a corrupted checkout
+# or bad permissions would otherwise wedge every restart with a bare
+# traceback). Degrade to a minimal ops prompt and log loudly instead.
+_DEFAULT_SUPERVISOR_INSTRUCTIONS = (
+    "You are JARVIS, a voice-first assistant. Reply concisely and "
+    "conversationally. Use your tools for concrete, nameable actions; "
+    "for ambiguous or emotional input, just reply. Never read tool-call "
+    "syntax aloud."
+)
+try:
+    JARVIS_INSTRUCTIONS = (_PROMPTS_DIR / "supervisor.md").read_text(encoding="utf-8")
+except Exception as _e:
+    logger.error(
+        f"[boot] could not read prompts/supervisor.md ({_e}); "
+        f"falling back to minimal built-in instructions. Restore the file."
+    )
+    JARVIS_INSTRUCTIONS = _DEFAULT_SUPERVISOR_INSTRUCTIONS
 
 
 # ── Tool bridge: delegate tool-using turns to the full JARVIS CLI ────
@@ -2522,6 +2539,46 @@ async def current_location() -> str:
     )
 
 
+# Path fragments that identify credential-bearing files. read_file
+# refuses these even though the bash tool technically could reach them:
+# JARVIS's threat model (CLAUDE.md) acknowledges mic / prompt-injection
+# can drive tools, and read_file → TTS is the cheapest secret-exfil path.
+_SECRET_PATH_FRAGMENTS = (
+    "/.ssh/",
+    "/.aws/credentials",
+    "/.config/gcloud/",
+    "/.netrc",
+    "/.pgpass",
+    "/.docker/config.json",
+    "/.kube/config",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "local-api-token",
+)
+_SECRET_PATH_SUFFIXES = (".env", ".pem", ".key", ".p12", ".pfx")
+
+
+def _is_secret_path(p: Path) -> bool:
+    """True if the path looks like it holds credentials/secrets.
+
+    Matches on the resolved path so symlink tricks don't bypass it.
+    Conservative by design — a false positive only blocks one read of an
+    oddly-named file, which the user can work around explicitly.
+    """
+    try:
+        resolved = str(p.resolve()).lower()
+    except Exception:
+        resolved = str(p).lower()
+    name = p.name.lower()
+    if any(frag in resolved for frag in _SECRET_PATH_FRAGMENTS):
+        return True
+    # Suffix match on the basename (".env", "prod.env", "server.key", …).
+    if any(name == suf.lstrip(".") or name.endswith(suf) for suf in _SECRET_PATH_SUFFIXES):
+        return True
+    return False
+
+
 @function_tool
 async def read_file(path: str, max_bytes: int = 8_192) -> str:
     """Read a file from disk and return its contents (capped).
@@ -2530,9 +2587,11 @@ async def read_file(path: str, max_bytes: int = 8_192) -> str:
     me the contents of <file>". Atomic single-step.
 
     NEVER use this for editing — there's no write counterpart. For
-    multi-file analysis, file-system traversal beyond a single read,
-    or anything that needs the CLI's editing/refactor tools, hand
-    off via transfer_to_planner.
+    multi-file analysis or refactor work, use plan-mode + the file/code
+    tools.
+
+    Credential-bearing files (.env, SSH/cloud keys, local-api-token, …)
+    are refused for safety — see `_is_secret_path`.
 
     Args:
         path:      Absolute or ~-prefixed file path.
@@ -2542,6 +2601,12 @@ async def read_file(path: str, max_bytes: int = 8_192) -> str:
     if not path:
         return "No path supplied. Ask the user which file to read."
     p = Path(path).expanduser()
+    if _is_secret_path(p):
+        logger.warning(f"read_file refused secret-bearing path: {p}")
+        return (
+            "That file holds credentials, so I won't read it aloud. "
+            "Tell the user it's blocked for safety."
+        )
     if not p.exists():
         return f"File not found at {p}. Tell the user the path doesn't exist and ask for clarification."
     if p.is_dir():
@@ -2585,6 +2650,10 @@ async def calc(expression: str) -> str:
     expr = (expression or "").strip()
     if not expr:
         return "No expression supplied. Tell the user briefly."
+    if len(expr) > 500:
+        # Bound the input so deeply-nested expressions can't exhaust the
+        # recursive AST evaluator before it even starts.
+        return "That expression is too long to evaluate safely. Ask the user to simplify."
 
     # Percent-shorthand: "15% of 80" → "(15/100)*80"
     expr = re.sub(r"(\d+(?:\.\d+)?)\s*%\s*of\s+", r"((\1)/100)*", expr, flags=re.IGNORECASE)
@@ -2632,6 +2701,8 @@ async def calc(expression: str) -> str:
         result = _eval(tree)
     except ZeroDivisionError:
         return "Cannot divide by zero. Tell the user."
+    except RecursionError:
+        return "That expression is nested too deeply to evaluate. Ask the user to simplify it."
     except (ValueError, SyntaxError, TypeError) as e:
         return f"That expression could not be evaluated [{type(e).__name__}]. Ask the user to rephrase."
 
@@ -3036,19 +3107,41 @@ async def glob_files(pattern: str, path: str = "~") -> str:
     root = Path(path or "~").expanduser()
     if not root.exists():
         return f"Root path {root} does not exist. Tell the user the directory is missing."
+    # Iterate the matcher LAZILY with a scan ceiling so a pathological
+    # root (e.g. "/") can't walk the entire filesystem. The old
+    # `list(root.rglob(...))` materialized every entry before capping,
+    # which hung indefinitely on a large/root path with no timeout.
+    _SCAN_CEILING = 50_000
+    matches: list[str] = []
+    scanned = 0
+    hit_ceiling = False
     try:
-        # `**` in pattern means recursive — pathlib handles it.
-        # If user gave a non-recursive pattern, glob it as-is.
-        matches = list(root.rglob(pattern) if "**" not in pattern else root.glob(pattern))
+        it = root.rglob(pattern) if "**" not in pattern else root.glob(pattern)
+        for m in it:
+            scanned += 1
+            if scanned > _SCAN_CEILING:
+                hit_ceiling = True
+                break
+            try:
+                if m.is_file():
+                    matches.append(str(m))
+                    if len(matches) > 100:
+                        break
+            except OSError:
+                continue  # broken symlink / permission — skip, keep scanning
     except Exception as e:
         return f"File listing failed [{type(e).__name__}]. Tell the user briefly."
-    matches = [str(m) for m in matches if m.is_file()]
-    total = len(matches)
+    truncated = len(matches) > 100
     matches = matches[:100]
-    logger.info(f"glob_files → pattern={pattern!r} root={root} matched={total}")
+    logger.info(
+        f"glob_files → pattern={pattern!r} root={root} matched={len(matches)} "
+        f"scanned={scanned} truncated={truncated} ceiling={hit_ceiling}"
+    )
     head = "\n".join(matches)
-    if total > 100:
-        head += f"\n…[+{total - 100} more]"
+    if truncated:
+        head += "\n…[more results truncated — narrow the pattern]"
+    if hit_ceiling:
+        head += f"\n…[stopped after scanning {_SCAN_CEILING} entries — narrow the path]"
     return head or f"No files matching {pattern!r} under {root}. Tell the user the search came up empty."
 
 

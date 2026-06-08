@@ -1253,8 +1253,12 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
             groq_legacy = _build_groq_legacy(route)
             if groq_legacy is not None:
                 rungs.append(groq_legacy)
-        # Rung 3: shared DeepSeek (cross-provider safety net).
-        if ds_fallback is not None:
+        # Rung 3: shared DeepSeek (cross-provider safety net). Skip when
+        # the primary IS already DeepSeek (e.g. TASK_CODE's default
+        # deepseek-v4-flash) — otherwise rungs 1 and 3 are the same
+        # model/endpoint/key, so a DeepSeek outage kills two of three
+        # rungs and the chain is effectively "DeepSeek → Groq → (dead)".
+        if ds_fallback is not None and not primary_label.startswith("deepseek:"):
             rungs.append(ds_fallback)
         if len(rungs) == 1:
             return primary

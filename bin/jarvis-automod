@@ -3,6 +3,9 @@
 # Usage: jarvis-automod <list|show|merge|reject|revert> [args...]
 set -euo pipefail
 
-REPO_ROOT="/home/ulrich/Documents/Projects/jarvis"
+# Derive REPO_ROOT from this script's location (bin/..) so the wrapper
+# works regardless of where the repo is checked out, not just one machine.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 exec "$REPO_ROOT/src/voice-agent/.venv/bin/python" \
   "$REPO_ROOT/src/voice-agent/pipeline/automod/cli.py" "$@"

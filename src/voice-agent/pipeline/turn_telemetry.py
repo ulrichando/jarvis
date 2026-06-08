@@ -1,16 +1,26 @@
-"""SQLite turn telemetry. Non-blocking writes; failures are silent.
+"""SQLite turn telemetry. Non-blocking writes; write failures are
+logged (throttled) rather than silently dropped — blind metrics make
+debugging impossible (see .claude/rules/voice-agent.md).
 
 Every JARVIS turn writes one row. Reading is via `--report` (optionally
 scoped with `--days N`).
 """
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import sys
 import time
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger("jarvis.telemetry")
+
+# Throttle counter for log_turn write failures: log the first one loudly,
+# then every 100th, so a persistent fault (disk full, locked DB) surfaces
+# without spamming a line on every turn.
+_log_turn_fail_count = 0
 
 # Acceptance threshold for time-to-first-word, in milliseconds. Defaults
 # to 1000ms (the spec target). Configurable so the CI / dogfood signal
@@ -574,8 +584,16 @@ def log_turn(
                     user_lang,
                 ),
             )
-    except Exception:
-        return  # silent — see module docstring
+    except Exception as e:
+        global _log_turn_fail_count
+        _log_turn_fail_count += 1
+        if _log_turn_fail_count == 1 or _log_turn_fail_count % 100 == 0:
+            logger.warning(
+                f"[telemetry] log_turn write failed (#{_log_turn_fail_count}) "
+                f"[{type(e).__name__}]: {e} — turn not recorded. The confab "
+                f"gate reads this DB; persistent failure degrades evidence checks."
+            )
+        return
 
 
 def log_computer_use_action(

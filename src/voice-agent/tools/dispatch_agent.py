@@ -281,9 +281,12 @@ async def handle_dispatch_agent(args: Dict[str, Any]) -> str:
         return text
     finally:
         elapsed_ms = int((time.monotonic() - started) * 1000)
-        _last_dispatch["type"] = subagent_type
-        _last_dispatch["ms"] = elapsed_ms
-        _last_dispatch["status"] = final_status
+        # Single .update() so a reader never sees a half-written record
+        # (type set but ms/status stale). dict.update from a literal is a
+        # single C-level op under the GIL.
+        _last_dispatch.update(
+            {"type": subagent_type, "ms": elapsed_ms, "status": final_status}
+        )
         logger.info(
             f"[dispatch_agent] exit type={subagent_type} status={final_status} ms={elapsed_ms}"
         )
@@ -317,9 +320,9 @@ def _start_background(subagent_type: str, task: str, description: str) -> str:
 
     # Record on the side-channel so the telemetry observer sees a started bg
     # task this turn (the real outcome is logged separately by the runner).
-    _last_dispatch["type"] = subagent_type
-    _last_dispatch["ms"] = 0
-    _last_dispatch["status"] = "background_started"
+    _last_dispatch.update(
+        {"type": subagent_type, "ms": 0, "status": "background_started"}
+    )
 
     logger.info(
         f"[dispatch_agent] background start type={subagent_type} id={task_id} "
