@@ -314,12 +314,31 @@ def has_recent_tool_evidence(
         if isinstance(content, list):
             for block in content:
                 btype = _msg_attr(block, "type")
-                if btype in ("tool_use", "tool_call", "tool_result", "function_call"):
+                # A returned result always counts — a tool actually ran.
+                if btype in ("tool_result", "function_call_output"):
                     return True
-                if _msg_attr(block, "function_call"):
-                    return True
-                if _msg_attr(block, "tool_calls"):
-                    return True
+                # For a tool *call* block, apply the same strict-mode
+                # handoff filter as branches 3 & 5. Previously this branch
+                # returned True for ANY tool_use block, so a bare
+                # transfer_to_* arriving as an Anthropic content block
+                # granted evidence even in strict mode — defeating the L2
+                # fix. (Residual defense; handoffs no longer exist.)
+                fc = _msg_attr(block, "function_call")
+                is_call_block = (
+                    btype in ("tool_use", "tool_call", "function_call")
+                    or fc is not None
+                    or bool(_msg_attr(block, "tool_calls"))
+                )
+                if is_call_block:
+                    bname = (
+                        _msg_attr(block, "name")
+                        or (_msg_attr(fc, "name") if fc is not None else None)
+                        or ""
+                    )
+                    if not _is_handoff(bname):
+                        return True
+                    if permissive:
+                        return True
 
         # 5) LiveKit ChatContext top-level FunctionCall items. These have
         # `name` at the top level (no role, no content list). Treat as

@@ -43,7 +43,10 @@ def _is_expected_provider_error(exc: BaseException) -> bool:
       - Groq rate-limit-exceeded 429 ("Rate limit reached for ... TPM")
       - Validation errors from upstream tool-call malformation
         ("failed to call a function", "tool call validation failed")
-      - Anthropic credit_exhausted / Anthropic auth 401 fragments
+
+    Billing exhaustion (credit_exhausted / insufficient_quota) is
+    intentionally EXCLUDED — it doesn't self-heal, so it should trip the
+    breaker and route around the dead provider (see note below).
 
     Walks the exception chain so wrapped errors are still matched.
     Added 2026-05-16 per global review §P0-16 + audio review §P0;
@@ -65,14 +68,19 @@ def _is_expected_provider_error(exc: BaseException) -> bool:
         "tool call validation failed",
         "failed_generation",
         "please adjust your prompt",
-        # Rate-limit / quota — provider-side, will recover on its own.
+        # Rate-limit — provider-side, recovers on its own within seconds,
+        # so don't burn the breaker on a transient 429.
         "rate_limit_exceeded",
         "rate limit reached",
         "tokens per min",
         "requests per min",
-        "credit_exhausted",
-        "insufficient_quota",
     ))
+    # NOTE: credit_exhausted / insufficient_quota are deliberately NOT in
+    # the non-failure set. Unlike rate limits they do NOT self-heal within
+    # the breaker's cooldown — so they SHOULD trip the breaker, which makes
+    # the FallbackAdapter skip the exhausted provider for the cooldown
+    # window instead of paying a failed round-trip to it on every call for
+    # the entire outage. (Was previously misclassified as transient.)
 
 
 # Per-upstream circuit breakers. A DNS / API blip on one upstream

@@ -60,7 +60,11 @@ def _read_intent(automod_id: str) -> dict:
 
 def _rerun_pytest() -> tuple[bool, str]:
     """Re-run the full test suite in src/voice-agent/. Returns (ok, tail)."""
-    cwd = Path("/home/ulrich/Documents/Projects/jarvis/src/voice-agent")
+    # Derive from this file's location (.../src/voice-agent/pipeline/automod/
+    # finalize.py → parents[2] == src/voice-agent) so the re-run works on any
+    # checkout, not just one hardcoded machine path. Previously this always
+    # returned "voice-agent dir missing" off-machine, failing every artifact.
+    cwd = Path(__file__).resolve().parents[2]
     if not cwd.exists():
         return False, "voice-agent dir missing"
     try:

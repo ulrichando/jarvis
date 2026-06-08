@@ -13,7 +13,10 @@ ID="$(basename "$INTENT_FILE" .intent.txt)"
 LOG="$HOME/.jarvis/auto-mods/$ID.log"
 mkdir -p "$(dirname "$LOG")"
 
-REPO_ROOT="/home/ulrich/Documents/Projects/jarvis"
+# Derive REPO_ROOT from this script's location (bin/..) so the wrapper
+# works regardless of where the repo is checked out, not just one machine.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 BRANCH="automod/$ID"
