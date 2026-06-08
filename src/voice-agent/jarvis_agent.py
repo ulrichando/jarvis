@@ -2018,10 +2018,16 @@ async def launch_app(binary: str, args: str = "") -> str:
     # sets CREATE_NEW_PROCESS_GROUP + DETACHED_PROCESS). Both branches
     # write child stdout/stderr to log_path.
     if platform.system() == "Linux":
-        cmd = f"setsid -f {bin_path} {args_clean} > {log_path} 2>&1"  # windows-footgun: ok (Linux branch — Windows uses detached_popen_kwargs() in the else below)
-        logger.info(f"launch_app → {cmd[:140]}")
+        import shlex as _shlex
+        argv = ["setsid", "-f", bin_path, *(_shlex.split(args_clean) if args_clean else [])]
+        logger.info(f"launch_app → {argv}")
         try:
-            proc = await asyncio.create_subprocess_shell(cmd)
+            log_fh = open(log_path, "wb")
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=log_fh,
+                stderr=log_fh,
+            )
             await asyncio.wait_for(proc.wait(), timeout=5.0)
         except Exception as e:
             return f"CRASHED: spawn error — {e}"

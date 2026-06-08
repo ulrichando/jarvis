@@ -11,6 +11,12 @@
 # pytest-timeout — kill hung tests so CI never wedges.
 pytest-timeout~=2.3
 
+# pytest-asyncio — required for @pytest.mark.asyncio tests. Without this,
+# async test bodies return a coroutine object (truthy) and pass vacuously.
+# The TTS barge-in cancellation tests and dispatch_agent tests silently
+# never ran their async code before this was added.
+pytest-asyncio~=0.23
+
 # Note 2026-05-22: fakeredis was removed alongside the hub subsystem
 # (the only consumer was tests/test_hub_*.py, all of which were
 # deleted with src/hub).
