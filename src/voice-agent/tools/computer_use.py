@@ -555,6 +555,23 @@ def _get_backend() -> ComputerUseBackend:
         return _backend
 
 
+def reset_session_approval() -> None:
+    """Clear per-session computer-use approval grants.
+
+    `_session_auto_approve` / `_always_allow` are module-level, so without
+    an explicit reset they persist for the whole worker process — a
+    reconnect or new conversation would silently inherit an "always
+    approve" the user granted in a PRIOR session, letting the agent click
+    and type on the desktop autonomously without re-asking. Called at
+    entrypoint() session start so each session starts un-approved. Leaves
+    the cached backend (display connection) intact — only the consent
+    state resets.
+    """
+    global _session_auto_approve, _always_allow
+    _session_auto_approve = False
+    _always_allow = set()
+
+
 def reset_backend_for_tests() -> None:
     """Test helper — tear down the cached backend and approval state."""
     global _backend, _session_auto_approve, _always_allow
