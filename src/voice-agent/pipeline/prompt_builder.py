@@ -87,6 +87,12 @@ _SOUL_THREAT_PATTERNS: list[tuple[str, str]] = [
     (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection"),
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
+    # Role / mode escalation — a persona file has no business flipping
+    # JARVIS into "admin/developer/jailbreak mode".
+    (r'you\s+are\s+now\s+(?:in\s+)?(?:admin|administrator|developer|root|sudo|god|jailbreak|dan)\b', "role_escalation"),
+    (r'(?:enable|activate|enter|switch\s+to)\s+(?:developer|debug|god|admin|jailbreak|unrestricted)\s+mode', "mode_escalation"),
+    # Injected fresh instruction block masquerading as system text.
+    (r'\bnew\s+(?:system\s+)?instructions?\s*:', "instruction_injection"),
 ]
 _SOUL_INVISIBLE_CHARS = frozenset(
     chr(c) for c in (

@@ -61,6 +61,13 @@ logger = logging.getLogger("jarvis.handoff_text_suppressor")
 # "is the supervisor handing off in this stream?"
 _HANDOFF_STATE: dict[str, bool] = {}
 
+# Ids whose chat_ctx cross-stream walk has already run this stream. The
+# walk result can't change mid-stream (chat_ctx is fixed during a single
+# response), so we record "already walked" to avoid re-walking the full
+# (≤80-item) ctx on every streamed chunk — the negative case (no pending
+# handoff, the common case now handoffs are gone) was re-walking per chunk.
+_CROSS_STREAM_CHECKED: set[str] = set()
+
 # Anything matching this is a supervisor → subagent handoff. The
 # `delegate` form is the single sub-agent dispatcher; transfer_to_X
 # covers all HandoffSubagents (browser, desktop, planner, …).
@@ -188,20 +195,23 @@ def install() -> None:
             # 2. Cross-stream check: chat_ctx tail shows a pending
             #    handoff with no task_done yet. Catches the FallbackAdapter
             #    case where stream B (DeepSeek) runs while subagent
-            #    spawned by stream A is still working. Cached per id so
-            #    we only walk chat_ctx once per stream.
+            #    spawned by stream A is still working. Walked at most once
+            #    per stream (chat_ctx is fixed during a response), so the
+            #    common no-handoff case doesn't re-scan the ctx per chunk.
             if (
                 os.environ.get("JARVIS_HANDOFF_CROSS_STREAM_GUARD", "1") == "1"
                 and not _HANDOFF_STATE.get(id)
-                and _chat_ctx_has_pending_handoff(self)
+                and id not in _CROSS_STREAM_CHECKED
             ):
-                logger.warning(
-                    "[handoff-suppressor] suppressing supervisor text on"
-                    " stream %s — chat_ctx shows pending handoff (subagent"
-                    " still running)",
-                    id[:12] if id else "?",
-                )
-                _HANDOFF_STATE[id] = True
+                _CROSS_STREAM_CHECKED.add(id)
+                if _chat_ctx_has_pending_handoff(self):
+                    logger.warning(
+                        "[handoff-suppressor] suppressing supervisor text on"
+                        " stream %s — chat_ctx shows pending handoff (subagent"
+                        " still running)",
+                        id[:12] if id else "?",
+                    )
+                    _HANDOFF_STATE[id] = True
 
             # Blank content during a handoff stream. The tool_call
             # field itself is preserved untouched.
@@ -212,6 +222,7 @@ def install() -> None:
         # across responses with reused ids (rare, but seen on retries).
         if finish:
             _HANDOFF_STATE.pop(id, None)
+            _CROSS_STREAM_CHECKED.discard(id)
 
         return orig_parse(self, id, choice, thinking)
 

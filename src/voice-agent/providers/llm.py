@@ -331,7 +331,9 @@ if _ANTHROPIC_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY", ""):
 # or the tray picker. The lk_openai plugin is used with a custom base_url,
 # identical to the existing DeepSeek/Kimi entries in this file.
 if os.environ.get("OPENROUTER_API_KEY", ""):
-    _OR_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+    # Each build lambda reads OPENROUTER_API_KEY fresh from the env at
+    # call time (not an import-captured constant) so a rotated key is
+    # picked up without restarting the worker.
     _OR_BASE = "https://openrouter.ai/api/v1"
 
     SPEECH_MODELS["openrouter/google/gemini-2.0-flash-001"] = {
@@ -340,7 +342,7 @@ if os.environ.get("OPENROUTER_API_KEY", ""):
         "label": "OpenRouter · Gemini 2.0 Flash",
         "build": lambda: lk_openai.LLM(
             model="google/gemini-2.0-flash-001",
-            api_key=_OR_KEY,
+            api_key=os.environ.get("OPENROUTER_API_KEY", ""),
             base_url=_OR_BASE,
             temperature=0.6,
         ),
@@ -352,7 +354,7 @@ if os.environ.get("OPENROUTER_API_KEY", ""):
         "label": "OpenRouter · Llama 3.3 70B",
         "build": lambda: lk_openai.LLM(
             model="meta-llama/llama-3.3-70b-instruct",
-            api_key=_OR_KEY,
+            api_key=os.environ.get("OPENROUTER_API_KEY", ""),
             base_url=_OR_BASE,
             temperature=0.6,
         ),
@@ -364,7 +366,7 @@ if os.environ.get("OPENROUTER_API_KEY", ""):
         "label": "OpenRouter · Claude Haiku 4.5",
         "build": lambda: lk_openai.LLM(
             model="anthropic/claude-haiku-4-5",
-            api_key=_OR_KEY,
+            api_key=os.environ.get("OPENROUTER_API_KEY", ""),
             base_url=_OR_BASE,
             temperature=0.6,
         ),
@@ -375,7 +377,7 @@ if os.environ.get("OPENROUTER_API_KEY", ""):
         "label": "OpenRouter · Mistral Small 3.2 24B",
         "build": lambda: lk_openai.LLM(
             model="mistralai/mistral-small-3.2-24b-instruct",
-            api_key=_OR_KEY,
+            api_key=os.environ.get("OPENROUTER_API_KEY", ""),
             base_url=_OR_BASE,
             temperature=0.6,
         ),

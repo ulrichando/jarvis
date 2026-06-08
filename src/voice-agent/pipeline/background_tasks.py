@@ -68,6 +68,25 @@ def register(task_id: str, description: str) -> None:
                 task_id, description, len(active()))
 
 
+# Keep at most this many finished tasks in `_tasks`. active() only reads
+# running tasks, so finished entries serve no purpose beyond near-term
+# status reporting — without a cap the dict grows for the life of the
+# process (memory_extractor spawns bg work every turn boundary).
+_FINISHED_RETENTION = 50
+
+
+def _prune_finished() -> None:
+    """Evict the oldest finished tasks once they exceed the retention cap."""
+    finished = [
+        (tid, t) for tid, t in _tasks.items() if t.get("status") != "running"
+    ]
+    if len(finished) <= _FINISHED_RETENTION:
+        return
+    finished.sort(key=lambda kv: kv[1].get("finished_at") or 0.0)
+    for tid, _t in finished[: len(finished) - _FINISHED_RETENTION]:
+        _tasks.pop(tid, None)
+
+
 def complete(task_id: str, announcement: str | None, status: str = "success") -> None:
     """Mark a task finished and enqueue its spoken announcement (if any).
 
@@ -82,6 +101,7 @@ def complete(task_id: str, announcement: str | None, status: str = "success") ->
         _pending.append(announcement)
     logger.info("[bg] complete id=%s status=%s voiced=%s",
                 task_id, status, bool(announcement))
+    _prune_finished()
 
 
 def discard(task_id: str) -> None:

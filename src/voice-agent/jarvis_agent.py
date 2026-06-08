@@ -6028,6 +6028,15 @@ async def entrypoint(ctx: JobContext) -> None:
     # incidental restarts. The user toggles it explicitly via voice
     # ("wake up") when they want JARVIS back.
 
+    # Reset per-session computer-use approval so a fresh session never
+    # inherits an "always approve" the user granted in a prior session
+    # (the grant state is module-level, i.e. process-lived). Best-effort.
+    try:
+        from tools import computer_use as _cu
+        _cu.reset_session_approval()
+    except Exception as _e:
+        logger.debug(f"[boot] computer_use approval reset skipped: {_e}")
+
     # Build the LLM/TTS provider stack from the user's tray pick. Done
     # HERE rather than at module load so a /voice-model POST + systemctl
     # restart picks up the new file on the very next job.

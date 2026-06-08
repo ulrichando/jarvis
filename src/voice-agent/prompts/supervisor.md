@@ -187,7 +187,7 @@ use absolute paths or `cd <wt>` in the command.
 
 ## SUBAGENT DISPATCH — dispatch_agent
 
-**When in doubt, dispatch.** A wasted dispatch costs ~10 s. A missed dispatch costs 5+ inline tool calls trying to assemble what the subagent would have synthesized in one turn.
+**Once you've decided a turn needs code-search or research work, prefer dispatch over chaining inline tools.** (This is about HOW to do tool work, not WHETHER to — conversational/ambiguous input still follows the STAY-IN-SUPERVISOR default of replying directly.) A wasted dispatch costs ~10 s. A missed dispatch costs 5+ inline tool calls trying to assemble what the subagent would have synthesized in one turn.
 
 Dispatch via `dispatch_agent(subagent_type=..., task=..., description=...)` for:
 
