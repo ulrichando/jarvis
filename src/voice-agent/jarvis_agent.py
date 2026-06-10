@@ -5615,9 +5615,17 @@ def _register_state_tracking_handlers(session) -> None:
             text = (getattr(ev, "transcript", "") or "").strip()
             if not text:
                 return
-            if echo_gate.is_echo(text, speaking_tracker.current_speaking_text()):
+            # honor_cooldown=True: this is the interrupt path, where the
+            # post-barge-in cooldown suppresses residual TTS-tail echo from
+            # re-firing the interrupt. The turn-admission drop_echo check
+            # (on_user_turn_completed) deliberately does NOT pass it, so the
+            # genuine turn that triggered this barge-in isn't dropped.
+            if echo_gate.is_echo(
+                text, speaking_tracker.current_speaking_text(), honor_cooldown=True
+            ):
                 return  # JARVIS hearing itself — not a real interruption
             logger.info(f"[echo-bargein] novel speech during TTS → interrupt: {text[:60]!r}")
+            echo_gate.note_bargein()  # arm cooldown so residual echo from cancelled TTS doesn't re-trigger
             session.interrupt(force=True)  # force: framework interruption is disabled in echo-aware mode, so a plain interrupt() would raise + no-op
             _cancel_thinking_heartbeat(session)
             session._jarvis_was_interrupted = True
@@ -5704,6 +5712,79 @@ def _register_state_tracking_handlers(session) -> None:
             logger.debug(f"[metrics-capture] skipped: {e}")
 
 
+def _iana_timezone_name() -> str:
+    """IANA zone name (e.g. "America/New_York") of the system timezone.
+
+    `datetime.now().astimezone().tzinfo` only carries the abbreviation
+    ("EDT"), never the IANA name — that has to come from the zoneinfo
+    link. Returns "" when undeterminable."""
+    try:
+        target = os.readlink("/etc/localtime")
+        if "/zoneinfo/" in target:
+            return target.split("/zoneinfo/", 1)[1]
+    except OSError:
+        pass
+    try:
+        return Path("/etc/timezone").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _local_timezone_label() -> str:
+    """Return a human-readable local timezone label for the prompt.
+
+    Uses the system's configured timezone (e.g. "America/New_York
+    (US Eastern, currently EDT/UTC-4)"). Falls back to UTC if the
+    system timezone can't be determined."""
+    try:
+        from datetime import datetime
+        now = datetime.now().astimezone()
+        tz = now.tzinfo
+        if tz is None:
+            return "UTC (unknown local — system timezone not set)"
+        tz_abbrev = str(tz)            # fixed-offset abbreviation, e.g. "EDT"
+        offset = now.strftime("%z")
+        # Format offset like "-04:00" → "UTC-4"
+        if offset and len(offset) == 5:
+            sign = offset[0]
+            hours = offset[1:3].lstrip("0") or "0"
+            minutes = offset[3:5]
+            if minutes == "00":
+                offset_label = f"UTC{sign}{hours}"
+            else:
+                offset_label = f"UTC{sign}{hours}:{minutes}"
+        else:
+            offset_label = "UTC"
+        iana = _iana_timezone_name()
+        if iana:
+            friendly = _FRIENDLY_TZ_NAMES.get(iana, "")
+            if friendly:
+                return f"{iana} ({friendly}, currently {tz_abbrev}/{offset_label})"
+            return f"{iana} (currently {tz_abbrev}/{offset_label})"
+        return f"{tz_abbrev} ({offset_label})"
+    except Exception:
+        return "UTC (local timezone lookup failed)"
+
+
+# Friendly labels for common timezones
+_FRIENDLY_TZ_NAMES = {
+    "America/New_York":    "US Eastern",
+    "America/Chicago":     "US Central",
+    "America/Denver":      "US Mountain",
+    "America/Los_Angeles": "US Pacific",
+    "America/Anchorage":   "US Alaska",
+    "Pacific/Honolulu":    "US Hawaii",
+    "Europe/London":       "UK",
+    "Europe/Paris":        "Central European",
+    "Europe/Berlin":       "Central European",
+    "Asia/Tokyo":          "Japan",
+    "Asia/Shanghai":       "China",
+    "Asia/Kolkata":        "India",
+    "Australia/Sydney":    "Australian Eastern",
+    "Africa/Douala":       "West Africa (Cameroon)",
+}
+
+
 def _build_runtime_id_block(active_speech_id: str) -> str:
     """Build the WHO YOU ARE prompt block with current model identity.
     Step 8d of the 10/10 refactor. Reads the CLI model live from the
@@ -5713,6 +5794,10 @@ def _build_runtime_id_block(active_speech_id: str) -> str:
     powering you?" correctly — without this, the LLM gives the vague
     "I'm a conversational AI" because LLMs don't know their own
     underlying model unless told.
+
+    Also includes the local timezone (2026-06-09) so the supervisor
+    converts UTC timestamps to local time by default instead of
+    speaking raw UTC times.
     """
     cli_model_id = read_cli_model()
     cli_def = CLI_MODELS.get(cli_model_id, {})
@@ -5720,6 +5805,7 @@ def _build_runtime_id_block(active_speech_id: str) -> str:
     speech_label = SPEECH_MODELS.get(active_speech_id, {}).get(
         "label", active_speech_id,
     )
+    tz_label = _local_timezone_label()
     return (
         "\n\n═══ WHO YOU ARE ═══\n\n"
         "When the user asks what model you're using, what's powering\n"
@@ -5731,7 +5817,17 @@ def _build_runtime_id_block(active_speech_id: str) -> str:
         f"  - Text-to-speech: {VOICE_TTS_LABEL}.\n"
         "If the user asks a vaguer 'what model' question, lead with\n"
         "the speech LLM and offer the tool model as 'and for tool work'.\n"
-        "Don't say you don't know — you do, it's right here."
+        "Don't say you don't know — you do, it's right here.\n"
+        "\n═══ TIMEZONE ═══\n\n"
+        f"The user's local timezone is {tz_label}.\n"
+        "When you read timestamps from databases, tools, or\n"
+        "conversation history they are ALWAYS in UTC. CONVERT\n"
+        "them to the user's local timezone before speaking the\n"
+        "time. Never speak a UTC timestamp aloud unless the\n"
+        "user explicitly asks for UTC.\n"
+        "The `current_time` tool with an empty timezone argument\n"
+        "returns the user's local time — use it to verify the\n"
+        "current time offset if you're unsure about DST status.\n"
     )
 
 
@@ -6878,18 +6974,24 @@ async def entrypoint(ctx: JobContext) -> None:
                     session._jarvis_turn_start_monotonic = None
                 except Exception as te:
                     logger.debug(f"[telemetry] write skipped: {te}")
-                # Trim chat_ctx if it has grown too long. Access via
-                # session.chat_ctx.messages — the live list the agent's
-                # LLM receives on every turn. Keep the most recent
-                # CTX_MAX_TURNS items; excess head items are discarded.
+                # Trim the conversation if it has grown too long. The
+                # session's own mutable context is `session.history`
+                # (livekit-agents 1.5: chat_ctx lives on Agent and is
+                # read-only; AgentSession exposes the writable ctx as
+                # `.history`). `truncate` drops oldest items in place,
+                # preserving the system message + function-call pair
+                # boundaries. Pre-2026-06 this read `session.chat_ctx`
+                # (AttributeError, silently swallowed) so compaction never
+                # ran — the token-aware pre-flight pruner was the only
+                # backstop; this restores the intended CTX_MAX_TURNS cap.
                 try:
-                    msgs = session.chat_ctx.messages
-                    if len(msgs) > CTX_MAX_TURNS:
-                        drop = len(msgs) - CTX_MAX_TURNS
-                        del msgs[:drop]
+                    hist = getattr(session, "history", None)
+                    if hist is not None and len(hist.items) > CTX_MAX_TURNS:
+                        before = len(hist.items)
+                        hist.truncate(max_items=CTX_MAX_TURNS)
                         logger.info(
-                            f"[ctx-compact] dropped {drop} oldest messages "
-                            f"({len(msgs)} remaining)"
+                            f"[ctx-compact] truncated {before - len(hist.items)} "
+                            f"oldest items ({len(hist.items)} remaining)"
                         )
                 except Exception as ce:
                     logger.debug(f"[ctx-compact] could not trim: {ce}")
