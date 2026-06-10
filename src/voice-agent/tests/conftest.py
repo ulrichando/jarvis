@@ -52,3 +52,30 @@ def pytest_configure(config) -> None:
     # tasks that leak across tests. Tests that specifically validate the
     # consolidator use monkeypatch.setenv("JARVIS_MEMORY_CONSOLIDATOR", "1").
     os.environ.setdefault("JARVIS_MEMORY_CONSOLIDATOR", "0")
+
+    # Hermetic suite: live per-machine runtime state must never reach
+    # prompt-shape assertions. A developer's ~/.jarvis/SOUL.md override
+    # replaces the entire 18-section persona (so soul-parity tests would
+    # assert against the override), and the real conversations.db gets
+    # rendered into the RECENT CONVERSATIONS block of the volatile
+    # suffix. Point both at paths that don't exist; tests that exercise
+    # these features set their own fixture paths explicitly.
+    os.environ.setdefault(
+        "JARVIS_SOUL_OVERRIDE_PATH",
+        str(Path(tempfile.gettempdir()) / "jarvis-test-no-soul" / "SOUL.md"),
+    )
+    os.environ.setdefault(
+        "JARVIS_CONVERSATION_PATH",
+        str(Path(tempfile.mkdtemp(prefix="jarvis-test-conv-")) / "conversations.db"),
+    )
+
+    # Same hermeticity rule for telemetry: pipeline.turn_telemetry binds
+    # DEFAULT_DB_PATH at import from JARVIS_TELEMETRY_PATH, and any code
+    # path that logs by default (e.g. the computer_use audit trail) would
+    # otherwise write into the developer's real
+    # ~/.local/share/jarvis/turn_telemetry.db during the suite. Tests that
+    # assert on telemetry pass their own tmp db_path explicitly.
+    os.environ.setdefault(
+        "JARVIS_TELEMETRY_PATH",
+        str(Path(tempfile.mkdtemp(prefix="jarvis-test-tele-")) / "turn_telemetry.db"),
+    )
