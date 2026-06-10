@@ -255,6 +255,83 @@ class TestFailurePaths:
 
 
 # ---------------------------------------------------------------------------
+# Wall-clock scaling — 2026-06 upgrade (timeout follows the step budget;
+# the old fixed 180s killed legitimate 35/50-step flows mid-run)
+# ---------------------------------------------------------------------------
+
+
+class TestTaskTimeoutScaling:
+    def test_scales_with_step_budget(self, monkeypatch):
+        monkeypatch.delenv("JARVIS_BROWSER_TASK_TIMEOUT_S", raising=False)
+        assert browser._task_timeout_s(15) == 180.0      # floor — quick lookups unchanged
+        assert browser._task_timeout_s(35) == 360.0      # 45 + 9*35
+        assert browser._task_timeout_s(50) == 495.0      # 45 + 9*50
+        assert browser._task_timeout_s(100) == 600.0     # cap
+
+    def test_env_override_wins(self, monkeypatch):
+        monkeypatch.setenv("JARVIS_BROWSER_TASK_TIMEOUT_S", "42")
+        assert browser._task_timeout_s(50) == 42.0
+
+    def test_garbage_env_ignored(self, monkeypatch):
+        monkeypatch.setenv("JARVIS_BROWSER_TASK_TIMEOUT_S", "garbage")
+        assert browser._task_timeout_s(50) == 495.0
+
+
+# ---------------------------------------------------------------------------
+# Runner optional-kwarg compat filter — 2026-06 upgrade (unknown Agent kwargs
+# degrade with a stderr note instead of failing the whole task)
+# ---------------------------------------------------------------------------
+
+
+def _import_runner():
+    """Import browser_use_bridge.runner with its stream-redirect side effects
+    contained (the module re-points sys.stdout/stderr at import — fine as a
+    subprocess script, hostile inside pytest)."""
+    saved_out, saved_err = sys.stdout, sys.stderr
+    try:
+        import browser_use_bridge.runner as runner
+    finally:
+        sys.stdout, sys.stderr = saved_out, saved_err
+    return runner
+
+
+class TestRunnerKwargFilter:
+    def test_drops_unsupported_optional_kwargs(self):
+        runner = _import_runner()
+
+        class _Agent:
+            def __init__(self, task, llm, browser_profile=None, use_thinking=False):
+                pass
+
+        kw = {"task": "t", "llm": object(), "browser_profile": None,
+              "use_thinking": False, "flash_mode": True, "fallback_llm": object()}
+        out = runner._filter_supported_kwargs(_Agent, dict(kw))
+        assert "flash_mode" not in out
+        assert "fallback_llm" not in out
+        assert out["task"] == "t" and "use_thinking" in out
+
+    def test_keeps_everything_when_agent_takes_var_kwargs(self):
+        runner = _import_runner()
+
+        class _Agent:
+            def __init__(self, task, **kwargs):
+                pass
+
+        kw = {"task": "t", "flash_mode": True}
+        assert runner._filter_supported_kwargs(_Agent, dict(kw)) == kw
+
+    def test_required_kwargs_always_survive(self):
+        runner = _import_runner()
+
+        class _Agent:
+            def __init__(self, task, llm):
+                pass
+
+        out = runner._filter_supported_kwargs(_Agent, {"task": "t", "llm": 1})
+        assert out == {"task": "t", "llm": 1}
+
+
+# ---------------------------------------------------------------------------
 # (f) Import hygiene — voice venv has no browser_use
 # ---------------------------------------------------------------------------
 
@@ -263,6 +340,8 @@ class TestImportHygiene:
     def test_tool_module_does_not_import_browser_use(self):
         # tools.browser is already imported at module top; importing it must not
         # have dragged browser_use into sys.modules (it's absent in the voice venv).
+        # (browser_use_bridge.runner is imported by the kwarg-filter tests above,
+        # but its browser_use imports are all lazy/in-function, so this holds.)
         assert "browser_use" not in sys.modules
 
     def test_runner_path_points_outside_tools_dir(self):
