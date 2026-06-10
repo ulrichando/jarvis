@@ -102,6 +102,35 @@ _EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="jarvis-acp")
 _MAX_TOOL_LOOP = 16
 
 
+def _install_provider_sanitizers() -> None:
+    """Install the provider-shape sanitizer patches in this process.
+
+    The voice agent installs these at jarvis_agent import time; the ACP
+    adapter runs in its own process but builds the same dispatching LLM
+    over the same registry tools, so it needs the same request/response
+    fixups. Most critically, without ``anthropic_strict_schema`` every
+    Anthropic request whose tool schemas contain object nodes lacking
+    ``additionalProperties: false`` returns 400 (live failure 2026-05-11)
+    — and Anthropic is the dispatcher's primary provider. Each install()
+    is idempotent, so calling this once per LLM build is safe.
+    """
+    import importlib
+
+    for mod_name in (
+        "sanitizers.anthropic_strict_schema",
+        "sanitizers.strict_schema_relax",
+        "sanitizers.tool_name",
+        "sanitizers.deepseek_roundtrip",
+    ):
+        try:
+            importlib.import_module(mod_name).install()
+        except Exception:
+            logger.warning(
+                "ACP: could not install %s — the matching provider may "
+                "reject tool requests", mod_name, exc_info=True,
+            )
+
+
 def _extract_text(prompt: list) -> str:
     """Pull plain text out of an ACP prompt's content blocks."""
     parts: list[str] = []
@@ -369,21 +398,30 @@ class JarvisACPAgent(acp.Agent):
         if not user_text:
             return PromptResponse(stop_reason="end_turn")
 
+        queued_depth = 0
         with state.runtime_lock:
             if state.is_running:
                 state.queued_prompts.append(user_text)
-                if self._conn:
-                    depth = len(state.queued_prompts)
-                    await send_update(
-                        self._conn,
-                        session_id,
-                        acp.update_agent_message_text(
-                            f"Queued for the next turn ({depth} queued)."
-                        ),
-                    )
-                return PromptResponse(stop_reason="end_turn")
-            state.is_running = True
-            state.current_prompt_text = user_text
+                queued_depth = len(state.queued_prompts)
+            else:
+                state.is_running = True
+                state.current_prompt_text = user_text
+
+        if queued_depth:
+            # Notify OUTSIDE the lock. runtime_lock is a threading.Lock;
+            # awaiting while holding it would block any concurrent
+            # acquirer on this loop thread (cancel, a third prompt) —
+            # and since the blocked acquirer freezes the loop, the
+            # holder could never resume to release: full deadlock.
+            if self._conn:
+                await send_update(
+                    self._conn,
+                    session_id,
+                    acp.update_agent_message_text(
+                        f"Queued for the next turn ({queued_depth} queued)."
+                    ),
+                )
+            return PromptResponse(stop_reason="end_turn")
 
         if state.cancel_event is not None:
             state.cancel_event.clear()
@@ -514,6 +552,8 @@ class JarvisACPAgent(acp.Agent):
         """Build the dispatching LLM for this session."""
         if self._llm_builder is not None:
             return self._llm_builder()
+        # Real providers need the provider-shape patches; test seams don't.
+        _install_provider_sanitizers()
         from providers.llm import build_dispatching_llm
 
         return build_dispatching_llm()
@@ -539,16 +579,31 @@ class JarvisACPAgent(acp.Agent):
         ctx_items: list = [
             ChatMessage(role="system", content=[system_prompt]),
         ]
+        seen_call_ids: set[str] = set()
         for msg in state.history:
             role = msg.get("role")
             content = msg.get("content")
             if role in ("user", "assistant") and isinstance(content, str) and content:
                 ctx_items.append(ChatMessage(role=role, content=[content]))
+            elif role == "function_call":
+                call_id = str(msg.get("call_id") or "")
+                if call_id:
+                    ctx_items.append(FunctionCall(
+                        call_id=call_id,
+                        name=str(msg.get("name") or ""),
+                        arguments=str(msg.get("arguments") or "{}"),
+                    ))
+                    seen_call_ids.add(call_id)
             elif role == "tool":
-                call_id = msg.get("tool_call_id") or msg.get("call_id") or ""
+                call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
                 output = msg.get("content")
                 name = msg.get("tool_name") or msg.get("name") or ""
-                if call_id and isinstance(output, str):
+                # Only rebuild outputs whose call row precedes them — an
+                # orphan FunctionCallOutput gets dropped by the provider
+                # formatter anyway (one warning per item per turn).
+                # Sessions persisted before function_call rows existed
+                # have only orphans; skipping them here silences that.
+                if call_id in seen_call_ids and isinstance(output, str):
                     ctx_items.append(FunctionCallOutput(
                         call_id=call_id, name=name, output=output, is_error=False,
                     ))
@@ -618,12 +673,23 @@ class JarvisACPAgent(acp.Agent):
                 stop_reason = "end_turn"
                 break
 
-            # Add the tool calls to chat_ctx and dispatch each.
+            # Add the tool calls to chat_ctx and dispatch each. Persist
+            # them to history too — the next prompt rebuilds chat_ctx
+            # from history, and a tool-result row without its matching
+            # call row is dropped as an orphan by the provider
+            # formatter, silently erasing all prior tool evidence.
             for tc in tool_calls:
+                arguments_json = json.dumps(tc["args"], ensure_ascii=False)
+                state.history.append({
+                    "role": "function_call",
+                    "call_id": tc["id"],
+                    "name": tc["name"],
+                    "arguments": arguments_json,
+                })
                 ctx_items.append(FunctionCall(
                     call_id=tc["id"],
                     name=tc["name"],
-                    arguments=json.dumps(tc["args"], ensure_ascii=False),
+                    arguments=arguments_json,
                 ))
 
             for tc in tool_calls:
@@ -636,7 +702,7 @@ class JarvisACPAgent(acp.Agent):
                 # Execute the tool. The handler emits its own JSON-shape
                 # result string; we surface that back as ToolCallProgress.
                 tool_result = await self._dispatch_tool_call(
-                    tc["name"], tc["args"], tools, loop,
+                    state, tc["name"], tc["args"], tools, loop,
                 )
 
                 # Track and persist the result.
@@ -681,6 +747,7 @@ class JarvisACPAgent(acp.Agent):
 
     async def _dispatch_tool_call(
         self,
+        state: SessionState,
         tool_name: str,
         args: dict[str, Any],
         tools: list,
@@ -698,7 +765,7 @@ class JarvisACPAgent(acp.Agent):
         # Event-loop-side edit approval. When the IDE denies, we never
         # invoke the actual tool — the supervisor gets the denial back
         # as the tool result and acknowledges it on the next round.
-        approval_result = await self._maybe_approve_edit(tool_name, args)
+        approval_result = await self._maybe_approve_edit(state, tool_name, args)
         if approval_result is not None:
             return approval_result
 
@@ -735,6 +802,7 @@ class JarvisACPAgent(acp.Agent):
 
     async def _maybe_approve_edit(
         self,
+        state: SessionState,
         tool_name: str,
         args: dict[str, Any],
     ) -> Optional[str]:
@@ -742,7 +810,9 @@ class JarvisACPAgent(acp.Agent):
 
         Returns a JSON error string when the IDE denies (caller surfaces
         it as the tool result); ``None`` when no approval was needed or
-        the user approved.
+        the user approved. Policy + permission routing use the session
+        that owns the tool call — never another concurrently-running
+        session's.
         """
         from .edit_approval import build_edit_proposal, should_auto_approve_edit
         from .permissions import is_permissive_mode
@@ -762,44 +832,41 @@ class JarvisACPAgent(acp.Agent):
         if proposal is None or self._conn is None:
             return None
 
-        # Auto-approve under workspace/session policy when applicable.
-        for state in list(self.session_manager._sessions.values()):
-            if state.is_running:
-                policy, cwd = self._approval_policy_for_state(state)
-                try:
-                    if should_auto_approve_edit(proposal, policy, cwd):
-                        return None
-                except Exception:
-                    logger.debug("Auto-approve check failed", exc_info=True)
-                # Use the active session's id for the permission request.
-                from .edit_approval import build_acp_edit_tool_call
-                from acp.schema import PermissionOption
+        # Auto-approve under this session's workspace/session policy.
+        policy, cwd = self._approval_policy_for_state(state)
+        try:
+            if should_auto_approve_edit(proposal, policy, cwd):
+                return None
+        except Exception:
+            logger.debug("Auto-approve check failed", exc_info=True)
 
-                options = [
-                    PermissionOption(option_id="allow_once", kind="allow_once", name="Allow edit"),
-                    PermissionOption(option_id="deny", kind="reject_once", name="Deny"),
-                ]
-                tool_call = build_acp_edit_tool_call(proposal)
-                try:
-                    response = await self._conn.request_permission(
-                        session_id=state.session_id,
-                        tool_call=tool_call,
-                        options=options,
-                    )
-                except Exception as exc:
-                    logger.warning("Edit approval request failed: %s", exc)
-                    return json.dumps(
-                        {"error": "Edit approval denied (request failed)"},
-                        ensure_ascii=False,
-                    )
-                outcome = getattr(response, "outcome", None) if response else None
-                if (
-                    getattr(outcome, "outcome", None) == "selected"
-                    and getattr(outcome, "option_id", None) == "allow_once"
-                ):
-                    return None
-                return json.dumps(
-                    {"error": "Edit approval denied by ACP client; file was not modified."},
-                    ensure_ascii=False,
-                )
-        return None
+        from .edit_approval import build_acp_edit_tool_call
+        from acp.schema import PermissionOption
+
+        options = [
+            PermissionOption(option_id="allow_once", kind="allow_once", name="Allow edit"),
+            PermissionOption(option_id="deny", kind="reject_once", name="Deny"),
+        ]
+        tool_call = build_acp_edit_tool_call(proposal)
+        try:
+            response = await self._conn.request_permission(
+                session_id=state.session_id,
+                tool_call=tool_call,
+                options=options,
+            )
+        except Exception as exc:
+            logger.warning("Edit approval request failed: %s", exc)
+            return json.dumps(
+                {"error": "Edit approval denied (request failed)"},
+                ensure_ascii=False,
+            )
+        outcome = getattr(response, "outcome", None) if response else None
+        if (
+            getattr(outcome, "outcome", None) == "selected"
+            and getattr(outcome, "option_id", None) == "allow_once"
+        ):
+            return None
+        return json.dumps(
+            {"error": "Edit approval denied by ACP client; file was not modified."},
+            ensure_ascii=False,
+        )
