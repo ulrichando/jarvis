@@ -17,7 +17,11 @@ CREATE INDEX IF NOT EXISTS idx_readings_ts ON readings(ts_utc);
 
 def init_ledger(db_path: Path = DEFAULT_LEDGER_DB) -> None:
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(db_path)); con.executescript(_SCHEMA); con.commit(); con.close()
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.executescript(_SCHEMA); con.commit()
+    finally:
+        con.close()   # try/finally so a locked/full-DB error can't leak the connection
 
 def append_reading(*, ts_utc: str, window_start: Optional[str], window_end: Optional[str],
                    n_turns: int, per_axis: dict, composite: float, guardrail_flags: dict,
@@ -26,18 +30,23 @@ def append_reading(*, ts_utc: str, window_start: Optional[str], window_end: Opti
     """Append one fitness reading. Returns new row id. Append-only: no update/delete API."""
     init_ledger(db_path)
     con = sqlite3.connect(str(db_path))
-    cur = con.execute(
-        "INSERT INTO readings(ts_utc,window_start,window_end,n_turns,per_axis_json,composite,"
-        "guardrail_json,passed,candidate_id) VALUES (?,?,?,?,?,?,?,?,?)",
-        (ts_utc, window_start, window_end, n_turns, json.dumps(per_axis), composite,
-         json.dumps(guardrail_flags), 1 if passed else 0, candidate_id))
-    con.commit(); rid = cur.lastrowid; con.close(); return rid
+    try:
+        cur = con.execute(
+            "INSERT INTO readings(ts_utc,window_start,window_end,n_turns,per_axis_json,composite,"
+            "guardrail_json,passed,candidate_id) VALUES (?,?,?,?,?,?,?,?,?)",
+            (ts_utc, window_start, window_end, n_turns, json.dumps(per_axis), composite,
+             json.dumps(guardrail_flags), 1 if passed else 0, candidate_id))
+        con.commit(); return cur.lastrowid
+    finally:
+        con.close()
 
 def read_readings(limit: int = 50, db_path: Path = DEFAULT_LEDGER_DB) -> list[dict]:
     if not Path(db_path).exists(): return []
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True); con.row_factory = sqlite3.Row
-    rows = con.execute("SELECT * FROM readings ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-    con.close()
+    try:
+        rows = con.execute("SELECT * FROM readings ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    finally:
+        con.close()
     out = []
     for r in rows:
         d = dict(r); d["per_axis"] = json.loads(d.pop("per_axis_json"))

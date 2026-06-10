@@ -151,6 +151,32 @@ def test_ttfw_p90():
     assert compute_signals(none_turns).ttfw_p90_ms == 0.0
 
 
+def test_ttfw_outlier_ceiling(monkeypatch):
+    """Measurement-artifact outliers (e.g. a 201s 'time to first word') are
+    dropped before the percentile so they can't dominate the p90 tail and
+    spuriously zero the latency axis. Genuinely-slow-but-plausible turns
+    still count."""
+    monkeypatch.delenv("JARVIS_TTFW_CEILING_MS", raising=False)  # default 20s
+    turns = [{"ttfw_ms": 800}, {"ttfw_ms": 1000}, {"ttfw_ms": 1200}, {"ttfw_ms": 201528}]
+    # 201528 ms is filtered → p90 over [800,1000,1200] = 1200, not 201528.
+    assert compute_signals(turns).ttfw_p90_ms == 1200.0
+
+
+def test_ttfw_ceiling_disabled(monkeypatch):
+    """JARVIS_TTFW_CEILING_MS=0 disables the filter (escape hatch)."""
+    monkeypatch.setenv("JARVIS_TTFW_CEILING_MS", "0")
+    turns = [{"ttfw_ms": 800}, {"ttfw_ms": 201528}]
+    assert compute_signals(turns).ttfw_p90_ms == 201528.0
+
+
+def test_ttfw_ceiling_keeps_plausible_slow_turns(monkeypatch):
+    """A genuinely slow turn just under the ceiling is NOT dropped — the
+    wedge-detecting p90 must still see real slowness."""
+    monkeypatch.setenv("JARVIS_TTFW_CEILING_MS", "20000")
+    turns = [{"ttfw_ms": 1000}, {"ttfw_ms": 18000}]
+    assert compute_signals(turns).ttfw_p90_ms == 18000.0
+
+
 def test_interruption_rate():
     turns = [
         {"interrupted": 1},
