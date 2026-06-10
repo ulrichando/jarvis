@@ -64,6 +64,7 @@ combos in ``key`` are hard-blocked regardless of approval.
 """
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import os
@@ -126,8 +127,11 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
         "  3. Execute via element=12 (click the center of window 12),\n"
         "     or from_element=5 to_element=8 (drag from window 5 to\n"
         "     window 8). Element = 1-based index from the SOM capture.\n"
-        "  4. action='capture' mode='vision' to verify via a clean\n"
-        "     screenshot (no overlays).\n"
+        "  4. After every mutating action the post-action screen is\n"
+        "     captured AUTOMATICALLY and attached to your next turn —\n"
+        "     do not spend a capture call just to see the result.\n"
+        "     Recapture with mode='som' only when you need fresh\n"
+        "     element numbers (windows opened/closed/moved).\n"
         "\n"
         "FALLBACK WORKFLOW (pixel coordinates — when SOM isn't fresh):\n"
         "  1. action='capture' mode='vision' to see the raw screen.\n"
@@ -469,25 +473,24 @@ def _detect_desktop_environment() -> Dict[str, Any]:
 
 
 def _remember_app_launch(command: str) -> None:
-    """Persist a successful app-launch command so the supervisor learns
-    the app→binary mapping across sessions. Best-effort — never breaks
-    the tool if memory write fails."""
-    try:
-        from pipeline.memory_extractor import _publish_event_async
-        label = command.split("/")[-1] if "/" in command else command
-        _publish_event_async(
-            "memory.value.upserted",
-            {
-                "type": "app_launch",
-                "key": f"app_launch:{label}",
-                "value": f"The '{label}' application launches via '{command}' on this machine.",
-                "category": "app_launch",
-                "source": "computer_use",
-            },
-        )
-        logger.info("[app-launch] remembered: %s → %s", label, command)
-    except Exception:
-        pass
+    """No-op: cross-session app→binary learning is currently retired.
+
+    This used to publish a ``memory.value.upserted`` event to
+    ``pipeline.memory_extractor`` — a module removed in the Hermes teardown
+    when JARVIS moved to file-backed memory. The import raised
+    ``ModuleNotFoundError`` that the bare ``except`` swallowed, so the
+    feature had been silently dead since that removal (no crash, no write,
+    no consumer ever read the ``app_launch`` facts back).
+
+    Deliberately NOT repointed at ``file_memory.add(...)``: the three
+    file-backed targets (MEMORY/USER/PROCEDURES) are small, curated,
+    prompt-injected budgets (``memory`` runs ~2.2 KB and is typically near
+    full). Machine trivia like "firefox launches via firefox" would either
+    fail to write when full or evict real user facts. Reviving this needs a
+    dedicated app-launch cache + a reader in the launch/discovery path —
+    feature work, tracked separately, not a drop-in repoint.
+    """
+    return
 
 # Hard-blocked key combos — destructive regardless of approval level. Linux/X11
 # equivalents of the upstream macOS list (logout / lock / kill-session).
@@ -655,6 +658,7 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> str:
         result = _dispatch(backend, action, args)
     except Exception as e:  # noqa: BLE001 — a tool error must not crash the turn
         logger.exception("computer_use %s failed", action)
+        _audit_action(action, args, success=False)
         return json.dumps({"error": f"{action} failed: {e}"})
 
     # Vision-feedback loop (P2a): record the action label for the recent-actions
@@ -665,7 +669,104 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> str:
         computer_use_vision.record_action(_summarize_action(action, args))
     except Exception:
         pass
+    if action in _DESTRUCTIVE_ACTIONS:
+        _publish_post_action_frame(backend, action)
+    _audit_action(action, args, success=_result_succeeded(result))
     return result
+
+
+def _publish_post_action_frame(backend: ComputerUseBackend, action: str) -> None:
+    """Claude-computer-use parity: after a mutating action, grab a fresh frame
+    and publish it to the vision cache so the supervisor SEES the result of
+    its own action in the next generation — no extra capture call needed.
+
+    Uses the backend's raw ``_screenshot_b64`` grab (NOT ``capture()``):
+    a ``mode='vision'`` capture clears the SOM element cache, which would
+    break som→click(element)→click(element) chains. Backends without the
+    raw grab (e.g. NoopBackend) silently skip. Best-effort; disable with
+    ``JARVIS_CU_AUTO_SCREENSHOT=0``.
+    """
+    if os.environ.get("JARVIS_CU_AUTO_SCREENSHOT", "1").strip().lower() in {"0", "false", "off"}:
+        return
+    grab = getattr(backend, "_screenshot_b64", None)
+    if grab is None:
+        return
+    try:
+        png_b64, width, height = grab()
+        if not png_b64:
+            return
+        from pipeline import computer_use_vision
+        computer_use_vision.publish_capture(
+            png_b64=png_b64, width=width, height=height,
+            action_label=f"after {action}",
+        )
+    except Exception:
+        pass
+
+
+# Monotonic step counter for the audit trail (per process).
+_AUDIT_STEP = itertools.count(1)
+
+
+def _result_succeeded(result: str) -> bool:
+    """Did a dispatched action succeed, per its JSON result string?
+
+    Two failure shapes exist: an error envelope ``{"error": ...}`` (schema
+    rejects / blocked) and a failed ``ActionResult`` rendered as
+    ``{"ok": false, ...}`` (e.g. element index out of range — xdotool never
+    ran). Treat BOTH as failures for the audit row; default True for any
+    non-dict / unparseable result so a healthy action is never mis-flagged.
+    """
+    try:
+        data = json.loads(result)
+    except Exception:
+        return True
+    if not isinstance(data, dict):
+        return True
+    if "error" in data:
+        return False
+    if data.get("ok") is False:
+        return False
+    return True
+
+
+def _redact_audit_params(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy of args safe to persist: typed text may contain secrets
+    (passwords typed into GUI password fields), so only its length is
+    recorded — never the content."""
+    out = {k: v for k, v in args.items() if k != "text" and v is not None}
+    if isinstance(args.get("text"), str):
+        out["text_chars"] = len(args["text"])
+    return out
+
+
+def _audit_action(action: str, args: Dict[str, Any], *, success: bool) -> None:
+    """Append a destructive action to the ``computer_use_actions`` audit
+    table. Best-effort — the tool must never fail because the audit DB is
+    locked/missing (the writer swallows its own sqlite errors too).
+
+    The table + writer predate this surface (the retired in-tool loop
+    called it); the direct-tool port had dropped the wiring, leaving real
+    mouse/keyboard actions with no persistent audit row.
+    """
+    if action not in _DESTRUCTIVE_ACTIONS:
+        return
+    try:
+        from pipeline import turn_telemetry as _tt
+
+        _tt.log_computer_use_action(
+            # Read DEFAULT_DB_PATH at call time (module attribute) so test
+            # monkeypatching and JARVIS_TELEMETRY_PATH are honored.
+            db_path=_tt.DEFAULT_DB_PATH,
+            handoff_id="direct",
+            step=next(_AUDIT_STEP),
+            model_used=None,
+            action=action,
+            params_json=json.dumps(_redact_audit_params(args), ensure_ascii=False),
+            success=success,
+        )
+    except Exception:
+        pass
 
 
 def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:

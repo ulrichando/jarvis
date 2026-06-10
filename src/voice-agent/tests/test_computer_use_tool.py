@@ -292,16 +292,6 @@ def test_noop_backend_is_available_and_records():
 # ---------------------------------------------------------------------------
 
 
-def _capture_has_som_overlays(png_b64: str) -> bool:
-    """Check if a base64 PNG shows signs of SOM overlay rendering."""
-    import struct
-    import zlib
-    raw = base64.b64decode(png_b64, validate=True)
-    # Scan for IHDR then scan for non-background colours in pixel data;
-    # a simpler heuristic: the PNG is at least valid and non-trivial.
-    return len(raw) > 300  # overlay rendering adds enough bytes
-
-
 def test_x11_backend_som_overlay_rendering(monkeypatch):
     """SOM mode returns a screenshot WITH overlaid numbered rectangles."""
     backend = cub.X11ComputerUseBackend()
@@ -507,7 +497,7 @@ def test_element_takes_priority_over_coordinate(noop_available):
 
 
 def test_som_defaults_in_capture_schema(noop_available):
-    """capture() with no mode specified should use 'vision' (unchanged default)."""
+    """capture() with no mode specified defaults to 'som' (numbered overlays)."""
     out = json.loads(cu.handle_computer_use({"action": "capture"}))
     assert out["ok"] is True
     assert out["mode"] == "som"
@@ -910,3 +900,205 @@ def test_new_destructive_actions_require_approval(monkeypatch, noop_available):
         out = json.loads(cu.handle_computer_use(args))
         assert out["error"] == "denied by user", f"{action} should require approval"
         cu._always_allow = set()  # reset per-action approval
+
+
+# ---------------------------------------------------------------------------
+# mouse_move element resolution — 2026-06 review regression
+# (move_cursor unpacked _resolve_element's 3-tuple into 2 names, so
+# mouse_move element=N raised ValueError on every call)
+# ---------------------------------------------------------------------------
+
+
+def test_x11_move_cursor_with_element(monkeypatch):
+    """move_cursor(element=1) resolves to the element's center, no crash."""
+    backend = cub.X11ComputerUseBackend()
+    backend.start()
+    backend._last_elements = [
+        cub.UIElement(index=1, bounds=(10, 20, 100, 50)),  # center: (60, 45)
+    ]
+    recorded = []
+
+    def _fake_run(argv):
+        recorded.append(argv)
+        return (0, "", "")
+
+    monkeypatch.setattr(backend, "_run", _fake_run)
+
+    res = backend.move_cursor(element=1)
+    assert res.ok, res.message
+    assert res.meta == {"x": 60, "y": 45}
+    assert any("mousemove" in argv and "60" in argv and "45" in argv
+               for argv in recorded)
+
+
+def test_x11_move_cursor_element_out_of_range():
+    """move_cursor with a bad element index returns the resolver's error."""
+    backend = cub.X11ComputerUseBackend()
+    backend.start()
+    backend._last_elements = [cub.UIElement(index=1, bounds=(0, 0, 10, 10))]
+    res = backend.move_cursor(element=5)
+    assert not res.ok
+    assert "out of range" in (res.message or "").lower()
+
+
+def test_mouse_move_dispatch_with_element(noop_available):
+    """mouse_move element=N forwards through the tool dispatch."""
+    out = json.loads(cu.handle_computer_use({"action": "mouse_move", "element": 2}))
+    assert out["ok"] is True
+    kw = noop_available.calls[-1][1]
+    assert kw.get("element") == 2
+
+
+# ---------------------------------------------------------------------------
+# wait clamp (base backend) — schema promises max 30s
+# ---------------------------------------------------------------------------
+
+
+def test_wait_clamps_seconds(monkeypatch):
+    slept = []
+    monkeypatch.setattr(cub.time, "sleep", lambda s: slept.append(s))
+    b = NoopBackend()
+    b.wait(9999.0)
+    b.wait(-5.0)
+    assert slept == [30.0, 0.0]
+
+
+# ---------------------------------------------------------------------------
+# Audit trail — 2026-06 review regression (the computer_use_actions writer
+# existed in turn_telemetry but the direct-tool surface never called it)
+# ---------------------------------------------------------------------------
+
+
+def _audit_rows(db):
+    import sqlite3
+    return list(sqlite3.connect(db).execute(
+        "SELECT handoff_id, action, success, params_json "
+        "FROM computer_use_actions ORDER BY step"
+    ))
+
+
+def test_destructive_actions_write_audit_rows(noop_available, tmp_path, monkeypatch):
+    from pipeline import turn_telemetry as tt
+
+    db = tmp_path / "tele.db"
+    tt.init_db(db)
+    monkeypatch.setattr(tt, "DEFAULT_DB_PATH", db)
+
+    out = json.loads(cu.handle_computer_use({"action": "click", "coordinate": [5, 6]}))
+    assert out["ok"] is True
+
+    rows = _audit_rows(db)
+    assert len(rows) == 1
+    handoff_id, action, success, params_json = rows[0]
+    assert handoff_id == "direct"
+    assert action == "click"
+    assert success == 1
+    assert json.loads(params_json)["coordinate"] == [5, 6]
+
+
+def test_audit_redacts_typed_text(noop_available, tmp_path, monkeypatch):
+    """Typed text may contain passwords — only its length is persisted."""
+    from pipeline import turn_telemetry as tt
+
+    db = tmp_path / "tele.db"
+    tt.init_db(db)
+    monkeypatch.setattr(tt, "DEFAULT_DB_PATH", db)
+
+    cu.handle_computer_use({"action": "type", "text": "hunter2-secret"})
+    rows = _audit_rows(db)
+    assert len(rows) == 1
+    params = json.loads(rows[0][3])
+    assert "text" not in params
+    assert params["text_chars"] == len("hunter2-secret")
+    assert "hunter2" not in rows[0][3]
+
+
+def test_safe_actions_not_audited(noop_available, tmp_path, monkeypatch):
+    from pipeline import turn_telemetry as tt
+
+    db = tmp_path / "tele.db"
+    tt.init_db(db)
+    monkeypatch.setattr(tt, "DEFAULT_DB_PATH", db)
+
+    cu.handle_computer_use({"action": "capture", "mode": "vision"})
+    cu.handle_computer_use({"action": "list_apps"})
+    assert _audit_rows(db) == []
+
+
+def test_audit_marks_failed_action_unsuccessful(tmp_path, monkeypatch):
+    """A dispatched-but-failed action ({"ok": false}, no "error" key — e.g.
+    element index out of range) must audit success=0, not 1. Live-verify
+    finding 2026-06: the old heuristic only checked for an "error" key."""
+    from pipeline import turn_telemetry as tt
+
+    # Real X11 backend with a fake _xdo so resolve-failure is exercised
+    # without touching a display.
+    monkeypatch.setenv("JARVIS_COMPUTER_USE_BACKEND", "x11")
+    monkeypatch.setattr(cu, "x11_backend_available", lambda: True)
+    cu.reset_backend_for_tests()
+    backend = cu._get_backend()
+    backend._last_elements = []  # no SOM capture → element resolve fails
+
+    db = tmp_path / "tele.db"
+    tt.init_db(db)
+    monkeypatch.setattr(tt, "DEFAULT_DB_PATH", db)
+
+    out = json.loads(cu.handle_computer_use({"action": "click", "element": 5}))
+    assert out["ok"] is False  # element resolve failed, xdotool never ran
+    rows = _audit_rows(db)
+    assert len(rows) == 1
+    assert rows[0][1] == "click"
+    assert rows[0][2] == 0, "failed action must audit success=0"
+    cu.reset_backend_for_tests()
+
+
+def test_result_succeeded_shapes():
+    """Unit-pin the three result shapes the audit success flag reads."""
+    assert cu._result_succeeded('{"ok": true, "action": "click"}') is True
+    assert cu._result_succeeded('{"ok": false, "message": "out of range"}') is False
+    assert cu._result_succeeded('{"error": "blocked"}') is False
+    assert cu._result_succeeded("not json") is True  # default: don't mis-flag
+
+
+# ---------------------------------------------------------------------------
+# Post-action auto-screenshot — 2026-06 Claude-CU parity upgrade
+# (after a mutating action the fresh screen is published to the vision cache
+# so the supervisor sees the result without another capture call)
+# ---------------------------------------------------------------------------
+
+
+def test_destructive_action_publishes_post_action_frame(noop_available, monkeypatch):
+    from pipeline import computer_use_vision as cuv
+
+    cuv.clear()
+    noop_available._screenshot_b64 = lambda: ("ZZZZ", 10, 10)
+
+    out = json.loads(cu.handle_computer_use({"action": "click", "coordinate": [1, 2]}))
+    assert out["ok"] is True
+
+    frame = cuv.take_current()
+    assert frame is not None
+    assert frame["png_b64"] == "ZZZZ"
+    assert frame["action_label"] == "after click"
+    cuv.clear()
+
+
+def test_auto_screenshot_env_kill_switch(noop_available, monkeypatch):
+    from pipeline import computer_use_vision as cuv
+
+    cuv.clear()
+    monkeypatch.setenv("JARVIS_CU_AUTO_SCREENSHOT", "0")
+    noop_available._screenshot_b64 = lambda: ("ZZZZ", 10, 10)
+
+    cu.handle_computer_use({"action": "click", "coordinate": [1, 2]})
+    assert cuv.take_current() is None
+
+
+def test_auto_screenshot_skips_backends_without_raw_grab(noop_available):
+    """NoopBackend has no _screenshot_b64 — the publish must silently skip."""
+    from pipeline import computer_use_vision as cuv
+
+    cuv.clear()
+    out = json.loads(cu.handle_computer_use({"action": "click", "coordinate": [1, 2]}))
+    assert out["ok"] is True
+    assert cuv.take_current() is None

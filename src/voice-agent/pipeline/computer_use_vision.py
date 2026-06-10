@@ -127,6 +127,29 @@ def decide_mode(dispatch_llm=None) -> str:
     return "pixels"
 
 
+def _scale_note(width, height, max_px: int = _MAX_DOWNSCALE_PX) -> str:
+    """Coordinate-honesty note for the model. The injected image is
+    downscaled to max_px, but click coordinates execute in NATIVE screen
+    pixels — without this note the model derives [x, y] from the small
+    image and the click lands short by the scale factor (1.5x off on a
+    1920x1080 screen). Anthropic's reference loop solves this by scaling
+    coordinates transparently; here the model mixes coordinate sources
+    (SOM bounds are native), so we state the mapping instead."""
+    try:
+        w, h = int(width or 0), int(height or 0)
+    except (TypeError, ValueError):
+        return ""
+    longest = max(w, h)
+    if w <= 0 or h <= 0 or longest <= max_px:
+        return ""
+    factor = longest / float(max_px)
+    return (
+        f" [image shown at {int(w / factor)}x{int(h / factor)}; the real screen is "
+        f"{w}x{h} — multiply any pixel coordinates you read off this image "
+        f"by {factor:.2f}, or use SOM element indexes instead]"
+    )
+
+
 def build_injection(*, cap: Optional[dict], mode: str, desc: Optional[str] = None):
     """Return (role, content_list) to add to chat_ctx, or None for no injection.
     pixels → text label + downscaled ImageContent; text → label + description."""
@@ -139,7 +162,8 @@ def build_injection(*, cap: Optional[dict], mode: str, desc: Optional[str] = Non
         if not b64:
             return None
         from livekit.agents.llm import ImageContent
-        return ("user", [f"[screen after: {label}]{trail}",
+        note = _scale_note(cap.get("width"), cap.get("height"))
+        return ("user", [f"[screen after: {label}]{trail}{note}",
                          ImageContent(image="data:image/png;base64," + b64,
                                       inference_detail="auto")])
     if mode == "text":
