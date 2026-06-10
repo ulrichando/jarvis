@@ -251,7 +251,8 @@ def _node_inject_prefix(state: TurnState, config: Optional[RunnableConfig] = Non
         session_min = int((time.monotonic() - _start) / 60) if _start else 0
         turn_n = session._jarvis_turn_count
 
-        msgs = getattr(session.chat_ctx, "messages", None) or []
+        from pipeline.chat_ctx import session_chat_messages
+        msgs = session_chat_messages(session)
         for m in reversed(msgs):
             if getattr(m, "role", None) == "user":
                 content = getattr(m, "content", None)

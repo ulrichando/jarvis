@@ -61,6 +61,7 @@ from typing import Any, Callable
 
 import aiohttp as _aiohttp
 
+from pipeline.chat_ctx import session_chat_messages
 from pipeline.fast_path_classifier import (
     BANTER_FAST_PATH_RE,
     REASONING_FAST_PATH_RE,
@@ -351,7 +352,7 @@ def make_dispatch_handler(
                     _sstart = getattr(session, "_jarvis_session_start", None)
                     _session_min = int((time.monotonic() - _sstart) / 60) if _sstart else 0
                     _turn_n = session._jarvis_turn_count
-                    msgs = getattr(session.chat_ctx, "messages", None) or []
+                    msgs = session_chat_messages(session)
                     for m in reversed(msgs):
                         if getattr(m, "role", None) == "user":
                             content = getattr(m, "content", None)
@@ -406,7 +407,7 @@ def make_dispatch_handler(
                     _sstart = getattr(session, "_jarvis_session_start", None)
                     _session_min = int((time.monotonic() - _sstart) / 60) if _sstart else 0
                     _turn_n = session._jarvis_turn_count
-                    msgs = getattr(session.chat_ctx, "messages", None) or []
+                    msgs = session_chat_messages(session)
                     for m in reversed(msgs):
                         if getattr(m, "role", None) == "user":
                             content = getattr(m, "content", None)
@@ -444,11 +445,7 @@ def make_dispatch_handler(
             try:
                 history = [
                     (m.role, getattr(m, "content", "") or "")
-                    for m in (
-                        session.chat_ctx.messages[-5:]
-                        if hasattr(session, "chat_ctx") and session.chat_ctx
-                        else []
-                    )
+                    for m in session_chat_messages(session)[-5:]
                 ]
             except Exception:
                 history = []
@@ -457,7 +454,7 @@ def make_dispatch_handler(
             # inline path.
             interrupted = False
             try:
-                msgs = getattr(session.chat_ctx, "messages", None) or []
+                msgs = session_chat_messages(session)
                 for m in reversed(msgs):
                     role = getattr(m, "role", None)
                     if role == "assistant":
@@ -526,11 +523,7 @@ def make_dispatch_handler(
             try:
                 history = [
                     (m.role, getattr(m, "content", "") or "")
-                    for m in (
-                        session.chat_ctx.messages[-5:]
-                        if hasattr(session, "chat_ctx") and session.chat_ctx
-                        else []
-                    )
+                    for m in session_chat_messages(session)[-5:]
                 ]
             except Exception:
                 history = []
@@ -557,7 +550,7 @@ def make_dispatch_handler(
                 _session_min = int((time.monotonic() - _sstart) / 60) if _sstart else 0
                 _turn_n = session._jarvis_turn_count
 
-                msgs = getattr(session.chat_ctx, "messages", None) or []
+                msgs = session_chat_messages(session)
 
                 # Detect interrupt: did the LLM's prior assistant
                 # message end mid-sentence?
