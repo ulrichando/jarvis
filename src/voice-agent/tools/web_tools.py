@@ -244,6 +244,17 @@ async def _handle_web_search(args: dict) -> str:
     anchors = anchor_re.findall(html)
     snippets = snippet_re.findall(html)
 
+    # DDG injects sponsored "ad" units that reuse class="result__a" but whose
+    # href is the y.js ad-click tracker (ad_domain/ad_provider/ad_type) instead
+    # of the organic /l/?uddg= redirect. Drop them so a paid placement can't
+    # surface as organic result #1 and mislead the model. (Live-verify finding
+    # 2026-06 — instagram-style ad was being returned as the top result.)
+    def _is_ad(href: str) -> bool:
+        h = href.lower()
+        return "y.js" in h or "ad_domain=" in h or "ad_provider=" in h or "ad_type=" in h
+
+    anchors = [(href, title) for (href, title) in anchors if not _is_ad(href)]
+
     def _strip_tags(s: str) -> str:
         s = re.sub(r"<[^>]+>", " ", s)
         s = re.sub(r"&amp;", "&", s)

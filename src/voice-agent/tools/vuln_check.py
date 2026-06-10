@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import urllib.error
 import urllib.request
 from typing import Optional, Tuple
 
@@ -42,6 +43,36 @@ def _infer_ecosystem(command: str) -> Optional[str]:
     if base in {"uvx", "uvx.cmd", "pipx", "pip"}:
         return "PyPI"
     return None
+
+
+# OSV is case-sensitive on the ecosystem name ("pypi" → HTTP 400 "Invalid
+# ecosystem"; "PyPI" → 200). The explicit ``ecosystem`` arg is LLM/user-typed,
+# so map the common spellings to OSV's canonical casing before querying.
+# Without this a trivial casing slip makes the OSV call 400, which the
+# fail-open path then masks as "safe: true" — a security tool silently not
+# checking. (Live-verify finding 2026-06.)
+_OSV_ECOSYSTEM_ALIASES = {
+    "pypi": "PyPI", "python": "PyPI", "pip": "PyPI",
+    "npm": "npm", "node": "npm", "nodejs": "npm",
+    "go": "Go", "golang": "Go",
+    "maven": "Maven", "java": "Maven",
+    "nuget": "NuGet", "dotnet": "NuGet", ".net": "NuGet",
+    "rubygems": "RubyGems", "gem": "RubyGems", "ruby": "RubyGems",
+    "crates.io": "crates.io", "crates": "crates.io", "cargo": "crates.io", "rust": "crates.io",
+    "packagist": "Packagist", "composer": "Packagist", "php": "Packagist",
+    "hex": "Hex", "elixir": "Hex",
+    "pub": "Pub", "dart": "Pub",
+}
+
+
+def _canonical_ecosystem(ecosystem: str) -> str:
+    """Map a user/LLM-supplied ecosystem string to OSV's canonical casing.
+
+    Unknown values pass through unchanged so a valid-but-unlisted OSV
+    ecosystem (e.g. "Alpine", "Debian:12") still works; only the common
+    lowercase spellings are corrected.
+    """
+    return _OSV_ECOSYSTEM_ALIASES.get((ecosystem or "").strip().lower(), ecosystem)
 
 
 def _parse_npm_package(token: str) -> Tuple[Optional[str], Optional[str]]:
@@ -88,6 +119,20 @@ def _query_osv(package: str, ecosystem: str, version: Optional[str] = None) -> l
     return result.get("vulns", [])
 
 
+def _osv_fail_open(package: str, ecosystem: str, version: Optional[str], exc: Exception) -> dict:
+    """Transient-outage fallback: proceed without a check rather than block."""
+    return {
+        "safe": True,
+        "package": package,
+        "ecosystem": ecosystem,
+        "version": version,
+        "vuln_count": 0,
+        "malware_count": 0,
+        "vulns": [],
+        "note": f"OSV API unreachable ({exc}); proceeding without security check.",
+    }
+
+
 def _check_package_for_vulns(
     package: str,
     ecosystem: str,
@@ -102,22 +147,39 @@ def _check_package_for_vulns(
       ``vuln_count``, ``malware_count``, ``vulns`` (list of dicts).
 
     Fail-open: returns ``{"safe": True, "error": "<msg>"}`` on network errors
-    so callers are never blocked by a transient outage.
+    so callers are never blocked by a transient outage. A 4xx (bad request —
+    e.g. an unrecognized ecosystem) is NOT a transient outage: it fails CLOSED
+    (``safe: False``) so a malformed query can't masquerade as a clean bill of
+    health.
     """
     try:
         vulns = _query_osv(package, ecosystem, version)
+    except urllib.error.HTTPError as exc:
+        if 400 <= exc.code < 500:
+            logger.warning(
+                "OSV rejected the query for %s/%s (HTTP %s) — failing closed",
+                ecosystem, package, exc.code,
+            )
+            return {
+                "safe": False,
+                "package": package,
+                "ecosystem": ecosystem,
+                "version": version,
+                "vuln_count": 0,
+                "malware_count": 0,
+                "vulns": [],
+                "error": (
+                    f"OSV rejected the query (HTTP {exc.code}) — likely an "
+                    f"unrecognized ecosystem {ecosystem!r}. Could NOT verify "
+                    "this package; treat as unverified, not safe."
+                ),
+            }
+        # 5xx / other HTTPError → transient; fall through to fail-open.
+        logger.debug("OSV query failed for %s/%s (fail-open): %s", ecosystem, package, exc)
+        return _osv_fail_open(package, ecosystem, version, exc)
     except Exception as exc:
         logger.debug("OSV query failed for %s/%s (fail-open): %s", ecosystem, package, exc)
-        return {
-            "safe": True,
-            "package": package,
-            "ecosystem": ecosystem,
-            "version": version,
-            "vuln_count": 0,
-            "malware_count": 0,
-            "vulns": [],
-            "note": f"OSV API unreachable ({exc}); proceeding without security check.",
-        }
+        return _osv_fail_open(package, ecosystem, version, exc)
 
     malware = [v for v in vulns if v.get("id", "").startswith("MAL-")]
     non_malware = [v for v in vulns if not v.get("id", "").startswith("MAL-")]
@@ -188,6 +250,10 @@ def _handle_vuln_check(args: dict) -> str:
         return tool_error("'package' is required.")
     if not ecosystem:
         return tool_error("'ecosystem' is required (e.g. 'PyPI', 'npm', 'Go', 'RubyGems').")
+
+    # Normalize casing so a "pypi"/"python" slip doesn't 400 the OSV call and
+    # then fail open as "safe".
+    ecosystem = _canonical_ecosystem(ecosystem)
 
     result = _check_package_for_vulns(package, ecosystem, version, malware_only=malware_only)
     return json.dumps(result, ensure_ascii=False)
