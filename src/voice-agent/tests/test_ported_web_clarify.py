@@ -215,6 +215,33 @@ class TestWebSearchBehavior:
         assert "1." in result
         assert "example" in result
 
+    def test_sponsored_ad_unit_filtered(self):
+        """DDG ad units reuse class=result__a but href is the y.js ad tracker —
+        they must NOT surface as organic results. (Live-verify 2026-06.)"""
+        ad = (
+            '<a class="result__a" rel="nofollow" '
+            'href="//duckduckgo.com/y.js?ad_domain=evil.example&ad_provider=bingv7aa'
+            '&ad_type=txad">Sponsored Result</a>'
+            '<a class="result__snippet" rel="nofollow">Buy now</a>'
+        )
+        organic = (
+            '<a class="result__a" rel="nofollow" '
+            'href="//duckduckgo.com/l/?uddg=https%3A%2F%2Freal.example">Real Result</a>'
+            '<a class="result__snippet" rel="nofollow">The real thing</a>'
+        )
+        html = "<html><body>" + ad + organic + ("X" * 20_000) + "</body></html>"
+        with mock.patch("tools.web_tools.asyncio.to_thread") as m_thread:
+            async def _ret(*args, **kwargs):
+                return html
+            m_thread.side_effect = _ret
+            result = self._call({"query": "anything", "limit": 5})
+        assert "real.example" in result
+        assert "Real Result" in result
+        assert "y.js" not in result and "ad_domain" not in result
+        assert "Sponsored Result" not in result
+        # The organic result is #1 (the ad didn't consume the top slot).
+        assert result.strip().startswith("1. Real Result")
+
     def test_limit_capped_at_10(self):
         fake_html = self._make_fake_html(n=15)
         with mock.patch("tools.web_tools.asyncio.to_thread") as m_thread:

@@ -134,6 +134,71 @@ class TestLivekitAdaptation:
 
 
 # ---------------------------------------------------------------------------
+# vuln_check ecosystem casing + fail-closed — live-verify finding 2026-06
+# (OSV is case-sensitive: "pypi" → HTTP 400 "Invalid ecosystem"; the old code
+# passed the explicit ecosystem straight through and then fail-OPENED the 400
+# as "safe", silently not checking. Now normalized + fails closed on 4xx.)
+# ---------------------------------------------------------------------------
+
+
+class TestVulnCheckEcosystem:
+    def test_canonical_ecosystem_normalizes_common_slips(self):
+        import tools.vuln_check as vc
+        assert vc._canonical_ecosystem("pypi") == "PyPI"
+        assert vc._canonical_ecosystem("python") == "PyPI"
+        assert vc._canonical_ecosystem("PYPI") == "PyPI"
+        assert vc._canonical_ecosystem("node") == "npm"
+        assert vc._canonical_ecosystem("golang") == "Go"
+        assert vc._canonical_ecosystem("cargo") == "crates.io"
+
+    def test_unknown_ecosystem_passes_through(self):
+        """A valid-but-unlisted OSV ecosystem must not be mangled."""
+        import tools.vuln_check as vc
+        assert vc._canonical_ecosystem("Debian:12") == "Debian:12"
+        assert vc._canonical_ecosystem("Alpine") == "Alpine"
+
+    def test_explicit_lowercase_ecosystem_is_normalized_before_query(self):
+        """A 'pypi' slip must reach _query_osv as 'PyPI', not 400-then-fail-open."""
+        import tools.vuln_check as vc
+        seen = {}
+
+        def _fake_query(package, ecosystem, version=None):
+            seen["ecosystem"] = ecosystem
+            return []  # no vulns
+
+        with unittest.mock.patch.object(vc, "_query_osv", _fake_query):
+            out = json.loads(vc._handle_vuln_check({"package": "requests", "ecosystem": "pypi"}))
+        assert seen["ecosystem"] == "PyPI"
+        assert out["safe"] is True
+
+    def test_4xx_fails_closed_not_open(self):
+        """An OSV 400 must report safe=False (unverified), not safe=True."""
+        import urllib.error
+        import tools.vuln_check as vc
+
+        def _raise_400(req, *a, **k):
+            raise urllib.error.HTTPError(req.full_url, 400, "Invalid ecosystem", {}, None)
+
+        with unittest.mock.patch.object(vc.urllib.request, "urlopen", _raise_400):
+            out = json.loads(vc._handle_vuln_check({"package": "x", "ecosystem": "Bogus"}))
+        assert out["safe"] is False
+        assert "error" in out and "400" in out["error"]
+
+    def test_5xx_still_fails_open(self):
+        """A transient 503 keeps the fail-open behavior (don't block on outage)."""
+        import urllib.error
+        import tools.vuln_check as vc
+
+        def _raise_503(req, *a, **k):
+            raise urllib.error.HTTPError(req.full_url, 503, "Service Unavailable", {}, None)
+
+        with unittest.mock.patch.object(vc.urllib.request, "urlopen", _raise_503):
+            out = json.loads(vc._handle_vuln_check({"package": "requests", "ecosystem": "PyPI"}))
+        assert out["safe"] is True
+        assert "note" in out
+
+
+# ---------------------------------------------------------------------------
 # (c) Behavior smoke tests — no network calls
 # ---------------------------------------------------------------------------
 
