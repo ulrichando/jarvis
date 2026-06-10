@@ -351,9 +351,8 @@ async def test_cancel_aborts_in_flight_prompt(monkeypatch):
     # Patch the dispatch tool call to set the cancel event after it runs.
     original = agent._dispatch_tool_call
 
-    async def cancelling_dispatch(name, args, tools, loop):
-        result = await original(name, args, tools, loop)
-        state = agent.session_manager.get_session(new_resp.session_id)
+    async def cancelling_dispatch(state, name, args, tools, loop):
+        result = await original(state, name, args, tools, loop)
         state.cancel_event.set()
         return result
 
@@ -396,6 +395,190 @@ async def test_permissive_mode_skips_approval(monkeypatch, tmp_path):
     conn.request_permission.assert_not_awaited()
     # Tool ran.
     assert tool.calls == [{"path": str(target), "content": "ok"}]
+
+
+# ---------------------------------------------------------------------------
+# Regression tests — 2026-06 acp_adapter review fixes
+# ---------------------------------------------------------------------------
+
+
+class _RecordingLLM(_StubLLM):
+    """StubLLM that records every chat_ctx it receives."""
+
+    def __init__(self, scripts) -> None:
+        super().__init__(scripts)
+        self.chat_ctxs: list = []
+
+    def chat(self, *, chat_ctx=None, tools=None, **kw):
+        self.chat_ctxs.append(chat_ctx)
+        return super().chat(chat_ctx=chat_ctx, tools=tools, **kw)
+
+
+@pytest.mark.asyncio
+async def test_queued_prompt_notification_not_under_runtime_lock():
+    """The 'queued' notification must fire AFTER runtime_lock is released.
+
+    runtime_lock is a threading.Lock; awaiting send_update while holding
+    it lets a concurrent prompt()/cancel() block the loop thread on
+    acquire — and then the holder can never resume to release. Deadlock.
+    """
+    from acp.schema import TextContentBlock
+
+    agent = _make_agent(scripts=[])
+    new_resp = await agent.new_session(cwd="/tmp")
+    state = agent.session_manager.get_session(new_resp.session_id)
+    state.is_running = True  # simulate an in-flight prompt
+
+    lock_free_during_update: list[bool] = []
+
+    class _LockProbeConn:
+        async def session_update(self, *, session_id=None, update=None):
+            acquired = state.runtime_lock.acquire(blocking=False)
+            if acquired:
+                state.runtime_lock.release()
+            lock_free_during_update.append(acquired)
+
+    agent._conn = _LockProbeConn()
+    resp = await agent.prompt(
+        prompt=[TextContentBlock(type="text", text="queued one")],
+        session_id=new_resp.session_id,
+    )
+    assert resp.stop_reason == "end_turn"
+    assert state.queued_prompts == ["queued one"]
+    assert lock_free_during_update == [True]
+
+
+@pytest.mark.asyncio
+async def test_tool_results_survive_across_prompts():
+    """Tool calls persist as function_call history rows, so the NEXT
+    prompt's rebuilt chat_ctx carries paired call/output items (the
+    provider formatter drops orphan outputs silently)."""
+    from acp.schema import TextContentBlock
+    from acp_adapter.server import JarvisACPAgent
+    from acp_adapter.session import SessionManager
+    from livekit.agents.llm import FunctionCall, FunctionCallOutput
+
+    tool = _StubTool("read_file", result=json.dumps({"content": "hello"}))
+    llm = _RecordingLLM([
+        # Prompt 1, round 1 — tool call; round 2 — text.
+        [_StubChunk(_StubDelta(tool_calls=[
+            _StubToolCall("call-1", "read_file", {"path": "/tmp/x.txt"})
+        ]))],
+        [_StubChunk(_StubDelta(content="Done."))],
+        # Prompt 2 — plain text; we inspect the ctx it receives.
+        [_StubChunk(_StubDelta(content="Second."))],
+    ])
+    agent = JarvisACPAgent(
+        session_manager=SessionManager(persist=False),
+        llm_builder=lambda: llm,
+        tools_builder=lambda: [tool],
+    )
+    agent._conn = AsyncMock()
+
+    new_resp = await agent.new_session(cwd="/tmp")
+    await agent.prompt(prompt=[TextContentBlock(type="text", text="read it")],
+                       session_id=new_resp.session_id)
+
+    state = agent.session_manager.get_session(new_resp.session_id)
+    fc_rows = [m for m in state.history if m.get("role") == "function_call"]
+    assert fc_rows and fc_rows[0]["call_id"] == "call-1"
+
+    await agent.prompt(prompt=[TextContentBlock(type="text", text="again")],
+                       session_id=new_resp.session_id)
+
+    # llm.chat() calls: prompt1-round1, prompt1-round2, prompt2-round1.
+    ctx2 = llm.chat_ctxs[2]
+    items = list(ctx2.items)
+    calls = [it for it in items if isinstance(it, FunctionCall)]
+    outputs = [it for it in items if isinstance(it, FunctionCallOutput)]
+    assert [c.call_id for c in calls] == ["call-1"]
+    assert [o.call_id for o in outputs] == ["call-1"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_orphan_tool_rows_skipped_on_rebuild():
+    """Tool-result rows persisted by older builds (no function_call rows)
+    must not be rebuilt as orphan FunctionCallOutput items."""
+    from acp.schema import TextContentBlock
+    from acp_adapter.server import JarvisACPAgent
+    from acp_adapter.session import SessionManager
+    from livekit.agents.llm import FunctionCallOutput
+
+    llm = _RecordingLLM([[_StubChunk(_StubDelta(content="ok"))]])
+    agent = JarvisACPAgent(
+        session_manager=SessionManager(persist=False),
+        llm_builder=lambda: llm,
+        tools_builder=lambda: [],
+    )
+    agent._conn = AsyncMock()
+
+    new_resp = await agent.new_session(cwd="/tmp")
+    state = agent.session_manager.get_session(new_resp.session_id)
+    state.history.extend([
+        {"role": "user", "content": "old prompt"},
+        {"role": "tool", "tool_call_id": "legacy-1",
+         "tool_name": "read_file", "content": "{}"},
+    ])
+
+    await agent.prompt(prompt=[TextContentBlock(type="text", text="hi")],
+                       session_id=new_resp.session_id)
+
+    items = list(llm.chat_ctxs[0].items)
+    assert not [it for it in items if isinstance(it, FunctionCallOutput)]
+
+
+@pytest.mark.asyncio
+async def test_edit_approval_targets_owning_session(tmp_path):
+    """Edit approval must use the session that owns the tool call — not
+    whichever running session a manager scan happens to find first."""
+    from acp.schema import TextContentBlock, AllowedOutcome
+
+    target = tmp_path / "owned.txt"
+    tool = _StubTool("write_file", result=json.dumps({"success": True}))
+    scripts = [
+        [_StubChunk(_StubDelta(tool_calls=[
+            _StubToolCall("call-1", "write_file",
+                          {"path": str(target), "content": "Hello"})
+        ]))],
+        [_StubChunk(_StubDelta(content="Wrote it."))],
+    ]
+    agent = _make_agent(scripts=scripts, tools=[tool])
+
+    response = MagicMock()
+    response.outcome = AllowedOutcome(outcome="selected", option_id="allow_once")
+    conn = AsyncMock()
+    conn.request_permission = AsyncMock(return_value=response)
+    agent._conn = conn
+
+    # Decoy created FIRST (earlier in dict order), running, with an
+    # auto-approve-everything policy. A first-running-session scan would
+    # consult the decoy and silently auto-approve under ITS policy.
+    decoy = await agent.new_session(cwd=str(tmp_path))
+    decoy_state = agent.session_manager.get_session(decoy.session_id)
+    decoy_state.is_running = True
+    decoy_state.mode = "dont_ask"
+
+    owner = await agent.new_session(cwd=str(tmp_path))  # default: ask
+    await agent.prompt(
+        prompt=[TextContentBlock(type="text", text="write the file")],
+        session_id=owner.session_id,
+    )
+
+    assert conn.request_permission.await_count == 1
+    kwargs = conn.request_permission.await_args.kwargs
+    assert kwargs.get("session_id") == owner.session_id
+
+
+def test_provider_sanitizers_install_helper():
+    """The ACP process must install the provider-shape sanitizers itself —
+    jarvis_agent.py's import-time installs never run here, and without
+    anthropic_strict_schema every Anthropic tool request 400s."""
+    from acp_adapter.server import _install_provider_sanitizers
+    import sanitizers.anthropic_strict_schema as strict_schema
+
+    _install_provider_sanitizers()
+    _install_provider_sanitizers()  # idempotent
+    assert strict_schema._INSTALLED is True
 
 
 def test_no_hermes_token():
