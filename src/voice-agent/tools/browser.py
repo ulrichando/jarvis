@@ -46,9 +46,34 @@ _RUNNER_PATH = Path(__file__).resolve().parent.parent / "browser_use_bridge" / "
 # LLM keys the runner can use; at least one must be present for the tool to arm.
 _LLM_ENV_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "KIMI_API_KEY")
 
-# Hard ceiling on a single browser task (seconds). Long enough for a multi-step
-# web flow, short enough that a hung browser can't wedge the supervisor turn.
+# Wall-clock floor for a single browser task (seconds). The actual ceiling
+# scales with the step budget (see _task_timeout_s) — a fixed 180s ceiling
+# contradicted _adaptive_max_steps, which grants up to 50 steps that cannot
+# possibly fit in 180s: the parent killed legitimate long flows mid-run.
 _TASK_TIMEOUT_S = 180.0
+
+# Absolute cap on the scaled ceiling, so a runaway budget can't wedge the
+# supervisor turn for more than 10 minutes.
+_TASK_TIMEOUT_CAP_S = 600.0
+
+
+def _task_timeout_s(max_steps: int) -> float:
+    """Wall-clock ceiling for one browser task, scaled to its step budget.
+
+    ~9s per granted step + 45s of browser/LLM startup, floored at the
+    historical 180s (quick lookups keep today's bound) and capped at
+    ``_TASK_TIMEOUT_CAP_S``. ``JARVIS_BROWSER_TASK_TIMEOUT_S`` overrides
+    everything (operator ceiling).
+    """
+    env = os.environ.get("JARVIS_BROWSER_TASK_TIMEOUT_S", "").strip()
+    if env:
+        try:
+            val = float(env)
+            if val > 0:
+                return val
+        except ValueError:
+            pass
+    return max(_TASK_TIMEOUT_S, min(_TASK_TIMEOUT_CAP_S, 45.0 + 9.0 * max(1, int(max_steps))))
 
 # Default step budget if the supervisor doesn't specify one.
 _DEFAULT_MAX_STEPS = 25
@@ -163,9 +188,10 @@ _BROWSER_TASK_SCHEMA = {
         "and read my latest DMs'. Prefer this over computer_use for anything "
         "where the goal is information or web actions rather than showing "
         "something on the screen. Give a complete, self-contained instruction "
-        "(include the destination/site and exactly what to find or do). The "
-        "browser may take up to ~3 minutes; you'll get back a short summary of "
-        "what it found or did."
+        "(include the destination/site and exactly what to find or do). Quick "
+        "lookups finish in well under 3 minutes; long multi-page flows get a "
+        "wall clock that scales with max_steps (up to ~10 minutes). You'll get "
+        "back a short summary of what it found or did."
     ),
     "parameters": {
         "type": "object",
@@ -365,16 +391,20 @@ def _format_result(payload: dict, stderr_tail: str = "") -> str:
     return f"Browser task failed: {err}"
 
 
-async def _run_runner(python_path: Path, request: bytes, task: str = "") -> str:
+async def _run_runner(
+    python_path: Path, request: bytes, task: str = "",
+    *, timeout_s: float = _TASK_TIMEOUT_S,
+) -> str:
     """Spawn the isolated browser_use runner with *request*, return a summary.
 
     Shared by the local-default and the opt-in remote-CDP paths — the only
     difference between them is whether *request* carries a ``cdp_url`` key.
     *task* is the plain-English task text, used only to label the per-step
     telemetry rows written from the parsed payload (best-effort, never
-    load-bearing). Never raises: timeout, a crashed subprocess, or garbled
-    output all map to a clear human-readable error string so a failed browser
-    task can't crash the voice turn.
+    load-bearing). *timeout_s* is the wall-clock ceiling (scaled to the step
+    budget by the caller). Never raises: timeout, a crashed subprocess, or
+    garbled output all map to a clear human-readable error string so a failed
+    browser task can't crash the voice turn.
     """
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -390,7 +420,7 @@ async def _run_runner(python_path: Path, request: bytes, task: str = "") -> str:
 
     try:
         stdout_b, stderr_b = await asyncio.wait_for(
-            proc.communicate(input=request), timeout=_TASK_TIMEOUT_S
+            proc.communicate(input=request), timeout=timeout_s
         )
     except asyncio.TimeoutError:
         # Kill the runner so a hung browser doesn't linger past the turn.
@@ -399,9 +429,9 @@ async def _run_runner(python_path: Path, request: bytes, task: str = "") -> str:
             await proc.wait()
         except Exception:  # noqa: BLE001 — best-effort reap
             pass
-        logger.warning("browser_task: timed out after %ss", _TASK_TIMEOUT_S)
+        logger.warning("browser_task: timed out after %ss", timeout_s)
         return tool_error(
-            f"browser task timed out after {int(_TASK_TIMEOUT_S)}s "
+            f"browser task timed out after {int(timeout_s)}s "
             "(the page may be slow or the task too large)"
         )
     except Exception as exc:  # noqa: BLE001 — any IPC failure -> clean error
@@ -487,11 +517,15 @@ async def _handle_browser_task(args: dict) -> str:
     if args.get("sensitive_data") and isinstance(args["sensitive_data"], dict):
         request_obj["sensitive_data"] = args["sensitive_data"]
 
+    # Wall-clock ceiling follows the granted step budget (a 50-step flow
+    # can't fit in the old fixed 180s).
+    timeout_s = _task_timeout_s(max_steps)
+
     # Default path: no configured provider → local subprocess, unchanged.
     provider = _resolve_browser_provider()
     if provider is None:
         request = json.dumps(request_obj, ensure_ascii=False).encode("utf-8")
-        return await _run_runner(python_path, request, task)
+        return await _run_runner(python_path, request, task, timeout_s=timeout_s)
 
     # Opt-in remote path: open a CDP session, drive it, always close it.
     task_id = uuid.uuid4().hex[:12]
@@ -523,7 +557,7 @@ async def _handle_browser_task(args: dict) -> str:
     request = json.dumps(request_obj, ensure_ascii=False).encode("utf-8")
 
     try:
-        return await _run_runner(python_path, request, task)
+        return await _run_runner(python_path, request, task, timeout_s=timeout_s)
     finally:
         if session_id:
             try:

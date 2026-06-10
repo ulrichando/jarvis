@@ -266,6 +266,36 @@ def _check_history_for_captcha(history) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
+def _filter_supported_kwargs(agent_cls, kwargs: dict) -> dict:
+    """Drop optional kwargs the installed browser_use ``Agent`` doesn't accept.
+
+    The tuning knobs (``flash_mode``, ``fallback_llm``, ``max_actions_per_step``,
+    ``sensitive_data``, ...) vary across browser_use versions. An unknown kwarg
+    makes ``Agent(**kwargs)`` raise TypeError and fail the WHOLE task; dropping
+    the knob (with a note on stderr, which lands in the failure tail) degrades
+    gracefully instead. Required kwargs (task/llm/...) are always in the
+    signature, so they pass through untouched. Returns ``kwargs`` unchanged when
+    the signature can't be introspected or the Agent accepts ``**kwargs``.
+    """
+    import inspect
+
+    try:
+        params = inspect.signature(agent_cls.__init__).parameters
+    except (TypeError, ValueError):
+        return kwargs
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return kwargs
+    accepted = set(params)
+    for key in [k for k in kwargs if k not in accepted]:
+        kwargs.pop(key)
+        print(
+            f"[runner] installed browser_use Agent does not accept {key!r}; "
+            "option dropped",
+            file=sys.stderr,
+        )
+    return kwargs
+
+
 async def _run_task(
     task: str, max_steps: int, headless: bool, cdp_url: Optional[str] = None,
     flash_mode: Optional[bool] = None,
@@ -308,11 +338,10 @@ async def _run_task(
     # Gap 5: flash_mode → skip LLM evaluation per step for simple tasks (~40% faster).
     if flash_mode:
         agent_kwargs["use_thinking"] = False
-        # browser-use has a dedicated flash_mode parameter in newer versions.
-        try:
-            agent_kwargs["flash_mode"] = True
-        except Exception:
-            pass
+        # browser-use gained a dedicated flash_mode parameter in newer
+        # versions; _filter_supported_kwargs drops it on older installs so
+        # the task degrades instead of failing on an unknown kwarg.
+        agent_kwargs["flash_mode"] = True
     # Gap 6: max_actions_per_step → batch multiple fields in one LLM step.
     if max_actions_per_step is not None:
         agent_kwargs["max_actions_per_step"] = int(max_actions_per_step)
@@ -323,7 +352,7 @@ async def _run_task(
     if sensitive_data:
         agent_kwargs["sensitive_data"] = dict(sensitive_data)
 
-    agent = Agent(**agent_kwargs)
+    agent = Agent(**_filter_supported_kwargs(Agent, agent_kwargs))
 
     history = await agent.run(max_steps=max_steps)
 
