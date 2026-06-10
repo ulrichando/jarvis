@@ -149,6 +149,32 @@ def test_build_injection_none_cases():
     assert cuv.build_injection(cap={"png_b64": "x", "action_label": "c"}, mode="text", desc=None) is None
 
 
+def test_build_injection_pixels_scale_note_when_downscaled():
+    """2026-06 review: clicks execute in native pixels but the injected image
+    is downscaled — the label must state the scale factor or the model's
+    pixel coordinates land short (1.5x off on 1920x1080)."""
+    cap = {"png_b64": _png_b64(1920, 1080), "width": 1920, "height": 1080,
+           "action_label": "capture/som"}
+    role, content = cuv.build_injection(cap=cap, mode="pixels")
+    text = next(c for c in content if isinstance(c, str))
+    assert "1920x1080" in text
+    assert "1.50" in text
+
+
+def test_build_injection_pixels_no_scale_note_when_small():
+    cap = {"png_b64": _png_b64(400, 300), "width": 400, "height": 300,
+           "action_label": "capture"}
+    role, content = cuv.build_injection(cap=cap, mode="pixels")
+    text = next(c for c in content if isinstance(c, str))
+    assert "multiply" not in text
+
+
+def test_scale_note_handles_garbage_dims():
+    assert cuv._scale_note(None, None) == ""
+    assert cuv._scale_note("not-a-number", 1080) == ""
+    assert cuv._scale_note(0, 0) == ""
+
+
 def test_resolve_route_primary_model(monkeypatch):
     from providers.llm import resolve_route_primary_model
     monkeypatch.delenv("JARVIS_TASK_DESKTOP_MODEL", raising=False)

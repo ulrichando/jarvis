@@ -1268,22 +1268,48 @@ class X11ComputerUseBackend(ComputerUseBackend):
     def launch_app(self, command: str) -> ActionResult:
         """Launch *command* via ``setsid`` so it detaches from the voice-agent
         process and survives the turn. Resolves bare names via ``which`` first.
-        Returns ok/error — does NOT focus the window (caller handles that)."""
+        Returns ok/error — does NOT focus the window (caller handles that).
+
+        Fire-and-forget ``Popen`` with DEVNULL stdio and a fresh session. Two
+        bugs this replaces (both in the old ``_run(["setsid", cmd, "&"])``):
+          * ``_run`` uses ``capture_output=True``; the launched GUI app
+            inherited those pipes, so ``subprocess.run`` blocked waiting for
+            the *app* to exit — every GUI launch hung the full timeout
+            (default 10 s) and then reported ``rc=124``/failure even though
+            the app had opened. DEVNULL stdio + no wait fixes that.
+          * The trailing ``"&"`` was NOT shell backgrounding (there is no
+            shell here) — it was passed to the app as a literal argument
+            (e.g. ``firefox &`` opened a tab for "&"). Dropped.
+        """
         cmd = command.strip()
         if not cmd:
             return ActionResult(ok=False, action="launch",
                                message="launch requires a non-empty command")
-        # Resolve bare binary names to full path so setsid can find them.
+        # Resolve bare binary names to a full path; a which() miss is a
+        # definite "not installed" we can report instead of a silent no-op.
         if "/" not in cmd:
             resolved = shutil.which(cmd)
-            if resolved:
-                cmd = resolved
-        rc, _out, err = self._run(["setsid", cmd, "&"])
-        ok = rc == 0
+            if resolved is None:
+                return ActionResult(ok=False, action="launch",
+                                   message=f"launch failed: '{cmd}' not found on PATH",
+                                   meta={"command": command})
+            cmd = resolved
+        try:
+            subprocess.Popen(
+                ["setsid", cmd],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                env=os.environ.copy(),
+            )
+        except (FileNotFoundError, OSError) as e:
+            return ActionResult(ok=False, action="launch",
+                               message=f"launch failed: {e}",
+                               meta={"command": command})
         return ActionResult(
-            ok=ok, action="launch",
-            message=(f"launched {command!r}" if ok
-                     else f"launch failed: {err}"),
+            ok=True, action="launch",
+            message=f"launched {command!r}",
             meta={"command": command},
         )
 
@@ -1297,13 +1323,10 @@ class X11ComputerUseBackend(ComputerUseBackend):
         """Move the mouse cursor without clicking — needed for hover effects,
         tooltip triggers, and positioning before a separate click action."""
         if element is not None:
-            target = self._resolve_element(element)
-            if target is None:
-                return ActionResult(
-                    ok=False, action="mouse_move",
-                    message=f"element {element} not found in cache — call capture first",
-                )
-            x, y = target
+            ex, ey, err = self._resolve_element(element)
+            if err:
+                return ActionResult(ok=False, action="mouse_move", message=err)
+            x, y = ex, ey
         if x is None or y is None:
             return ActionResult(
                 ok=False, action="mouse_move",
