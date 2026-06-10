@@ -4,10 +4,27 @@ No I/O, no DB, no import-time side effects. Live-grounded against the
 real `confab_check_state` vocabulary (pipeline/turn_telemetry.py:38-70).
 """
 from __future__ import annotations
+import os
 from dataclasses import dataclass, asdict
 from typing import Optional
 
 RE_ASK_WINDOW = 3   # a near-duplicate user utterance within N turns = a re-ask (failure proxy)
+
+
+def _ttfw_ceiling_ms() -> float:
+    """Above this, a `ttfw_ms` is a measurement artifact, not a real
+    time-to-first-word: an abandoned/interrupted turn whose timer never
+    stopped, or tool-execution time bleeding into the first-word clock.
+    Live telemetry (2026-06) had ttfw up to 201_528 ms — including on the
+    BANTER fast path, where it's impossible — and 31 turns over 30 s. Left
+    in, a handful of garbage outliers dominate the p90 tail and spuriously
+    zero the latency axis. Generous default (20 s) so genuinely-slow turns
+    still count toward the wedge-detecting p90; override via
+    JARVIS_TTFW_CEILING_MS (0/blank disables the filter)."""
+    try:
+        return float(os.environ.get("JARVIS_TTFW_CEILING_MS", "20000"))
+    except (TypeError, ValueError):
+        return 20000.0
 
 # Real confab_check_state vocabulary (pipeline/turn_telemetry.py:38-70).
 _RECOVERED = {"caught_t1_passed", "caught_t2_passed", "caught_t3_passed",
@@ -67,7 +84,13 @@ def compute_signals(turns: list[dict]) -> WindowSignals:
     no_text = sum(1 for s in states if str(s or "").startswith("no_text"))
     clean_action_rate = (tool_clean / (tool_clean + no_text)) if (tool_clean + no_text) else 1.0
     interruption_rate = sum(1 for t in turns if (t.get("interrupted") or 0)) / n
-    ttfws = [t["ttfw_ms"] for t in turns if t.get("ttfw_ms")]
+    # Drop measurement-artifact outliers before the percentile (see
+    # _ttfw_ceiling_ms). A ceiling of 0/blank disables the filter.
+    ceiling = _ttfw_ceiling_ms()
+    ttfws = [
+        v for t in turns
+        if (v := t.get("ttfw_ms")) and v > 0 and (ceiling <= 0 or v <= ceiling)
+    ]
     ttfw_p90_ms = _p90(ttfws)
     return WindowSignals(n, len(checked), reask_rate, confab_quality, ttfw_p90_ms,
                          clean_action_rate, interruption_rate)
