@@ -25,6 +25,44 @@ import re
 logger = logging.getLogger("jarvis.chat_ctx")
 
 
+# ── Live conversation accessor ───────────────────────────────────────
+def session_chat_messages(session) -> list:
+    """Return the live conversation's ChatMessage list, or ``[]``.
+
+    The chat context lives on the **Agent** (``session.current_agent.chat_ctx``),
+    NOT on ``AgentSession`` — ``session.chat_ctx`` raises ``AttributeError``
+    (livekit-agents 1.5 migration; the same trap the 2026-05-27 pre-TTS-gate
+    fix called out, see jarvis_agent.py). Two further 1.5 changes this guards:
+      * ``ChatContext.messages`` is now a *method*, not a property — calling it
+        returns the list; accessing it as an attribute yields a bound method
+        (which ``reversed()``/slicing then choke on).
+      * ``current_agent.chat_ctx`` is a ``_ReadOnlyChatContext``: its item
+        *list* is immutable (append/del/setitem raise ``RuntimeError``), but
+        mutating a returned message's ``.content`` attribute DOES persist to
+        the live context (the message objects are shared). So callers may
+        prefix-inject in place on the returned messages; they must NOT
+        append/delete list items (use ``session.history.truncate(...)`` for
+        that — ``session.history`` is the session's own mutable ctx).
+
+    Returns ``[]`` on any access failure so callers degrade to "no history"
+    instead of silently swallowing an ``AttributeError`` they never expected.
+    """
+    try:
+        agent = getattr(session, "current_agent", None)
+        if agent is None:
+            return []
+        ctx = agent.chat_ctx  # property; raises RuntimeError if no agent bound
+        msgs = getattr(ctx, "messages", None)
+        if callable(msgs):
+            return msgs() or []
+        return msgs or []
+    except (AttributeError, RuntimeError):
+        return []
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug("[chat_ctx] session_chat_messages failed: %s", e)
+        return []
+
+
 # ── Filter 1: leaked tool-call text ──────────────────────────────────
 TOOL_LEAK_RE: re.Pattern[str] = re.compile(
     # XML attribute form: `<function=name>...</function>` (W-015)

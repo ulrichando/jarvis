@@ -30,6 +30,12 @@ def _mk_session(prior_user_text: str = "hey there") -> SimpleNamespace:
     chat_ctx = SimpleNamespace(messages=[user_msg])
     options = SimpleNamespace(interruption={"min_words": 2, "min_duration": 0.4})
     return SimpleNamespace(
+        # livekit 1.5: the live ctx is reached via current_agent.chat_ctx
+        # (what session_chat_messages reads), NOT session.chat_ctx (which
+        # raises AttributeError on a real AgentSession — see
+        # test_chat_ctx_session_messages). Point both at the SAME object so
+        # the node's in-place prefix mutation is visible to the assertions.
+        current_agent=SimpleNamespace(chat_ctx=chat_ctx),
         chat_ctx=chat_ctx,
         options=options,
         _llm=None, _tts=None,
