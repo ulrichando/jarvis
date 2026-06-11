@@ -156,7 +156,7 @@ export function PreviewTab({ workspaceId, iframeKey, viewport = "desktop" }: Pro
           </p>
           <p className="mt-1 max-w-md text-xs leading-5 text-muted-foreground">
             {starting ? (
-              <>Patching the dev script (if needed) and spawning <code className="font-mono">bun run dev</code> on port 5173. Preview should appear within ~10s once it's up.</>
+              <>Patching the dev script (if needed) and spawning <code className="font-mono">bun run dev</code> on port 5173. Preview should appear within ~10s once it&apos;s up.</>
             ) : healMessage ? (
               healMessage
             ) : startError ? (

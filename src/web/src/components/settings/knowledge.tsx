@@ -23,7 +23,7 @@ export function KnowledgeSection() {
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
           Documents JARVIS can reference in every chat — your CV, brand
-          guidelines, recurring project specs, anything you'd want the
+          guidelines, recurring project specs, anything you&apos;d want the
           model to remember without re-explaining it each turn.
         </p>
       </div>
@@ -73,14 +73,14 @@ export function KnowledgeSection() {
           </li>
           <li className="flex items-start gap-2">
             <span className="mt-1.5 size-1 shrink-0 rounded-full bg-primary/60" />
-            <span>"Forget this" — single click delete, embeddings purged.</span>
+            <span>&ldquo;Forget this&rdquo; — single click delete, embeddings purged.</span>
           </li>
         </ul>
       </div>
 
       <div className="rounded-lg border border-border/40 bg-card/20 p-4">
         <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          What's needed to wire it up
+          What&apos;s needed to wire it up
         </h3>
         <ul className="space-y-1 text-[12px] text-muted-foreground">
           <li className="font-mono">· Embeddings provider config (Voyage AI / OpenAI / local)</li>

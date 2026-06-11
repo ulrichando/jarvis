@@ -53,7 +53,7 @@ export function SkillsSection() {
           <li className="flex items-start gap-2">
             <span className="mt-1.5 size-1 shrink-0 rounded-full bg-primary/60" />
             <span>
-              Author skills as YAML frontmatter + markdown body (Anthropic's skills
+              Author skills as YAML frontmatter + markdown body (Anthropic&apos;s skills
               format).
             </span>
           </li>
@@ -77,7 +77,7 @@ export function SkillsSection() {
 
       <div className="rounded-lg border border-border/40 bg-card/20 p-4">
         <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          What's needed to wire it up
+          What&apos;s needed to wire it up
         </h3>
         <ul className="space-y-1 text-[12px] text-muted-foreground">
           <li className="font-mono">· Skill format: YAML frontmatter (name, description, args) + markdown body</li>

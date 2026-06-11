@@ -54,7 +54,7 @@ export async function GET(
   // Pull schema via the sandbox's sqlite3 CLI. Tab-separated output
   // makes parsing straightforward. `.tables` lists names; for each we
   // run `SELECT count(*)` to surface row counts.
-  let tables: { name: string; rows: number }[] = [];
+  const tables: { name: string; rows: number }[] = [];
   try {
     const r = await execInRuntime(
       id,

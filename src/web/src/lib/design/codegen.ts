@@ -282,7 +282,7 @@ type Section = { componentName: string; html: string };
 
 function splitSectionsAuto(body: Element): Section[] {
   // Strict: only direct children matching STRUCT_TAGS.
-  let strict = topLevelStructuralChildren(body);
+  const strict = topLevelStructuralChildren(body);
   if (strict.length >= 3) {
     return finalizeSections(strict);
   }

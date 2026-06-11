@@ -32,7 +32,7 @@ export function JarvisInChromeSection() {
             <p className="text-[14px] font-semibold">Jarvis in Chrome</p>
             <p className="mt-0.5 text-[13px] text-muted-foreground">
               The browser extension lets you use Jarvis on any web page. Install
-              it from the Chrome Web Store once it's available.
+              it from the Chrome Web Store once it&apos;s available.
             </p>
           </div>
         </div>

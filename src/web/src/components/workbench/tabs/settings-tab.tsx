@@ -3008,7 +3008,7 @@ function StubSection({
       </div>
       <div className="rounded-lg border border-border/40 bg-card/20 p-4">
         <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          What's needed to wire it up
+          What&apos;s needed to wire it up
         </h3>
         <ul className="space-y-1.5 text-[12px] text-muted-foreground">
           {needs.map((n, i) => (
