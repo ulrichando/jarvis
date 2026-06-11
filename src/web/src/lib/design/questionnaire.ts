@@ -507,10 +507,15 @@ ${formatHint}`;
     return result.object.questions;
   } catch (err) {
     console.warn(
-      "[questionnaire] generateObject failed, falling back to generic format questions:",
+      "[questionnaire] generateObject failed, falling back to format questions:",
       err,
     );
-    return questionsForFormat(format, null);
+    // Detect the topic from the brief so the fallback asks topic-tailored
+    // questions (restaurant → cuisine/vibe, SaaS → audience/pricing, …)
+    // instead of generic ones. detectTopic returns null for an unknown
+    // topic, in which case questionsForFormat falls through to the generic
+    // set — so this is strictly better than the previous hardcoded null.
+    return questionsForFormat(format, detectTopic(brief));
   }
 }
 
