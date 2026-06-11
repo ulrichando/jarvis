@@ -1,5 +1,7 @@
 /**
- * src/middleware.ts — bearer-token auth gate for the web app's API surface.
+ * src/proxy.ts — bearer-token auth gate (Next 16 proxy convention,
+ * formerly middleware.ts — renamed per the middleware-to-proxy
+ * deprecation) for the web app's API surface.
  *
  * Mirrors the bridge's auth pattern (src/cli/src/bridge/server.ts):
  *   - Requires `Authorization: Bearer <JARVIS_LOCAL_API_TOKEN>` on every
@@ -26,13 +28,16 @@
  * JARVIS_REQUIRE_LOCAL_AUTH=1 is exported (start-desktop.sh does this),
  * the gate activates. Same opt-in pattern as the bridge.
  *
- * Token validation: constant-time compare (timingSafeEqual via Buffer).
+ * Token validation: constant-time compare via XOR-accumulate, kept
+ * runtime-agnostic on purpose. Next 16 Proxy defaults to the Node.js
+ * runtime (where node:crypto.timingSafeEqual exists), but the XOR has
+ * the same constant-time property with zero imports, so it keeps working
+ * unchanged if this is ever pinned to the Edge runtime.
  *
  * Refs: 2026-05-17 plan §P0-SEC-6.
  */
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
-import { timingSafeEqual } from 'node:crypto'
 
 const REQUIRE_AUTH = process.env.JARVIS_REQUIRE_LOCAL_AUTH === '1'
 const LOCAL_TOKEN = process.env.JARVIS_LOCAL_API_TOKEN ?? ''
@@ -41,7 +46,7 @@ const LOCAL_TOKEN = process.env.JARVIS_LOCAL_API_TOKEN ?? ''
 // Keep this MINIMAL — every entry is a route the bridge / Chrome ext /
 // healthcheckers can hit without a token.
 const PUBLIC_PATHS = new Set<string>([
-  '/api/health',  // not currently a route but reserved for future
+  '/api/health',  // desktop tray probe (probe_jarvis_web) — identity only
 ])
 
 // Host header allowlist (DNS-rebinding defense, parallel to the bridge
@@ -64,18 +69,22 @@ function hostFromHeader(host: string | null): string {
 }
 
 function constantTimeStringEq(a: string, b: string): boolean {
-  // timingSafeEqual requires equal-length buffers; use SHA-256 hashed
-  // comparison for arbitrary-length strings, but for our case both
-  // are the bearer-token shape — pad to common length.
+  // XOR-accumulate constant-time compare, kept dependency-free so it
+  // works in any runtime. Next 16 Proxy runs in Node by default (so
+  // node:crypto.timingSafeEqual is available), but this avoids the
+  // import entirely: fixed iteration count over the full length, no
+  // data-dependent branch. The length-mismatch early return matches
+  // timingSafeEqual's own behavior (it also requires equal lengths);
+  // token length is not a secret.
   if (a.length !== b.length) return false
-  try {
-    return timingSafeEqual(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'))
-  } catch {
-    return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
   }
+  return diff === 0
 }
 
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   const url = new URL(req.url)
   const path = url.pathname
 
@@ -103,6 +112,21 @@ export function middleware(req: NextRequest) {
   }
 
   if (PUBLIC_PATHS.has(path)) {
+    return NextResponse.next()
+  }
+
+  // Same-origin browser carve-out: the web UI itself (pages served by
+  // THIS server doing fetch()/EventSource against /api/*) has no way to
+  // hold the bearer token — there is no client-side token wiring, and
+  // EventSource can't set headers at all. Browsers stamp
+  // `Sec-Fetch-Site: same-origin` on such requests and page JS cannot
+  // forge it (forbidden header); a DNS-rebinding or cross-origin page
+  // gets `cross-site` (and is killed by the Host allowlist above
+  // anyway). Non-browser callers (bridge, curl, extensions) lack the
+  // header entirely and still need the bearer token below. A local
+  // process forging the header with curl gains nothing it can't
+  // already do as the same user.
+  if (req.headers.get('sec-fetch-site') === 'same-origin') {
     return NextResponse.next()
   }
 
