@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { eq, ne } from "drizzle-orm";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { db, schema } from "./db";
+import { LOCAL_USER_ID } from "./chat/persist";
 
 // JARVIS web login. better-auth over the existing web.* Postgres schema —
 // users/sessions/accounts/verifications already match better-auth's shape.
@@ -34,6 +36,31 @@ export const auth = betterAuth({
       // Our id columns are Postgres `uuid`; better-auth's default string IDs
       // would fail the insert. Emit real UUIDs instead.
       generateId: () => randomUUID(),
+    },
+  },
+  databaseHooks: {
+    user: {
+      create: {
+        // The FIRST real (non-local) account inherits the existing local-user
+        // data (chats + projects) — a single-user self-hosted box upgrading to
+        // logins. Subsequent accounts start fresh.
+        after: async (user: { id: string }) => {
+          if (!db || user.id === LOCAL_USER_ID) return;
+          const realUsers = await db
+            .select({ id: schema.users.id })
+            .from(schema.users)
+            .where(ne(schema.users.id, LOCAL_USER_ID));
+          if (realUsers.length !== 1) return; // not the first real user
+          await db
+            .update(schema.conversations)
+            .set({ userId: user.id })
+            .where(eq(schema.conversations.userId, LOCAL_USER_ID));
+          await db
+            .update(schema.projects)
+            .set({ userId: user.id })
+            .where(eq(schema.projects.userId, LOCAL_USER_ID));
+        },
+      },
     },
   },
   session: {

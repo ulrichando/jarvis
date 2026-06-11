@@ -1,7 +1,8 @@
 import { notFound } from "next/navigation";
 import { and, asc, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
-import { LOCAL_USER_ID, toUIMessages } from "@/lib/chat/persist";
+import { toUIMessages } from "@/lib/chat/persist";
+import { getUserId } from "@/lib/auth-helpers";
 import { Chat } from "@/components/chat/chat";
 
 export default async function ChatByIdPage(props: PageProps<"/chat/[id]">) {
@@ -14,13 +15,15 @@ export default async function ChatByIdPage(props: PageProps<"/chat/[id]">) {
 
   if (!db) return <Chat chatId={id} seed={seed} />;
 
+  const userId = await getUserId();
+
   const [conversation] = await db
     .select()
     .from(schema.conversations)
     .where(
       and(
         eq(schema.conversations.id, id),
-        eq(schema.conversations.userId, LOCAL_USER_ID),
+        eq(schema.conversations.userId, userId),
       ),
     )
     .limit(1);

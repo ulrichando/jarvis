@@ -32,13 +32,16 @@ export async function ensureConversation({
   id,
   model,
   firstUserText,
+  userId = LOCAL_USER_ID,
 }: {
   id?: string;
   model: string;
   firstUserText: string;
+  /** Owner of the conversation. Defaults to the local user (auth-disabled). */
+  userId?: string;
 }) {
   if (!persistenceEnabled || !db) return null;
-  await ensureLocalUser();
+  if (userId === LOCAL_USER_ID) await ensureLocalUser();
 
   if (id) {
     const [existing] = await db
@@ -47,7 +50,7 @@ export async function ensureConversation({
       .where(
         and(
           eq(schema.conversations.id, id),
-          eq(schema.conversations.userId, LOCAL_USER_ID),
+          eq(schema.conversations.userId, userId),
         ),
       )
       .limit(1);
@@ -61,8 +64,8 @@ export async function ensureConversation({
   // default fill in. When id IS provided (e.g. existing chat), pass
   // it through so the row is created with the caller's id.
   const values = id
-    ? { id, userId: LOCAL_USER_ID, title, model }
-    : { userId: LOCAL_USER_ID, title, model };
+    ? { id, userId, title, model }
+    : { userId, title, model };
   const [created] = await db
     .insert(schema.conversations)
     .values(values)

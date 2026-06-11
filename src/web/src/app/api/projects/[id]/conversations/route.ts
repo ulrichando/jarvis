@@ -1,17 +1,18 @@
 import { and, desc, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
-import { LOCAL_USER_ID } from "@/lib/chat/persist";
+import { getUserId } from "@/lib/auth-helpers";
 import { DEFAULT_MODEL } from "@/lib/ai/models-meta";
 
 export const runtime = "nodejs";
 
 export async function GET(
-  _req: Request,
+  req: Request,
   ctx: RouteContext<"/api/projects/[id]/conversations">,
 ) {
   if (!db) return Response.json({ conversations: [] });
 
   const { id } = await ctx.params;
+  const userId = await getUserId(req.headers);
 
   const rows = await db
     .select({
@@ -23,7 +24,7 @@ export async function GET(
     .from(schema.conversations)
     .where(
       and(
-        eq(schema.conversations.userId, LOCAL_USER_ID),
+        eq(schema.conversations.userId, userId),
         eq(schema.conversations.projectId, id),
       ),
     )
@@ -40,15 +41,16 @@ export async function POST(
   if (!db) return new Response("Persistence disabled", { status: 503 });
 
   const { id: projectId } = await ctx.params;
+  const userId = await getUserId(req.headers);
 
-  // Verify the project belongs to the local user before linking.
+  // Verify the project belongs to the current user before linking.
   const [project] = await db
     .select({ id: schema.projects.id })
     .from(schema.projects)
     .where(
       and(
         eq(schema.projects.id, projectId),
-        eq(schema.projects.userId, LOCAL_USER_ID),
+        eq(schema.projects.userId, userId),
       ),
     )
     .limit(1);
@@ -62,7 +64,7 @@ export async function POST(
   const [created] = await db
     .insert(schema.conversations)
     .values({
-      userId: LOCAL_USER_ID,
+      userId,
       projectId,
       title: body?.title?.trim() || "New chat",
       model: body?.model || DEFAULT_MODEL,

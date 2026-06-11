@@ -1,11 +1,12 @@
 import { desc, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
-import { LOCAL_USER_ID } from "@/lib/chat/persist";
+import { getUserId } from "@/lib/auth-helpers";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(req: Request) {
   if (!db) return Response.json({ projects: [] });
+  const userId = await getUserId(req.headers);
 
   const rows = await db
     .select({
@@ -18,7 +19,7 @@ export async function GET() {
       updatedAt: schema.projects.updatedAt,
     })
     .from(schema.projects)
-    .where(eq(schema.projects.userId, LOCAL_USER_ID))
+    .where(eq(schema.projects.userId, userId))
     .orderBy(desc(schema.projects.updatedAt))
     .limit(200);
 
@@ -27,6 +28,7 @@ export async function GET() {
 
 export async function POST(req: Request) {
   if (!db) return new Response("Persistence disabled", { status: 503 });
+  const userId = await getUserId(req.headers);
 
   const body = (await req.json().catch(() => null)) as {
     name?: string;
@@ -40,7 +42,7 @@ export async function POST(req: Request) {
   const [row] = await db
     .insert(schema.projects)
     .values({
-      userId: LOCAL_USER_ID,
+      userId,
       name,
       description: body?.description?.trim() ?? "",
       instructions: body?.instructions?.trim() ?? "",

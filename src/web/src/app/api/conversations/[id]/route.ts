@@ -1,13 +1,15 @@
 import { and, asc, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
-import { LOCAL_USER_ID, toUIMessages } from "@/lib/chat/persist";
+import { toUIMessages } from "@/lib/chat/persist";
+import { getUserId } from "@/lib/auth-helpers";
 
 export const runtime = "nodejs";
 
-export async function GET(_req: Request, ctx: RouteContext<"/api/conversations/[id]">) {
+export async function GET(req: Request, ctx: RouteContext<"/api/conversations/[id]">) {
   if (!db) return new Response("Persistence disabled", { status: 503 });
 
   const { id } = await ctx.params;
+  const userId = await getUserId(req.headers);
 
   const [conversation] = await db
     .select()
@@ -15,7 +17,7 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/conversations/[
     .where(
       and(
         eq(schema.conversations.id, id),
-        eq(schema.conversations.userId, LOCAL_USER_ID),
+        eq(schema.conversations.userId, userId),
       ),
     )
     .limit(1);
@@ -35,19 +37,20 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/conversations/[
 }
 
 export async function DELETE(
-  _req: Request,
+  req: Request,
   ctx: RouteContext<"/api/conversations/[id]">,
 ) {
   if (!db) return new Response("Persistence disabled", { status: 503 });
 
   const { id } = await ctx.params;
+  const userId = await getUserId(req.headers);
 
   await db
     .delete(schema.conversations)
     .where(
       and(
         eq(schema.conversations.id, id),
-        eq(schema.conversations.userId, LOCAL_USER_ID),
+        eq(schema.conversations.userId, userId),
       ),
     );
 
@@ -61,6 +64,7 @@ export async function PATCH(
   if (!db) return new Response("Persistence disabled", { status: 503 });
 
   const { id } = await ctx.params;
+  const userId = await getUserId(req.headers);
   const body = (await req.json().catch(() => ({}))) as {
     title?: unknown;
   };
@@ -74,7 +78,7 @@ export async function PATCH(
     .where(
       and(
         eq(schema.conversations.id, id),
-        eq(schema.conversations.userId, LOCAL_USER_ID),
+        eq(schema.conversations.userId, userId),
       ),
     );
 
