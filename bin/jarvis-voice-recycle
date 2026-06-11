@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# jarvis-voice-recycle — graceful recycle of the voice agent.
+#
+# Why: the per-session LiveKit job process slowly grows (~14 MB/hr observed)
+# and, with no memory limit or recycle, eventually wedges inference after
+# ~18 h (goes slower-than-realtime; JARVIS stops responding until a manual
+# restart). This recycles the worker on a schedule BEFORE it degrades.
+#
+# Safety: never restarts mid-conversation. It checks the latest turn in
+# turn_telemetry.db; if a turn fired within IDLE_GUARD_S it waits and
+# retries, then skips until the next timer fire (the leak is slow — missing
+# one night is harmless). Mirrors the manual in-flight check from CLAUDE.md.
+#
+# Invoked by jarvis-voice-recycle.timer (~04:00 local). Safe to run by hand.
+set -uo pipefail
+
+DB="${JARVIS_TELEMETRY_PATH:-$HOME/.local/share/jarvis/turn_telemetry.db}"
+SERVICE="jarvis-voice-agent.service"
+IDLE_GUARD_S="${JARVIS_RECYCLE_IDLE_GUARD_S:-120}"
+RETRIES="${JARVIS_RECYCLE_RETRIES:-2}"
+RETRY_SLEEP_S="${JARVIS_RECYCLE_RETRY_SLEEP_S:-300}"
+
+log() { logger -t jarvis-voice-recycle "$*" 2>/dev/null || true; echo "[jarvis-voice-recycle] $*"; }
+
+last_turn_age_s() {
+  # Seconds since the most recent turn. 999999 when the DB is absent or
+  # has no turns (treat as fully idle → safe to recycle).
+  local last epoch now
+  last=$(sqlite3 "$DB" "SELECT MAX(ts_utc) FROM turns" 2>/dev/null) || { echo 999999; return; }
+  [ -z "$last" ] && { echo 999999; return; }
+  epoch=$(date -u -d "$last" +%s 2>/dev/null) || { echo 999999; return; }
+  now=$(date -u +%s)
+  echo $(( now - epoch ))
+}
+
+for attempt in $(seq 0 "$RETRIES"); do
+  age=$(last_turn_age_s)
+  if [ "$age" -ge "$IDLE_GUARD_S" ]; then
+    log "idle ${age}s >= ${IDLE_GUARD_S}s — restarting $SERVICE"
+    systemctl --user restart "$SERVICE"
+    log "restart issued"
+    exit 0
+  fi
+  log "session active (last turn ${age}s ago) — attempt ${attempt}/${RETRIES}"
+  [ "$attempt" -lt "$RETRIES" ] && sleep "$RETRY_SLEEP_S"
+done
+
+log "still active after $((RETRIES+1)) checks — skipping recycle until next timer"
+exit 0
