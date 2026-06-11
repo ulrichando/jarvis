@@ -129,6 +129,28 @@ def test_both_missing_returns_default_soul(monkeypatch, tmp_path):
 
 # ── soul.md format + extraction parity ───────────────────────────────
 
+def test_no_endorsed_exemplar_uses_a_banned_deflection():
+    """Guard against the 2026-06 contradiction: a few-shot ✅ exemplar that
+    endorses the exact generic-deflection hedge the NO HEDGING section bans
+    (e.g. 'What can I do for you?'). An endorsed line teaching the banned
+    pattern fights the user's #1 documented complaint."""
+    soul = pb.SOUL_PATH_DEFAULT.read_text(encoding="utf-8")
+    banned = re.compile(
+        r"what can i (do|help)|what (would|do) you (like|need)|"
+        r"how can i help|anything else\?",
+        re.IGNORECASE,
+    )
+    offenders = [
+        line.strip()
+        for line in soul.splitlines()
+        if "✅" in line and banned.search(line)
+    ]
+    assert not offenders, (
+        "soul.md endorses (✅) a banned deflection hedge:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
 def test_soul_has_no_reserved_tier_headers():
     """soul.md must not collide with the evolution learned-rules tier
     headers (## ═══ ANCHOR|CORE|ACCEPTED|STAGED|ARCHIVED ═══) — otherwise
