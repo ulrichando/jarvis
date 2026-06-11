@@ -148,8 +148,19 @@ export async function GET(
       },
     });
   } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    // A missing entry file (ENOENT) is a client condition — a stale
+    // workspace id, or files that were cleaned up — not a server fault.
+    // Return 404 so the preview can render a graceful "no preview"
+    // state instead of treating it as a 500 hard error.
+    if (err?.code === "ENOENT") {
+      return NextResponse.json(
+        { error: `entry not found: ${entry}` },
+        { status: 404 },
+      );
+    }
     return NextResponse.json(
-      { error: (e as Error).message },
+      { error: err?.message ?? "bundle failed" },
       { status: 500 },
     );
   }
