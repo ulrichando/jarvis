@@ -88,6 +88,12 @@ ai-edge-litert~=2.1  # DTLN-aec L3 neural echo cancellation (audio/dtln_aec.py)
 # of the voice-client; was missing from this file until 2026-06-11
 # (local venvs had it from manual installs; CI + fresh installs broke).
 cmudict~=1.1
+# VADER sentiment — animators/ expression engine (kiosk face eyes/brows
+# react to spoken-text sentiment). Same 2026-06-11 missing-runtime-dep
+# class as cmudict. (bpy/gpu/mathutils imports in animators/ are
+# Blender-embedded modules — the face animator runs inside Blender —
+# NOT pip deps; don't add them here.)
+vaderSentiment~=3.3
 # pkg_resources (transitively required by older deps); pin to a setuptools
 # version that still ships it (82+ removed pkg_resources).
 setuptools>=78.1.1,<82
