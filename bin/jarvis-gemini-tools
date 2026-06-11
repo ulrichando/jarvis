@@ -67,6 +67,7 @@ try:
     from pipeline.prompt_builder import load_soul
     from pipeline.file_memory import MemoryStore
     from direct_mode_status import StatusServer
+    from face_feed_client import FaceFeedPusher
 except ImportError as e:
     sys.stderr.write(f"missing dep: {e}\n")
     sys.stderr.write(f"hint: run inside {VOICE_AGENT_DIR}/.venv\n")
@@ -563,6 +564,13 @@ async def main() -> int:
         # needed; bound at this scope so the inner sets are visible).
         last_audio_at = [0.0]  # monotonic seconds; 0.0 = no audio yet
 
+        # Kiosk-face bridge: realtime output-audio level + spoken transcript →
+        # /face/feed so the talking-face avatar animates in Gemini Live mode.
+        # This audio lives outside LiveKit, so the voice-client's face pipeline
+        # never sees it — without this the kiosk mouth/eyes freeze.
+        # sample_rate drives the pusher's playback clock — must match paplay's.
+        face_feed = FaceFeedPusher(sample_rate=SPK_SAMPLE_RATE)
+
         async def speaking_debounce() -> None:
             while not stop.is_set():
                 await asyncio.sleep(SPEAKING_DEBOUNCE_S / 2)
@@ -601,6 +609,7 @@ async def main() -> int:
 
         async def drain_replies() -> None:
             assert spk_proc.stdin is not None
+            transcript_accum = ""   # spoken text of the current reply (→ face)
             while not stop.is_set():
                 async for msg in session.receive():
                     # Tool calls — Gemini wants us to run a function.
@@ -655,7 +664,11 @@ async def main() -> int:
                             status.set_speaking(True)
                             status.set_listening(False)
                             status.set_agent_thinking(False)
+                            # New reply → new utterance for the face engines.
+                            transcript_accum = ""
+                            face_feed.reset_text()
                         last_audio_at[0] = loop.time()
+                        face_feed.feed_audio(msg.data)   # amplitude → kiosk jaw
                         try:
                             spk_proc.stdin.write(msg.data)
                             await spk_proc.stdin.drain()
@@ -664,10 +677,14 @@ async def main() -> int:
                             return
                     if msg.text:
                         print(msg.text, end="", flush=True)
+                        transcript_accum += msg.text
+                        face_feed.feed_text(transcript_accum)
                     if msg.server_content is not None:
                         ot = msg.server_content.output_transcription
                         if ot and ot.text:
                             print(ot.text, end="", flush=True)
+                            transcript_accum += ot.text
+                            face_feed.feed_text(transcript_accum)   # → visemes + expression
 
         # Listening defaults to True once the session is up — Gemini
         # Live's server-side VAD owns turn-taking, and we don't get an

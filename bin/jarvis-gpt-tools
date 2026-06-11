@@ -66,6 +66,7 @@ try:
     from pipeline.prompt_builder import load_soul
     from pipeline.file_memory import MemoryStore
     from direct_mode_status import StatusServer
+    from face_feed_client import FaceFeedPusher
 except ImportError as e:
     sys.stderr.write(f"missing dep: {e}\n")
     sys.stderr.write(f"hint: run inside {VOICE_AGENT_DIR}/.venv\n")
@@ -432,6 +433,14 @@ async def main() -> int:
             STATUS_PORT, e,
         )
 
+    # Kiosk-face bridge: realtime output-audio level + spoken transcript →
+    # /face/feed, so the talking-face avatar animates in OpenAI Realtime mode.
+    # This audio lives outside LiveKit, so the voice-client's own face pipeline
+    # never sees it — without this the kiosk mouth/eyes freeze (only Claude
+    # animated). Fire-and-forget; a dropped POST is one skipped face frame.
+    # sample_rate drives the pusher's playback clock — must match paplay's.
+    face_feed = FaceFeedPusher(sample_rate=SPK_SAMPLE_RATE)
+
     log.info(f"[gpt-tools] connecting to {MODEL} (voice={VOICE_NAME}, tools={len(tool_list)})…")
 
     # GA Realtime: no OpenAI-Beta header (beta shape disabled
@@ -584,6 +593,7 @@ async def main() -> int:
         async def drain_replies() -> None:
             nonlocal last_image_item_id
             assert spk_proc.stdin is not None
+            transcript_accum = ""   # spoken text of the current reply (→ face)
             async for raw in ws:
                 if stop.is_set():
                     return
@@ -604,8 +614,13 @@ async def main() -> int:
                         if not status._speaking:
                             status.set_speaking(True)
                             status.set_agent_thinking(False)
+                            # New reply → new utterance for the face engines.
+                            transcript_accum = ""
+                            face_feed.reset_text()
+                        pcm = base64.b64decode(b)
+                        face_feed.feed_audio(pcm)   # amplitude → kiosk jaw
                         try:
-                            spk_proc.stdin.write(base64.b64decode(b))
+                            spk_proc.stdin.write(pcm)
                             await spk_proc.stdin.drain()
                         except (BrokenPipeError, ConnectionResetError):
                             log.warning("[gpt-tools] paplay pipe closed")
@@ -636,6 +651,8 @@ async def main() -> int:
                     d = evt.get("delta") or ""
                     if d:
                         print(d, end="", flush=True)
+                        transcript_accum += d
+                        face_feed.feed_text(transcript_accum)   # → visemes + expression
                 elif etype in ("response.audio_transcript.done", "response.output_audio_transcript.done"):
                     print()
 

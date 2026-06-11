@@ -307,6 +307,13 @@ _LISTENING_HOLD_S = float(os.environ.get("JARVIS_LISTENING_HOLD_S", "0.6"))
 _SPEAKING_RMS_THRESHOLD = float(os.environ.get("JARVIS_SPEAKING_RMS_THRESHOLD", "800"))
 _SPEAKING_HOLD_S = float(os.environ.get("JARVIS_SPEAKING_HOLD_S", "1.2"))
 
+# How long after the last /face/feed POST an external realtime speech source
+# (bin/jarvis-gpt-tools = OpenAI Realtime, bin/jarvis-gemini-tools = Gemini
+# Live) counts as "live". Within this window the _external_face_ticker owns
+# the kiosk face and the LiveKit playback loop yields its own face update, so
+# the two never fight. Past it, the playback loop resumes (the Claude path).
+_EXT_FACE_FRESH_S = float(os.environ.get("JARVIS_EXT_FACE_FRESH_S", "0.5"))
+
 # ── Watchdog (loop wedge + agent presence + stale STT) ──────────
 # Extracted to voice_client_watchdog.py 2026-05-10 (Step 7 of the
 # audit). The class encapsulates all watchdog state (_last_heartbeat,
@@ -426,6 +433,17 @@ class ClientState:
     # face's visemes. Updated by the playback loop via the VisemeEngine;
     # published on GET /face. Empty dict = mouth at rest.
     face_weights:  dict = field(default_factory=dict)
+    # ── External face feed (realtime gpt-tools / gemini-tools modes) ──────
+    # Those modes (OpenAI Realtime / Gemini Live) play their own audio OUTSIDE
+    # LiveKit, so play_subscribed_track never runs for them and the kiosk face
+    # would freeze (only the Claude path animated). They POST {text, level,
+    # speaking} to /face/feed; the fields below stash the latest. The
+    # _external_face_ticker() drives face_weights/output_level from them, and
+    # the playback loop yields face ownership while ext_face_ts is fresh.
+    ext_face_text:     str = ""
+    ext_face_level:    float = 0.0
+    ext_face_speaking: bool = False
+    ext_face_ts:       float = 0.0   # time.monotonic() of the last /face/feed POST
     # Active CLI model ID (e.g., "deepseek-chat", "qwen/qwen3-32b").
     # Read straight from CLI_MODEL_FILE on every /status hit, so the
     # tray sees changes the same instant they're written.
@@ -588,15 +606,37 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
                 )
             except Exception as e:
                 log.debug(f"[playback] reverse-stream feed failed: {e}")
+            # Yield speaking/level/face to an external realtime source while
+            # it's actively feeding /face/feed (gpt-tools / gemini-tools modes
+            # play their own audio outside LiveKit). _external_face_ticker owns
+            # the kiosk face then; this loop driving it too would flicker. A
+            # stale feed (the Claude path) → fall through and drive normally.
+            if time.monotonic() - state.ext_face_ts < _EXT_FACE_FRESH_S:
+                out.write(pcm)
+                continue
             # Drive state.speaking from the outgoing TTS PCM (clean,
             # known signal) — not mic-side RMS which can false-positive
             # on ambient noise. Spec 2026-05-20 §5.5.
             from audio.speaking_signal import is_rendering_speech
+            _was_speaking = state.speaking
             if is_rendering_speech(np.frombuffer(frame.data, dtype=np.int16)):
                 state.speaking = True
                 _speaking_until[0] = time.monotonic() + _SPEAKING_HOLD_S
             elif time.monotonic() > _speaking_until[0]:
                 state.speaking = False
+            if state.speaking != _was_speaking:
+                _speaking_rms = float(np.sqrt(np.mean(
+                    np.frombuffer(frame.data, dtype=np.int16).astype(np.float32) ** 2
+                )))
+                log.info(
+                    "[face] state.speaking %s (rms=%.0f, threshold=%.0f, "
+                    "text_pending=%s, face_weights_populated=%s)",
+                    "True" if state.speaking else "False",
+                    _speaking_rms,
+                    _SPEAKING_RMS_THRESHOLD,
+                    bool((_viseme_engine._pending_text or "").strip()),
+                    bool(state.face_weights),
+                )
             # Output amplitude (0..1, normalized RMS) of the played TTS frame —
             # the kiosk WebGL face polls /level and drives the jaw morph from
             # this. Lightly smoothed; cheap (one np.sqrt per 10ms frame).
@@ -613,7 +653,10 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
                 )
                 state.face_weights = {**_vw, **_expression_engine.frame(state.speaking)}
             except Exception as e:
-                log.debug(f"[face] frame failed: {e}")
+                log.warning(
+                    "[face] frame computation failed: %s (speaking=%s rms=%.4f)",
+                    e, state.speaking, state.output_level,
+                )
                 state.face_weights = {}
             # write() is non-blocking-ish — it copies into PortAudio's
             # internal ring, the audio thread drains. If we ever fall
@@ -809,16 +852,27 @@ async def run_once(shutdown: asyncio.Event) -> None:
         # stream end. Only the agent's transcript drives the face, never our
         # own STT echoed back under the local identity.
         is_agent = participant_identity != IDENTITY
+        _first_text_logged = False
         try:
             buf = []
             async for chunk in reader:
                 buf.append(chunk)
                 if is_agent:
                     _txt = "".join(buf)
+                    if not _first_text_logged and _txt.strip():
+                        _first_text_logged = True
+                        log.info(
+                            "[face] lk.transcription text stream active "
+                            "(identity=%s, len=%d, preview=%r)",
+                            participant_identity, len(_txt), _txt[:60],
+                        )
                     _viseme_engine.set_pending_text(_txt)
                     _expression_engine.set_pending_text(_txt)
         except Exception as e:
-            log.debug(f"[stream-drain] text stream from {participant_identity} ended: {e}")
+            log.warning(
+                "[face] lk.transcription text stream error "
+                "(identity=%s): %s", participant_identity, e,
+            )
 
     def _byte_stream_handler(reader, participant_identity: str) -> None:
         loop.create_task(_drain_byte_stream(reader, participant_identity))
@@ -1217,6 +1271,63 @@ async def run_once(shutdown: asyncio.Event) -> None:
         await room.disconnect()
 
 
+async def _external_face_ticker() -> None:
+    """Drive the kiosk face from an external realtime speech source.
+
+    The realtime modes (bin/jarvis-gpt-tools = OpenAI Realtime,
+    bin/jarvis-gemini-tools = Gemini Live) POST {text, level, speaking} to
+    /face/feed while they talk. They don't go through LiveKit, so
+    play_subscribed_track — which normally runs the viseme + expression
+    engines — never fires for them, and the face would freeze.
+
+    This always-on ticker fills that gap: while a feed is fresh it runs the
+    SAME engines at ~50 fps, so the kiosk's mouth (visemes shaped by text,
+    jaw scaled by amplitude) and eyes/brows (sentiment expression) move
+    exactly as on the Claude path. When no external source is feeding it does
+    ~one monotonic compare per tick and yields — the playback loop owns the
+    face then. Never raises out of the loop.
+    """
+    _last_text: Optional[str] = None
+    _driving = False
+    while True:
+        try:
+            await asyncio.sleep(0.02)  # ~50 fps
+            if time.monotonic() - state.ext_face_ts >= _EXT_FACE_FRESH_S:
+                if _driving:
+                    # Feed just went stale (realtime speech ended, or the
+                    # pusher died without sending its closing speaking=False
+                    # frames). Emit ONE at-rest frame so the mouth closes
+                    # instead of freezing on the last viseme — in realtime
+                    # mode there's no playback loop running to reclaim it.
+                    _viseme_engine.reset()
+                    _expression_engine.reset()
+                    state.face_weights = {}
+                    state.output_level = 0.0
+                    state.speaking = False
+                    _driving = False
+                _last_text = None      # re-seed engines on the next utterance
+                continue
+            txt = state.ext_face_text or ""
+            if txt != _last_text:
+                _viseme_engine.set_pending_text(txt)
+                _expression_engine.set_pending_text(txt)
+                _last_text = txt
+            spk = bool(state.ext_face_speaking)
+            # Smooth the pushed level the same way the playback loop does so
+            # the jaw amplitude reads identically across providers.
+            state.output_level += (state.ext_face_level - state.output_level) * 0.5
+            state.speaking = spk
+            _vw = _viseme_engine.frame(
+                now=time.monotonic(), speaking=spk, rms=state.output_level,
+            )
+            state.face_weights = {**_vw, **_expression_engine.frame(spk)}
+            _driving = True
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.debug(f"[face] external ticker tick failed: {e}")
+
+
 async def main() -> None:
     shutdown = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -1349,6 +1460,9 @@ async def main() -> None:
             except Exception as e:
                 log.debug(f"[aec_state] periodic refresh failed: {e}")
     asyncio.create_task(_aec_state_refresh_loop(), name="aec-state-refresh")
+    # Drives the kiosk face when a realtime mode (gpt-tools / gemini-tools)
+    # feeds /face/feed; idle (one compare/tick) on the Claude path.
+    asyncio.create_task(_external_face_ticker(), name="external-face-ticker")
 
     # HTTP control plane runs for the whole process lifetime — survives
     # LiveKit reconnects so the Tauri UI gets a quick "connected=false"
