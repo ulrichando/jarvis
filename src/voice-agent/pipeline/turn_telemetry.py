@@ -247,6 +247,16 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
                 )
             except sqlite3.OperationalError:
                 pass
+        # 2026-06-11 — per-turn job-process RSS (MB). Makes the long-session
+        # memory climb measurable: the per-session job process grows
+        # ~14 MB/hr and, with no recycle, eventually wedges the agent after
+        # ~18 h (inference goes slower-than-realtime). Captured in log_turn
+        # via /proc/self/statm so the leak rate is visible per turn.
+        if "rss_mb" not in cols:
+            try:
+                conn.execute("ALTER TABLE turns ADD COLUMN rss_mb REAL")
+            except sqlite3.OperationalError:
+                pass
         # Audit table — one row per computer_use_loop action.
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS computer_use_actions (
@@ -470,6 +480,22 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
         """)
 
 
+def _self_rss_mb() -> Optional[float]:
+    """Resident-set size (MB) of the CURRENT process.
+
+    Called from ``log_turn``, which runs inside the per-session job process
+    — exactly the process that slowly bloats — so this records the right
+    number. Reads ``/proc/self/statm`` (field 2 = RSS in pages × 4 KiB).
+    Returns None on any failure (non-Linux, sandbox); cheap one-file read.
+    """
+    try:
+        with open("/proc/self/statm", "r") as f:
+            rss_pages = int(f.read().split()[1])
+        return round(rss_pages * 4096 / (1024 * 1024), 1)
+    except Exception:
+        return None
+
+
 def log_turn(
     *,
     db_path: Path = DEFAULT_DB_PATH,
@@ -564,8 +590,8 @@ def log_turn(
                     aec_layer1_active, aec_layer2_aec_active, aec_layer3_active,
                     output_profile, apm_delay_ms_p50, dtln_latency_ms_p95,
                     subagent_type, subagent_ms, subagent_status,
-                    user_lang)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    user_lang, rss_mb)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     ts_utc or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     user_text, jarvis_text, emotion, route, llm_used,
@@ -581,7 +607,7 @@ def log_turn(
                     aec_layer1_active, aec_layer2_aec_active, aec_layer3_active,
                     output_profile, apm_delay_ms_p50, dtln_latency_ms_p95,
                     subagent_type, subagent_ms, subagent_status,
-                    user_lang,
+                    user_lang, _self_rss_mb(),
                 ),
             )
     except Exception as e:

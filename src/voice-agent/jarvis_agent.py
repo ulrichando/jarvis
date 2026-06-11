@@ -7526,6 +7526,20 @@ if __name__ == "__main__":
             # min(cpu_count, 4); we pin the explicit value so it
             # doesn't shrink on lower-cpu hosts.
             num_idle_processes=4,
+            # Memory safety net (2026-06-11). The per-session job process
+            # slowly grows over a long session (~14 MB/hr observed); with
+            # no limit it climbs until inference goes slower-than-realtime
+            # and the agent wedges (live: 18 h → silent, manual restart
+            # needed). job_memory_warn_mb (500, framework default) only
+            # WARNS — it floods the log but never recycles the job. This
+            # cap recycles a runaway job before it degrades. Set high
+            # enough (1500) that normal operation (~635 MB even after
+            # hours) never trips it — it fires only on a genuine runaway;
+            # the nightly recycle timer handles the normal slow climb.
+            # Env override JARVIS_JOB_MEMORY_LIMIT_MB; 0 disables.
+            job_memory_limit_mb=float(
+                os.environ.get("JARVIS_JOB_MEMORY_LIMIT_MB", "1500")
+            ),
             # livekit-agents binds a health HTTP server on 8081 by
             # default (prod_default in worker.py). Override to 8181
             # to dodge port collisions with other tooling on the same

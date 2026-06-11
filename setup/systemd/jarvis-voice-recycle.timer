@@ -1,0 +1,17 @@
+[Unit]
+Description=Nightly graceful recycle of the JARVIS voice agent (~04:00 local)
+Documentation=file:%h/Documents/Projects/jarvis/bin/jarvis-voice-recycle
+
+[Timer]
+# 04:00 local — a low-use window so the in-flight check rarely has to skip.
+# Recycles the worker before the per-session job process bloats enough to
+# wedge inference (~14 MB/hr → ~18 h → silent). See bin/jarvis-voice-recycle.
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=300
+# Don't fire a missed run at boot — a just-started agent doesn't need
+# recycling, and the next 04:00 catches it.
+Persistent=false
+Unit=jarvis-voice-recycle.service
+
+[Install]
+WantedBy=timers.target
