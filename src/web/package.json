@@ -12,6 +12,7 @@
     "dev:pty": "node scripts/pty-server.mjs",
     "build:image": "docker build -t jarvis-workbench:latest scripts/workbench-image",
     "build": "next build",
+    "db:migrate": "drizzle-kit migrate",
     "start": "concurrently -n next,pty -c blue,magenta \"next start -H 127.0.0.1\" \"node scripts/pty-server.mjs\"",
     "lint": "eslint",
     "test": "vitest run",
