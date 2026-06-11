@@ -1,11 +1,12 @@
 import { desc, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
-import { LOCAL_USER_ID } from "@/lib/chat/persist";
+import { getUserId } from "@/lib/auth-helpers";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(req: Request) {
   if (!db) return Response.json({ conversations: [] });
+  const userId = await getUserId(req.headers);
 
   const rows = await db
     .select({
@@ -15,7 +16,7 @@ export async function GET() {
       updatedAt: schema.conversations.updatedAt,
     })
     .from(schema.conversations)
-    .where(eq(schema.conversations.userId, LOCAL_USER_ID))
+    .where(eq(schema.conversations.userId, userId))
     .orderBy(desc(schema.conversations.updatedAt))
     .limit(100);
 

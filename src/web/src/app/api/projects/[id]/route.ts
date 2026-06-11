@@ -1,16 +1,17 @@
 import { and, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
-import { LOCAL_USER_ID } from "@/lib/chat/persist";
+import { getUserId } from "@/lib/auth-helpers";
 
 export const runtime = "nodejs";
 
 export async function GET(
-  _req: Request,
+  req: Request,
   ctx: RouteContext<"/api/projects/[id]">,
 ) {
   if (!db) return new Response("Persistence disabled", { status: 503 });
 
   const { id } = await ctx.params;
+  const userId = await getUserId(req.headers);
 
   const [project] = await db
     .select()
@@ -18,7 +19,7 @@ export async function GET(
     .where(
       and(
         eq(schema.projects.id, id),
-        eq(schema.projects.userId, LOCAL_USER_ID),
+        eq(schema.projects.userId, userId),
       ),
     )
     .limit(1);
@@ -34,6 +35,7 @@ export async function PATCH(
   if (!db) return new Response("Persistence disabled", { status: 503 });
 
   const { id } = await ctx.params;
+  const userId = await getUserId(req.headers);
   const body = (await req.json().catch(() => null)) as {
     name?: string;
     description?: string;
@@ -55,7 +57,7 @@ export async function PATCH(
     .where(
       and(
         eq(schema.projects.id, id),
-        eq(schema.projects.userId, LOCAL_USER_ID),
+        eq(schema.projects.userId, userId),
       ),
     )
     .returning();
@@ -65,19 +67,20 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  _req: Request,
+  req: Request,
   ctx: RouteContext<"/api/projects/[id]">,
 ) {
   if (!db) return new Response("Persistence disabled", { status: 503 });
 
   const { id } = await ctx.params;
+  const userId = await getUserId(req.headers);
 
   await db
     .delete(schema.projects)
     .where(
       and(
         eq(schema.projects.id, id),
-        eq(schema.projects.userId, LOCAL_USER_ID),
+        eq(schema.projects.userId, userId),
       ),
     );
 
