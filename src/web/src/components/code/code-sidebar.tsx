@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { useState, useRef, useEffect } from "react";
 import {
   ChevronDown,
+  ChevronRight,
   Briefcase,
   Plus,
   Zap,
@@ -10,7 +12,28 @@ import {
   PanelLeft,
   ArrowDownUp,
   Send,
+  MoreVertical,
+  ExternalLink,
+  Pin,
+  CircleCheck,
+  Pencil,
+  Share2,
+  Link2,
+  FolderInput,
+  Archive,
+  Trash2,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+
+const RECENTS_MENU: { icon: LucideIcon; label: string; chord: string; sub?: boolean }[] = [
+  { icon: ExternalLink, label: "Open in", chord: "", sub: true },
+  { icon: Pin, label: "Pin", chord: "P" },
+  { icon: CircleCheck, label: "Mark as completed", chord: "U" },
+  { icon: Pencil, label: "Rename", chord: "R" },
+  { icon: Share2, label: "Share", chord: "" },
+  { icon: Link2, label: "Copy link", chord: "C" },
+  { icon: FolderInput, label: "Move to group", chord: "", sub: true },
+];
 
 type SessionSummary = {
   session_id: string;
@@ -38,6 +61,17 @@ export function CodeSidebar({
   activeSessionId?: string | null;
   onSelectSession?: (id: string) => void;
 }) {
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const menuWrapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!openMenuId) return;
+    const onDown = (e: MouseEvent) => {
+      if (menuWrapRef.current && !menuWrapRef.current.contains(e.target as Node)) setOpenMenuId(null);
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [openMenuId]);
+
   return (
     <aside className="w-[260px] shrink-0 h-full flex flex-col bg-sidebar text-sidebar-foreground border-r border-border/40">
       {/* Branding header */}
@@ -100,19 +134,55 @@ export function CodeSidebar({
             <div className="px-2.5 py-1 text-[12.5px] text-sidebar-foreground/35">No sessions yet</div>
           ) : (
             sessions.map((s) => (
-              <button
+              <div
                 key={s.session_id}
-                type="button"
-                onClick={() => onSelectSession?.(s.session_id)}
-                className={`flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[12.5px] transition-colors ${
-                  activeSessionId === s.session_id
-                    ? "bg-sidebar-accent/60 text-sidebar-foreground"
-                    : "text-sidebar-foreground/75 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                ref={openMenuId === s.session_id ? menuWrapRef : undefined}
+                className={`group relative flex items-center rounded-md ${
+                  activeSessionId === s.session_id ? "bg-sidebar-accent/60" : "hover:bg-sidebar-accent/50"
                 }`}
               >
-                <span className={`size-1.5 shrink-0 rounded-full ${DOT[s.status]}`} />
-                <span className="truncate">{s.title}</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => onSelectSession?.(s.session_id)}
+                  className="flex min-w-0 flex-1 items-center gap-2.5 px-2.5 py-1.5 text-left text-[12.5px] text-sidebar-foreground/75 group-hover:text-sidebar-foreground"
+                >
+                  <span className={`size-1.5 shrink-0 rounded-full ${DOT[s.status]}`} />
+                  <span className="truncate">{s.title}</span>
+                </button>
+                <button
+                  type="button"
+                  aria-label="Session options"
+                  onClick={() => setOpenMenuId((cur) => (cur === s.session_id ? null : s.session_id))}
+                  className={`mr-1 flex size-5 shrink-0 items-center justify-center rounded text-sidebar-foreground/50 hover:bg-sidebar-accent hover:text-sidebar-foreground ${
+                    openMenuId === s.session_id ? "bg-sidebar-accent opacity-100" : "opacity-0 group-hover:opacity-100"
+                  }`}
+                >
+                  <MoreVertical className="size-3.5" />
+                </button>
+                {openMenuId === s.session_id && (
+                  <div className="absolute left-full top-1 z-50 ml-1 w-[210px] rounded-lg border border-border bg-card p-1 shadow-xl">
+                    {RECENTS_MENU.map((it) => (
+                      <button key={it.label} type="button" className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] text-foreground/90 hover:bg-accent/50">
+                        <it.icon className="size-3.5 text-muted-foreground" />
+                        <span className="flex-1">{it.label}</span>
+                        {it.sub && <ChevronRight className="size-3.5 text-muted-foreground" />}
+                        {it.chord && <span className="text-[11px] text-muted-foreground/60">{it.chord}</span>}
+                      </button>
+                    ))}
+                    <div className="my-1 border-t border-border/50" />
+                    <button type="button" className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] text-foreground/90 hover:bg-accent/50">
+                      <Archive className="size-3.5 text-muted-foreground" />
+                      <span className="flex-1">Archive</span>
+                      <span className="text-[11px] text-muted-foreground/60">A</span>
+                    </button>
+                    <button type="button" className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] text-red-500 hover:bg-red-500/10">
+                      <Trash2 className="size-3.5" />
+                      <span className="flex-1">Delete</span>
+                      <span className="text-[11px] text-red-500/60">D</span>
+                    </button>
+                  </div>
+                )}
+              </div>
             ))
           )}
         </div>
