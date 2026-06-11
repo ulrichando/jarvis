@@ -68,8 +68,15 @@ def test_help_runs(checker):
         text=True,
     )
     assert result.returncode == 0
-    assert "Windows cross-platform footguns" in result.stdout
-    assert "windows-footgun: ok" in result.stdout
+    # argparse reflows help text to the inherited terminal width (COLUMNS);
+    # a narrow environment wraps mid-phrase and the raw substring vanishes
+    # (live: COLUMNS=35 splits "windows-footgun:\nok" — caught by the Stop
+    # hook's first fire, whose env had a narrow width while every direct
+    # pytest run used the 80-col fallback). Collapse whitespace so the
+    # help-documents-the-contract assertion is wrap-proof.
+    help_flat = " ".join(result.stdout.split())
+    assert "Windows cross-platform footguns" in help_flat
+    assert "windows-footgun: ok" in help_flat
 
 
 def test_list_runs(checker):
