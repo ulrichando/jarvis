@@ -118,16 +118,20 @@ values remain in **git history** (and possibly on the GitHub remote since
 the May pushes).
 
 **Required, in order:**
-1. Rotate the LangSmith key (console) and the Postgres password; update `.env`.
-2. Decide whether LANGCHAIN_TRACING_V2 should be on at all (it ships
-   conversation traces to LangSmith cloud).
-3. Re-run `docs/runbook/git-history-scrub.md` with the leaked values
-   (rotated or not) in the replacement list.
+1. ~~Rotate the Postgres password~~ — **DONE 2026-06-11**: rotated (owner
+   chose a simple local-only password — accepted risk: role is idle, no
+   repo consumers, server loopback-only), old leaked password verified
+   rejected by the server. ~~Rotate the LangSmith key~~ — new key
+   installed in `.env` 2026-06-11; **REMAINING: confirm the OLD key
+   (`lsv2_pt_e278…`) was actually REVOKED in the LangSmith console** —
+   creating a new key does not invalidate the old one.
+2. Decide whether LANGCHAIN_TRACING_V2 should be on at all (currently
+   `false` — the key is unused at runtime).
+3. Re-run `docs/runbook/git-history-scrub.md` with the leaked values in
+   the replacement list (they remain in git history even after rotation).
 4. **BLOCKER for the public-repo flip** (README note, 2026-05-24): do NOT
-   flip public until steps 1–3 are done.
+   flip public until step 3 is done.
 
-The repo being private contains the blast radius today; treat 1–2 as
-this-week items anyway.
 **Revisit by:** 2026-06-14.
 
 ## 10. Tauri webview hardening (CSP `unsafe-inline`, `withGlobalTauri`)
