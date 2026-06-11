@@ -27,12 +27,30 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Optional
 
 from aiohttp import web
 
 
 logger = logging.getLogger("jarvis.direct_mode_status")
+
+# Same file the voice-client serves on :8767/cli-model (see
+# voice_client_tray_config.CLI_MODEL_FILE — not imported to keep this
+# module's deps to aiohttp only). The tool/CLI model is a GLOBAL,
+# mode-independent setting: the tray's "Tool:" header must show it in
+# Gemini/OpenAI modes too, where this server is the /status source.
+# Reported live per snapshot so a tray switch mid-mode is reflected on
+# the next poll. (Before 2026-06-09 this was reported as null in the
+# direct modes and the tray's Tool line sat on "(loading…)" forever.)
+_CLI_MODEL_FILE: Path = Path.home() / ".jarvis" / "cli-model"
+
+
+def _read_cli_model() -> Optional[str]:
+    try:
+        return _CLI_MODEL_FILE.read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
 
 
 __all__ = ["StatusServer"]
@@ -106,7 +124,7 @@ class StatusServer:
             "tool_running":    self._tool_running,
             "agent_thinking":  self._agent_thinking,
             "sharing_screen":  self._sharing_screen,
-            "cli_model":       self._cli_model,
+            "cli_model":       self._cli_model or _read_cli_model(),
             "speech_model":    self._speech_model,
             "tts_provider":    self._tts_provider,
             "mode":            self.mode,

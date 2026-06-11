@@ -37,6 +37,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import asdict
 from typing import Any, Awaitable, Callable, Optional
 
@@ -124,6 +125,7 @@ class VoiceClientHttpApi:
         app.router.add_get("/status",  self.status)
         app.router.add_get("/level",   self.level)    # fast (~30fps) lip-sync poll
         app.router.add_get("/face",    self.face)    # per-frame viseme morph weights
+        app.router.add_post("/face/feed", self.face_feed)  # external realtime → face
         app.router.add_get("/health",  self.status)   # systemd / launch.sh probe
         app.router.add_post("/mute",   self.mute)
         app.router.add_post("/speak",      self.speak)
@@ -207,6 +209,40 @@ class VoiceClientHttpApi:
             {"weights": getattr(self.state, "face_weights", {}) or {},
              "level": round(self.state.output_level, 4)},
             headers=_CORS_HEADERS,
+        )
+
+    async def face_feed(self, req: web.Request) -> web.Response:
+        """POST /face/feed  {text?, level?, speaking?}  → drive the kiosk face
+        from an EXTERNAL realtime speech source.
+
+        The realtime modes (bin/jarvis-gpt-tools = OpenAI Realtime,
+        bin/jarvis-gemini-tools = Gemini Live) play their own audio and never
+        touch LiveKit, so the playback loop that normally feeds the face never
+        runs for them — the face would freeze (only the Claude provider
+        animated). They POST their output-audio level + spoken transcript here;
+        we stash the raw inputs on `state` and stamp `ext_face_ts`. The
+        voice-client's _external_face_ticker consumes them, runs the SAME
+        viseme + expression engines the Claude path uses, and republishes on
+        /face + /level. No connection gate — this works while the voice-client
+        is muted in realtime mode."""
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        st = self.state
+        if "text" in body:
+            st.ext_face_text = str(body.get("text") or "")
+        if "level" in body:
+            try:
+                st.ext_face_level = max(0.0, min(1.0, float(body.get("level") or 0.0)))
+            except (TypeError, ValueError):
+                pass
+        if "speaking" in body:
+            st.ext_face_speaking = bool(body.get("speaking"))
+        st.ext_face_ts = time.monotonic()
+        return web.json_response(
+            {"ok": True},
+            headers={"Access-Control-Allow-Origin": "*"},
         )
 
     async def mute(self, req: web.Request) -> web.Response:
