@@ -28,7 +28,7 @@ These constraints are load-bearing. Don't remove or weaken without the user's si
 
 **Voice-agent has its own `.venv`** at [src/voice-agent/.venv/](../../src/voice-agent/.venv/). Don't use the project root venv or system Python — the voice-agent's livekit-agents version is pinned.
 
-**Tests:** `cd src/voice-agent && .venv/bin/python -m pytest tests/`. 800+ tests; full suite runs in ~25s.
+**Tests:** `cd src/voice-agent && .venv/bin/python -m pytest tests/`. 3,000+ tests across ~200 files; full suite runs in ~70s.
 
 **Logs live at `~/.local/share/jarvis/logs/voice-agent.log`** (NOT `/tmp/...` anymore — was switched 2026-05-07 because `/tmp` rotates aggressively and we lost the 11:57 SFU disconnect evidence). Rotated daily by `jarvis-log-rotate.timer` (50MB cap or 24h, gzip, keep 14). Old archives: `~/.local/share/jarvis/logs/voice-agent.log.<stamp>.gz`. Use `zgrep` for historical searches across archives.
 

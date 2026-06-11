@@ -14,34 +14,42 @@ Already rotated automatically (2026-05-04). New keys live in `~/.jarvis/livekit-
 ## 2. Groq
 
 1. Open <https://console.groq.com/keys>
-2. Find the key starting with `gsk_8MwNK8v3PcczfTbxutQNW…` (current value in `.env`). Click **Revoke**.
-3. Click **Create API Key**, name it `jarvis-laptop-2026-05-04`, copy the new value.
+2. Find the key whose prefix matches `GROQ_API_KEY` in your `.env`
+   (`grep -o 'gsk_.\{8\}' .env`). Click **Revoke**.
+3. Click **Create API Key**, name it `jarvis-<host>-<date>`, copy the new value.
 4. Paste into `.env`:
    ```
    GROQ_API_KEY=gsk_<new value>
    ```
-5. Restart: `systemctl --user restart jarvis-proxy.service jarvis-voice-agent.service`
+5. Restart: `systemctl --user restart jarvis-voice-agent.service` and
+   relaunch the desktop app (the bridge + proxy read `.env` at launch).
 
 ## 3. DeepSeek
 
 1. Open <https://platform.deepseek.com/api_keys>
-2. Find `***REMOVED-LEAKED-KEY***`. Click trash icon.
-3. **Create new key** named `jarvis-laptop`, copy value.
+2. Find the key matching `DEEPSEEK_API_KEY` in your `.env`. Click trash icon.
+3. **Create new key** named `jarvis-<host>`, copy value.
 4. Paste into `.env`:
    ```
    DEEPSEEK_API_KEY=sk-<new value>
    ```
-5. Restart: `systemctl --user restart jarvis-proxy.service jarvis-voice-agent.service`
+5. Restart: `systemctl --user restart jarvis-voice-agent.service` and
+   relaunch the desktop app.
 
 ## 4. LangSmith / LangChain
 
 1. Open <https://smith.langchain.com/o/-/settings/apikeys>
-2. Find `lsv2_pt_e278be2cbe454501adf3f0cbcd556a6c_…`. Revoke.
+2. Find the key matching `LANGCHAIN_API_KEY` in your `.env`. Revoke.
 3. **Create API Key**, copy value.
 4. Paste into `.env`:
    ```
    LANGCHAIN_API_KEY=lsv2_pt_<new value>
    ```
+
+> **Never paste real key material (even prefixes) into this file** — it is
+> tracked in git. Pre-2026-06-11 revisions of this runbook contained real
+> prefixes; one (LangChain) matched a then-live key. If you need to identify
+> a key, grep your local `.env` instead.
 5. No restart needed (used only for tracing, picked up on next process start).
 
 ## 5. Google API key
@@ -57,7 +65,7 @@ Already rotated automatically (2026-05-04). New keys live in `~/.jarvis/livekit-
 
 ## 6. Postgres password
 
-The DSN `postgresql://jarvis:697968751ando@localhost:5432/jarvis` was committed. The Postgres user `jarvis` is local-only, but the password is now public.
+A DSN of the form `postgresql://jarvis:<password>@localhost:5432/jarvis` was committed to git history (the literal password used to be reproduced in THIS file too — removed 2026-06-11; it is still in old revisions). The Postgres user `jarvis` is local-only, but treat the password as burned and rotate it.
 
 ```bash
 # Pick a new password (24+ random chars)
@@ -87,7 +95,8 @@ curl -sS http://127.0.0.1:8767/status | jq '.connected, .agent_present'
 # 2. Trigger a turn (say "Jarvis" into the mic) → should reply
 
 # 3. Check no service is logging auth errors
-journalctl --user -u jarvis-proxy.service -u jarvis-voice-agent.service --since "5 minutes ago" | grep -iE "(401|403|unauthorized|invalid api key)"
+# (voice-agent logs to a file, not journald; bridge/proxy log to /tmp)
+tail -n 500 ~/.local/share/jarvis/logs/voice-agent.log /tmp/jarvis-proxy.log 2>/dev/null | grep -iE "(401|403|unauthorized|invalid api key)"
 # should be empty
 ```
 

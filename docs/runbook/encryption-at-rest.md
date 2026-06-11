@@ -35,7 +35,7 @@ This requires reinstalling the OS or doing a backup → wipe → restore migrati
 2. **Reinstall Arch / Kali** with the installer's "Encrypt full disk" option (LUKS2 on root, or LUKS on `/home` only).
 3. **Verify** with `cryptsetup status root` — should show `cipher: aes-xts-plain64` (default).
 4. **Restore** home from backup.
-5. **Validate** JARVIS comes back up: `systemctl --user start jarvis-hub.service` then check `~/.jarvis/hub/state.db` is intact.
+5. **Validate** JARVIS comes back up: `systemctl --user start livekit-server jarvis-voice-agent jarvis-voice-client`, then `sqlite3 ~/.local/share/jarvis/turn_telemetry.db "PRAGMA integrity_check;"` and the same for `~/.jarvis/conversations.db`.
 
 ## Interim mitigations until LUKS is enabled
 

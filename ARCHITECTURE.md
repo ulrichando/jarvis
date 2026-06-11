@@ -14,17 +14,18 @@ JARVIS is not a single process. Five long-running processes cooperate:
 
 | Process | Language / framework | Systemd unit |
 |---|---|---|
+| **LiveKit SFU** | Go (bundled binary) | `livekit-server.service` |
 | **Voice agent** | Python 3.13 / LiveKit Agents | `jarvis-voice-agent.service` |
 | **Voice client** | Python / LiveKit SDK | `jarvis-voice-client.service` |
-| **Hub** | Python / Redis-Streams | `jarvis-hub.service` |
 | **Bridge** | TypeScript / Bun | started by `start-desktop.sh`; no unit |
 | **Desktop UI** | Tauri (Rust + React) | launched by bridge script |
 
 The **voice agent** is the brain. Everything else is either a UI layer or a
 data-routing layer.
 
-The **web app** (`src/web/`) is a Next.js development server that reads from
-the hub DB and proxies to the bridge. It is not a required runtime process.
+The **web app** (`src/web/`) is a Next.js development server that reads
+local JARVIS state (conversations, logs, telemetry) and proxies to the
+bridge. It is not a required runtime process.
 
 ---
 
@@ -68,11 +69,18 @@ Speaker
 
 ### Memory
 
-Memory writes happen off the critical path:
-- `pipeline/memory_extractor.py` auto-extracts facts from every turn boundary.
-- `pipeline/memory_consolidator.py` deduplicates memories every N extractions.
-- The hub (`src/hub/`) consumes memory events from Redis Streams and
-  materialises them in `~/.jarvis/hub/state.db`.
+Memory is file-backed and tool-driven (the turn-boundary auto-extractor and
+the consolidator were removed in the 2026-05-20 rebuild):
+- Three curated stores under `~/.jarvis/memories/` — `USER.md` /
+  `MEMORY.md` / `PROCEDURES.md` — char-budgeted, written only via the
+  `memory` tool (`pipeline/file_memory.py`), and injected as a frozen
+  snapshot at session start so the prompt prefix-cache stays stable.
+- Cross-session deep recall is the `recall` tool over a pluggable provider
+  (`pipeline/memory_provider.py`, selected by `JARVIS_MEMORY_PROVIDER`);
+  the live backend is self-hosted honcho, which auto-syncs every message
+  off the turn path.
+- `recall_conversation` / `session_search` search past transcripts
+  (`~/.jarvis/conversations.db` / `turn_telemetry.db`).
 - Recall queries are force-routed to the memory read path by the turn router.
 
 ---
@@ -140,8 +148,7 @@ supervisor model at runtime (written to `~/.jarvis/voice-model`).
 | Desktop UI | `src/desktop-tauri/` | Rust + React/JSX |
 | Web app | `src/web/` | TypeScript / Next.js |
 | CLI agent | `src/cli/` | TypeScript / Bun |
-| Hub | `src/hub/` | Python |
-| Chrome extension | `src/cli/src/utils/claudeInChrome/` (reserved for future work — `src/extensions/` does not exist yet) | JavaScript (MV3) |
+| Chrome extension | `src/cli/src/utils/claudeInChrome/` (reserved for future work) | JavaScript (MV3) |
 | Android app | `src/android/` | Kotlin + NDK |
 | ACP adapter | `src/voice-agent/acp_registry/` | Python |
 
@@ -151,8 +158,10 @@ supervisor model at runtime (written to `~/.jarvis/voice-model`).
 
 - **Barge-in** uses VAD-direct mode (`min_words=0` on all routes); Deepgram
   streaming partials are required for STT-confirmed interrupts.
-- **Four load-bearing monkey-patches** are installed on import and must not
-  be removed — see `src/voice-agent/sanitizers/__init__.py`.
+- **~13 load-bearing monkey-patches** install at import and must not be
+  removed (grep `\.install()` in `jarvis_agent.py` for the live list); the
+  provider-critical four are `deepseek_roundtrip`, `tool_name`,
+  `strict_schema_relax`, and `anthropic_strict_schema`.
 - **No in-process HandoffSubagent layer** — the torn-down `subagents/` tree
   was replaced by direct registry tools and the out-of-process
   `dispatch_agent` tool (2026-05-27).
