@@ -428,16 +428,16 @@ def test_dispatcher_without_google_key_degrades(monkeypatch):
 
 
 def test_dispatcher_with_gemini_plugin_missing_degrades(monkeypatch):
-    """When `GOOGLE_API_KEY` is set but `livekit-plugins-google` isn't
-    installed (the GeminiCachedLLM import raises ImportError), the
-    dispatcher catches the failure and falls back to Groq legacy. No
-    sys.modules monkey here — we want the real import to actually fail."""
+    """When `GOOGLE_API_KEY` is set but the Gemini wrapper can't import
+    (missing `livekit-plugins-google`), the dispatcher catches the
+    ImportError and falls back to Groq legacy. The plugin now ships in
+    requirements, so simulate the failure: `None` in sys.modules makes
+    `import providers.gemini_llm` raise ImportError deterministically."""
     _wipe_route_env(monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
     monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
     monkeypatch.setenv("JARVIS_REASONING_MODEL", "gemini-2.5-flash")
-    # Wipe any previously installed fake so the real import path runs.
-    monkeypatch.delitem(sys.modules, "providers.gemini_llm", raising=False)
+    monkeypatch.setitem(sys.modules, "providers.gemini_llm", None)
 
     from providers.llm import build_dispatching_llm
 

@@ -102,11 +102,19 @@ class TestInertWithoutConfig:
         assert mc.discover_mcp_tools() == []
         assert mc.get_mcp_status() == []
 
-    def test_no_loop_thread_started_when_inert(self):
+    def test_no_loop_thread_started_when_inert(self, _isolated_jarvis_home):
         import tools.mcp_client as mc
 
-        mc.discover_mcp_tools()  # no config → must not start the loop
-        assert mc._loop is None
+        # Order-independent: if an earlier test in the session ran
+        # discovery against a usable config (any load_all_livekit_tools
+        # call with a real ~/.jarvis/mcp.json does), the daemon loop
+        # already exists and is never torn down (by design — see
+        # shutdown_mcp_servers). What THIS test guards: discovery with
+        # no config must not START a loop, i.e. the loop state must be
+        # exactly what it was before the call.
+        before = mc._loop
+        mc.discover_mcp_tools()  # no config → must not start a loop
+        assert mc._loop is before
 
     def test_empty_config_file_is_inert(self, _isolated_jarvis_home):
         import tools.mcp_client as mc

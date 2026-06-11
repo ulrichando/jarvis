@@ -73,6 +73,14 @@ def _install_minimal_lk_google_stub(monkeypatch):
     fake_pkg = _types.ModuleType("livekit.plugins.google")
     fake_pkg.LLM = _FakeGoogleLLM
     monkeypatch.setitem(sys.modules, "livekit.plugins.google", fake_pkg)
+    # providers.gemini_llm imports via `from livekit.plugins import google`,
+    # which resolves the ATTRIBUTE on the parent package — and once the real
+    # plugin has been imported anywhere in the pytest session, that attribute
+    # is the real module, bypassing the sys.modules stub. Patch the parent
+    # attribute too, or the real plugin's chat() runs (it spawns an asyncio
+    # metrics task and needs a running event loop these tests don't have).
+    import livekit.plugins as _lk_plugins
+    monkeypatch.setattr(_lk_plugins, "google", fake_pkg, raising=False)
     # Also wipe any cached import of providers.gemini_llm so the stub
     # takes effect on the next import.
     monkeypatch.delitem(sys.modules, "providers.gemini_llm", raising=False)
