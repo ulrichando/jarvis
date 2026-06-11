@@ -44,6 +44,9 @@ export function useDesignComments(workspaceId: string) {
   const [items, setItems] = useState<DesignCommentRecord[]>([]);
 
   useEffect(() => {
+    // SSR-safe: localStorage is client-only, so load this workspace's comments
+    // after mount rather than via a hydration-mismatching lazy initializer.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- SSR-safe localStorage load
     setItems(read(workspaceId));
   }, [workspaceId]);
 
