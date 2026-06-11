@@ -11,15 +11,44 @@ on:
     branches: [main, master]
 
 jobs:
+  docs-truth:
+    name: docs reference no tombstoned systems
+    runs-on: ubuntu-latest
+    # Blocking on purpose (deterministic grep, no environment variance).
+    # Orientation docs — what a new contributor or agent reads first —
+    # must not present removed systems as live. The hub was deleted
+    # 2026-05-22; the memory extractor/consolidator 2026-05-20. This
+    # gate exists because every one of these files had drifted by
+    # 2026-06-11. Historical mentions belong in CHANGELOG and
+    # docs/superpowers/specs/ (deliberately not checked).
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: grep orientation docs for tombstoned systems
+        run: |
+          ! grep -nE 'src/hub|src/extensions|jarvis-hub\.service|jarvis-proxy\.service|memory_extractor|memory_consolidator' \
+            README.md ARCHITECTURE.md CONTRIBUTING.md SECURITY.md \
+            docs/runbook/*.md .claude/rules/*.md
+
+      - name: grep docs for key-shaped strings
+        run: |
+          # Real key material has been committed into docs twice
+          # (credential-rotation.md prefixes; git-history-scrub.md a FULL
+          # live key as a replace-rule example, caught 2026-06-11). Docs
+          # must reference keys by env-var name only. Patterns cover
+          # Groq / OpenAI-style / Anthropic / LangSmith / Google keys.
+          ! grep -rnE 'gsk_[A-Za-z0-9]{16}|sk-[A-Za-z0-9]{20,}|sk-ant-[A-Za-z0-9]{10,}|lsv2_pt_[a-f0-9]{8,}|AIza[A-Za-z0-9_-]{20,}' \
+            README.md ARCHITECTURE.md CONTRIBUTING.md SECURITY.md CHANGELOG.md docs/
+
   ruff:
     name: ruff (voice-agent)
     runs-on: ubuntu-latest
     # Non-blocking: ratchet to required once existing violations are fixed.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
@@ -36,7 +65,7 @@ jobs:
     # required once the existing warnings are addressed.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Tauri system deps
         run: |
@@ -70,7 +99,7 @@ jobs:
     # Non-blocking: type errors may exist today; ratchet to required once clean.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: oven-sh/setup-bun@v2
         with:
