@@ -6,7 +6,15 @@ const redisMock = {
   get: vi.fn(),
 };
 vi.mock("ioredis", () => ({
-  default: vi.fn().mockImplementation(() => redisMock),
+  // A real class: vitest 4 invokes the default export with `new`, and a
+  // vi.fn whose implementation is an arrow is no longer constructible.
+  // The constructor returns the shared redisMock so every instance is
+  // the same object the assertions reset/inspect.
+  default: class {
+    constructor() {
+      return redisMock;
+    }
+  },
 }));
 
 import { reserveSwarmBudget, recordSwarmSpend } from "@/lib/ai/kimi/budget";
