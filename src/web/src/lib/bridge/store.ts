@@ -13,6 +13,8 @@ export interface EnvironmentInput {
   max_sessions: number
   worker_type: string
   reuse_id?: string
+  /** Owner (JARVIS user id) the registering CLI authenticated as, or null. */
+  user_id?: string | null
 }
 
 export interface EnvironmentRow {
@@ -24,6 +26,7 @@ export interface EnvironmentRow {
   git_repo_url: string | null
   max_sessions: number
   worker_type: string
+  user_id: string | null
   created_at: number
   last_seen_at: number
 }
@@ -89,14 +92,57 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at INTEGER NOT NULL,
   archived_at INTEGER
 );
+-- Per-user CLI auth: maps a long-lived JARVIS token (sent by the CLI on
+-- register) to a JARVIS user id. The token-generation endpoint writes these
+-- (session-authenticated); register resolves token → user to own the env.
+CREATE TABLE IF NOT EXISTS bridge_tokens (
+  token TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  last_used_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS bridge_tokens_user ON bridge_tokens(user_id);
 `
 
 export function initSchema(db: Database.Database): void {
   db.exec(SCHEMA)
+  // Additive migration for DBs created before per-user CCR: add the
+  // environments.user_id column if missing (ALTER throws if it already
+  // exists — swallow that specific case).
+  try {
+    db.exec('ALTER TABLE environments ADD COLUMN user_id TEXT')
+  } catch {
+    /* column already present */
+  }
   // FK enforcement is the load-bearing reason CASCADE DELETE works on the
   // `work` table when an environment is deleted. Set explicitly here rather
   // than relying on better-sqlite3's bundled SQLite default.
   db.pragma('foreign_keys = ON')
+}
+
+/** Get-or-create the caller's long-lived CLI token (one per user). */
+export function getOrCreateBridgeToken(store: Store, userId: string): string {
+  const existing = store.db
+    .prepare('SELECT token FROM bridge_tokens WHERE user_id = ? LIMIT 1')
+    .get(userId) as { token: string } | undefined
+  if (existing) return existing.token
+  const token = `jbr_${randomBytes(24).toString('base64url')}`
+  store.db
+    .prepare('INSERT INTO bridge_tokens (token, user_id, created_at) VALUES (?, ?, ?)')
+    .run(token, userId, Date.now())
+  return token
+}
+
+/** Resolve a CLI token to its owning user id, or null. Touches last_used_at. */
+export function resolveBridgeToken(store: Store, token: string): string | null {
+  const row = store.db
+    .prepare('SELECT user_id FROM bridge_tokens WHERE token = ?')
+    .get(token) as { user_id: string } | undefined
+  if (!row) return null
+  store.db
+    .prepare('UPDATE bridge_tokens SET last_used_at = ? WHERE token = ?')
+    .run(Date.now(), token)
+  return row.user_id
 }
 
 function genId(): string {
@@ -128,8 +174,8 @@ export function createEnvironment(
   const now = Date.now()
   store.db
     .prepare(
-      `INSERT INTO environments (environment_id, environment_secret, machine_name, directory, branch, git_repo_url, max_sessions, worker_type, created_at, last_seen_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO environments (environment_id, environment_secret, machine_name, directory, branch, git_repo_url, max_sessions, worker_type, user_id, created_at, last_seen_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       id,
@@ -140,6 +186,7 @@ export function createEnvironment(
       input.git_repo_url ?? null,
       input.max_sessions,
       input.worker_type,
+      input.user_id ?? null,
       now,
       now,
     )
@@ -377,8 +424,16 @@ export interface SessionRow {
   archived_at: number | null
 }
 
-/** All registered machines (workers), most-recently-seen first. */
-export function listEnvironments(store: Store): EnvironmentRow[] {
+/**
+ * Registered machines (workers), most-recently-seen first. When `userId` is
+ * given, only that user's machines are returned (per-user CCR scoping).
+ */
+export function listEnvironments(store: Store, userId?: string | null): EnvironmentRow[] {
+  if (userId) {
+    return store.db
+      .prepare('SELECT * FROM environments WHERE user_id = ? ORDER BY last_seen_at DESC')
+      .all(userId) as EnvironmentRow[]
+  }
   return store.db
     .prepare('SELECT * FROM environments ORDER BY last_seen_at DESC')
     .all() as EnvironmentRow[]
@@ -398,8 +453,22 @@ export function getOrCreateSession(
     .run(sessionId, environmentId, Date.now())
 }
 
-/** Sessions, newest first (for the /code sidebar / parallel dashboard). */
-export function listSessions(store: Store): SessionRow[] {
+/**
+ * Sessions, newest first (for the /code sidebar / parallel dashboard). When
+ * `userId` is given, only sessions whose environment is owned by that user are
+ * returned (per-user scoping).
+ */
+export function listSessions(store: Store, userId?: string | null): SessionRow[] {
+  if (userId) {
+    return store.db
+      .prepare(
+        `SELECT s.* FROM sessions s
+         JOIN environments e ON e.environment_id = s.environment_id
+         WHERE e.user_id = ?
+         ORDER BY s.created_at DESC`,
+      )
+      .all(userId) as SessionRow[]
+  }
   return store.db
     .prepare('SELECT * FROM sessions ORDER BY created_at DESC')
     .all() as SessionRow[]

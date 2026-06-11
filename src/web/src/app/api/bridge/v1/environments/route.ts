@@ -1,15 +1,18 @@
 import { NextResponse } from 'next/server'
 import { getStore } from '@/lib/bridge/db'
 import { listEnvironments } from '@/lib/bridge/store'
+import { getUserId } from '@/lib/auth-helpers'
 import { bridgeError } from '@/lib/bridge/errors'
 
-// GET /api/bridge/v1/environments — list registered machines (workers) for the
-// /code machine picker. Unauthenticated like the other v1 routes (relies on the
-// 127.0.0.1 loopback bind). NEVER exposes environment_secret to the UI.
-export async function GET(): Promise<NextResponse> {
+// GET /api/bridge/v1/environments — the logged-in user's registered machines
+// (workers) for the /code machine picker. Per-user scoped: only environments
+// the CLI registered under this user's token are returned. NEVER exposes
+// environment_secret to the UI.
+export async function GET(req: Request): Promise<NextResponse> {
   try {
     const store = getStore()
-    const environments = listEnvironments(store).map((e) => ({
+    const userId = await getUserId(req.headers)
+    const environments = listEnvironments(store, userId).map((e) => ({
       environment_id: e.environment_id,
       machine_name: e.machine_name,
       directory: e.directory,

@@ -6,6 +6,7 @@ import {
   findEnvironment,
   type EnvironmentRow,
 } from '@/lib/bridge/store'
+import { getUserId } from '@/lib/auth-helpers'
 import { bridgeError } from '@/lib/bridge/errors'
 
 function repoLabel(env: EnvironmentRow | null): string | null {
@@ -20,10 +21,11 @@ function repoLabel(env: EnvironmentRow | null): string | null {
 // GET /api/bridge/v1/sessions — sessions for the /code main view, each with a
 // title (first user prompt), a preview (latest event), repo + machine, and a
 // derived status. Newest first, capped.
-export async function GET(): Promise<NextResponse> {
+export async function GET(req: Request): Promise<NextResponse> {
   try {
     const store = getStore()
-    const sessions = listSessions(store)
+    const userId = await getUserId(req.headers)
+    const sessions = listSessions(store, userId)
       .slice(0, 40)
       .map((s) => {
         const events = listSessionEvents(store, s.session_id, 0)
