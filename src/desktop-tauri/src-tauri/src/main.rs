@@ -1782,6 +1782,7 @@ fn main() {
                 .menu(&menu)
                 .tooltip("J.A.R.V.I.S.")
                 .on_menu_event(move |app, event| {
+                    eprintln!("[JARVIS] menu event: {}", event.id().as_ref());
                     match event.id().as_ref() {
                         "open_chat" => {
                             let Some(w) = app.get_webview_window("main") else { return };
