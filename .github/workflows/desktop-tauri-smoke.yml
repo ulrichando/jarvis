@@ -27,7 +27,7 @@ jobs:
       run:
         working-directory: src/desktop-tauri
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Tauri 2 system deps
         run: |
@@ -41,7 +41,7 @@ jobs:
             patchelf \
             pkg-config
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "20"
           cache: npm
