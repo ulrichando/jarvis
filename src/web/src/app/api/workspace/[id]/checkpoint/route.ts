@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import {
   listCheckpoints,
   saveCheckpoint,
-  restoreCheckpoint,
 } from "@/lib/checkpoints";
 
 export const runtime = "nodejs";
