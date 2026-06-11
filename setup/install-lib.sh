@@ -595,6 +595,25 @@ install_web() {
   if [ "${JARVIS_SKIP_WEB:-0}" = "1" ]; then warn "skipping Web (JARVIS_SKIP_WEB=1)"; return; fi
   section "Installing Web (Next.js)"
   (cd "$INSTALL_DIR/src/web" && bun install --silent)
+  # JARVIS login (better-auth): signing secret + DB migrations so the login
+  # gate, accounts, and chat persistence work on a fresh install.
+  local web_env="$INSTALL_DIR/src/web/.env.local"
+  if [ -f "$web_env" ] && ! grep -q "^BETTER_AUTH_SECRET=" "$web_env"; then
+    local auth_secret
+    auth_secret=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    printf '\n# better-auth (JARVIS login) — signs sessions; keep secret.\nBETTER_AUTH_SECRET=%s\nBETTER_AUTH_URL=http://localhost:3000\n' "$auth_secret" >> "$web_env"
+    chmod 600 "$web_env"
+    ok "generated BETTER_AUTH_SECRET"
+  fi
+  if [ -f "$web_env" ] && grep -q "^DATABASE_URL=" "$web_env"; then
+    if (cd "$INSTALL_DIR/src/web" && bun run db:migrate >/dev/null 2>&1); then
+      ok "applied web DB migrations (auth + chat tables)"
+    else
+      warn "web DB migration skipped — run 'cd src/web && bun run db:migrate' once Postgres is reachable"
+    fi
+  else
+    warn "DATABASE_URL not in .env.local — login + chat need it; then run 'cd src/web && bun run db:migrate'"
+  fi
   ok "deps installed — run 'cd $INSTALL_DIR/src/web && bun dev' to start dev server"
 }
 
