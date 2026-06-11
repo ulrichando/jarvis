@@ -48,6 +48,7 @@ export function CodeComposer({
   onPickMachine,
   onRefreshMachines,
   placeholder = "Describe a task or ask a question",
+  showPills = true,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -58,6 +59,7 @@ export function CodeComposer({
   onPickMachine: (m: Machine) => void;
   onRefreshMachines: () => void;
   placeholder?: string;
+  showPills?: boolean;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [envOpen, setEnvOpen] = useState(false);
@@ -84,7 +86,9 @@ export function CodeComposer({
 
   return (
     <div className="border border-border/60 rounded-2xl overflow-hidden bg-card">
-      {/* pills: environment · repo · branch · + */}
+      {/* pills: environment · repo · branch · + (welcome view only — in a
+          session the breadcrumb already shows env/repo) */}
+      {showPills && (
       <div className="relative flex items-center gap-1.5 px-3 py-2 border-b border-border/40" ref={popRef}>
         <button type="button" onClick={() => setEnvOpen((o) => !o)} className={pill}>
           {selected ? <Monitor className="size-3 text-foreground/60" /> : <Cloud className="size-3 text-foreground/60" />}
@@ -157,6 +161,7 @@ export function CodeComposer({
           </div>
         )}
       </div>
+      )}
 
       {/* input + send */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border/40">

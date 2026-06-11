@@ -15,6 +15,10 @@ import {
   Settings2,
   Archive,
   Trash2,
+  Check,
+  GitCompare,
+  ListChecks,
+  Columns2,
 } from "lucide-react";
 
 type CodeEvent = {
@@ -41,17 +45,25 @@ export function CodeSession({
   sessionId,
   repo,
   title,
+  panels,
+  onTogglePanel,
+  onShare,
 }: {
   sessionId: string;
   repo?: string | null;
   title?: string;
+  panels: { diff: boolean; background: boolean; plan: boolean };
+  onTogglePanel: (p: "diff" | "background" | "plan") => void;
+  onShare: () => void;
 }) {
   const [events, setEvents] = useState<CodeEvent[]>([]);
   const [waiting, setWaiting] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [layoutOpen, setLayoutOpen] = useState(false);
   const cursorRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const layoutRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setEvents([]);
@@ -95,6 +107,15 @@ export function CodeSession({
     return () => window.removeEventListener("mousedown", onDown);
   }, [menuOpen]);
 
+  useEffect(() => {
+    if (!layoutOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (layoutRef.current && !layoutRef.current.contains(e.target as Node)) setLayoutOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [layoutOpen]);
+
   return (
     <div className="flex h-full flex-col">
       {/* Breadcrumb header */}
@@ -136,13 +157,34 @@ export function CodeSession({
             </div>
           )}
         </div>
-        <div className="flex items-center gap-1">
-          <button type="button" aria-label="Share" className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/50 hover:text-foreground">
+        <div className="relative flex items-center gap-1" ref={layoutRef}>
+          <button type="button" onClick={onShare} aria-label="Share session" className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/50 hover:text-foreground">
             <Share2 className="size-4" />
           </button>
-          <button type="button" aria-label="Layout" className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/50 hover:text-foreground">
-            <PanelRight className="size-4" />
+          <button type="button" onClick={() => setLayoutOpen((o) => !o)} aria-label="Panels" className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/50 hover:text-foreground">
+            <Columns2 className="size-4" />
           </button>
+          {layoutOpen && (
+            <div className="absolute right-0 top-full z-50 mt-1 w-[215px] rounded-lg border border-border bg-card p-1 shadow-xl">
+              {([
+                { key: "diff", label: "Diff", icon: GitCompare, chord: "Ctrl+⇧+D" },
+                { key: "background", label: "Background tasks", icon: Columns2, chord: "" },
+                { key: "plan", label: "Plan", icon: ListChecks, chord: "" },
+              ] as const).map((it) => (
+                <button
+                  key={it.key}
+                  type="button"
+                  onClick={() => onTogglePanel(it.key)}
+                  className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] text-foreground/90 hover:bg-accent/50"
+                >
+                  <it.icon className="size-3.5 text-muted-foreground" />
+                  <span className="flex-1">{it.label}</span>
+                  {panels[it.key] && <Check className="size-3.5 text-primary" />}
+                  {it.chord && <span className="text-[11px] text-muted-foreground/60">{it.chord}</span>}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

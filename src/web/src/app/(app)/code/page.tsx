@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Asterisk, ChevronRight, Lightbulb, X } from "lucide-react";
+import { Asterisk, ChevronRight, Lightbulb, X, Shield, ExternalLink, Check } from "lucide-react";
 import { CodeSidebar } from "@/components/code/code-sidebar";
 import { CodeComposer } from "@/components/code/code-composer";
 import { CodeSession } from "@/components/code/code-session";
+import { CodePanels, type PanelName } from "@/components/code/code-panels";
 
 type Machine = {
   environment_id: string;
@@ -62,6 +63,9 @@ export default function CodePage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [bannerOpen, setBannerOpen] = useState(true);
+  const [panels, setPanels] = useState({ diff: false, background: false, plan: false });
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareVisibility, setShareVisibility] = useState<"private" | "public">("private");
 
   const loadMachines = useCallback(async () => {
     try {
@@ -135,12 +139,17 @@ export default function CodePage() {
         onNewSession={() => { setSessionId(null); setInput(""); }}
       />
 
-      <main className="flex flex-1 flex-col overflow-hidden">
+      <main className="flex flex-1 overflow-hidden">
+        {/* chat column (messages + composer) */}
+        <div className="flex min-w-0 flex-1 flex-col">
           {sessionId ? (
             <CodeSession
               sessionId={sessionId}
               repo={repoLabel(selected)}
               title={sessions.find((s) => s.session_id === sessionId)?.title ?? "New session"}
+              panels={panels}
+              onTogglePanel={(p) => setPanels((s) => ({ ...s, [p]: !s[p] }))}
+              onShare={() => setShareOpen(true)}
             />
           ) : (
             <div className="flex-1 overflow-y-auto">
@@ -209,9 +218,58 @@ export default function CodePage() {
               onPickMachine={setSelected}
               onRefreshMachines={loadMachines}
               placeholder={sessionId ? "Type / for commands" : "Describe a task or ask a question"}
+              showPills={!sessionId}
             />
           </div>
-        </main>
+        </div>
+
+        {/* right-side panels (session mode) */}
+        {sessionId && (panels.diff || panels.background || panels.plan) && (
+          <CodePanels
+            panels={panels}
+            onClose={(p: PanelName) => setPanels((s) => ({ ...s, [p]: false }))}
+            baseBranch={selected?.branch ?? "main"}
+            workBranch={`jarvis/${sessionId.slice(0, 8)}`}
+          />
+        )}
+      </main>
+
+      {/* Share session modal */}
+      {shareOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShareOpen(false)}>
+          <div className="w-[420px] max-w-[90vw] rounded-2xl border border-border bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-1 flex items-center justify-between">
+              <div className="text-[15px] font-semibold text-foreground">Share session</div>
+              <button type="button" onClick={() => setShareOpen(false)} aria-label="Close" className="text-muted-foreground hover:text-foreground">
+                <X className="size-4" />
+              </button>
+            </div>
+            <div className="mb-4 text-[12.5px] text-muted-foreground">Showcase your work and how you code with Jarvis.</div>
+            {([
+              { key: "private", icon: Shield, title: "Private", sub: "Only you have access" },
+              { key: "public", icon: ExternalLink, title: "Public", sub: "Anyone with the link can view" },
+            ] as const).map((o) => (
+              <button
+                key={o.key}
+                type="button"
+                onClick={() => setShareVisibility(o.key)}
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-accent/40"
+              >
+                <o.icon className="size-4 text-muted-foreground" />
+                <div className="flex-1">
+                  <div className="text-[13px] font-medium text-foreground">{o.title}</div>
+                  <div className="text-[12px] text-muted-foreground">{o.sub}</div>
+                </div>
+                {shareVisibility === o.key && <Check className="size-4 text-foreground" />}
+              </button>
+            ))}
+            <div className="mt-3 text-[11.5px] leading-relaxed text-muted-foreground/70">
+              Don&apos;t share personal information or third-party content without permission, and see our{" "}
+              <span className="text-blue-400">Usage Policy</span>.
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
