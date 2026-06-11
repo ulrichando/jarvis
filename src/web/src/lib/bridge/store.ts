@@ -354,3 +354,73 @@ export function archiveSession(
   }
   return 'archived'
 }
+
+// ── Read paths for the /code web UI (CCR parity, 2026-06-11) ───────────────
+// The worker-facing endpoints write environments / work / session_events; the
+// UI needs to LIST machines, create a session, dispatch a task, and tail a
+// session's event stream. These are the read/dispatch helpers for that.
+
+export interface SessionEventRow {
+  rowid: number
+  event_id: string
+  session_id: string
+  type: string
+  payload_json: string
+  created_at: number
+}
+
+export interface SessionRow {
+  session_id: string
+  environment_id: string | null
+  archived: number
+  created_at: number
+  archived_at: number | null
+}
+
+/** All registered machines (workers), most-recently-seen first. */
+export function listEnvironments(store: Store): EnvironmentRow[] {
+  return store.db
+    .prepare('SELECT * FROM environments ORDER BY last_seen_at DESC')
+    .all() as EnvironmentRow[]
+}
+
+/** Idempotently register a UI-initiated session against an environment. */
+export function getOrCreateSession(
+  store: Store,
+  sessionId: string,
+  environmentId: string,
+): void {
+  store.db
+    .prepare(
+      `INSERT OR IGNORE INTO sessions (session_id, environment_id, archived, created_at)
+       VALUES (?, ?, 0, ?)`,
+    )
+    .run(sessionId, environmentId, Date.now())
+}
+
+/** Sessions, newest first (for the /code sidebar / parallel dashboard). */
+export function listSessions(store: Store): SessionRow[] {
+  return store.db
+    .prepare('SELECT * FROM sessions ORDER BY created_at DESC')
+    .all() as SessionRow[]
+}
+
+/**
+ * A session's events after `sinceRowid` (0 = from the start). rowid is the
+ * monotonic insert cursor — unique even for events sharing a created_at ms,
+ * so the UI can long-poll without dupes or gaps.
+ */
+export function listSessionEvents(
+  store: Store,
+  sessionId: string,
+  sinceRowid = 0,
+): SessionEventRow[] {
+  return store.db
+    .prepare(
+      `SELECT rowid, event_id, session_id, type, payload_json, created_at
+       FROM session_events
+       WHERE session_id = ? AND rowid > ?
+       ORDER BY rowid ASC`,
+    )
+    .all(sessionId, sinceRowid) as SessionEventRow[]
+}
