@@ -7,6 +7,7 @@ import {
   enqueueWork,
   appendSessionEvent,
 } from '@/lib/bridge/store'
+import { getUserId } from '@/lib/auth-helpers'
 import { emitWorkAvailable } from '@/lib/bridge/events'
 import { bridgeError } from '@/lib/bridge/errors'
 
@@ -35,8 +36,14 @@ export async function POST(req: Request): Promise<NextResponse> {
   let workId = ''
   try {
     const store = getStore()
-    if (!findEnvironment(store, body.environment_id)) {
+    const env = findEnvironment(store, body.environment_id)
+    if (!env) {
       return bridgeError(404, 'not_found', 'Environment not found')
+    }
+    // Ownership: you can only dispatch to your own machines.
+    const userId = await getUserId(req.headers)
+    if (env.user_id && env.user_id !== userId) {
+      return bridgeError(403, 'forbidden', 'Not your machine')
     }
     sessionId = randomBytes(8).toString('hex')
     getOrCreateSession(store, sessionId, body.environment_id)

@@ -25,13 +25,25 @@ import { lt } from '../utils/semver.js'
  * The `feature('BRIDGE_MODE')` guard ensures the GrowthBook string literal
  * is only referenced when bridge mode is enabled at build time.
  */
+/**
+ * Self-hosted Remote Control: JARVIS_BRIDGE_BASE_URL points the bridge at a
+ * local CCR server (the JARVIS web app) instead of claude.ai. When set, the
+ * claude.ai-subscription + GrowthBook entitlement gates don't apply — there is
+ * no claude.ai account in the loop. Kept inside each `feature('BRIDGE_MODE')`
+ * ternary so the positive-pattern string-literal elimination still holds.
+ */
+function isSelfHostedBridge(): boolean {
+  return !!process.env.JARVIS_BRIDGE_BASE_URL
+}
+
 export function isBridgeEnabled(): boolean {
   // Positive ternary pattern — see docs/feature-gating.md.
   // Negative pattern (if (!feature(...)) return) does not eliminate
   // inline string literals from external builds.
   return feature('BRIDGE_MODE')
-    ? isClaudeAISubscriber() &&
-        getFeatureValue_CACHED_MAY_BE_STALE('tengu_ccr_bridge', false)
+    ? isSelfHostedBridge() ||
+        (isClaudeAISubscriber() &&
+          getFeatureValue_CACHED_MAY_BE_STALE('tengu_ccr_bridge', false))
     : false
 }
 
@@ -49,8 +61,9 @@ export function isBridgeEnabled(): boolean {
  */
 export async function isBridgeEnabledBlocking(): Promise<boolean> {
   return feature('BRIDGE_MODE')
-    ? isClaudeAISubscriber() &&
-        (await checkGate_CACHED_OR_BLOCKING('tengu_ccr_bridge'))
+    ? isSelfHostedBridge() ||
+        (isClaudeAISubscriber() &&
+          (await checkGate_CACHED_OR_BLOCKING('tengu_ccr_bridge')))
     : false
 }
 
@@ -69,6 +82,7 @@ export async function isBridgeEnabledBlocking(): Promise<boolean> {
  */
 export async function getBridgeDisabledReason(): Promise<string | null> {
   if (feature('BRIDGE_MODE')) {
+    if (isSelfHostedBridge()) return null // self-hosted: no claude.ai entitlement
     if (!isClaudeAISubscriber()) {
       return 'Remote Control requires a claude.ai subscription. Run `claude auth login` to sign in with your claude.ai account.'
     }
@@ -158,6 +172,7 @@ export function isCseShimEnabled(): boolean {
  * loaded yet, the default '0.0.0' means the check passes — a safe fallback.
  */
 export function checkBridgeMinVersion(): string | null {
+  if (isSelfHostedBridge()) return null // self-hosted: no min-version gate
   // Positive pattern — see docs/feature-gating.md.
   // Negative pattern (if (!feature(...)) return) does not eliminate
   // inline string literals from external builds.

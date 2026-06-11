@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { getStore } from '@/lib/bridge/db'
-import { createEnvironment } from '@/lib/bridge/store'
+import { createEnvironment, resolveBridgeToken } from '@/lib/bridge/store'
+import { extractBearer } from '@/lib/bridge/auth'
+import { LOCAL_USER_ID } from '@/lib/chat/persist'
 import { bridgeError } from '@/lib/bridge/errors'
 
 export async function POST(req: Request): Promise<NextResponse> {
@@ -23,6 +25,11 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
   try {
     const store = getStore()
+    // Per-user ownership: the CLI sends its long-lived JARVIS token as the
+    // register bearer. Resolve it to the owning user; tokenless/anonymous
+    // registers (auth-disabled, thin worker) default to the local user.
+    const token = extractBearer(req.headers.get('authorization'))
+    const userId = (token && resolveBridgeToken(store, token)) || LOCAL_USER_ID
     const result = createEnvironment(store, {
       machine_name: body.machine_name,
       directory: body.directory,
@@ -31,6 +38,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       max_sessions: body.max_sessions,
       worker_type: body.metadata?.worker_type ?? 'jarvis',
       reuse_id: body.environment_id,
+      user_id: userId,
     })
     return NextResponse.json(result, { status: 200 })
   } catch (err) {
