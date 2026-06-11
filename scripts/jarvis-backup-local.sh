@@ -54,5 +54,22 @@ else
     echo "[jarvis-backup] skip memory: no directory at ${MEMORY_DIR}" >&2
 fi
 
+# Web workspace index — ~/.jarvis/workspaces/_meta.json is the SINGLE source of
+# truth for every web-app workspace's name / kind / conversation-link / config.
+# The workspace FILES survive its loss but become ORPHANED (invisible in the UI),
+# and it is otherwise un-backed-up. Tiny file; keep versioned copies. Recover
+# with `bin/jarvis-workspace-reindex` or by copying a snapshot back.
+META_FILE="${HOME}/.jarvis/workspaces/_meta.json"
+if [[ -f "${META_FILE}" ]]; then
+    meta_dst="${DST_DIR}/workspaces_meta-${stamp}.json"
+    cp "${META_FILE}" "${meta_dst}"
+    ln -sfn "$(basename "${meta_dst}")" "${DST_DIR}/workspaces_meta-latest.json"
+    meta_count=$(find "${DST_DIR}" -maxdepth 1 -name 'workspaces_meta-*.json' -type f | wc -l)
+    echo "[jarvis-backup] workspaces_meta: ${meta_dst} — ${meta_count} retained"
+    find "${DST_DIR}" -maxdepth 1 -name 'workspaces_meta-*.json' -type f -mtime "+${RETENTION_DAYS}" -delete
+else
+    echo "[jarvis-backup] skip workspaces_meta: no file at ${META_FILE}" >&2
+fi
+
 # Prune any pre-existing snapshot families that are no longer produced.
 find "${DST_DIR}" -maxdepth 1 \( -name 'state-*.db' -o -name 'conversations-*.db' \) -type f -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null || true

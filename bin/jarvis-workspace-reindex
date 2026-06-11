@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""jarvis-workspace-reindex — heal the web-app workspace index from disk.
+
+`~/.jarvis/workspaces/_meta.json` is the SINGLE source of truth for every web
+workspace's name / kind / conversation-link / config. If it is lost or
+corrupted, the workspace DIRECTORIES survive but become orphaned (invisible in
+the Workbench/Design UI). This tool rebuilds the index by scanning the dirs.
+
+SAFETY:
+  * DRY-RUN by default — prints what it WOULD add; touches nothing.
+  * --write applies, after backing up the current _meta.json to
+    `_meta.json.reindex-<ts>.bak`.
+  * NEVER overwrites an existing entry — your real names / conversationIds /
+    customInstructions / envVars / deploy / auth config are preserved. Only
+    workspace dirs MISSING from the index are added.
+
+Derived fields for a re-added workspace (the rest is unrecoverable from disk):
+  * id        = directory name
+  * kind      = "workbench" if <id>/.jarvis/dev.log exists, else "design"
+  * name      = content <title> / <h1> / humanized package.json name,
+                else "(empty) <mtime>" for a 0-file dir,
+                else "Recovered <kind> — <id8>"
+  * createdAt/updatedAt = directory ctime/mtime (ms)
+
+Usage:
+  bin/jarvis-workspace-reindex            # dry run (default)
+  bin/jarvis-workspace-reindex --write    # apply (backs up first)
+"""
+from __future__ import annotations
+import glob
+import json
+import os
+import re
+import sys
+import time
+
+ROOT = os.environ.get(
+    "JARVIS_WORKSPACES_ROOT", os.path.expanduser("~/.jarvis/workspaces")
+)
+META = os.path.join(ROOT, "_meta.json")
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f-]{27}$")
+
+
+def _first_match(workspace_dir: str, pattern: str, tag_re: str) -> str | None:
+    for f in glob.glob(os.path.join(workspace_dir, pattern)) + glob.glob(
+        os.path.join(workspace_dir, "*", pattern)
+    ):
+        try:
+            m = re.search(tag_re, open(f, encoding="utf-8", errors="ignore").read(), re.I)
+            if m:
+                return m.group(1).strip()
+        except OSError:
+            pass
+    return None
+
+
+def derive_name(workspace_dir: str, kind: str, wid: str) -> str:
+    title = _first_match(workspace_dir, "*.html", r"<title>([^<]+)") or _first_match(
+        workspace_dir, "*.html", r"<h1[^>]*>([^<]{3,60})"
+    )
+    if title:
+        return re.sub(r"\s+", " ", title)[:60]
+    for pkg in glob.glob(os.path.join(workspace_dir, "package.json")) + glob.glob(
+        os.path.join(workspace_dir, "*", "package.json")
+    ):
+        try:
+            nm = json.load(open(pkg)).get("name", "")
+            if nm:
+                return nm.replace("-", " ").title()[:60]
+        except (OSError, ValueError):
+            pass
+    nfiles = sum(
+        1
+        for _ in (
+            p
+            for p in glob.glob(os.path.join(workspace_dir, "**", "*"), recursive=True)
+            if os.path.isfile(p) and "/.git/" not in p and "/node_modules/" not in p
+        )
+    )
+    if nfiles == 0:
+        return "(empty) " + time.strftime("%b %-d", time.localtime(os.path.getmtime(workspace_dir)))
+    return f"Recovered {kind} — {wid[:8]}"
+
+
+def main() -> int:
+    write = "--write" in sys.argv[1:]
+    if not os.path.isdir(ROOT):
+        print(f"no workspaces dir at {ROOT}", file=sys.stderr)
+        return 1
+    try:
+        meta = json.load(open(META))
+        existing = {w["id"]: w for w in meta.get("workspaces", [])}
+    except (OSError, ValueError):
+        meta = {"workspaces": []}
+        existing = {}
+
+    added = []
+    for d in sorted(os.listdir(ROOT)):
+        full = os.path.join(ROOT, d)
+        if not os.path.isdir(full):
+            continue
+        if not (UUID_RE.match(d) or d.startswith("swarm-")):
+            continue  # skip test-smoke, scratch, non-workspace dirs
+        if d in existing:
+            continue  # NEVER touch an existing entry
+        kind = "workbench" if os.path.exists(os.path.join(full, ".jarvis", "dev.log")) else "design"
+        added.append({
+            "id": d,
+            "name": derive_name(full, kind, d),
+            "createdAt": int(os.path.getctime(full) * 1000),
+            "updatedAt": int(os.path.getmtime(full) * 1000),
+            "kind": kind,
+        })
+
+    if not added:
+        print(f"index is healthy — {len(existing)} workspaces, no orphaned dirs.")
+        return 0
+
+    print(f"{'WROTE' if write else 'WOULD ADD'} {len(added)} orphaned workspace(s) "
+          f"(existing {len(existing)} preserved):")
+    for w in added:
+        print(f"  + {w['id'][:8]}  [{w['kind']:9}]  {w['name']}")
+
+    if not write:
+        print("\n(dry run) re-run with --write to apply.")
+        return 0
+
+    bak = f"{META}.reindex-{int(time.time())}.bak"
+    if os.path.exists(META):
+        import shutil
+        shutil.copy2(META, bak)
+        print(f"\nbacked up current index -> {bak}")
+    meta["workspaces"] = list(existing.values()) + added
+    tmp = META + ".tmp"
+    json.dump(meta, open(tmp, "w"), indent=2)
+    os.replace(tmp, META)
+    print(f"wrote {META} ({len(meta['workspaces'])} workspaces).")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
