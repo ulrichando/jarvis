@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
+  "overrides": {
+    "shell-quote": "1.8.4"
+  },
   "scripts": {
     "dev": "concurrently -n next,pty -c blue,magenta \"next dev -H 127.0.0.1\" \"node scripts/pty-server.mjs\"",
     "dev:next": "next dev -H 127.0.0.1",
@@ -36,7 +39,7 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "ai": "^6.0.168",
-    "better-auth": "^1.6.9",
+    "better-auth": "^1.6.16",
     "better-sqlite3": "^12.9.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -82,7 +85,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/ws": "^8.18.1",
-    "@vitest/ui": "^2.1.0",
+    "@vitest/ui": "^4.1.8",
     "concurrently": "^9.2.1",
     "drizzle-kit": "^0.31.10",
     "eslint": "^9",
@@ -91,7 +94,7 @@
     "msw": "^2.6.0",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vitest": "^2.1.0"
+    "vitest": "^4.1.8"
   },
   "ignoreScripts": [
     "sharp",
