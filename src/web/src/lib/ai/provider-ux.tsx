@@ -39,7 +39,6 @@ import {
   UserPlus,
   type LucideIcon,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
 import type { Provider } from "./models-meta";
 
 export type Chip = {
