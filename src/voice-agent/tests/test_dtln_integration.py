@@ -22,6 +22,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# jarvis_voice_client imports sounddevice, which raises OSError (not
+# ImportError) at import time when the PortAudio C library is absent —
+# pytest.importorskip can't catch that, so guard explicitly. CI installs
+# libportaudio2 so these tests RUN there; the skip is for minimal envs.
+try:
+    import sounddevice  # noqa: F401
+except (ImportError, OSError) as _e:
+    pytest.skip(f"sounddevice/PortAudio unavailable: {_e}", allow_module_level=True)
+
 import jarvis_voice_client as jvc  # noqa: E402  (after sys.path mutation)
 from audio.apm_reverse_stream import ReverseRefRingBuffer  # noqa: E402
 from audio.dtln_aec import DTLNResidualFilter  # noqa: E402

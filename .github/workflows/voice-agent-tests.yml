@@ -50,10 +50,10 @@ jobs:
       DISPLAY: ":0"
       JARVIS_GRAPH_DISABLED: "1"   # skip LangGraph slow-path init in CI
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
@@ -64,15 +64,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ffmpeg \
-            libsndfile1
+            libsndfile1 \
+            libportaudio2
 
       - name: pip install
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          # requirements-test.txt pulls in fakeredis (6 hub tests
-          # collection-error without it) + pytest-timeout. Without
-          # this line CI silently green-passes while local fails.
+          # requirements-test.txt pins pytest-timeout (hung-test kill)
+          # and pytest-asyncio (without it async test bodies return a
+          # coroutine and pass vacuously). Without this line CI
+          # diverges from the local suite.
           pip install -r requirements-test.txt
           pip install pytest pytest-asyncio pytest-rerunfailures
 
@@ -80,7 +82,6 @@ jobs:
         run: |
           # --durations=10 surfaces slow tests in normal runs.
           # --timeout=60 prevents one hung test from wedging the job.
-          # --reruns=1 -p no:randomly retries known flakes once.
           # No --ignore flags: test_github_subagent.py does not exist
           # (was a ghost). JARVIS_RUN_INTEGRATION is not set so
           # live-dispatch integration tests skip automatically.
