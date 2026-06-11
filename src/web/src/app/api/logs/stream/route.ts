@@ -60,19 +60,47 @@ export async function GET(req: NextRequest) {
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
+      // Once the client disconnects, tail's stdout/close callbacks can
+      // still fire — enqueue() on a closed controller throws, and since
+      // those callbacks run as Node event handlers the throw escaped as
+      // an uncaughtException (live crash 2026-06-09: ERR_INVALID_STATE
+      // from the socket-close and child-exit paths). Every write goes
+      // through this guard; every teardown path flips `closed` first.
+      let closed = false;
       const send = (line: string) => {
-        const payload = JSON.stringify({ line, ts: Date.now() });
-        controller.enqueue(encoder.encode(`data: ${payload}\n\n`));
+        if (closed) return;
+        try {
+          const payload = JSON.stringify({ line, ts: Date.now() });
+          controller.enqueue(encoder.encode(`data: ${payload}\n\n`));
+        } catch {
+          closed = true; // racing teardown — stop writing
+        }
       };
 
       // Heartbeat every 15s so proxies / browsers don't time out idle SSE.
       const heartbeat = setInterval(() => {
+        if (closed) return;
         try {
           controller.enqueue(encoder.encode(`: ping\n\n`));
         } catch {
-          /* controller closed — handled by abort listener */
+          closed = true;
         }
       }, 15_000);
+
+      const teardown = () => {
+        closed = true;
+        clearInterval(heartbeat);
+        try {
+          child?.kill("SIGTERM");
+        } catch {
+          /* already dead */
+        }
+        try {
+          controller.close();
+        } catch {
+          /* already closed */
+        }
+      };
 
       let spawnedChild: ChildProcessByStdio<null, Readable, Readable>;
       try {
@@ -82,8 +110,7 @@ export async function GET(req: NextRequest) {
         child = spawnedChild;
       } catch (err) {
         send(`[stream] spawn tail failed: ${String(err)}`);
-        controller.close();
-        clearInterval(heartbeat);
+        teardown();
         return;
       }
 
@@ -102,32 +129,16 @@ export async function GET(req: NextRequest) {
       });
       spawnedChild.on("close", (code) => {
         send(`[stream] tail exited with code ${code}`);
-        clearInterval(heartbeat);
-        try {
-          controller.close();
-        } catch {
-          /* already closed */
-        }
+        teardown();
       });
 
       // Client disconnect: kill the tail process so it doesn't leak.
-      req.signal.addEventListener("abort", () => {
-        clearInterval(heartbeat);
-        try {
-          child?.kill("SIGTERM");
-        } catch {
-          /* already dead */
-        }
-        try {
-          controller.close();
-        } catch {
-          /* already closed */
-        }
-      });
+      req.signal.addEventListener("abort", teardown);
     },
     cancel() {
+      // Stream-side teardown (e.g. response GC'd without abort firing).
       try {
-        child?.kill("SIGTERM");
+        child?.kill("SIGTERM"); // close handler does the rest
       } catch {
         /* */
       }
