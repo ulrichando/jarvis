@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { extractBearer } from '@/lib/bridge/auth'
 import { getStore } from '@/lib/bridge/db'
-import { appendSessionEvent } from '@/lib/bridge/store'
+import { appendSessionEvent, listSessionEvents } from '@/lib/bridge/store'
 import { bridgeError } from '@/lib/bridge/errors'
 
 export async function POST(
@@ -34,6 +34,33 @@ export async function POST(
       })
     }
     return new NextResponse(null, { status: 204 })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return bridgeError(500, 'internal_error', `DB error: ${msg}`)
+  }
+}
+
+// GET /api/bridge/v1/sessions/{id}/events?since=<rowid> — tail a session's
+// event stream for the /code session view. `since` is the rowid cursor from the
+// previous poll (0 = from the start). Returns events + the next cursor.
+export async function GET(
+  req: Request,
+  ctx: { params: Promise<{ sessionId: string }> },
+): Promise<NextResponse> {
+  const { sessionId } = await ctx.params
+  const sinceRaw = Number(new URL(req.url).searchParams.get('since') ?? '0')
+  const since = Number.isFinite(sinceRaw) && sinceRaw >= 0 ? sinceRaw : 0
+  try {
+    const store = getStore()
+    const rows = listSessionEvents(store, sessionId, since)
+    const events = rows.map((r) => ({
+      cursor: r.rowid,
+      type: r.type,
+      payload: JSON.parse(r.payload_json) as unknown,
+      created_at: r.created_at,
+    }))
+    const cursor = rows.length ? rows[rows.length - 1].rowid : since
+    return NextResponse.json({ events, cursor })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return bridgeError(500, 'internal_error', `DB error: ${msg}`)
