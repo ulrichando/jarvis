@@ -42,6 +42,20 @@ import type { NextRequest } from 'next/server'
 const REQUIRE_AUTH = process.env.JARVIS_REQUIRE_LOCAL_AUTH === '1'
 const LOCAL_TOKEN = process.env.JARVIS_LOCAL_API_TOKEN ?? ''
 
+// JARVIS user-login gate (better-auth). Unauthenticated PAGE navigations
+// redirect to /login. Independent of REQUIRE_AUTH (that's the network bearer
+// gate). Escape hatch for dev: JARVIS_AUTH_DISABLED=1.
+const AUTH_DISABLED = process.env.JARVIS_AUTH_DISABLED === '1'
+const LOGIN_PUBLIC_PREFIXES = ['/login', '/signup']
+
+function hasSessionCookie(req: NextRequest): boolean {
+  // http (dev) vs __Secure- prefix (https/prod).
+  return (
+    req.cookies.has('better-auth.session_token') ||
+    req.cookies.has('__Secure-better-auth.session_token')
+  )
+}
+
 // Public path allowlist. Anything matching is bypassed by the auth gate.
 // Keep this MINIMAL — every entry is a route the bridge / Chrome ext /
 // healthcheckers can hit without a token.
@@ -88,9 +102,21 @@ export function proxy(req: NextRequest) {
   const url = new URL(req.url)
   const path = url.pathname
 
-  // Only gate /api/* — pages render server-side and the bridge fix
-  // handles the cross-origin attack vectors at the network boundary.
+  // Page requests (not /api/*): JARVIS login gate. Unauthenticated page
+  // navigations redirect to /login. Static assets are excluded by the
+  // matcher; /login + /signup are public; /api/* falls through to the
+  // network bearer gate below (and /api/auth/* is reached same-origin by
+  // the login forms).
   if (!path.startsWith('/api/')) {
+    if (
+      !AUTH_DISABLED &&
+      !LOGIN_PUBLIC_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`)) &&
+      !hasSessionCookie(req)
+    ) {
+      const loginUrl = new URL('/login', req.url)
+      if (path !== '/') loginUrl.searchParams.set('next', path)
+      return NextResponse.redirect(loginUrl)
+    }
     return NextResponse.next()
   }
 
@@ -150,10 +176,10 @@ export function proxy(req: NextRequest) {
   return NextResponse.next()
 }
 
-// Match every API route. Page routes are NOT included — the web app's
-// pages render server-side and trust env-level config; cross-origin
-// reads of HTML pages aren't a meaningful threat with the current
-// loopback-only binding.
+// Match /api/* (bearer gate) AND page routes (login gate), excluding Next
+// internals + static assets (so images/fonts/css aren't redirected to /login).
 export const config = {
-  matcher: ['/api/:path*'],
+  matcher: [
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|svg|ico|webp|avif|woff|woff2|ttf|otf|css|js|map|txt|xml|json)).*)',
+  ],
 }
