@@ -25,6 +25,14 @@ export type GithubIssue = {
   updated_at: string;
 };
 
+export type GithubRepo = {
+  full_name: string;
+  private: boolean;
+  default_branch: string;
+  pushed_at: string;
+  url: string;
+};
+
 async function load(): Promise<Connectors> {
   try {
     return JSON.parse(await fs.readFile(FILE, "utf8")) as Connectors;
@@ -112,4 +120,32 @@ export async function listGithubIssues(): Promise<
       updated_at: String(i.updated_at ?? ""),
     }));
   return { ok: true, issues };
+}
+
+/** The authenticated user's repos (owner + collaborator + org), recently pushed first. */
+export async function listGithubRepos(): Promise<
+  { ok: true; repos: GithubRepo[] } | { ok: false; error: string }
+> {
+  const c = await load();
+  if (!c.github) return { ok: false, error: "GitHub not connected" };
+  let r: Response;
+  try {
+    r = await fetch(
+      `${GH}/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member`,
+      { headers: ghHeaders(c.github.token) },
+    );
+  } catch (e) {
+    return { ok: false, error: `Network error: ${String(e)}` };
+  }
+  if (r.status === 401) return { ok: false, error: "GitHub token no longer valid — reconnect." };
+  if (!r.ok) return { ok: false, error: `GitHub error ${r.status}` };
+  const raw = (await r.json()) as Array<Record<string, unknown>>;
+  const repos: GithubRepo[] = raw.map((x) => ({
+    full_name: String(x.full_name ?? ""),
+    private: Boolean(x.private),
+    default_branch: String(x.default_branch ?? "main"),
+    pushed_at: String(x.pushed_at ?? ""),
+    url: String(x.html_url ?? ""),
+  }));
+  return { ok: true, repos };
 }

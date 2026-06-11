@@ -95,6 +95,8 @@ export function CodeComposer({
   const [model, setModel] = useState("Opus 4.8");
   const [repoQuery, setRepoQuery] = useState("");
   const [modal, setModal] = useState<null | "connectors" | "import">(null);
+  const [ghRepos, setGhRepos] = useState<{ full_name: string }[] | null>(null);
+  const [repoOverride, setRepoOverride] = useState<string | null>(null);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -112,11 +114,24 @@ export function CodeComposer({
     return () => window.removeEventListener("mousedown", onDown);
   }, [open]);
 
+  // Pull the user's GitHub repos (when GitHub is connected) for the repo picker.
+  useEffect(() => {
+    fetch("/api/github/repos")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { ok?: boolean; repos?: { full_name: string }[] } | null) => {
+        if (d?.ok && d.repos) setGhRepos(d.repos);
+      })
+      .catch(() => {});
+  }, []);
+
   const pill =
     "flex items-center gap-1.5 rounded-full border border-border/60 bg-accent/30 px-2.5 py-1 text-[12px] text-foreground/70 hover:bg-accent/50 hover:text-foreground transition-colors";
   const toggle = (p: Popover) => setOpen((cur) => (cur === p ? null : p));
   const repos = (machines ?? []).filter((m) =>
     repoLabel(m).toLowerCase().includes(repoQuery.toLowerCase()),
+  );
+  const ghFiltered = (ghRepos ?? []).filter((r) =>
+    r.full_name.toLowerCase().includes(repoQuery.toLowerCase()),
   );
 
   return (
@@ -166,20 +181,38 @@ export function CodeComposer({
           {/* repo */}
           <button type="button" onClick={() => toggle("repo")} className={pill}>
             <Code2 className="size-3 text-foreground/60" />
-            {repoLabel(selected)}
+            {repoOverride ?? repoLabel(selected)}
           </button>
           {open === "repo" && (
-            <div className="absolute bottom-full left-20 mb-2 w-[300px] rounded-xl border border-border bg-card p-1.5 shadow-xl z-50">
-              <div className="max-h-[260px] overflow-y-auto">
-                {repos.length === 0 ? (
-                  <div className="px-2 py-1.5 text-[12px] text-muted-foreground">No repos — connect a machine.</div>
-                ) : (
-                  repos.map((m) => (
-                    <button key={m.environment_id} type="button" onClick={() => { onPickMachine(m); setOpen(null); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] hover:bg-accent/40">
-                      <span className="flex-1 truncate text-foreground/90">{repoLabel(m)}</span>
-                      {selected?.environment_id === m.environment_id && <Check className="size-3.5 text-primary" />}
-                    </button>
-                  ))
+            <div className="absolute bottom-full left-20 mb-2 w-[320px] rounded-xl border border-border bg-card p-1.5 shadow-xl z-50">
+              <div className="max-h-[300px] overflow-y-auto">
+                {ghRepos !== null && ghFiltered.length > 0 && (
+                  <>
+                    <div className="px-2 pb-1 pt-1 text-[11px] font-medium text-muted-foreground/70">GitHub</div>
+                    {ghFiltered.slice(0, 60).map((r) => (
+                      <button key={r.full_name} type="button" onClick={() => { setRepoOverride(r.full_name); setOpen(null); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] hover:bg-accent/40">
+                        <span className="flex-1 truncate text-foreground/90">{r.full_name}</span>
+                        {repoOverride === r.full_name && <Check className="size-3.5 text-primary" />}
+                      </button>
+                    ))}
+                  </>
+                )}
+                {repos.length > 0 && (
+                  <>
+                    <div className="px-2 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground/70">Connected machines</div>
+                    {repos.map((m) => (
+                      <button key={m.environment_id} type="button" onClick={() => { onPickMachine(m); setRepoOverride(null); setOpen(null); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] hover:bg-accent/40">
+                        <span className="flex-1 truncate text-foreground/90">{repoLabel(m)}</span>
+                        {!repoOverride && selected?.environment_id === m.environment_id && <Check className="size-3.5 text-primary" />}
+                      </button>
+                    ))}
+                  </>
+                )}
+                {ghRepos === null && repos.length === 0 && (
+                  <div className="px-2 py-1.5 text-[12px] text-muted-foreground">No repos — connect GitHub (＋ → Connectors) or a machine.</div>
+                )}
+                {ghRepos !== null && ghFiltered.length === 0 && repos.length === 0 && (
+                  <div className="px-2 py-1.5 text-[12px] text-muted-foreground">No matching repos.</div>
                 )}
               </div>
               <div className="mt-1 flex items-center gap-1.5 rounded-lg border border-border/50 bg-accent/20 px-2 py-1.5">
