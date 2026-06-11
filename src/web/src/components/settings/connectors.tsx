@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { Copy, Eye, EyeOff, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { McpServersCard } from "./mcp-servers";
 
 function RemoteControlCard() {
   const [token, setToken] = useState<string | null>(null);
@@ -174,6 +175,8 @@ export function ConnectorsSection() {
   return (
     <div className="space-y-10">
       <RemoteControlCard />
+
+      <McpServersCard />
 
       <section>
         <div className="mb-4 flex items-center justify-between">

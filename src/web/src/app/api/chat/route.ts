@@ -1,4 +1,4 @@
-import { convertToModelMessages, streamText, stepCountIs, type UIMessage } from "ai";
+import { convertToModelMessages, streamText, stepCountIs, type UIMessage, type ToolSet } from "ai";
 import { eq } from "drizzle-orm";
 import { getModel, MissingApiKeyError } from "@/lib/ai/models";
 import { MODELS_META } from "@/lib/ai/models-meta";
@@ -10,6 +10,9 @@ import {
   saveAssistantMessage,
   saveUserMessage,
 } from "@/lib/chat/persist";
+import { getUserId } from "@/lib/auth-helpers";
+import { listMcpServers } from "@/lib/mcp/store";
+import { loadMcpTools } from "@/lib/mcp/client";
 import { db, schema } from "@/lib/db";
 import {
   getWorkspace,
@@ -187,6 +190,7 @@ type Body = {
 
 export async function POST(req: Request) {
   const { id, messages, model, system, workspaceId, mode, format }: Body = await req.json();
+  const userId = await getUserId(req.headers);
   const settings = await loadSettings();
   let modelId = model ?? settings.defaults.model;
 
@@ -276,6 +280,7 @@ export async function POST(req: Request) {
     id,
     model: modelId,
     firstUserText,
+    userId,
   });
 
   // Pin conversation→workspace server-side so refresh / different-
@@ -612,6 +617,24 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
     `[chat] streamText start: system=${finalSystem.length}ch, maxOut=${maxOutputTokens}`,
   );
 
+  // MCP tools — plain chats only (workspace turns build code, not call tools).
+  // A broken/slow server is skipped (loadMcpTools is per-server try/catch with a
+  // connect timeout) so a connector can never break chat.
+  let mcpClose: (() => Promise<void>) | null = null;
+  let mcpTools: ToolSet = {};
+  if (!workspaceId) {
+    try {
+      const servers = await listMcpServers(userId);
+      if (servers.some((s) => s.enabled)) {
+        const loaded = await loadMcpTools(servers);
+        mcpTools = loaded.tools;
+        mcpClose = loaded.close;
+      }
+    } catch (err) {
+      console.error("[chat] mcp load failed:", err);
+    }
+  }
+
   const result = streamText({
     model: selected.model,
     system: finalSystem,
@@ -633,7 +656,7 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
     // producing the requested artifact (`finish: tool-calls`, no
     // boltActions emitted). Workspace turns are for building code, not
     // research. webSearch stays available only for plain chats.
-    tools: workspaceId ? undefined : { webSearch: webSearchTool },
+    tools: workspaceId ? undefined : { webSearch: webSearchTool, ...mcpTools },
     stopWhen: stepCountIs(5),
     onError: (err) => {
       // streamText surfaces provider errors via this hook — they don't
@@ -642,6 +665,8 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
       console.error("[chat] streamText error:", err);
     },
     onFinish: async ({ text, totalUsage, finishReason }) => {
+      // Disconnect MCP servers now that all tool-calling steps are done.
+      await mcpClose?.().catch(() => {});
       if (finishReason === "length") {
         // Length cutoff = the model ran out of tokens mid-output. Log it
         // so we can spot patterns; the client surfaces a toast separately.
