@@ -16,6 +16,7 @@ NO runtime state — pure functions over (paths, breakers).
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -56,7 +57,13 @@ __all__ = [
 # prompt cache stays warm; no per-turn cost.
 _PROMPTS_DIR: Path = Path(__file__).resolve().parent.parent / "prompts"
 SOUL_PATH_DEFAULT: Path = _PROMPTS_DIR / "soul.md"
-SOUL_PATH_OVERRIDE: Path = Path.home() / ".jarvis" / "SOUL.md"
+# JARVIS_SOUL_OVERRIDE_PATH redirects the override lookup (the test
+# suite points it at a nonexistent path so a developer's live
+# ~/.jarvis/SOUL.md can never leak into prompt-shape assertions).
+SOUL_PATH_OVERRIDE: Path = Path(
+    os.environ.get("JARVIS_SOUL_OVERRIDE_PATH")
+    or (Path.home() / ".jarvis" / "SOUL.md")
+)
 
 # Generous cap: bounds an absurd/runaway override without clipping a
 # legitimately rich identity (the shipped soul.md is ~23k chars). Only

@@ -132,7 +132,13 @@ def test_ok_path_when_verifier_finds_pid(monkeypatch):
     async def fake_subprocess_shell(*args, **kwargs):
         return _FakeProcShell()
 
+    # launch_app spawns via create_subprocess_EXEC on Linux (`setsid -f <bin>`),
+    # NOT _shell — so exec is the primitive that must be stubbed. Patching only
+    # _shell left the real `setsid -f xeyes` running: the test stayed green
+    # (the verifier below is mocked) while leaking a detached xeyes window every
+    # single run (incl. the verify-before-done Stop hook). Patch both.
     monkeypatch.setattr(aio, "create_subprocess_shell", fake_subprocess_shell)
+    monkeypatch.setattr(aio, "create_subprocess_exec", fake_subprocess_shell)
     # Verifier returns a non-empty PID list → "process is alive"
     monkeypatch.setattr(_runtime, "is_process_running", lambda pat: [123456])
 
@@ -167,7 +173,10 @@ def test_crashed_when_verifier_finds_nothing(monkeypatch):
     async def fake_subprocess_shell(*args, **kwargs):
         return _FakeProcShell()
 
+    # Stub the EXEC primitive (Linux `setsid -f`), not just _shell — else the
+    # real spawn runs. See the xeyes-leak note in the OK test above.
     monkeypatch.setattr(aio, "create_subprocess_shell", fake_subprocess_shell)
+    monkeypatch.setattr(aio, "create_subprocess_exec", fake_subprocess_shell)
     # Empty PID list every poll → CRASHED
     monkeypatch.setattr(_runtime, "is_process_running", lambda pat: [])
 
