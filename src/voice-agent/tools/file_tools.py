@@ -886,12 +886,16 @@ def _search_content(
             cmd += ["-C", str(context)]
         if file_glob:
             cmd += ["--glob", file_glob]
-        # Limit to text files.
-        cmd += ["--type-not", "binary"]
+        # (rg skips binary file contents by default — no flag needed.)
         cmd += [pattern, str(root)]
 
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30, errors="replace")
+            # rg exit codes: 0 = matches, 1 = no matches, ≥2 = error
+            # (bad flag / pattern / IO). An error leaves stdout empty —
+            # take the grep fallback rather than reporting zero matches.
+            if proc.returncode >= 2:
+                raise FileNotFoundError(proc.stderr.strip()[:200] or "rg failed")
             raw_lines = proc.stdout.splitlines()
         except FileNotFoundError:
             # Fallback to grep
