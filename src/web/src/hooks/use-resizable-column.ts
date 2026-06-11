@@ -24,6 +24,11 @@ export function useResizableColumn(opts: UseResizableColumnOptions) {
       const raw = window.localStorage.getItem(storageKey);
       if (!raw) return;
       const n = Number(raw);
+      // SSR-safe localStorage hydration: lazy-initializing useState from
+      // localStorage mismatches SSR (window is undefined server-side), so the
+      // mount-then-upgrade setState is intentional — a single post-mount
+      // update, not a cascade.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- SSR-safe localStorage load
       if (Number.isFinite(n) && n >= min && n <= max) setWidth(n);
     } catch {}
   }, [storageKey, min, max]);
