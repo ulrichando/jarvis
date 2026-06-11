@@ -41,12 +41,12 @@ some don't, gate.
 
 Before removing/renaming any symbol, grep the WHOLE repo including:
 - bin/ (shell entry points + cron-style scripts)
-- /etc/systemd/user/jarvis-*.service (unit files reference Python paths)
-- src/hub/ (HTTP routes called by Chrome extension over WS)
-- src/extensions/ (browser-side calls into hub/voice paths)
-- /etc/sudoers.d/jarvis (NOPASSWD scopes)
+- setup/systemd/ (unit files reference Python paths, env files, scripts)
+- scripts/ (timer payloads: backup, retention prune, dep check/update)
+- src/cli/src/bridge/ (HTTP+WS routes the desktop + Chrome extension call)
+- src/desktop-tauri/src-tauri/ (tray/invoke handlers hit voice-client HTTP)
 
-If still unsure: ask. The bridge + hub + Tauri side call into voice-agent
+If still unsure: ask. The bridge + Tauri side call into voice-agent
 paths via HTTP/IPC and don't show up in a Python-only search.
 
 ## 5. Verify before claiming done

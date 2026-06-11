@@ -70,6 +70,7 @@ API keys and other secrets live in:
 
 | Location | Description |
 |---|---|
+| `.env` (repo root) | Centralized LLM provider keys (created by the installer) |
 | `src/voice-agent/.env` | Voice-agent LLM/STT/TTS provider keys |
 | `~/.jarvis/*.env` | Per-user key overrides (loaded at runtime) |
 | `~/.jarvis/local-api-token.env` | Bridge bearer token |
@@ -83,9 +84,13 @@ to purge it from git history before the commit is pushed or shared.
 Recommended filesystem permissions:
 
 ```sh
+chmod 600 .env
 chmod 600 src/voice-agent/.env
 chmod 600 ~/.jarvis/*.env
 ```
+
+(The installer creates `.env` files with mode 600; the `chmod` lines are
+for files that predate that fix — audit yours with `stat -c '%a' .env`.)
 
 ### Local bridge / API surface
 

@@ -31,16 +31,19 @@ cd ..
 cp -r jarvis jarvis-pre-scrub-$(date +%F)
 cd jarvis
 
-# 3. Build the BFG-style replacement file
-cat > /tmp/jarvis-secrets.txt <<'EOF'
-APIveRsdNgLskjE==>REDACTED_LIVEKIT_KEY
-KliwnenjqBuzWcjPDCrbo5aLbvTyz2pQZp490L7SjdT==>REDACTED_LIVEKIT_SECRET
-REDACTED_GROQ_KEY==>REDACTED_GROQ_KEY
-sk-168b2769b20448d893beb244b5f4eced==>REDACTED_DEEPSEEK_KEY
-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==>REDACTED_LANGCHAIN_KEY
-REDACTED_GOOGLE_KEY==>REDACTED_GOOGLE_KEY
-697968751ando==>REDACTED_PG_PASSWORD
-EOF
+# 3. Build the BFG-style replacement file FROM YOUR LIVE ENV, at scrub
+#    time, on this machine only. NEVER commit real values into this
+#    runbook — pre-2026-06-11 revisions embedded them verbatim, which
+#    made the scrub runbook itself a leaked-secret source (two of the
+#    embedded values were still live when caught).
+#
+#    One line per secret:   <the secret value>==>REDACTED_<LABEL>
+#    Harvest from: .env, src/voice-agent/.env, ~/.jarvis/*.env,
+#    ~/.jarvis/livekit-keys.yaml, the password inside JARVIS_PG_DSN,
+#    PLUS every historical value you know once leaked (rotated or not —
+#    history rewrite is the only thing that removes them from old commits).
+touch /tmp/jarvis-secrets.txt && chmod 600 /tmp/jarvis-secrets.txt
+"${EDITOR:-nano}" /tmp/jarvis-secrets.txt
 
 # 4. Run filter-repo. --force is required since the repo has a remote.
 git-filter-repo --replace-text /tmp/jarvis-secrets.txt --force

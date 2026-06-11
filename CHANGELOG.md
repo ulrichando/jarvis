@@ -7,6 +7,41 @@ For the full commit-level history, run `git log --oneline`.
 
 ---
 
+## [Unreleased] — SDLC review pass (2026-06-11)
+
+Follow-ups from the full lifecycle review (CI un-red + docs truth):
+
+### Fixed
+
+- CI: `cmudict` was a missing **runtime** dependency of the viseme engine
+  (`lipsync/phonemize.py`) — added to `requirements.txt`; fresh installs of
+  the voice-client would have crashed the lipsync path.
+- CI: `test_dtln_integration.py` import-crashed without the PortAudio C
+  library; CI now installs `libportaudio2` and the test module skips
+  gracefully on minimal environments.
+- CI: bumped `actions/checkout`→v6, `setup-node`→v6, `setup-python`→v6,
+  `setup-java`→v5 ahead of GitHub's forced Node 24 switch (2026-06-16).
+- cli: `npm audit fix` — resolved the critical `shell-quote` advisory
+  (GHSA-w7jw-789q-3m8p) and `ws` memory disclosure; the remaining
+  @opentelemetry HIGH pair is accepted + tracked in
+  `docs/decisions-pending.md` (gate moved to `--audit-level=critical`).
+- `bin/jarvis-mode-resume`: a slow `jarvis-mode` at login (exit 124) left
+  the unit `failed` for days — mode restore is best-effort now (warn + exit 0).
+
+### Docs
+
+- Truth pass over `ARCHITECTURE.md`, `CONTRIBUTING.md`, `SECURITY.md`,
+  `docs/runbook/jarvis-voice.md`, and `.claude/rules/` — removed the
+  deleted hub/extractor/consolidator and `jarvis-proxy`/`jarvis-hub` units,
+  fixed log paths, test counts, monkey-patch count, snapshot + escalation
+  targets.
+- New `docs-truth` CI job (lint workflow) greps orientation docs for
+  tombstoned systems so this class of drift fails the build.
+- New `docs/decisions-pending.md` — single tracked home for findings that
+  await a maintainer decision.
+
+---
+
 ## [Unreleased] — production-hardening pass (2026-05)
 
 This section summarises the `chore/production-hardening` pass. Items are

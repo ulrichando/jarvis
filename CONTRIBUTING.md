@@ -14,7 +14,7 @@ on direction.
 | Desktop UI (Tauri/Rust + React) | `src/desktop-tauri/` |
 | Web app (Next.js) | `src/web/` |
 | CLI agent (TypeScript/Bun) | `src/cli/` |
-| Hub (Python) | `src/hub/` |
+| Android app (Kotlin/Compose + NDK) | `src/android/` |
 
 Each subtree is an independent build. Work in only the subtree relevant to
 your change. **`src/cli/` is treated as a separate codebase** — do not
@@ -43,7 +43,7 @@ uv pip install -r requirements.txt
 systemctl --user restart jarvis-voice-agent.service
 ```
 
-Tests live under `src/voice-agent/tests/` (~115 files, ~20s full run).
+Tests live under `src/voice-agent/tests/` (~200 files, ~3,000 tests, ~70s full run).
 
 ### Desktop UI (`src/desktop-tauri/`)
 
@@ -131,7 +131,7 @@ Verify before claiming done:
 - Web/CLI edit → that subtree's build/test command passes.
 
 Do not delete code you think is unused without grepping the whole repo,
-including `bin/`, `setup/systemd/`, `src/hub/`, and `src/extensions/`.
+including `bin/`, `setup/systemd/`, `scripts/`, and `src/cli/src/bridge/`.
 
 **Full rules:** [`.claude/rules/regression-prevention.md`](.claude/rules/regression-prevention.md)
 
