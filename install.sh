@@ -551,6 +551,26 @@ install_echo_cancel_aec() {
   fi
 }
 
+# ── Cross-session memory: self-hosted honcho (optional, heavy) ───────────
+install_honcho() {
+  # Honcho gives JARVIS auto-capturing, semantic cross-session recall (the
+  # `recall` tool). OPTIONAL + HEAVY: a Docker stack (api + deriver + pgvector
+  # Postgres + redis) plus ongoing OpenAI cost. Off by default — the
+  # file-backed memory works without it. Opt in with JARVIS_INSTALL_HONCHO=1,
+  # or run setup/honcho/setup-honcho.sh anytime. See setup/honcho/README.md.
+  if [ "${JARVIS_INSTALL_HONCHO:-0}" != "1" ]; then
+    sub "Skipping honcho cross-session memory (optional, heavy)."
+    sub "  Enable later: JARVIS_INSTALL_HONCHO=1 ./install.sh  |  setup/honcho/setup-honcho.sh"
+    return 0
+  fi
+  sub "Setting up self-hosted honcho (cross-session memory)..."
+  if JARVIS_REPO="$INSTALL_DIR" bash "$INSTALL_DIR/setup/honcho/setup-honcho.sh"; then
+    ok "honcho configured (restart the voice agent to activate recall)"
+  else
+    warn "honcho setup failed (non-fatal; file-backed memory still works)"
+  fi
+}
+
 # ── Computer-use subagent dependencies (optional) ────────────────────────
 check_computer_use_deps() {
   # Computer-use subagent dependencies (optional — only needed if
@@ -753,6 +773,7 @@ main() {
   install_audio_profile
   install_echo_cancel_aec
   setup_env_template
+  install_honcho           # optional: self-hosted honcho cross-session memory (JARVIS_INSTALL_HONCHO=1)
   print_summary
 }
 
