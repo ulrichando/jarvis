@@ -90,6 +90,40 @@ as clean as before.
 3. As each rule's final site clears, flip it back to `error` and prune the
    downgrade comment.
 
+## 2.5 Findings during implementation (2026-06-11)
+
+**The react-compiler diagnostics do NOT all suppress the same way:**
+
+- ✅ `@typescript-eslint/no-unused-vars`, stale `eslint-disable` removal, and
+  `react-hooks/set-state-in-effect` clear cleanly (inline disable or refactor).
+  Increments 1–2 shipped on this basis (leaf hooks, dead imports).
+- ❌ **`react-hooks/refs`, `react-hooks/immutability`, `react/use` resist inline
+  suppression.** They report at *expression/statement* granularity (observed 7×
+  at one location in `design-view.tsx`), an `eslint-disable-next-line` placed at
+  the ref-access line does NOT cover the reported line, and a mis-placed disable
+  becomes its OWN `Unused eslint-disable directive` warning. Clearing them
+  requires real REFACTORS — which, for the intentional patterns they flag (e.g.
+  `design-view`'s `sessionAssignedIdRef`, tied to the documented "messages
+  disappear on refresh" fix), is the exact regression risk §2.1 forbids.
+
+**Conclusion:** the original downgrade-to-`warn` (eslint.config.mjs, 2026-06-09)
+is the correct call for `refs`/`immutability`/`react/use`. They stay as
+documented warnings. The achievable migration scope is the `no-unused-vars` +
+`set-state-in-effect` subset. `design-view.tsx` was attempted and reverted (its
+warnings are all in the un-suppressible group or intentional patterns).
+
+**Two "unused" symbols were investigated as possible disconnected features:**
+
+- `detectTopic` (`lib/design/questionnaire.ts`) — **REAL gap, FIXED**: the
+  LLM-failure fallback called `questionsForFormat(format, null)`, so the built
+  topic-tailored question sets (`topicQuestions`) were dead. Wired
+  `detectTopic(brief)` in (fallback path only; `null`→generic preserves old
+  behavior). Low-risk.
+- `queueStreaming` (`components/design/design-view.tsx`) — **NOT a bug, left as
+  is**: the `<Chat>` block documents that the per-chunk streaming-preview overlay
+  is *intentionally* unwired ("the biggest speed win"). It's deliberate
+  scaffolding; its unused-var warning is the accepted cost.
+
 ## 3. Out of scope
 
 - No behavior changes beyond what a fix strictly requires.
