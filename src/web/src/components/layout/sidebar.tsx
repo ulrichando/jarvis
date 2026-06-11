@@ -16,6 +16,7 @@ import {
   Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { UserMenu } from "./user-menu";
 import { useUI } from "@/stores/ui";
 import { useChatStore } from "@/stores/chat";
 import {
@@ -290,25 +291,9 @@ export function Sidebar() {
                 label={recentsLabel}
               />
 
-              {/* User footer */}
+              {/* User footer — avatar opens the account menu (Settings / Log out) */}
               <div className="border-t border-border/50 px-2 py-2">
-                <Link
-                  href="/settings"
-                  className="flex items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-sidebar-accent/60"
-                >
-                  <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/20 font-mono text-[11px] font-semibold tracking-wider text-primary">
-                    {initials(displayName)}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[13px] font-medium text-sidebar-foreground">
-                      {displayName}
-                    </div>
-                    <div className="truncate text-[11px] text-sidebar-foreground/60">
-                      Personal · local
-                    </div>
-                  </div>
-                  <MoreHorizontal className="size-4 shrink-0 text-sidebar-foreground/50" />
-                </Link>
+                <UserMenu fallbackName={displayName} />
               </div>
             </div>
           </motion.aside>
