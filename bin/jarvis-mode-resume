@@ -59,4 +59,14 @@ if [[ "$current" == "$desired" ]]; then
 fi
 
 echo "[mode-resume] restoring mode → $desired (was: ${current:-unknown})"
-exec timeout 50 "$JARVIS_MODE" "$desired"
+# Best-effort: at login the voice stack may still be starting and
+# jarvis-mode can blow its budget (live 2026-06-09: exit 124 left the
+# unit 'failed' for days). A missed resume is cosmetic — the user can
+# pick a mode from the tray — so warn and exit 0 instead of failing
+# the unit.
+rc=0
+timeout 50 "$JARVIS_MODE" "$desired" || rc=$?
+if [[ $rc -ne 0 ]]; then
+    echo "[mode-resume] jarvis-mode '$desired' did not complete (rc=$rc) — leaving mode as-is" >&2
+fi
+exit 0
