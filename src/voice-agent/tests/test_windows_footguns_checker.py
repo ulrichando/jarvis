@@ -14,6 +14,7 @@ These tests confirm the contract:
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 import textwrap
@@ -62,18 +63,20 @@ def test_checker_file_exists():
 
 def test_help_runs(checker):
     """--help exits 0 and prints the usage banner."""
+    # argparse reflows help text to the inherited terminal width (COLUMNS),
+    # and textwrap's default break_on_hyphens can split INSIDE
+    # "windows-footgun:" (e.g. COLUMNS=88 → "windows-\nfootgun: ok"), which
+    # no whitespace normalization can rejoin. Caught live by the Stop
+    # hook's environment, twice — first as a newline wrap, then as a
+    # hyphen break after the flatten-only fix. Pin a wide COLUMNS so the
+    # subprocess never wraps, and keep the flatten as belt-and-suspenders.
     result = subprocess.run(
         [sys.executable, str(CHECKER_PATH), "--help"],
         capture_output=True,
         text=True,
+        env={**os.environ, "COLUMNS": "200"},
     )
     assert result.returncode == 0
-    # argparse reflows help text to the inherited terminal width (COLUMNS);
-    # a narrow environment wraps mid-phrase and the raw substring vanishes
-    # (live: COLUMNS=35 splits "windows-footgun:\nok" — caught by the Stop
-    # hook's first fire, whose env had a narrow width while every direct
-    # pytest run used the 80-col fallback). Collapse whitespace so the
-    # help-documents-the-contract assertion is wrap-proof.
     help_flat = " ".join(result.stdout.split())
     assert "Windows cross-platform footguns" in help_flat
     assert "windows-footgun: ok" in help_flat
