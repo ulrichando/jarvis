@@ -139,7 +139,7 @@ function getNotificationMessage(toolUseConfirm: ToolUseConfirm): string {
   if (!toolName || toolName.trim() === '') {
     return 'Jarvis needs your attention';
   }
-  return `Claude needs your permission to use ${toolName}`;
+  return `Jarvis needs your permission to use ${toolName}`;
 }
 
 // TODO: Move this to Tool.renderPermissionRequest
