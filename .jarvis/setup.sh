@@ -16,9 +16,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 # Web app (Next.js) — needed for src/web work, vitest, and next build.
+# npm ci first (fast, exact); fall back to npm install — the tracked
+# package-lock.json drifts out of sync with package.json at times (some deps
+# were added with bun), and `npm ci` hard-fails on that where a sandbox just
+# needs a working node_modules.
 if [ -f src/web/package.json ]; then
-  note "Installing src/web dependencies (npm ci)…"
-  (cd src/web && npm ci --no-audit --no-fund) || warn "src/web npm ci failed"
+  note "Installing src/web dependencies (npm ci, falling back to npm install)…"
+  (cd src/web && { npm ci --no-audit --no-fund || npm install --no-audit --no-fund; }) \
+    || warn "src/web dependency install failed"
 fi
 
 # CLI (Bun) — needed for src/cli work and its bun tests.
