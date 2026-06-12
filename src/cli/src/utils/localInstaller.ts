@@ -118,7 +118,7 @@ export async function installOrUpdateClaudePackage(
 
     if (result.code !== 0) {
       const error = new Error(
-        `Failed to install Claude CLI package: ${result.stderr}`,
+        `Failed to install Jarvis CLI package: ${result.stderr}`,
       )
       logError(error)
       return result.code === 190 ? 'in_progress' : 'install_failed'

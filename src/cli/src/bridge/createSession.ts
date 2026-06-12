@@ -94,7 +94,7 @@ export async function createBridgeSession({
         git_info: {
           type: 'github',
           repo: `${owner}/${name}`,
-          branches: [`claude/${branch || 'task'}`],
+          branches: [`jarvis/${branch || 'task'}`],
         },
       }
     } else {
@@ -114,7 +114,7 @@ export async function createBridgeSession({
             git_info: {
               type: 'github',
               repo: `${owner}/${name}`,
-              branches: [`claude/${branch || 'task'}`],
+              branches: [`jarvis/${branch || 'task'}`],
             },
           }
         }

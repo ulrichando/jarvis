@@ -1820,7 +1820,7 @@ export function parseArgs(args: string[]): ParsedArgs {
       createSessionInDir = false
     } else {
       return makeError(
-        `Unknown argument: ${arg}\nRun 'claude remote-control --help' for usage.`,
+        `Unknown argument: ${arg}\nRun 'jarvis remote-control --help' for usage.`,
       )
     }
   }

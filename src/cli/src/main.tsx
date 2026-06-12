@@ -1097,7 +1097,7 @@ export async function main() {
       // so the flag doesn't silently cause local execution.
       if (rest.includes("-p") || rest.includes("--print")) {
         process.stderr.write(
-          "Error: headless (-p/--print) mode is not supported with claude ssh\n",
+          "Error: headless (-p/--print) mode is not supported with jarvis ssh\n",
         );
         gracefulShutdownSync(1);
         return;
@@ -4744,7 +4744,7 @@ async function run(): Promise<CommanderCommand> {
           if (!isRemoteTuiEnabled && !hasInitialPrompt) {
             return await exitWithError(
               root,
-              'Error: --remote requires a description.\nUsage: claude --remote "your task description"',
+              'Error: --remote requires a description.\nUsage: jarvis --remote "your task description"',
               () => gracefulShutdown(1),
             );
           }
@@ -5359,7 +5359,7 @@ async function run(): Promise<CommanderCommand> {
     );
     program.option(
       "--agent-teams",
-      "[ANT-ONLY] Force Claude to use multi-agent mode for solving problems",
+      "[ANT-ONLY] Force Jarvis to use multi-agent mode for solving problems",
       () => true,
     );
   }
@@ -5682,7 +5682,7 @@ async function run(): Promise<CommanderCommand> {
           const existing = await probeRunningServer();
           if (existing) {
             process.stderr.write(
-              `A claude server is already running (pid ${existing.pid}) at ${existing.httpUrl}\n`,
+              `A jarvis server is already running (pid ${existing.pid}) at ${existing.httpUrl}\n`,
             );
             process.exit(1);
           }
@@ -5762,7 +5762,7 @@ async function run(): Promise<CommanderCommand> {
         // commander runs. Reaching here means host was missing or the
         // rewrite predicate didn't match.
         process.stderr.write(
-          "Usage: claude ssh <user@host | ssh-config-alias> [dir]\n\n" +
+          "Usage: jarvis ssh <user@host | ssh-config-alias> [dir]\n\n" +
             "Runs Jarvis on a remote Linux host. You don't need to install\n" +
             "anything on the remote or run `jarvis auth login` there — the binary is\n" +
             "deployed over SSH and API auth tunnels back through your local machine.\n",
@@ -6301,7 +6301,7 @@ async function run(): Promise<CommanderCommand> {
         // (e.g. `--debug assistant`) and the position-0 predicate
         // didn't match. Print usage like the ssh stub does.
         process.stderr.write(
-          "Usage: claude assistant [sessionId]\n\n" +
+          "Usage: jarvis assistant [sessionId]\n\n" +
             "Attach the REPL as a viewer client to a running bridge session.\n" +
             "Omit sessionId to discover and pick from available sessions.\n",
         );
@@ -6352,13 +6352,13 @@ async function run(): Promise<CommanderCommand> {
       });
   }
 
-  // claude rollback (ant-only)
+  // jarvis rollback (ant-only)
   // Rolls back to previous releases
   if ("external" === "ant") {
     program
       .command("rollback [target]")
       .description(
-        "[ANT-ONLY] Roll back to a previous release\n\nExamples:\n  claude rollback                                    Go 1 version back from current\n  claude rollback 3                                  Go 3 versions back from current\n  claude rollback 2.0.73-dev.20251217.t190658        Roll back to a specific version",
+        "[ANT-ONLY] Roll back to a previous release\n\nExamples:\n  jarvis rollback                                    Go 1 version back from current\n  jarvis rollback 3                                  Go 3 versions back from current\n  jarvis rollback 2.0.73-dev.20251217.t190658        Roll back to a specific version",
       )
       .option("-l, --list", "List recent published versions with ages")
       .option("--dry-run", "Show what would be installed without installing")
