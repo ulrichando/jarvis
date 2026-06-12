@@ -34,7 +34,7 @@ import { lt } from '../utils/semver.js'
  * no claude.ai account in the loop. Kept inside each `feature('BRIDGE_MODE')`
  * ternary so the positive-pattern string-literal elimination still holds.
  */
-function isSelfHostedBridge(): boolean {
+export function isSelfHostedBridge(): boolean {
   return !!process.env.JARVIS_BRIDGE_BASE_URL
 }
 

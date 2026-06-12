@@ -56,6 +56,7 @@ import {
   isBridgeEnabledBlocking,
   isCseShimEnabled,
   isEnvLessBridgeEnabled,
+  isSelfHostedBridge,
 } from './bridgeEnabled.js'
 import {
   archiveBridgeSession,
@@ -471,7 +472,14 @@ export async function initReplBridge(
   // Assistant-mode sessions advertise a distinct worker_type so the web UI
   // can filter them into a dedicated picker. KAIROS guard keeps the
   // assistant module out of external builds entirely.
-  let workerType: BridgeWorkerType = 'claude_code'
+  // Self-hosted servers use worker_type to tell attach-only REPL
+  // environments apart from task-capable daemons in the /code machine
+  // picker (a REPL can't spawn children — dispatching a task to it is
+  // refused via stopWork but the task runs nowhere). claude.ai may
+  // validate the enum, so only advertise the distinction self-hosted.
+  let workerType: BridgeWorkerType = isSelfHostedBridge()
+    ? 'claude_code_repl'
+    : 'claude_code'
   if (feature('KAIROS')) {
     /* eslint-disable @typescript-eslint/no-require-imports */
     const { isAssistantMode } =

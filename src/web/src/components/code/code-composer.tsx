@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useEffect, useState } from "react";
+import Link from "next/link";
 import {
   Cloud,
   Monitor,
@@ -10,6 +11,7 @@ import {
   CornerDownLeft,
   ChevronDown,
   Mic,
+  Gauge,
   Loader2,
   Check,
   ExternalLink,
@@ -26,6 +28,31 @@ import { ConnectorsModal, ImportIssueModal } from "./code-connectors";
 const TOOLBAR_ICON_BTN =
   "flex size-6 items-center justify-center rounded text-foreground/50 hover:bg-accent/40 hover:text-foreground transition-colors";
 
+// Minimal SpeechRecognition typings — not in this project's TS DOM lib, and
+// `webkitSpeechRecognition` is vendor-prefixed. (SpeechRecognitionResultList
+// IS in the lib, so we reuse it.)
+interface SpeechRecognitionEvent extends Event {
+  resultIndex: number;
+  results: SpeechRecognitionResultList;
+}
+interface SpeechRecognition extends EventTarget {
+  lang: string;
+  interimResults: boolean;
+  continuous: boolean;
+  onresult: ((e: SpeechRecognitionEvent) => void) | null;
+  onend: (() => void) | null;
+  onerror: (() => void) | null;
+  start(): void;
+  stop(): void;
+  abort(): void;
+}
+declare global {
+  interface Window {
+    SpeechRecognition?: { new (): SpeechRecognition };
+    webkitSpeechRecognition?: { new (): SpeechRecognition };
+  }
+}
+
 type Machine = {
   environment_id: string;
   machine_name: string;
@@ -36,7 +63,7 @@ type Machine = {
   last_seen_at: number;
 };
 
-type Popover = null | "env" | "repo" | "plus" | "model" | "effort" | "mode";
+type Popover = null | "env" | "repo" | "plus" | "model" | "effort" | "mode" | "mic" | "usage";
 
 // Permission modes, claude.ai/code naming. Values are the CLI's
 // ExternalPermissionMode strings, applied via set_permission_mode
@@ -88,6 +115,7 @@ export function CodeComposer({
   showPills = true,
   mode = "acceptEdits",
   onModeChange,
+  onPickRepo,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -101,6 +129,8 @@ export function CodeComposer({
   showPills?: boolean;
   mode?: string;
   onModeChange?: (mode: string) => void;
+  /** Picking a GitHub repo targets a cloud container for the next task. */
+  onPickRepo?: (fullName: string | null) => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -110,6 +140,55 @@ export function CodeComposer({
   const [modal, setModal] = useState<null | "connectors" | "import">(null);
   const [ghRepos, setGhRepos] = useState<{ full_name: string }[] | null>(null);
   const [repoOverride, setRepoOverride] = useState<string | null>(null);
+
+  // Voice dictation via the browser SpeechRecognition API (Chrome/Edge) —
+  // client-side, no backend. Transcribed text is appended to the composer.
+  const [holdToRecord, setHoldToRecord] = useState(true);
+  const [recording, setRecording] = useState(false);
+  const recRef = useRef<SpeechRecognition | null>(null);
+  const valueRef = useRef(value);
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
+  // Detect AFTER mount: reading `window` during render makes SSR (false) and
+  // the client (true) disagree → hydration mismatch. Both render "unsupported"
+  // first, then the client enables the mic post-mount.
+  const [speechSupported, setSpeechSupported] = useState(false);
+  useEffect(() => {
+    setSpeechSupported(!!(window.SpeechRecognition || window.webkitSpeechRecognition));
+  }, []);
+
+  const startRec = () => {
+    if (!speechSupported || recording) return;
+    const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!Ctor) return;
+    const rec = new Ctor();
+    rec.lang = navigator.language || "en-US";
+    rec.interimResults = false;
+    rec.continuous = holdToRecord; // hold = keep listening until release
+    rec.onresult = (ev: SpeechRecognitionEvent) => {
+      let finalText = "";
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        if (ev.results[i].isFinal) finalText += ev.results[i][0].transcript;
+      }
+      if (finalText.trim()) {
+        const base = valueRef.current;
+        onChange((base ? base.replace(/\s*$/, "") + " " : "") + finalText.trim());
+      }
+    };
+    rec.onend = () => setRecording(false);
+    rec.onerror = () => setRecording(false);
+    recRef.current = rec;
+    try {
+      rec.start();
+      setRecording(true);
+    } catch {
+      setRecording(false);
+    }
+  };
+  const stopRec = () => recRef.current?.stop();
+  const toggleRec = () => (recording ? stopRec() : startRec());
+  useEffect(() => () => recRef.current?.abort(), []);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -140,9 +219,6 @@ export function CodeComposer({
   const pill =
     "flex items-center gap-1.5 rounded-full border border-border/60 bg-accent/30 px-2.5 py-1 text-[12px] text-foreground/70 hover:bg-accent/50 hover:text-foreground transition-colors";
   const toggle = (p: Popover) => setOpen((cur) => (cur === p ? null : p));
-  const repos = (machines ?? []).filter((m) =>
-    repoLabel(m).toLowerCase().includes(repoQuery.toLowerCase()),
-  );
   const ghFiltered = (ghRepos ?? []).filter((r) =>
     r.full_name.toLowerCase().includes(repoQuery.toLowerCase()),
   );
@@ -161,7 +237,7 @@ export function CodeComposer({
           {open === "env" && (
             <div className="absolute bottom-full left-0 mb-2 w-[320px] rounded-xl border border-border bg-card p-1.5 shadow-xl z-50">
               <div className="flex items-center justify-between px-2 py-1">
-                <span className="text-[11px] font-medium text-foreground/60">Local <span className="opacity-50">· workers</span></span>
+                <span className="text-[11px] font-medium text-foreground/60">Connected machines</span>
                 <button type="button" aria-label="Refresh machines" onClick={onRefreshMachines} className="flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-accent/50 hover:text-foreground">
                   <RefreshCw className="size-3" />
                 </button>
@@ -172,9 +248,12 @@ export function CodeComposer({
                 <div className="px-2 py-1.5 text-[12px] text-muted-foreground">No machines connected.</div>
               ) : (
                 machines.map((m) => (
-                  <button key={m.environment_id} type="button" onClick={() => { onPickMachine(m); setOpen(null); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent/40">
-                    <Monitor className="size-3.5 text-foreground/60" />
+                  <button key={m.environment_id} type="button" onClick={() => { onPickMachine(m); onPickRepo?.(null); setRepoOverride(null); setOpen(null); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent/40">
+                    {m.worker_type === "container" ? <Cloud className="size-3.5 text-blue-400" /> : <Monitor className="size-3.5 text-foreground/60" />}
                     <span className="flex-1 truncate text-[13px] text-foreground">{m.machine_name}</span>
+                    {m.worker_type === "claude_code_repl" && (
+                      <span className="shrink-0 rounded bg-accent/60 px-1 text-[10px] text-muted-foreground" title="An attached REPL session — can't run new tasks">attach-only</span>
+                    )}
                     <span className="truncate text-[11px] text-muted-foreground">{repoLabel(m)}</span>
                     {selected?.environment_id === m.environment_id && <Check className="size-3.5 text-primary" />}
                   </button>
@@ -198,34 +277,25 @@ export function CodeComposer({
           </button>
           {open === "repo" && (
             <div className="absolute bottom-full left-20 mb-2 w-[320px] rounded-xl border border-border bg-card p-1.5 shadow-xl z-50">
+              {/* GitHub repos ONLY — the machine the task runs on is the env
+                  pill's job; this picks WHAT to work on. */}
               <div className="max-h-[300px] overflow-y-auto">
-                {ghRepos !== null && ghFiltered.length > 0 && (
-                  <>
-                    <div className="px-2 pb-1 pt-1 text-[11px] font-medium text-muted-foreground/70">GitHub</div>
-                    {ghFiltered.slice(0, 60).map((r) => (
-                      <button key={r.full_name} type="button" onClick={() => { setRepoOverride(r.full_name); setOpen(null); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] hover:bg-accent/40">
-                        <span className="flex-1 truncate text-foreground/90">{r.full_name}</span>
-                        {repoOverride === r.full_name && <Check className="size-3.5 text-primary" />}
-                      </button>
-                    ))}
-                  </>
-                )}
-                {repos.length > 0 && (
-                  <>
-                    <div className="px-2 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground/70">Connected machines</div>
-                    {repos.map((m) => (
-                      <button key={m.environment_id} type="button" onClick={() => { onPickMachine(m); setRepoOverride(null); setOpen(null); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] hover:bg-accent/40">
-                        <span className="flex-1 truncate text-foreground/90">{repoLabel(m)}</span>
-                        {!repoOverride && selected?.environment_id === m.environment_id && <Check className="size-3.5 text-primary" />}
-                      </button>
-                    ))}
-                  </>
-                )}
-                {ghRepos === null && repos.length === 0 && (
-                  <div className="px-2 py-1.5 text-[12px] text-muted-foreground">No repos — connect GitHub (＋ → Connectors) or a machine.</div>
-                )}
-                {ghRepos !== null && ghFiltered.length === 0 && repos.length === 0 && (
-                  <div className="px-2 py-1.5 text-[12px] text-muted-foreground">No matching repos.</div>
+                {ghRepos === null ? (
+                  <div className="px-2 py-2 text-[12px] text-muted-foreground">
+                    Connect GitHub (＋ → Connectors) to pick a repository.
+                  </div>
+                ) : ghFiltered.length === 0 ? (
+                  <div className="px-2 py-1.5 text-[12px] text-muted-foreground">
+                    {repoQuery ? "No matching repositories." : "No repositories found."}
+                  </div>
+                ) : (
+                  ghFiltered.slice(0, 60).map((r) => (
+                    <button key={r.full_name} type="button" onClick={() => { setRepoOverride(r.full_name); onPickRepo?.(r.full_name); setOpen(null); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] hover:bg-accent/40">
+                      <Code2 className="size-3.5 shrink-0 text-muted-foreground" />
+                      <span className="flex-1 truncate text-foreground/90">{r.full_name}</span>
+                      {repoOverride === r.full_name && <Check className="size-3.5 text-primary" />}
+                    </button>
+                  ))
                 )}
               </div>
               <div className="mt-1 flex items-center gap-1.5 rounded-lg border border-border/50 bg-accent/20 px-2 py-1.5">
@@ -302,13 +372,52 @@ export function CodeComposer({
             {MODE_OPTIONS.find((m) => m.value === mode)?.label ?? "Accept edits"}
           </button>
           <button type="button" aria-label="Attach" className={TOOLBAR_ICON_BTN}><Plus className="size-3.5" /></button>
-          <button type="button" aria-label="Record" className={TOOLBAR_ICON_BTN}><Mic className="size-3.5" /></button>
-          <button type="button" aria-label="More" className={TOOLBAR_ICON_BTN}><ChevronDown className="size-3.5" /></button>
+          <button
+            type="button"
+            aria-label={recording ? "Stop recording" : "Record"}
+            title={speechSupported ? (holdToRecord ? "Hold to record" : "Click to record") : "Voice input needs Chrome or Edge"}
+            disabled={!speechSupported}
+            {...(holdToRecord
+              ? {
+                  onMouseDown: startRec,
+                  onMouseUp: stopRec,
+                  onMouseLeave: () => recording && stopRec(),
+                  onTouchStart: startRec,
+                  onTouchEnd: stopRec,
+                }
+              : { onClick: toggleRec })}
+            className={`${TOOLBAR_ICON_BTN} ${recording ? "!text-red-500" : ""} disabled:opacity-40`}
+          >
+            <Mic className={`size-3.5 ${recording ? "animate-pulse" : ""}`} />
+          </button>
+          <button type="button" aria-label="Microphone settings" onClick={() => toggle("mic")} className={TOOLBAR_ICON_BTN}>
+            <ChevronDown className="size-3.5" />
+          </button>
+          {open === "mic" && (
+            <div className="absolute bottom-full left-24 mb-2 w-[210px] rounded-xl border border-border bg-card p-2 shadow-xl z-50">
+              <div className="px-1 pb-1.5 text-[11px] font-medium text-muted-foreground/60">Microphone</div>
+              <button
+                type="button"
+                onClick={() => setHoldToRecord((h) => !h)}
+                className="flex w-full items-center gap-2 rounded px-1 py-1 text-left text-[13px] text-foreground/90 hover:bg-accent/40"
+              >
+                <span className="flex-1">Hold to record</span>
+                <span className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${holdToRecord ? "bg-primary" : "bg-accent"}`}>
+                  <span className={`absolute top-0.5 size-3 rounded-full bg-white transition-transform ${holdToRecord ? "translate-x-3.5" : "translate-x-0.5"}`} />
+                </span>
+              </button>
+              {!speechSupported && (
+                <p className="mt-1 px-1 text-[11px] text-muted-foreground/60">Voice input needs Chrome or Edge.</p>
+              )}
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2 text-[11.5px] text-foreground/55">
           <button type="button" onClick={() => toggle("model")} className="rounded px-1.5 py-0.5 hover:bg-accent/40 hover:text-foreground">{model}</button>
           <button type="button" onClick={() => toggle("effort")} className="rounded px-1.5 py-0.5 hover:bg-accent/40 hover:text-foreground">Max</button>
-          <Loader2 className="size-3 animate-spin opacity-40" />
+          <button type="button" aria-label="Usage" onClick={() => toggle("usage")} className="flex size-5 items-center justify-center rounded hover:bg-accent/40 hover:text-foreground">
+            <Gauge className="size-3.5" />
+          </button>
         </div>
 
         {open === "mode" && (
@@ -369,6 +478,26 @@ export function CodeComposer({
             <div className="mb-2 text-[12px] text-foreground/70">Effort <span className="font-medium text-foreground">Max</span></div>
             <div className="mb-1 flex justify-between text-[11px] text-muted-foreground/60"><span>Faster</span><span>Smarter</span></div>
             <input type="range" min={0} max={100} defaultValue={100} className="w-full accent-primary" />
+          </div>
+        )}
+
+        {open === "usage" && (
+          <div className="absolute bottom-full right-2 mb-2 w-[260px] rounded-xl border border-border bg-card p-3 shadow-xl z-50">
+            <div className="flex items-center justify-between text-[13px]">
+              <span className="font-medium text-foreground">Plan usage</span>
+              <span className="text-[12px] text-emerald-500">Unlimited</span>
+            </div>
+            <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground/80">
+              Self-hosted — runs on your own API keys, so there&apos;s no Claude
+              plan limit. Throughput is bounded by each provider&apos;s own rate
+              limits.
+            </p>
+            <Link
+              href="/settings?tab=usage"
+              className="mt-2 inline-block text-[12px] text-blue-400 hover:underline"
+            >
+              Provider limits in Settings →
+            </Link>
           </div>
         )}
       </div>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Asterisk, ChevronRight, Lightbulb, X, Shield, ExternalLink, Check } from "lucide-react";
+import { Asterisk, ChevronRight, X, Shield, ExternalLink, Check } from "lucide-react";
 import { CodeSidebar } from "@/components/code/code-sidebar";
 import { CodeComposer } from "@/components/code/code-composer";
 import { CodeSession } from "@/components/code/code-session";
@@ -25,6 +25,10 @@ type SessionSummary = {
   machine_name: string | null;
   created_at: number;
   status: "needs_input" | "working" | "done";
+  pinned?: boolean;
+  read?: boolean;
+  group_id?: string | null;
+  group_name?: string | null;
 };
 
 function repoLabel(m: Machine | null): string | null {
@@ -58,13 +62,14 @@ export default function CodePage() {
   const [input, setInput] = useState("");
   // Permission mode for dispatch + live switching (ExternalPermissionMode).
   const [mode, setMode] = useState("acceptEdits");
+  // GitHub repo picked in the composer → tasks run in a cloud container.
+  const [cloudRepo, setCloudRepo] = useState<string | null>(null);
   const [machines, setMachines] = useState<Machine[] | null>(null);
   const [selected, setSelected] = useState<Machine | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [bannerOpen, setBannerOpen] = useState(true);
   const [panels, setPanels] = useState({ diff: false, background: false, plan: false });
   const [shareOpen, setShareOpen] = useState(false);
   const [shareVisibility, setShareVisibility] = useState<"private" | "public">("private");
@@ -99,6 +104,9 @@ export default function CodePage() {
   useEffect(() => {
     loadMachines();
     loadSessions();
+    // Deep link from "Copy link" (/code?s=<id>) — open that session on load.
+    const s = new URLSearchParams(window.location.search).get("s");
+    if (s) setSessionId(s);
   }, [loadMachines, loadSessions]);
 
   const changeMode = (m: string) => {
@@ -141,8 +149,38 @@ export default function CodePage() {
       }
       return;
     }
-    if (!selected) {
-      setError("Connect a machine first — click the “Default” pill, then run /remote-control on your machine.");
+    // Explicit repo pick → cloud-container dispatch: get-or-create the repo's
+    // container target (idempotent per user+repo) and run the task in it.
+    let environmentId = selected?.environment_id ?? null;
+    if (cloudRepo) {
+      setBusy(true);
+      try {
+        const r = await fetch("/api/bridge/v1/environments/cloud", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ repo: cloudRepo }),
+        });
+        if (!r.ok) {
+          const j = (await r.json().catch(() => ({}))) as { error?: { message?: string } };
+          setError(j.error?.message ?? `Cloud target failed (${r.status})`);
+          setBusy(false);
+          return;
+        }
+        environmentId = ((await r.json()) as { environment_id: string }).environment_id;
+        loadMachines();
+      } catch (e) {
+        setError(String(e));
+        setBusy(false);
+        return;
+      }
+    }
+    if (!environmentId) {
+      setError("Pick a repo (cloud container) or connect a machine — run /remote-control on your machine.");
+      setBusy(false);
+      return;
+    }
+    if (selected?.worker_type === "claude_code_repl" && !cloudRepo) {
+      setError("That machine is an attached REPL session (attach-only) — it can't run new tasks. Pick a repo to use a cloud container instead.");
       return;
     }
     setBusy(true);
@@ -151,7 +189,7 @@ export default function CodePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          environment_id: selected.environment_id,
+          environment_id: environmentId,
           prompt: input.trim(),
           permission_mode: mode,
         }),
@@ -181,6 +219,7 @@ export default function CodePage() {
         onSelectSession={(id) => setSessionId(id || null)}
         onNewSession={() => { setSessionId(null); setInput(""); }}
         onRefresh={loadSessions}
+        onShareSession={(id) => { setSessionId(id); setShareOpen(true); }}
       />
 
       <main className="flex flex-1 overflow-hidden">
@@ -239,19 +278,6 @@ export default function CodePage() {
 
           <div className="mx-auto w-full max-w-3xl px-6 pb-6">
             {error && <div className="mb-2 text-[12px] text-red-500">{error}</div>}
-            {bannerOpen && (
-              <div className="mb-2 flex items-center gap-2 rounded-xl border border-border/50 bg-card px-3.5 py-2 text-[12.5px]">
-                <Lightbulb className="size-3.5 shrink-0 text-amber-500" />
-                <span className="flex-1 text-foreground/75">
-                  <span className="font-medium text-foreground">Meet Fable 5,</span> built for long-running, complex work.
-                  Switch anytime with <span className="text-blue-400">/model</span>. Included in your plan limits until Jun 22.
-                </span>
-                <button type="button" className="shrink-0 text-[12.5px] text-blue-400 hover:underline">Try it</button>
-                <button type="button" aria-label="Dismiss" onClick={() => setBannerOpen(false)} className="shrink-0 text-muted-foreground hover:text-foreground">
-                  <X className="size-3.5" />
-                </button>
-              </div>
-            )}
             <CodeComposer
               value={input}
               onChange={setInput}
@@ -265,6 +291,7 @@ export default function CodePage() {
               showPills={!sessionId}
               mode={mode}
               onModeChange={changeMode}
+              onPickRepo={setCloudRepo}
             />
           </div>
         </div>
