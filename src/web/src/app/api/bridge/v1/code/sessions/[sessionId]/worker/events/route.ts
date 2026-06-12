@@ -46,11 +46,15 @@ export async function POST(
       const payload = event?.payload
       if (!payload || typeof payload.type !== 'string') continue
       // stream_event = live-typing snapshots (the final message follows);
-      // keep_alive = container-lease liveness pings. Neither is transcript.
+      // keep_alive = container-lease liveness pings; control_request/
+      // control_response = protocol traffic (mode switches, permission
+      // verdicts). None of these are transcript.
       if (
         event.ephemeral ||
         payload.type === 'stream_event' ||
-        payload.type === 'keep_alive'
+        payload.type === 'keep_alive' ||
+        payload.type === 'control_request' ||
+        payload.type === 'control_response'
       ) {
         continue
       }

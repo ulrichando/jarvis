@@ -33,6 +33,7 @@ export async function POST(
   const body = (await req.json().catch(() => null)) as {
     text?: string
     interrupt?: boolean
+    mode?: string
     permission?: {
       request_id?: string
       behavior?: string
@@ -42,17 +43,24 @@ export async function POST(
   } | null
   const text = typeof body?.text === 'string' ? body.text.trim() : ''
   const interrupt = body?.interrupt === true
+  // ExternalPermissionMode in the CLI (types/permissions.ts) — applied live
+  // via a set_permission_mode control_request (bridgeMessaging.ts:328).
+  const VALID_MODES = ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk']
+  const mode =
+    typeof body?.mode === 'string' && VALID_MODES.includes(body.mode)
+      ? body.mode
+      : null
   const permission = body?.permission
   const permissionValid =
     !!permission &&
     typeof permission.request_id === 'string' &&
     !!permission.request_id &&
     (permission.behavior === 'allow' || permission.behavior === 'deny')
-  if (!text && !interrupt && !permissionValid) {
+  if (!text && !interrupt && !mode && !permissionValid) {
     return bridgeError(
       400,
       'invalid_request',
-      'text, interrupt, or permission {request_id, behavior} required',
+      'text, interrupt, mode, or permission {request_id, behavior} required',
     )
   }
   try {
@@ -88,6 +96,13 @@ export async function POST(
         uuid,
         request_id: uuid,
         request: { subtype: 'interrupt' },
+      })
+    } else if (mode) {
+      appendInbound(store, sessionId, {
+        type: 'control_request',
+        uuid,
+        request_id: uuid,
+        request: { subtype: 'set_permission_mode', mode },
       })
     } else if (permission && permissionValid) {
       appendInbound(store, sessionId, {

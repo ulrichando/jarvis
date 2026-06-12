@@ -56,6 +56,8 @@ const STATUS_META: Record<SessionSummary["status"], { dot: string; label: string
 
 export default function CodePage() {
   const [input, setInput] = useState("");
+  // Permission mode for dispatch + live switching (ExternalPermissionMode).
+  const [mode, setMode] = useState("acceptEdits");
   const [machines, setMachines] = useState<Machine[] | null>(null);
   const [selected, setSelected] = useState<Machine | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -99,9 +101,46 @@ export default function CodePage() {
     loadSessions();
   }, [loadMachines, loadSessions]);
 
+  const changeMode = (m: string) => {
+    setMode(m);
+    // Session open → apply live via a set_permission_mode control_request.
+    // Otherwise the choice rides the next task dispatch as permission_mode.
+    if (sessionId) {
+      fetch(`/api/bridge/v1/sessions/${sessionId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: m }),
+      }).catch(() => {});
+    }
+  };
+
   const dispatch = async () => {
     setError(null);
     if (!input.trim()) return;
+    // Session open → the composer messages THAT session (one composer for
+    // both modes; the session view has no input of its own). No session →
+    // dispatch a new task to the selected machine.
+    if (sessionId) {
+      setBusy(true);
+      try {
+        const r = await fetch(`/api/bridge/v1/sessions/${sessionId}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: input.trim() }),
+        });
+        if (r.ok) {
+          setInput("");
+        } else {
+          const j = (await r.json().catch(() => ({}))) as { error?: { message?: string } };
+          setError(j.error?.message ?? `Send failed (${r.status})`);
+        }
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     if (!selected) {
       setError("Connect a machine first — click the “Default” pill, then run /remote-control on your machine.");
       return;
@@ -111,7 +150,11 @@ export default function CodePage() {
       const r = await fetch("/api/bridge/v1/tasks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ environment_id: selected.environment_id, prompt: input.trim() }),
+        body: JSON.stringify({
+          environment_id: selected.environment_id,
+          prompt: input.trim(),
+          permission_mode: mode,
+        }),
       });
       if (r.ok) {
         const j = (await r.json()) as { session_id: string };
@@ -135,8 +178,9 @@ export default function CodePage() {
       <CodeSidebar
         sessions={sessions}
         activeSessionId={sessionId}
-        onSelectSession={(id) => setSessionId(id)}
+        onSelectSession={(id) => setSessionId(id || null)}
         onNewSession={() => { setSessionId(null); setInput(""); }}
+        onRefresh={loadSessions}
       />
 
       <main className="flex flex-1 overflow-hidden">
@@ -219,6 +263,8 @@ export default function CodePage() {
               onRefreshMachines={loadMachines}
               placeholder={sessionId ? "Type / for commands" : "Describe a task or ask a question"}
               showPills={!sessionId}
+              mode={mode}
+              onModeChange={changeMode}
             />
           </div>
         </div>

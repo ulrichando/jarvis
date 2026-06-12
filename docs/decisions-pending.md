@@ -185,14 +185,34 @@ the events poll). Done in this pass:
 STILL TO BUILD:
 - stream_event live-typing in the session view (currently dropped; final
   messages only).
-- The containerized variant (user request 2026-06-12): create a container
-  (src/web jarvis-workbench image), clone the selected repo, initialize, run
-  the session inside — claude.ai/code's environment-manager model.
 - /code machine picker should mark REPL-held machines (dispatching a task
   to one is now cleanly refused via stopWork, but the task still doesn't
   run anywhere — the picker shouldn't offer attach-only environments).
 Protocol reference: CLI `remoteBridgeCore.ts`/`ccrClient.ts` and
 `~/Documents/Projects/claude-code/src/remote/`.
+
+UPDATE 2026-06-12 (third pass): CONTAINER SESSIONS BUILT (MVP) and verified
+live — claude.ai's init sequence (container → clone → optional setup →
+start Claude Code) ran in <5s against ulrichando/maxrun, model replied,
+follow-up turn answered from /workspace/<repo>, archive reaped the
+container. Shape: `POST /v1/environments/cloud {repo}` registers a virtual
+environment (worker_type 'container') that appears in the existing machine
+picker; the tasks route branches on worker_type and the WEB acts as
+environment-manager (src/web/src/lib/bridge/containers.ts): docker run from
+jarvis-workbench (label com.jarvis.code-session), git clone via the §13
+connector PAT (token scrubbed from .git/config after), optional
+.jarvis/setup.sh, pre-seeded workspace trust (CLAUDE_CONFIG_DIR
+/jarvis-config), then the CLI source bind-mounted RO + vendored bun runs
+`cli.tsx --print --sdk-url <web>/v1/code/sessions/{id}` — the same worker
+endpoints as bridge children, so SSE/permissions/transcripts are unchanged.
+Init steps stream as status session_events.
+MVP tradeoffs (next phases): --network=host (web binds 127.0.0.1; the
+egress-proxy phase replaces this — until then container isolation is
+filesystem/process, NOT network), no branch/PR push-back yet (clone cred is
+scrubbed; push needs the scoped-credential flow), no setup snapshot
+caching, no idle timeout (archive is the lifecycle end), and the cloud-repo
+picker UI (env rows are curl/API-created today; picker lists them once
+created).
 
 RESEARCHED ARCHITECTURE (2026-06-12, from code.claude.com docs + Anthropic
 sandboxing post): claude.ai/code's primary mode is CLOUD SESSIONS, not
