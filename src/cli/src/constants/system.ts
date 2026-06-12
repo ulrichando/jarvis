@@ -9,7 +9,7 @@ import { getWorkload } from '../utils/workloadContext.js'
 
 const DEFAULT_PREFIX = `You are Jarvis, Ulrich's AI coding CLI.`
 const AGENT_SDK_CLAUDE_CODE_PRESET_PREFIX = `You are Jarvis, Ulrich's AI coding CLI, running within the Claude Agent SDK.`
-const AGENT_SDK_PREFIX = `You are a Claude agent, built on Anthropic's Claude Agent SDK.`
+const AGENT_SDK_PREFIX = `You are a Jarvis agent, built on Anthropic's Claude Agent SDK.`
 
 const CLI_SYSPROMPT_PREFIX_VALUES = [
   DEFAULT_PREFIX,

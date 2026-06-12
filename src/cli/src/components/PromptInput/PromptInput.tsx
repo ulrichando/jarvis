@@ -775,7 +775,7 @@ function PromptInput({
     if (isUltrareviewEnabled() && ultrareviewTriggers.length) {
       addNotification({
         key: 'ultrareview-active',
-        text: 'Run /ultrareview after Claude finishes to review these changes in the cloud',
+        text: 'Run /ultrareview after Jarvis finishes to review these changes in the cloud',
         priority: 'immediate',
         timeoutMs: 5000
       });

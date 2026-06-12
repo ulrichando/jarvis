@@ -68,7 +68,7 @@ export const CRON_LIST_TOOL_NAME = 'CronList'
 export function buildCronCreateDescription(durableEnabled: boolean): string {
   return durableEnabled
     ? 'Schedule a prompt to run at a future time — either recurring on a cron schedule, or once at a specific time. Pass durable: true to persist to .jarvis/scheduled_tasks.json; otherwise session-only.'
-    : 'Schedule a prompt to run at a future time within this Claude session — either recurring on a cron schedule, or once at a specific time.'
+    : 'Schedule a prompt to run at a future time within this Jarvis session — either recurring on a cron schedule, or once at a specific time.'
 }
 
 export function buildCronCreatePrompt(durableEnabled: boolean): string {
