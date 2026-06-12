@@ -1,11 +1,41 @@
 import { NextResponse } from 'next/server'
 import { getStore } from '@/lib/bridge/db'
-import { findSession, setSessionTitle } from '@/lib/bridge/store'
+import {
+  archiveSession,
+  deleteSession,
+  findEnvironment,
+  findSession,
+  setSessionTitle,
+} from '@/lib/bridge/store'
 import { extractBearer } from '@/lib/bridge/auth'
+import { getUserId } from '@/lib/auth-helpers'
 import { bridgeError } from '@/lib/bridge/errors'
 
+// Authorize a mutation on a session two ways: the CLI worker presents a
+// bearer (v1-permissive — any non-empty token); the /code browser presents a
+// same-origin session cookie, checked against the session's owning
+// environment (mirrors the messages route). Returns an error response, or
+// null when allowed.
+async function authorizeMutation(
+  req: Request,
+  sessionId: string,
+): Promise<NextResponse | null> {
+  if (extractBearer(req.headers.get('authorization'))) return null
+  const store = getStore()
+  const session = findSession(store, sessionId)
+  if (!session) return bridgeError(404, 'not_found', 'Session not found')
+  const env = session.environment_id
+    ? findEnvironment(store, session.environment_id)
+    : null
+  const userId = await getUserId(req.headers)
+  if (env?.user_id && env.user_id !== userId) {
+    return bridgeError(403, 'forbidden', 'Not your session')
+  }
+  return null
+}
+
 // GET /api/bridge/v1/sessions/{id} — single-session fetch, used by the CLI's
-// reconnect paths (getBridgeSession). Returns the two fields the CLI reads:
+// reconnect paths (getBridgeSession). Returns the fields the CLI reads:
 // environment_id (for --session-id resume) and title.
 export async function GET(
   _req: Request,
@@ -29,30 +59,53 @@ export async function GET(
   }
 }
 
-// PATCH /api/bridge/v1/sessions/{id} — retitle (updateBridgeSessionTitle;
-// fired when the CLI derives/generates a session title). Stored on the
-// sessions.title column — NOT as a session_events row, which the /code
-// session view would render as a bare "title" line. v1-permissive bearer
-// like the events route.
+// PATCH /api/bridge/v1/sessions/{id} — { title } to rename (CLI's
+// updateBridgeSessionTitle + the /code sidebar Rename) or { archived: true }
+// to archive from the sidebar. Title is stored on the sessions.title column,
+// NOT as a session_events row (which the session view would render as a bare
+// "title" line). Bearer (CLI) or session-cookie (browser) authorized.
 export async function PATCH(
   req: Request,
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params
-  const token = extractBearer(req.headers.get('authorization'))
-  if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
   const body = (await req.json().catch(() => null)) as {
     title?: string
+    archived?: boolean
   } | null
-  if (!body || typeof body.title !== 'string' || !body.title.trim()) {
-    return bridgeError(400, 'invalid_request', 'title required')
+  const renaming = typeof body?.title === 'string' && body.title.trim() !== ''
+  const archiving = body?.archived === true
+  if (!renaming && !archiving) {
+    return bridgeError(400, 'invalid_request', 'title or archived required')
   }
+  const denied = await authorizeMutation(req, sessionId)
+  if (denied) return denied
   try {
     const store = getStore()
     const session = findSession(store, sessionId)
     if (!session) return bridgeError(404, 'not_found', 'Session not found')
-    setSessionTitle(store, sessionId, body.title.trim())
+    if (renaming) setSessionTitle(store, sessionId, body!.title!.trim())
+    if (archiving) archiveSession(store, sessionId)
     return NextResponse.json({ id: sessionId })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return bridgeError(500, 'internal_error', `DB error: ${msg}`)
+  }
+}
+
+// DELETE /api/bridge/v1/sessions/{id} — permanently remove a session and its
+// events (the /code sidebar Delete). Session-cookie authorized for the
+// browser; a bearer also works for tooling.
+export async function DELETE(
+  req: Request,
+  ctx: { params: Promise<{ sessionId: string }> },
+): Promise<NextResponse> {
+  const { sessionId } = await ctx.params
+  const denied = await authorizeMutation(req, sessionId)
+  if (denied) return denied
+  try {
+    deleteSession(getStore(), sessionId)
+    return new NextResponse(null, { status: 204 })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return bridgeError(500, 'internal_error', `DB error: ${msg}`)

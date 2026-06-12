@@ -9,6 +9,7 @@ import {
 } from '@/lib/bridge/store'
 import { getUserId } from '@/lib/auth-helpers'
 import { apiBaseFromRequest, dispatchSessionWork } from '@/lib/bridge/dispatch'
+import { launchContainerSession } from '@/lib/bridge/containers'
 import { bridgeError } from '@/lib/bridge/errors'
 
 // POST /api/bridge/v1/tasks — the /code UI dispatches a coding task: registers
@@ -25,6 +26,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   const body = (await req.json().catch(() => null)) as {
     environment_id?: string
     prompt?: string
+    permission_mode?: string
   } | null
   if (
     !body ||
@@ -61,6 +63,21 @@ export async function POST(req: Request): Promise<NextResponse> {
       type: 'user_prompt',
       payload: { type: 'user_prompt', prompt, uuid },
     })
+    // Seed the chosen permission mode BEFORE the prompt — the child replays
+    // inbound in sequence order, so the mode applies before work starts.
+    const VALID_MODES = ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk']
+    if (
+      typeof body.permission_mode === 'string' &&
+      VALID_MODES.includes(body.permission_mode)
+    ) {
+      const modeUuid = randomUUID()
+      appendInbound(store, sessionId, {
+        type: 'control_request',
+        uuid: modeUuid,
+        request_id: modeUuid,
+        request: { subtype: 'set_permission_mode', mode: body.permission_mode },
+      })
+    }
     // Seed the prompt as the first inbound client event. The spawned child
     // replays the stream from seq 0 on connect, so this is how the task
     // prompt actually reaches the model.
@@ -71,6 +88,28 @@ export async function POST(req: Request): Promise<NextResponse> {
       parent_tool_use_id: null,
       message: { role: 'user', content: [{ type: 'text', text: prompt }] },
     })
+    // Container target (environments/cloud rows): the web is the worker
+    // manager — no bridge work queue. Launch async; the init steps stream
+    // into the session view as status events (container → clone → setup →
+    // CLI), and the child picks the seeded prompt up via SSE catch-up
+    // exactly like a bridge-spawned child.
+    if (env.worker_type === 'container') {
+      const repo = (env.git_repo_url ?? '')
+        .replace(/^https:\/\/github\.com\//, '')
+        .replace(/\.git$/, '')
+      if (!repo) {
+        return bridgeError(500, 'internal_error', 'Container target has no repo URL')
+      }
+      const origin = new URL(req.url).origin
+      void launchContainerSession(store, {
+        sessionId,
+        repoFullName: repo,
+        baseUrl: origin,
+      }).catch(() => {
+        /* failure already emitted as a ✗ status event + container reaped */
+      })
+      return NextResponse.json({ session_id: sessionId }, { status: 200 })
+    }
     const dispatched = dispatchSessionWork(
       store,
       body.environment_id,

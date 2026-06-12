@@ -157,6 +157,14 @@ export function initSchema(db: Database.Database): void {
   } catch {
     /* column already present */
   }
+  // Additive migration (2026-06-12, container sessions): which docker
+  // container runs this session ({container, repo}), for archive-time reaping
+  // and the /code session header.
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN container_json TEXT')
+  } catch {
+    /* column already present */
+  }
   // FK enforcement is the load-bearing reason CASCADE DELETE works on the
   // `work` table when an environment is deleted. Set explicitly here rather
   // than relying on better-sqlite3's bundled SQLite default.
@@ -445,6 +453,27 @@ export function archiveSession(
   return 'archived'
 }
 
+/** Permanently remove a session and all its rows (browser "Delete"). */
+export function deleteSession(store: Store, sessionId: string): void {
+  const tables = [
+    'session_events',
+    'session_inbound',
+    'session_internal_events',
+    'sessions',
+  ]
+  const tx = store.db.transaction((id: string) => {
+    for (const t of tables) {
+      // Some session_* tables only exist on newer DBs — guard each.
+      try {
+        store.db.prepare(`DELETE FROM ${t} WHERE session_id = ?`).run(id)
+      } catch {
+        /* table absent — skip */
+      }
+    }
+  })
+  tx(sessionId)
+}
+
 // ── Read paths for the /code web UI (CCR parity, 2026-06-11) ───────────────
 // The worker-facing endpoints write environments / work / session_events; the
 // UI needs to LIST machines, create a session, dispatch a task, and tail a
@@ -469,6 +498,18 @@ export interface SessionRow {
   session_token: string | null
   worker_epoch: number
   worker_state_json: string | null
+  container_json: string | null
+}
+
+/** Record the docker container backing a session ({container, repo}). */
+export function setSessionContainer(
+  store: Store,
+  sessionId: string,
+  meta: { container: string; repo: string },
+): void {
+  store.db
+    .prepare('UPDATE sessions SET container_json = ? WHERE session_id = ?')
+    .run(JSON.stringify(meta), sessionId)
 }
 
 /**

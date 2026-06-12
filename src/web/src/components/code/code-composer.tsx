@@ -36,7 +36,16 @@ type Machine = {
   last_seen_at: number;
 };
 
-type Popover = null | "env" | "repo" | "plus" | "model" | "effort";
+type Popover = null | "env" | "repo" | "plus" | "model" | "effort" | "mode";
+
+// Permission modes, claude.ai/code naming. Values are the CLI's
+// ExternalPermissionMode strings, applied via set_permission_mode
+// control_requests (live sessions) or seeded at task dispatch.
+const MODE_OPTIONS: { label: string; value: string; n: string }[] = [
+  { label: "Accept edits", value: "acceptEdits", n: "1" },
+  { label: "Plan mode", value: "plan", n: "2" },
+  { label: "Auto mode", value: "bypassPermissions", n: "3" },
+];
 
 const MODELS: { name: string; n: string; legacy?: boolean; ctx?: string }[] = [
   { name: "Fable 5", n: "1" },
@@ -77,6 +86,8 @@ export function CodeComposer({
   onRefreshMachines,
   placeholder = "Describe a task or ask a question",
   showPills = true,
+  mode = "acceptEdits",
+  onModeChange,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -88,6 +99,8 @@ export function CodeComposer({
   onRefreshMachines: () => void;
   placeholder?: string;
   showPills?: boolean;
+  mode?: string;
+  onModeChange?: (mode: string) => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -241,6 +254,12 @@ export function CodeComposer({
                   onClick={() => {
                     if (it.label === "Connectors") setModal("connectors");
                     else if (it.label === "Import GitHub issue") setModal("import");
+                    else if (it.label === "Slash commands") {
+                      // Match the CLI: seed a "/" so the user types a command;
+                      // the CLI interprets it on submit.
+                      if (!value.startsWith("/")) onChange("/" + value);
+                      textareaRef.current?.focus();
+                    }
                     setOpen(null);
                   }}
                   className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] text-foreground/90 hover:bg-accent/50"
@@ -275,7 +294,13 @@ export function CodeComposer({
       {/* toolbar */}
       <div className="relative flex items-center justify-between px-3 py-2">
         <div className="flex items-center gap-1">
-          <button type="button" disabled className="rounded px-2 py-1 text-[12px] text-foreground/60 disabled:opacity-50 disabled:pointer-events-none">Accept edits</button>
+          <button
+            type="button"
+            onClick={() => toggle("mode")}
+            className="rounded bg-accent/40 px-2 py-1 text-[12px] text-foreground/80 hover:bg-accent/60 hover:text-foreground"
+          >
+            {MODE_OPTIONS.find((m) => m.value === mode)?.label ?? "Accept edits"}
+          </button>
           <button type="button" aria-label="Attach" className={TOOLBAR_ICON_BTN}><Plus className="size-3.5" /></button>
           <button type="button" aria-label="Record" className={TOOLBAR_ICON_BTN}><Mic className="size-3.5" /></button>
           <button type="button" aria-label="More" className={TOOLBAR_ICON_BTN}><ChevronDown className="size-3.5" /></button>
@@ -285,6 +310,39 @@ export function CodeComposer({
           <button type="button" onClick={() => toggle("effort")} className="rounded px-1.5 py-0.5 hover:bg-accent/40 hover:text-foreground">Max</button>
           <Loader2 className="size-3 animate-spin opacity-40" />
         </div>
+
+        {open === "mode" && (
+          <div
+            className="absolute bottom-full left-2 mb-2 w-[210px] rounded-xl border border-border bg-card p-1 shadow-xl z-50"
+            onKeyDown={(e) => {
+              const hit = MODE_OPTIONS.find((m) => m.n === e.key);
+              if (hit) {
+                onModeChange?.(hit.value);
+                setOpen(null);
+              }
+            }}
+          >
+            <div className="flex items-center justify-between px-2.5 py-1.5 text-[11px] text-muted-foreground/60">
+              <span>Mode</span>
+              <span className="font-mono">Ctrl Alt M</span>
+            </div>
+            {MODE_OPTIONS.map((m) => (
+              <button
+                key={m.value}
+                type="button"
+                onClick={() => {
+                  onModeChange?.(m.value);
+                  setOpen(null);
+                }}
+                className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-[13px] hover:bg-accent/50"
+              >
+                <span className="flex-1 text-foreground/90">{m.label}</span>
+                <Check className={`size-3.5 ${m.value === mode ? "text-primary" : "opacity-0"}`} />
+                <span className="text-[11px] text-muted-foreground/50">{m.n}</span>
+              </button>
+            ))}
+          </div>
+        )}
 
         {open === "model" && (
           <div className="absolute bottom-full right-2 mb-2 w-[260px] rounded-xl border border-border bg-card p-1 shadow-xl z-50">

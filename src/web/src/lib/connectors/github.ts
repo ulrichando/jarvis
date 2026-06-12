@@ -84,6 +84,15 @@ export async function connectGithub(
   return { ok: true, login: user.login };
 }
 
+/**
+ * The stored PAT, for SERVER-SIDE git operations only (e.g. cloning into a
+ * container session). Never expose through a route response.
+ */
+export async function getGithubToken(): Promise<string | null> {
+  const c = await load();
+  return c.github?.token ?? null;
+}
+
 export async function disconnectGithub(): Promise<void> {
   const c = await load();
   delete c.github;

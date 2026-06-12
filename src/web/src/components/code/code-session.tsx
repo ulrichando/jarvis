@@ -121,8 +121,6 @@ export function CodeSession({
   const [waiting, setWaiting] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
   const [layoutOpen, setLayoutOpen] = useState(false);
-  const [draft, setDraft] = useState("");
-  const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [worker, setWorker] = useState<WorkerInfo | null>(null);
   // request_ids the user already answered — hides the card instantly while
@@ -370,55 +368,29 @@ export function CodeSession({
         </div>
       </div>
 
-      {/* Composer — sends into the connected CLI session */}
-      <div className="border-t border-border/60 px-6 py-3">
-        <form
-          className="mx-auto flex max-w-3xl items-center gap-2"
-          onSubmit={(ev) => {
-            ev.preventDefault();
-            const text = draft.trim();
-            if (!text || sending) return;
-            setSending(true);
-            setSendError(null);
-            post({ text })
-              .then(() => setDraft(""))
-              .catch((err: unknown) => {
-                setSendError(err instanceof Error ? err.message : String(err));
-              })
-              .finally(() => setSending(false));
-          }}
-        >
-          <input
-            value={draft}
-            onChange={(ev) => setDraft(ev.target.value)}
-            placeholder="Message this session…"
-            className="flex-1 rounded-lg border border-border/60 bg-accent/20 px-3 py-2 text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/40"
-          />
-          {running && (
-            <button
-              type="button"
-              onClick={() => {
-                post({ interrupt: true }).catch((err: unknown) => {
-                  setSendError(err instanceof Error ? err.message : String(err));
-                });
-              }}
-              className="rounded-lg border border-border px-3 py-2 text-[13px] text-foreground hover:bg-accent/40"
-            >
-              Stop
-            </button>
-          )}
-          <button
-            type="submit"
-            disabled={!draft.trim() || sending}
-            className="rounded-lg bg-primary px-3 py-2 text-[13px] font-medium text-primary-foreground disabled:opacity-50"
-          >
-            Send
-          </button>
-        </form>
-        {sendError && (
-          <p className="mx-auto mt-1 max-w-3xl text-[12px] text-red-500">{sendError}</p>
-        )}
-      </div>
+      {/* Session controls — the text input lives in the page-level
+          CodeComposer (one composer for both new-task and session modes);
+          this bar only surfaces Stop while running and send errors. */}
+      {(running || sendError) && (
+        <div className="border-t border-border/60 px-6 py-2">
+          <div className="mx-auto flex max-w-3xl items-center gap-3">
+            {running && (
+              <button
+                type="button"
+                onClick={() => {
+                  post({ interrupt: true }).catch((err: unknown) => {
+                    setSendError(err instanceof Error ? err.message : String(err));
+                  });
+                }}
+                className="rounded-lg border border-border px-3 py-1.5 text-[13px] text-foreground hover:bg-accent/40"
+              >
+                Stop
+              </button>
+            )}
+            {sendError && <p className="text-[12px] text-red-500">{sendError}</p>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
