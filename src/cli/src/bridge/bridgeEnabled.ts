@@ -89,7 +89,7 @@ export async function getBridgeDisabledReason(): Promise<string | null> {
       return 'Remote Control is not connected to a JARVIS server. Run `jarvis auth login` in a terminal to link this machine to your JARVIS account, then start a new session. (To use a claude.ai subscription instead: `jarvis auth login --claudeai`.)'
     }
     if (!hasProfileScope()) {
-      return 'Remote Control requires a full-scope login token. Long-lived tokens (from `claude setup-token` or CLAUDE_CODE_OAUTH_TOKEN) are limited to inference-only for security reasons. Run `jarvis auth login --claudeai` to use Remote Control.'
+      return 'Remote Control requires a full-scope login token. Long-lived tokens (from `jarvis setup-token` or CLAUDE_CODE_OAUTH_TOKEN) are limited to inference-only for security reasons. Run `jarvis auth login --claudeai` to use Remote Control.'
     }
     if (!getOauthAccountInfo()?.organizationUuid) {
       return 'Unable to determine your organization for Remote Control eligibility. Run `jarvis auth login --claudeai` to refresh your account information.'
