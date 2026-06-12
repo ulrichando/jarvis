@@ -257,6 +257,12 @@ export async function launchContainerSession(
       CLAUDE_CODE_USE_CCR_V2: "1",
       CLAUDE_CODE_WORKER_EPOCH: String(epoch),
       CLAUDE_CODE_ENVIRONMENT_KIND: "bridge",
+      // Global-scope prompt caching (an experimental firstParty beta) emits
+      // `cache_control.scope: "global"` on system blocks that aren't a true
+      // prefix when tool definitions render first — the API 400s the whole
+      // turn ("only valid when every preceding block is also globally
+      // scoped"). Normal ephemeral caching still applies with betas off.
+      CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1",
       ...(anthropicKey && { ANTHROPIC_API_KEY: anthropicKey }),
     };
     const envArgs = Object.entries(childEnv).flatMap(([k, v]) => [
@@ -264,6 +270,13 @@ export async function launchContainerSession(
       `${k}=${v}`,
     ]);
     const sdkUrl = `${opts.baseUrl.replace(/\/+$/, "")}/api/bridge/v1/code/sessions/${sessionId}`;
+    // Identity reinforcement: the base system prompt already says "You are
+    // Jarvis", but Opus/Sonnet have a strong "Claude Code" prior and leak it
+    // when greeting (e.g. "Hi, I'm Claude Code…"). Append an explicit guard
+    // rather than editing src/cli's prompt (separate codebase). Single-quoted
+    // in the sh -c below, so it must contain no single quotes.
+    const identityPrompt =
+      "Your name is Jarvis. Never refer to yourself as Claude, Claude Code, or an Anthropic CLI in user-facing replies; introduce yourself and sign off as Jarvis.";
     // Detached exec: the CLI runs for the session's lifetime; stdout goes
     // to an in-container log for debugging (docker exec <name> cat
     // /tmp/jarvis-cli.log). Vendored bun avoids version skew with the
@@ -278,7 +291,7 @@ export async function launchContainerSession(
       name,
       "sh",
       "-c",
-      `/opt/jarvis-cli/vendor/bun/linux-x64/bun /opt/jarvis-cli/src/entrypoints/cli.tsx --print --sdk-url '${sdkUrl}' --session-id '${sessionId}' --input-format stream-json --output-format stream-json --replay-user-messages >> /tmp/jarvis-cli.log 2>&1`,
+      `/opt/jarvis-cli/vendor/bun/linux-x64/bun /opt/jarvis-cli/src/entrypoints/cli.tsx --print --sdk-url '${sdkUrl}' --session-id '${sessionId}' --append-system-prompt '${identityPrompt}' --input-format stream-json --output-format stream-json --replay-user-messages --include-partial-messages >> /tmp/jarvis-cli.log 2>&1`,
     ]);
   });
 }
