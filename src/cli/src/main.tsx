@@ -6451,10 +6451,10 @@ async function run(): Promise<CommanderCommand> {
         "after",
         `
 Examples:
-  $ claude export 0 conversation.txt                Export conversation at log index 0
-  $ claude export <uuid> conversation.txt           Export conversation by session ID
-  $ claude export input.json output.txt             Render JSON log file to text
-  $ claude export <uuid>.jsonl output.txt           Render JSONL session file to text`,
+  $ jarvis export 0 conversation.txt                Export conversation at log index 0
+  $ jarvis export <uuid> conversation.txt           Export conversation by session ID
+  $ jarvis export input.json output.txt             Render JSON log file to text
+  $ jarvis export <uuid>.jsonl output.txt           Render JSONL session file to text`,
       )
       .action(async (source: string, outputFile: string) => {
         const { exportHandler } = await import("./cli/handlers/ant.js");

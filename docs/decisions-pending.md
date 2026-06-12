@@ -193,7 +193,7 @@ Protocol reference: CLI `remoteBridgeCore.ts`/`ccrClient.ts` and
 
 UPDATE 2026-06-12 (third pass): CONTAINER SESSIONS BUILT (MVP) and verified
 live — claude.ai's init sequence (container → clone → optional setup →
-start Claude Code) ran in <5s against ulrichando/maxrun, model replied,
+start Jarvis Code) ran in <5s against ulrichando/maxrun, model replied,
 follow-up turn answered from /workspace/<repo>, archive reaped the
 container. Shape: `POST /v1/environments/cloud {repo}` registers a virtual
 environment (worker_type 'container') that appears in the existing machine
@@ -242,4 +242,28 @@ A first-class GitHub connection (OAuth app or PAT) stored per-user, powering
 the /code repo picker (#47) and the future clone-into-container flow (item
 12). Today repo listing rides ad-hoc credentials; a connector card makes it
 explicit, revocable, and per-account like the Remote Control card.
+**Revisit by:** 2026-06-26.
+
+## 14. /code UI parity — remaining stub affordances
+
+The 2026-06-12 UI pass wired the plus menu (Import GitHub issue, Connectors
+incl. MCP enable/disable toggles, Slash commands), the permission-mode picker
+(Accept edits / Plan / Auto, applied live or seeded at dispatch), and the
+sidebar session menu (Rename / Archive / Delete — fixed-positioned so it's no
+longer clipped by the Recents scroll box, browser-authed routes added). Still
+stubbed, deferred deliberately:
+- **Add files or photos** (plus menu): needs image/file plumbing — composer
+  must thread sessionId + read files→base64, an extended messages route to
+  accept SDK image content blocks, and provider-render verification (the
+  text-only fallback LLM rungs won't see images). Threading through the
+  shared composer also collides with the in-flight container work; do it
+  once that settles.
+- **Sidebar menu (2026-06-12 update): Pin, Copy link, and relative time
+  ("2m ago") are now DONE** — `pinned` column + pinned-first sort, PATCH
+  {pinned}, `/code?s=<id>` deep link for Copy link, time on each row (hidden
+  on hover for the kebab). Menu order/shortcuts (P/R/C/A/D) mirror claude.ai.
+  STILL stubbed (each needs state JARVIS lacks): **Mark as read** (read/unread
+  column), **Move to group** (group_id + grouped list), **Share** (per-session
+  visibility model — the page Share modal is still a stub), **Open in** (no
+  teleport/editor-open equivalent self-hosted).
 **Revisit by:** 2026-06-26.

@@ -385,7 +385,7 @@ ${HOOK_VERIFICATION_FLOW}
 
 ### Adding a Hook
 
-User: "Format my code after Claude writes it"
+User: "Format my code after Jarvis writes it"
 
 1. **Clarify**: Which formatter? (prettier, gofmt, etc.)
 2. **Read**: \`.jarvis/settings.json\` (or create if missing)
@@ -439,7 +439,7 @@ If a hook isn't running:
 3. **Check the matcher** - Does it match the tool name? (e.g., "Bash", "Write", "Edit")
 4. **Check hook type** - Is it "command", "prompt", or "agent"?
 5. **Test the command** - Run the hook command manually to see if it works
-6. **Use --debug** - Run \`claude --debug\` to see hook execution logs
+6. **Use --debug** - Run \`jarvis --debug\` to see hook execution logs
 `
 
 export function registerUpdateConfigSkill(): void {
