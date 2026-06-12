@@ -154,10 +154,10 @@ function Web({
     return <LoadingState message="Checking login status…" />;
   }
   if (step.name === 'uploading') {
-    return <LoadingState message="Connecting GitHub to Claude…" />;
+    return <LoadingState message="Connecting GitHub to claude.ai…" />;
   }
   const token = step.token;
-  return <Dialog title="Connect Claude on the web to GitHub?" onCancel={handleCancel} hideInputGuide>
+  return <Dialog title="Connect claude.ai to GitHub?" onCancel={handleCancel} hideInputGuide>
       <Box flexDirection="column">
         <Text>
           Claude on the web requires connecting to your GitHub account to clone

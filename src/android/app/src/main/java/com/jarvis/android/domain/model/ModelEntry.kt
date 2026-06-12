@@ -151,11 +151,11 @@ enum class RoutingMode(val label: String, val description: String) {
     ),
     CLOUD(
         label       = "Cloud",
-        description = "Always use Claude API (best quality)",
+        description = "Always use the Anthropic API (best quality)",
     ),
     HYBRID(
         label       = "Hybrid",
-        description = "Local draft → Claude refinement",
+        description = "Local draft → cloud refinement",
     ),
 }
 

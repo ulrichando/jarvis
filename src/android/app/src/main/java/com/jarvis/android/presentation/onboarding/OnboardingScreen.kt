@@ -110,7 +110,7 @@ private fun WelcomePage(onNext: () -> Unit) {
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            "Your personal AI command-and-control center.\nFull root access · Claude AI · Zero cloud lock-in.",
+            "Your personal AI command-and-control center.\nFull root access · Anthropic AI · Zero cloud lock-in.",
             style     = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
             color     = MaterialTheme.colorScheme.onSurfaceVariant,
