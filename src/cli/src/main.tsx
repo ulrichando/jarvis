@@ -1351,7 +1351,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       "-p, --print",
-      "Print response and exit (useful for pipes). Note: The workspace trust dialog is skipped when Claude is run with the -p mode. Only use this flag in directories you trust.",
+      "Print response and exit (useful for pipes). Note: The workspace trust dialog is skipped when Jarvis is run with the -p mode. Only use this flag in directories you trust.",
       () => true,
     )
     .option(
@@ -1724,7 +1724,7 @@ async function run(): Promise<CommanderCommand> {
         logEvent("tengu_code_prompt_ignored", {});
         // biome-ignore lint/suspicious/noConsole:: intentional console output
         console.warn(
-          chalk.yellow("Tip: You can launch Jarvis with just `claude`"),
+          chalk.yellow("Tip: You can launch Jarvis with just `jarvis`"),
         );
         prompt = undefined;
       }
@@ -4582,7 +4582,7 @@ async function run(): Promise<CommanderCommand> {
             // establish a bridge session before discovery will find it.
             return await exitWithMessage(
               root,
-              `Assistant installed in ${installedDir}. The daemon is starting up — run \`claude assistant\` again in a few seconds to connect.`,
+              `Assistant installed in ${installedDir}. The daemon is starting up — run \`jarvis assistant\` again in a few seconds to connect.`,
               {
                 exitCode: 0,
                 beforeExit: () => gracefulShutdown(0),
@@ -5764,7 +5764,7 @@ async function run(): Promise<CommanderCommand> {
         process.stderr.write(
           "Usage: claude ssh <user@host | ssh-config-alias> [dir]\n\n" +
             "Runs Jarvis on a remote Linux host. You don't need to install\n" +
-            "anything on the remote or run `claude auth login` there — the binary is\n" +
+            "anything on the remote or run `jarvis auth login` there — the binary is\n" +
             "deployed over SSH and API auth tunnels back through your local machine.\n",
         );
         process.exit(1);

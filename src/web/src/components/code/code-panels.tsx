@@ -90,7 +90,7 @@ export function CodePanels({
           <PanelShell header={<span>Plan</span>} onClose={() => onClose("plan")}>
             <Empty
               icon={<ListChecks className="size-5" />}
-              lines={["No plan yet", "Claude writes the plan here as it explores. Keep chatting."]}
+              lines={["No plan yet", "Jarvis writes the plan here as it explores. Keep chatting."]}
             />
           </PanelShell>
         </div>

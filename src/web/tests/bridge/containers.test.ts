@@ -110,7 +110,7 @@ describe('launchContainerSession', () => {
       '✓ Set up a cloud container',
       '✓ Cloned repository',
       '◌ Run setup script — skipped (no .jarvis/setup.sh in the repo)',
-      '✓ Started Claude Code',
+      '✓ Started Jarvis Code',
     ])
   })
 

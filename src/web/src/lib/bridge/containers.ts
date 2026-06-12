@@ -20,7 +20,7 @@ import { getGithubToken } from "../connectors/github";
 //   ✓ Set up a cloud container
 //   ✓ Cloned repository
 //   ◌ Run setup script      (skipped unless the repo has .jarvis/setup.sh)
-//   ✓ Started Claude Code
+//   ✓ Started Jarvis Code
 //
 // One docker container per session from the jarvis-workbench image (passive
 // `sleep infinity`; we exec the steps into it — same shape the workbench
@@ -234,8 +234,8 @@ export async function launchContainerSession(
     emit(store, sessionId, "◌ Run setup script — skipped (no .jarvis/setup.sh in the repo)");
   }
 
-  // 4. Started Claude Code
-  await step("Started Claude Code", async () => {
+  // 4. Started Jarvis Code
+  await step("Started Jarvis Code", async () => {
     // Pre-trust the workspace: bridge-spawned CLIs verify
     // projects[gitRoot].hasTrustDialogAccepted in the global config and
     // exit otherwise (no interactive dialog in --print mode).
