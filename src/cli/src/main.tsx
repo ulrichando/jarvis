@@ -6316,6 +6316,45 @@ async function run(): Promise<CommanderCommand> {
       "Check the health of your Jarvis auto-updater. Note: The workspace trust dialog is skipped and stdio servers from .mcp.json are spawned for health checks. Only use this command in directories you trust.",
     )
     .action(async () => {
+      // Piped/CI invocations have no raw-mode stdin, and the interactive
+      // Doctor UI hard-errors under Ink ("Raw mode is not supported").
+      // Print the same diagnostics as plain text instead. Subcommand
+      // actions skip setup(), so the config gate must be opened here —
+      // getDoctorDiagnostic reads getGlobalConfig().
+      if (!process.stdin.isTTY) {
+        try {
+          const [{ getDoctorDiagnostic }, { enableConfigs }] =
+            await Promise.all([
+              import("./utils/doctorDiagnostic.js"),
+              import("./utils/config.js"),
+            ]);
+          enableConfigs();
+          const d = await getDoctorDiagnostic();
+          const lines = [
+            `Currently running: ${d.installationType} (${d.version})`,
+            `Path: ${d.installationPath}`,
+            `Invoked: ${d.invokedBinary}`,
+            `Config install method: ${d.configInstallMethod}`,
+            `Auto-updates: ${d.autoUpdates}`,
+            `Search: ${d.ripgrepStatus.working ? "OK" : "BROKEN"} (${d.ripgrepStatus.mode})`,
+            ...d.multipleInstallations.map(
+              (m) => `Other installation: ${m.type} at ${m.path}`,
+            ),
+            ...d.warnings.flatMap((w) => [
+              `Warning: ${w.issue}`,
+              `  Fix: ${w.fix}`,
+            ]),
+            ...(d.recommendation
+              ? [`Recommendation: ${d.recommendation}`]
+              : []),
+          ];
+          process.stdout.write(lines.join("\n") + "\n");
+          process.exit(d.warnings.length > 0 ? 1 : 0);
+        } catch (err) {
+          process.stderr.write(`doctor failed: ${String(err)}\n`);
+          process.exit(1);
+        }
+      }
       const [{ doctorHandler }, { createRoot }] = await Promise.all([
         import("./cli/handlers/util.js"),
         import("./ink.js"),

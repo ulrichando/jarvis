@@ -19,6 +19,9 @@ import {
   GitCompare,
   ListChecks,
   Columns2,
+  Copy,
+  Volume2,
+  Square,
 } from "lucide-react";
 
 type CodeEvent = {
@@ -82,6 +85,91 @@ function str(p: Record<string, unknown>, k: string): string | undefined {
   return typeof p[k] === "string" ? (p[k] as string) : undefined;
 }
 
+function timeAgo(ts?: number): string {
+  if (!ts) return "";
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+// Per-message action bar (Copy / Read aloud / time), like claude.ai's hover
+// toolbar. Copy + Read aloud are fully client-side (clipboard + the browser
+// SpeechSynthesis API) — no backend. Pin-per-message is deferred (needs
+// event-level state + a pinned view; the sidebar has session-level pin).
+function MessageActions({ text, ts }: { text: string; ts: number }) {
+  const [copied, setCopied] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+
+  const copy = () => {
+    void navigator.clipboard?.writeText(text).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  };
+
+  const readAloud = () => {
+    const synth = typeof window !== "undefined" ? window.speechSynthesis : null;
+    if (!synth) return;
+    if (speaking) {
+      synth.cancel();
+      setSpeaking(false);
+      return;
+    }
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.onend = () => setSpeaking(false);
+    u.onerror = () => setSpeaking(false);
+    synth.speak(u);
+    setSpeaking(true);
+  };
+
+  // Stop narration if the message unmounts (session switch).
+  useEffect(() => () => window.speechSynthesis?.cancel(), []);
+
+  const btn = "flex size-6 items-center justify-center rounded text-muted-foreground/60 hover:bg-accent/40 hover:text-foreground";
+  return (
+    <div className="mt-1 flex items-center gap-0.5 pl-4">
+      <button type="button" aria-label="Copy" title="Copy" onClick={copy} className={btn}>
+        {copied ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
+      </button>
+      <button type="button" aria-label="Read aloud" title="Read aloud" onClick={readAloud} className={btn}>
+        {speaking ? <Square className="size-3 fill-current" /> : <Volume2 className="size-3.5" />}
+      </button>
+      <span className="ml-1 text-[11px] text-muted-foreground/50">{timeAgo(ts)}</span>
+    </div>
+  );
+}
+
+type RenderItem =
+  | { kind: "init"; key: string; steps: { cursor: number; text: string }[] }
+  | { kind: "event"; event: CodeEvent };
+
+// Fold runs of `status`/`system` events (the container init steps — "Set up a
+// cloud container", "Cloned repository", …) into a single collapsible group.
+// Non-status events pass through in order.
+function foldEvents(events: CodeEvent[]): RenderItem[] {
+  const out: RenderItem[] = [];
+  for (const e of events) {
+    if (e.type === "status" || e.type === "system") {
+      const text =
+        (typeof e.payload.status === "string" ? e.payload.status : "") ||
+        "Session event";
+      const last = out[out.length - 1];
+      if (last && last.kind === "init") {
+        last.steps.push({ cursor: e.cursor, text });
+      } else {
+        out.push({ kind: "init", key: `init-${e.cursor}`, steps: [{ cursor: e.cursor, text }] });
+      }
+    } else {
+      out.push({ kind: "event", event: e });
+    }
+  }
+  return out;
+}
+
 // Display text for SDK-shaped messages (type user/assistant from the CLI's
 // CCR v2 transcript flush): message.content is a string or an array of
 // blocks — show text blocks, name tool uses, skip tool results.
@@ -123,9 +211,17 @@ export function CodeSession({
   const [layoutOpen, setLayoutOpen] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [worker, setWorker] = useState<WorkerInfo | null>(null);
+  // In-flight assistant text (ephemeral stream_event snapshots relayed by
+  // the events poll) — shows the reply streaming before the final message.
+  const [live, setLive] = useState<string | null>(null);
   // request_ids the user already answered — hides the card instantly while
   // the CLI processes the response and clears requires_action server-side.
   const [answered, setAnswered] = useState<Set<string>>(new Set());
+  // The container init steps (status events) collapse into one "Initialized
+  // session" block, like claude.ai. Open while initializing; the user can
+  // toggle. Auto-collapses once real output arrives (see below).
+  const [initOpen, setInitOpen] = useState(true);
+  const initAutoCollapsed = useRef(false);
   const cursorRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -136,7 +232,10 @@ export function CodeSession({
     cursorRef.current = 0;
     setWaiting(true);
     setWorker(null);
+    setLive(null);
     setAnswered(new Set());
+    setInitOpen(true);
+    initAutoCollapsed.current = false;
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
@@ -147,13 +246,17 @@ export function CodeSession({
             events: CodeEvent[];
             cursor: number;
             worker?: WorkerInfo | null;
+            live?: string | null;
           };
           if (active && j.events?.length) {
             cursorRef.current = j.cursor;
             setEvents((prev) => [...prev, ...j.events]);
             if (j.events.some((e) => e.type !== "user_prompt")) setWaiting(false);
           }
-          if (active) setWorker(j.worker ?? null);
+          if (active) {
+            setWorker(j.worker ?? null);
+            setLive(j.live ?? null);
+          }
         }
       } catch {
         /* transient */
@@ -169,7 +272,21 @@ export function CodeSession({
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [events.length]);
+  }, [events.length, live]);
+
+  // Collapse the init block once the assistant starts producing real output —
+  // matches claude.ai (steps visible while initializing, tidy once running).
+  // Once only, so a user who re-opens it keeps it open.
+  useEffect(() => {
+    if (initAutoCollapsed.current) return;
+    const hasOutput = events.some(
+      (e) => e.type !== "status" && e.type !== "system" && e.type !== "user_prompt" && e.type !== "user",
+    );
+    if (hasOutput) {
+      initAutoCollapsed.current = true;
+      setInitOpen(false);
+    }
+  }, [events]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -302,7 +419,34 @@ export function CodeSession({
       {/* Messages */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4">
         <div className="mx-auto max-w-3xl space-y-3">
-          {events.map((e) => {
+          {foldEvents(events).map((item) => {
+            // Container init / status run → one collapsible "Initialized
+            // session" block (claude.ai-style), instead of N bare rows.
+            if (item.kind === "init") {
+              const failed = item.steps.some((s) => s.text.startsWith("✗"));
+              return (
+                <div key={item.key} className="rounded-xl border border-border/50 bg-card/40">
+                  <button
+                    type="button"
+                    onClick={() => setInitOpen((o) => !o)}
+                    className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-[13px] text-foreground/80 hover:text-foreground"
+                  >
+                    {initOpen ? <ChevronDown className="size-3.5 text-muted-foreground" /> : <ChevronRight className="size-3.5 text-muted-foreground" />}
+                    <span className="font-medium">{failed ? "Session failed to start" : "Initialized session"}</span>
+                  </button>
+                  {initOpen && (
+                    <div className="space-y-1 px-3 pb-2.5 pl-8">
+                      {item.steps.map((s) => (
+                        <div key={s.cursor} className="text-[12.5px] leading-relaxed text-muted-foreground">
+                          {s.text}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            }
+            const e = item.event;
             if (e.type === "user_prompt" || e.type === "user") {
               const prompt = str(e.payload, "prompt") ?? sdkText(e.payload);
               // SDK user messages with only tool_result blocks carry no
@@ -316,21 +460,22 @@ export function CodeSession({
                 </div>
               );
             }
-            if (e.type === "status" || e.type === "system") {
-              return (
-                <button key={e.cursor} type="button" className="flex items-center gap-1 text-[13px] text-muted-foreground hover:text-foreground">
-                  {str(e.payload, "status") ?? "Session event"}
-                  <ChevronRight className="size-3.5" />
-                </button>
-              );
-            }
             const text = str(e.payload, "text") ?? str(e.payload, "content") ?? str(e.payload, "message") ?? sdkText(e.payload);
             return (
-              <div key={e.cursor} className="flex gap-2.5">
-                <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-amber-500" />
-                <div className="min-w-0 whitespace-pre-wrap break-words text-[13px] text-foreground/90">
-                  {text ?? <span className="text-muted-foreground/70">{e.type}</span>}
+              <div key={e.cursor} className="group/msg flex flex-col">
+                <div className="flex gap-2.5">
+                  <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-amber-500" />
+                  <div className="min-w-0 whitespace-pre-wrap break-words text-[13px] text-foreground/90">
+                    {text ?? <span className="text-muted-foreground/70">{e.type}</span>}
+                  </div>
                 </div>
+                {/* Action bar — only for messages with real text. Visible on
+                    hover (always-on once narration starts via its own state). */}
+                {text && (
+                  <div className="opacity-0 transition-opacity group-hover/msg:opacity-100 focus-within:opacity-100">
+                    <MessageActions text={text} ts={e.created_at} />
+                  </div>
+                )}
               </div>
             );
           })}
@@ -360,7 +505,16 @@ export function CodeSession({
             </div>
           )}
 
-          {(waiting || running) && (
+          {live && (
+            <div className="flex gap-2.5">
+              <span className="mt-1.5 size-1.5 shrink-0 animate-pulse rounded-full bg-orange-500" />
+              <div className="min-w-0 whitespace-pre-wrap break-words text-[13px] text-foreground/80">
+                {live}
+              </div>
+            </div>
+          )}
+
+          {(waiting || running) && !live && (
             <div className="flex items-center gap-2 pt-1 text-orange-500">
               <span className="inline-block animate-pulse text-[18px] leading-none">✳</span>
             </div>

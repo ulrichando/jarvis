@@ -105,6 +105,28 @@ export async function update() {
     writeToStdout(`Installation method set to: ${detectedMethod}\n`)
   }
 
+  // Source checkout (the JARVIS deployment): bin/jarvis runs the vendored
+  // bun against src/entrypoints/cli.tsx. The npm/native update machinery
+  // below targets @anthropic-ai/claude-code distributions and can't update
+  // this — point at git instead of silently doing the wrong thing.
+  if (
+    diagnostic.invokedBinary.endsWith('cli.tsx') ||
+    diagnostic.installationPath.includes('/vendor/bun/')
+  ) {
+    const { dirname, join } = await import('node:path')
+    const { existsSync } = await import('node:fs')
+    let root = dirname(diagnostic.invokedBinary)
+    for (let i = 0; i < 8 && root !== '/'; i++) {
+      if (existsSync(join(root, '.git'))) break
+      root = dirname(root)
+    }
+    writeToStdout('Jarvis is running from a source checkout.\n')
+    writeToStdout(`Checkout: ${root}\n`)
+    writeToStdout('To update, pull the repository:\n')
+    writeToStdout(chalk.bold(`  git -C ${root} pull`) + '\n')
+    await gracefulShutdown(0)
+  }
+
   // Check if running from development build
   if (diagnostic.installationType === 'development') {
     writeToStdout('\n')

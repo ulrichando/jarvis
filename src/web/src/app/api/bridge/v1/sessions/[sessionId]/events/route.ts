@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { extractBearer } from '@/lib/bridge/auth'
+import { getLiveText } from '@/lib/bridge/events'
 import { getStore } from '@/lib/bridge/db'
 import {
   appendSessionEvent,
@@ -78,7 +79,15 @@ export async function GET(
         worker = null
       }
     }
-    return NextResponse.json({ events, cursor, worker })
+    // In-flight assistant text (ephemeral stream_event snapshots) — lets the
+    // UI show the reply as it streams; cleared server-side when the final
+    // assistant message lands in the transcript.
+    return NextResponse.json({
+      events,
+      cursor,
+      worker,
+      live: getLiveText(sessionId),
+    })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return bridgeError(500, 'internal_error', `DB error: ${msg}`)

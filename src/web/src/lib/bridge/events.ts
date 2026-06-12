@@ -65,3 +65,41 @@ export function waitForInbound(
     const timer = setTimeout(() => cleanup(false), timeoutMs)
   })
 }
+
+// ── Live-typing snapshots ───────────────────────────────────────────────────
+// The worker's ephemeral stream_events carry FULL-so-far text per content
+// block (the CLI coalesces deltas into self-contained snapshots — see
+// ccrClient.ts accumulateStreamEvents). They are deliberately not persisted;
+// this in-memory map holds the latest snapshot per block so the /code events
+// poll can show the reply as it streams. Cleared when the final assistant
+// message (or result) is ingested.
+const liveText = new Map<string, Map<number, string>>()
+
+export function setLiveText(
+  sessionId: string,
+  blockIndex: number,
+  text: string,
+): void {
+  let blocks = liveText.get(sessionId)
+  if (!blocks) {
+    blocks = new Map()
+    liveText.set(sessionId, blocks)
+  }
+  blocks.set(blockIndex, text)
+}
+
+export function clearLiveText(sessionId: string): void {
+  liveText.delete(sessionId)
+}
+
+/** Joined in-flight text for the session, or null when nothing is streaming. */
+export function getLiveText(sessionId: string): string | null {
+  const blocks = liveText.get(sessionId)
+  if (!blocks || blocks.size === 0) return null
+  const joined = [...blocks.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, t]) => t)
+    .join('')
+    .trim()
+  return joined || null
+}

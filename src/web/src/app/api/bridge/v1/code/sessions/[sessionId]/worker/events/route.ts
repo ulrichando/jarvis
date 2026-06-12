@@ -6,8 +6,20 @@ import {
   hasInboundUuid,
   validateSessionToken,
 } from '@/lib/bridge/store'
+import { clearLiveText, setLiveText } from '@/lib/bridge/events'
 import { extractBearer } from '@/lib/bridge/auth'
 import { bridgeError } from '@/lib/bridge/errors'
+
+// Structural slice of an ephemeral stream_event carrying a full-so-far
+// text snapshot (the CLI coalesces deltas per block — ccrClient.ts).
+type StreamEventPayload = {
+  parent_tool_use_id?: string | null
+  event?: {
+    type?: string
+    index?: number
+    delta?: { type?: string; text?: string }
+  }
+}
 
 // POST /api/bridge/v1/code/sessions/{id}/worker/events — the CLI's outbound
 // transcript (CCRClient writeEvent → SerialBatchEventUploader). Body:
@@ -48,7 +60,9 @@ export async function POST(
       // stream_event = live-typing snapshots (the final message follows);
       // keep_alive = container-lease liveness pings; control_request/
       // control_response = protocol traffic (mode switches, permission
-      // verdicts). None of these are transcript.
+      // verdicts). None of these are transcript — but foreground text
+      // snapshots feed the in-memory live-typing buffer the events poll
+      // serves while the turn streams.
       if (
         event.ephemeral ||
         payload.type === 'stream_event' ||
@@ -56,6 +70,18 @@ export async function POST(
         payload.type === 'control_request' ||
         payload.type === 'control_response'
       ) {
+        if (payload.type === 'stream_event') {
+          const se = payload as StreamEventPayload
+          if (
+            (se.parent_tool_use_id ?? null) === null &&
+            se.event?.type === 'content_block_delta' &&
+            se.event.delta?.type === 'text_delta' &&
+            typeof se.event.delta.text === 'string' &&
+            typeof se.event.index === 'number'
+          ) {
+            setLiveText(sessionId, se.event.index, se.event.delta.text)
+          }
+        }
         continue
       }
       // --replay-user-messages makes the worker echo back user messages it
@@ -70,6 +96,10 @@ export async function POST(
         hasInboundUuid(store, sessionId, payload.uuid)
       ) {
         continue
+      }
+      // The complete message supersedes any in-flight snapshot.
+      if (payload.type === 'assistant' || payload.type === 'result') {
+        clearLiveText(sessionId)
       }
       appendSessionEvent(store, sessionId, { type: payload.type, payload })
     }
