@@ -635,7 +635,7 @@ private fun EndpointCard(state: SettingsUiState, viewModel: SettingsViewModel) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
             Text(
-                "Select the Claude API endpoint used for all requests.",
+                "Select the Anthropic API endpoint used for all requests.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

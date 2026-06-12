@@ -1053,20 +1053,20 @@ fn refresh_mode_menu(app: &tauri::AppHandle) {
     let mode = detect_active_mode();
     let (header_text, jarvis_label, gemini_label, openai_label) = match mode {
         ActiveMode::Jarvis => (
-            "Active: JARVIS · Claude",
-            "✓  JARVIS · Claude (audio + vision + tools)",
+            "Active: JARVIS",
+            "✓  JARVIS (audio + vision + tools)",
             "Gemini Live (audio + vision + tools)",
             "OpenAI Realtime (audio + vision + tools)",
         ),
         ActiveMode::Gemini => (
             "Active: Gemini Live",
-            "JARVIS · Claude (audio + vision + tools)",
+            "JARVIS (audio + vision + tools)",
             "✓  Gemini Live (audio + vision + tools)",
             "OpenAI Realtime (audio + vision + tools)",
         ),
         ActiveMode::Openai => (
             "Active: OpenAI Realtime",
-            "JARVIS · Claude (audio + vision + tools)",
+            "JARVIS (audio + vision + tools)",
             "Gemini Live (audio + vision + tools)",
             "✓  OpenAI Realtime (audio + vision + tools)",
         ),
@@ -1836,7 +1836,7 @@ fn main() {
             ).enabled(false).build(app)?;
             let mode_header_sep = PredefinedMenuItem::separator(app)?;
             let mode_jarvis_item = MenuItemBuilder::with_id(
-                "mode_jarvis", "JARVIS · Claude (audio + vision + tools)",
+                "mode_jarvis", "JARVIS (audio + vision + tools)",
             ).build(app)?;
             let mode_gemini_item = MenuItemBuilder::with_id(
                 "mode_gemini", "Gemini Live (audio + vision + tools)",
