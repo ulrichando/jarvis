@@ -5831,35 +5831,63 @@ async function run(): Promise<CommanderCommand> {
       );
   }
 
-  // claude auth (login/logout hidden when using Jarvis proxy)
+  // jarvis auth — JARVIS-account login (self-hosted web app) is the default;
+  // the Anthropic OAuth path lives behind --claudeai/--console/--sso and is
+  // refused when JARVIS_DISABLE_AUTH is set (both launchers set it — the CLI
+  // routes inference through its own proxy, so Anthropic login is opt-in).
 
   const auth = program
     .command("auth")
     .description("Manage authentication")
     .configureHelp(createSortedHelpConfig());
-  if (!isEnvTruthy(process.env.JARVIS_DISABLE_AUTH)) {
-    auth
-      .command("login")
-      .description("Sign in to your Anthropic account")
-      .option("--email <email>", "Pre-populate email address on the login page")
-      .option("--sso", "Force SSO login flow")
-      .option(
-        "--console",
-        "Use Anthropic Console (API usage billing) instead of Claude subscription",
-      )
-      .option("--claudeai", "Use Claude subscription (default)")
-      .action(
-        async ({
-          email,
-          sso,
-          console: useConsole,
-          claudeai,
-        }: {
-          email?: string;
-          sso?: boolean;
-          console?: boolean;
-          claudeai?: boolean;
-        }) => {
+  auth
+    .command("login")
+    .description(
+      "Sign in to your JARVIS server (default) — Anthropic with --claudeai/--console",
+    )
+    .option(
+      "--url <url>",
+      "JARVIS server URL (default: $JARVIS_BRIDGE_BASE_URL, saved value, or http://localhost:3000)",
+    )
+    .option(
+      "--token <token>",
+      "Skip sign-in: store a Remote Control token from Settings → Connectors",
+    )
+    .option(
+      "--email <email>",
+      "Email address (JARVIS: skips the prompt; Anthropic: pre-populates the login page)",
+    )
+    .option("--sso", "Anthropic: force SSO login flow")
+    .option(
+      "--console",
+      "Anthropic Console (API usage billing) instead of Claude subscription",
+    )
+    .option("--claudeai", "Anthropic: Claude subscription login")
+    .action(
+      async ({
+        url,
+        token,
+        email,
+        sso,
+        console: useConsole,
+        claudeai,
+      }: {
+        url?: string;
+        token?: string;
+        email?: string;
+        sso?: boolean;
+        console?: boolean;
+        claudeai?: boolean;
+      }) => {
+        if (sso || useConsole || claudeai) {
+          if (isEnvTruthy(process.env.JARVIS_DISABLE_AUTH)) {
+            process.stderr.write(
+              "Anthropic login is disabled in this build (JARVIS_DISABLE_AUTH=1; " +
+                "inference routes through the Jarvis proxy).\n" +
+                "Run `jarvis auth login` without flags to sign in to your JARVIS server instead.\n",
+            );
+            process.exit(1);
+          }
           const { authLogin } = await import("./cli/handlers/auth.js");
           await authLogin({
             email,
@@ -5867,16 +5895,28 @@ async function run(): Promise<CommanderCommand> {
             console: useConsole,
             claudeai,
           });
-        },
-      );
-    auth
-      .command("logout")
-      .description("Log out from your Anthropic account")
-      .action(async () => {
+          return;
+        }
+        const { jarvisAuthLogin } = await import(
+          "./cli/handlers/jarvisAuth.js"
+        );
+        await jarvisAuthLogin({ url, token, email });
+      },
+    );
+  auth
+    .command("logout")
+    .description(
+      "Log out — removes JARVIS Remote Control credentials (and Anthropic auth when enabled)",
+    )
+    .action(async () => {
+      const { jarvisAuthLogout } = await import("./cli/handlers/jarvisAuth.js");
+      await jarvisAuthLogout();
+      if (!isEnvTruthy(process.env.JARVIS_DISABLE_AUTH)) {
         const { authLogout } = await import("./cli/handlers/auth.js");
-        await authLogout();
-      });
-  }
+        await authLogout(); // exits
+      }
+      process.exit(0);
+    });
   auth
     .command("status")
     .description("Show authentication status")
@@ -6234,14 +6274,19 @@ async function run(): Promise<CommanderCommand> {
         hidden: true,
       })
       .alias("rc")
+      .allowUnknownOption(true)
+      .allowExcessArguments(true)
       .description(
         "Connect your local environment for remote-control sessions via claude.ai/code",
       )
-      .action(async () => {
-        // Unreachable — cli.tsx fast-path handles this command before main.tsx loads.
-        // If somehow reached, delegate to bridgeMain.
+      .action(async (_opts: unknown, cmd: { args: string[] }) => {
+        // Reached whenever launcher-injected global flags (--settings /
+        // --permission-mode in start.sh) precede the subcommand — the cli.tsx
+        // fast-path only matches argv[0] === 'remote-control'. Pass the
+        // command's own leftover args: process.argv.slice(3) would re-include
+        // the launcher flags' values, which bridgeMain's parser rejects.
         const { bridgeMain } = await import("./bridge/bridgeMain.js");
-        await bridgeMain(process.argv.slice(3));
+        await bridgeMain(cmd.args);
       });
   }
   if (feature("KAIROS")) {

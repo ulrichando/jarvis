@@ -233,6 +233,8 @@ export async function authStatus(opts: {
   json?: boolean
   text?: boolean
 }): Promise<void> {
+  const { getJarvisBridgeStatus } = await import('./jarvisAuth.js')
+  const jarvisBridge = getJarvisBridgeStatus()
   const { source: authTokenSource, hasToken } = getAuthTokenSource()
   const { source: apiKeySource } = getAnthropicApiKeyWithSource()
   const hasApiKeyEnvVar =
@@ -285,9 +287,14 @@ export async function authStatus(opts: {
     if (!hasAuthProperty && hasApiKeyEnvVar) {
       process.stdout.write('API key: ANTHROPIC_API_KEY\n')
     }
+    if (jarvisBridge.baseUrl) {
+      process.stdout.write(
+        `JARVIS server: ${jarvisBridge.baseUrl} (Remote Control token ${jarvisBridge.tokenConfigured ? 'configured' : 'not set'})\n`,
+      )
+    }
     if (!loggedIn) {
       process.stdout.write(
-        'Not logged in. Run claude auth login to authenticate.\n',
+        'Not logged in. Run `jarvis auth login` to connect your JARVIS server.\n',
       )
     }
   } else {
@@ -298,10 +305,17 @@ export async function authStatus(opts: {
         : hasApiKeyEnvVar
           ? 'ANTHROPIC_API_KEY'
           : null
-    const output: Record<string, string | boolean | null> = {
+    const output: Record<
+      string,
+      string | boolean | null | { baseUrl: string | null; tokenConfigured: boolean }
+    > = {
       loggedIn,
       authMethod,
       apiProvider,
+      jarvisBridge: {
+        baseUrl: jarvisBridge.baseUrl ?? null,
+        tokenConfigured: jarvisBridge.tokenConfigured,
+      },
     }
     if (resolvedApiKeySource) {
       output.apiKeySource = resolvedApiKeySource

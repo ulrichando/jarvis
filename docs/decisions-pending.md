@@ -142,3 +142,84 @@ Each enlarges the blast radius of any webview XSS into IPC. Tightening
 requires manual UI verification (tray, chat panel, kiosk face) — not safe
 to change blind.
 **Revisit by:** 2026-07-15.
+
+## 12. /code dispatch: finish the CCR v2 session backend
+
+UPDATE 2026-06-12 (late): the CCR v2 worker backend for the REPL-attach path
+is BUILT and verified end-to-end live (web → CLI over SSE, CLI → web via
+/worker/events; e2e: injected prompt round-tripped through a real REPL+LLM).
+Implemented: /v1/code/sessions/{id}/worker (PUT/GET state — its absence
+caused a 2s session-recreate loop), /worker/register (epoch),
+/worker/heartbeat (409 on stale epoch), /worker/events (transcript ingest;
+stream_event/keep_alive filtered), /worker/events/stream (SSE, 15s
+keepalives, from_sequence_num resume), /worker/events/delivery,
+/worker/internal-events (resume state); session_inbound queue + composer
+(POST /v1/sessions/{id}/messages) in the /code session view; sessions POST
+now mints a session token and dispatches `{type:'session'}` work.
+
+UPDATE 2026-06-12 (second pass, verified live): the remaining worker-path
+gaps are closed and the loop ran end-to-end against a real
+`jarvis remote-control` daemon (dispatch → child spawn → SSE prompt → model
+reply "ok." → result, 5.4s; worker_status idle→running→idle observed via
+the events poll). Done in this pass:
+- tasks route now creates the session + token, seeds the prompt on the
+  inbound stream (SSE catch-up delivers it to the spawned child), and
+  dispatches `{type:'session'}` work — `{type:'prompt'}` is gone.
+- Permission flow bridged: PUT /worker requires_action_details +
+  external_metadata.pending_action surface in the events poll; the /code
+  session view renders an Allow/Deny card; POST /messages accepts
+  {permission} (control_response; updatedInput echoed from pending_action —
+  an empty {} means "use original input" per
+  PermissionPromptToolResultSchema) and {interrupt} (control_request).
+- ack / work-heartbeat / stop routes accept the work's session ingress
+  token (the CLI sends that, not the environment secret — every ack and
+  lease heartbeat 401'd before, causing ~60s re-delivery churn).
+- Worker echo of web-sent user messages deduped by uuid
+  (--replay-user-messages would double every prompt in the transcript).
+- CLI: foreign-session work now gets stopWork'd by the REPL bridge instead
+  of churning the queue forever; bridge-spawned children no longer crash at
+  startup with "MACRO is not defined" (runtime fallback in cli.tsx — the
+  spawner bypasses run-cli.mjs's --define args).
+- Route-level protocol tests: src/web/tests/bridge/ccr-v2.test.ts.
+
+STILL TO BUILD:
+- stream_event live-typing in the session view (currently dropped; final
+  messages only).
+- The containerized variant (user request 2026-06-12): create a container
+  (src/web jarvis-workbench image), clone the selected repo, initialize, run
+  the session inside — claude.ai/code's environment-manager model.
+- /code machine picker should mark REPL-held machines (dispatching a task
+  to one is now cleanly refused via stopWork, but the task still doesn't
+  run anywhere — the picker shouldn't offer attach-only environments).
+Protocol reference: CLI `remoteBridgeCore.ts`/`ccrClient.ts` and
+`~/Documents/Projects/claude-code/src/remote/`.
+
+RESEARCHED ARCHITECTURE (2026-06-12, from code.claude.com docs + Anthropic
+sandboxing post): claude.ai/code's primary mode is CLOUD SESSIONS, not
+Remote Control. Per task: fresh isolated VM (~4vCPU/16GB/30GB, Ubuntu 24.04
++ toolchains), repo CLONED from GitHub, per-environment setup script whose
+result is FILESYSTEM-SNAPSHOT-CACHED (~7d) so later sessions skip it; all
+egress through an allowlisting proxy (None/Trusted/Full/Custom levels);
+git creds NEVER inside the sandbox — a git proxy translates a scoped
+in-sandbox credential to the real token and restricts pushes to the working
+branch; outcome = branch + optional PR, diff view (+42 −18) with inline
+comments, auto-fix via GitHub-App webhooks; `--remote` pushes tasks up
+(or uploads a <100MB git bundle when no GitHub), `--teleport` pulls a
+session+branch down to the terminal; parallel sessions; mobile monitoring.
+JARVIS mapping: container per task from the jarvis-workbench image (docker
+commit ≈ their env cache), clone via the §13 GitHub connector with a
+credential-proxy (MVP: short-lived token env), child CLI inside the
+container speaks the ALREADY-BUILT /v1/code/sessions worker endpoints back
+to the web app, branch+PR outcome via connector, diff view from git, egress
+via a proxy container with the Trusted-domains allowlist. /code "new task"
+then takes a REPO (not a machine); machine-targeted Remote Control stays as
+the secondary mode (already working).
+**Revisit by:** 2026-06-26.
+
+## 13. GitHub connector in Settings → Connectors (user request 2026-06-12)
+
+A first-class GitHub connection (OAuth app or PAT) stored per-user, powering
+the /code repo picker (#47) and the future clone-into-container flow (item
+12). Today repo listing rides ad-hoc credentials; a connector card makes it
+explicit, revocable, and per-account like the Remote Control card.
+**Revisit by:** 2026-06-26.

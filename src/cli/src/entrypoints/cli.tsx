@@ -1,5 +1,25 @@
 import { feature } from 'bun:bundle';
 
+// Bridge-spawned children run WITHOUT the launcher's `--define MACRO.*` args:
+// sessionRunner spawns `bun <argv[1]> --print --sdk-url …` (this file), while
+// only scripts/run-cli.mjs injects the defines. Without them, `MACRO.X`
+// compiles to a plain global property read — provide the values at runtime so
+// child sessions don't die at startup with "MACRO is not defined". Keep the
+// values in sync with scripts/run-cli.mjs (the canonical list). Under the
+// launcher this assignment is dead weight: the dotted references were already
+// inlined at parse time, and `globalThis.MACRO` is not a define target.
+// eslint-disable-next-line custom-rules/no-top-level-side-effects
+(globalThis as unknown as { MACRO?: Record<string, unknown> }).MACRO ??= {
+  VERSION: '2.1.107',
+  BUILD_TIME: '',
+  PACKAGE_URL: '@anthropic-ai/claude-code',
+  NATIVE_PACKAGE_URL: '@anthropic-ai/claude-code-native',
+  ISSUES_EXPLAINER:
+    'report the issue at https://github.com/anthropics/claude-code/issues',
+  FEEDBACK_CHANNEL: 'https://github.com/anthropics/claude-code/issues',
+  VERSION_CHANGELOG: null,
+};
+
 // Bugfix for corepack auto-pinning, which adds yarnpkg to peoples' package.jsons
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 process.env.COREPACK_ENABLE_AUTO_PIN = '0';
@@ -133,10 +153,13 @@ async function main(): Promise<void> {
     // GrowthBook has no user context and would return a stale/default false.
     // getBridgeDisabledReason awaits GB init, so the returned value is fresh
     // (not the stale disk cache), but init still needs auth headers to work.
+    // Self-hosted Remote Control (JARVIS_BRIDGE_BASE_URL, set by `jarvis auth
+    // login`) needs no claude.ai OAuth token — getBridgeDisabledReason()
+    // short-circuits before any GrowthBook lookup on that path too.
     const {
       getClaudeAIOAuthTokens
     } = await import('../utils/auth.js');
-    if (!getClaudeAIOAuthTokens()?.accessToken) {
+    if (!process.env.JARVIS_BRIDGE_BASE_URL && !getClaudeAIOAuthTokens()?.accessToken) {
       exitWithError(BRIDGE_LOGIN_ERROR);
     }
     const disabledReason = await getBridgeDisabledReason();

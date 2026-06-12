@@ -53,7 +53,7 @@ export async function createBridgeSession({
   permissionMode?: string
 }): Promise<string | null> {
   const { getClaudeAIOAuthTokens } = await import('../utils/auth.js')
-  const { getOrganizationUUID } = await import('../services/oauth/client.js')
+  const { getBridgeOrgUUID } = await import('./bridgeConfig.js')
   const { getOauthConfig } = await import('../constants/oauth.js')
   const { getOAuthHeaders } = await import('../utils/teleport/api.js')
   const { parseGitHubRepository } = await import('../utils/detectRepository.js')
@@ -68,7 +68,7 @@ export async function createBridgeSession({
     return null
   }
 
-  const orgUUID = await getOrganizationUUID()
+  const orgUUID = await getBridgeOrgUUID()
   if (!orgUUID) {
     logForDebugging('[bridge] No org UUID for session creation')
     return null
@@ -192,7 +192,7 @@ export async function getBridgeSession(
   opts?: { baseUrl?: string; getAccessToken?: () => string | undefined },
 ): Promise<{ environment_id?: string; title?: string } | null> {
   const { getClaudeAIOAuthTokens } = await import('../utils/auth.js')
-  const { getOrganizationUUID } = await import('../services/oauth/client.js')
+  const { getBridgeOrgUUID } = await import('./bridgeConfig.js')
   const { getOauthConfig } = await import('../constants/oauth.js')
   const { getOAuthHeaders } = await import('../utils/teleport/api.js')
   const { default: axios } = await import('axios')
@@ -204,7 +204,7 @@ export async function getBridgeSession(
     return null
   }
 
-  const orgUUID = await getOrganizationUUID()
+  const orgUUID = await getBridgeOrgUUID()
   if (!orgUUID) {
     logForDebugging('[bridge] No org UUID for session fetch')
     return null
@@ -269,7 +269,7 @@ export async function archiveBridgeSession(
   },
 ): Promise<void> {
   const { getClaudeAIOAuthTokens } = await import('../utils/auth.js')
-  const { getOrganizationUUID } = await import('../services/oauth/client.js')
+  const { getBridgeOrgUUID } = await import('./bridgeConfig.js')
   const { getOauthConfig } = await import('../constants/oauth.js')
   const { getOAuthHeaders } = await import('../utils/teleport/api.js')
   const { default: axios } = await import('axios')
@@ -281,7 +281,7 @@ export async function archiveBridgeSession(
     return
   }
 
-  const orgUUID = await getOrganizationUUID()
+  const orgUUID = await getBridgeOrgUUID()
   if (!orgUUID) {
     logForDebugging('[bridge] No org UUID for session archive')
     return
@@ -330,7 +330,7 @@ export async function updateBridgeSessionTitle(
   opts?: { baseUrl?: string; getAccessToken?: () => string | undefined },
 ): Promise<void> {
   const { getClaudeAIOAuthTokens } = await import('../utils/auth.js')
-  const { getOrganizationUUID } = await import('../services/oauth/client.js')
+  const { getBridgeOrgUUID } = await import('./bridgeConfig.js')
   const { getOauthConfig } = await import('../constants/oauth.js')
   const { getOAuthHeaders } = await import('../utils/teleport/api.js')
   const { default: axios } = await import('axios')
@@ -342,7 +342,7 @@ export async function updateBridgeSessionTitle(
     return
   }
 
-  const orgUUID = await getOrganizationUUID()
+  const orgUUID = await getBridgeOrgUUID()
   if (!orgUUID) {
     logForDebugging('[bridge] No org UUID for session title update')
     return

@@ -71,6 +71,13 @@ export function getRemoteSessionUrl(
     require('../bridge/sessionIdCompat.js') as typeof import('../bridge/sessionIdCompat.js')
   /* eslint-enable @typescript-eslint/no-require-imports */
   const compatId = toCompatSessionId(sessionId)
+  // Self-hosted Remote Control: sessions live on the JARVIS web app — the
+  // bridge base minus its /api/bridge suffix. The /code page routes sessions
+  // client-side (no /code/{id} route), so link the page itself.
+  const jarvisBase = process.env.JARVIS_BRIDGE_BASE_URL
+  if (jarvisBase) {
+    return `${jarvisBase.replace(/\/api\/bridge\/?$/, '')}/code`
+  }
   const baseUrl = getClaudeAiBaseUrl(compatId, ingressUrl)
   return `${baseUrl}/code/${compatId}`
 }

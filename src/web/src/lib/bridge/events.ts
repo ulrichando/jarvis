@@ -31,3 +31,37 @@ export function waitForWork(envId: string, timeoutMs: number): Promise<boolean> 
     const timer = setTimeout(() => cleanup(false), timeoutMs)
   })
 }
+
+function inboundEventName(sessionId: string): string {
+  return `inbound:${sessionId}`
+}
+
+/** Wake the session's SSE stream — a web client queued an inbound message. */
+export function emitInbound(sessionId: string): void {
+  bus.emit(inboundEventName(sessionId))
+}
+
+/**
+ * Wait until an inbound message is emitted for this session, or the timeout
+ * elapses. Same contract as waitForWork. The SSE loop ALSO re-reads the
+ * queue after every timeout, so direct DB inserts (tests, admin tooling)
+ * are picked up within one keepalive interval even without an emit.
+ */
+export function waitForInbound(
+  sessionId: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  return new Promise(resolve => {
+    let done = false
+    const cleanup = (val: boolean) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      bus.off(inboundEventName(sessionId), onEvent)
+      resolve(val)
+    }
+    const onEvent = () => cleanup(true)
+    bus.once(inboundEventName(sessionId), onEvent)
+    const timer = setTimeout(() => cleanup(false), timeoutMs)
+  })
+}

@@ -49,7 +49,7 @@ export default function SignupPage() {
                 autoFocus
                 autoComplete="name"
                 className="w-full rounded-lg border border-border/60 bg-accent/20 px-3 py-2 text-[14px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/40"
-                placeholder="Ulrich"
+                placeholder="Your name"
               />
             </div>
             <div>
