@@ -1121,6 +1121,16 @@ export async function initBridgeCore(
         logForDebugging(
           `[bridge:repl] Rejecting foreign session: expected=${currentSessionId} got=${workSessionId}`,
         )
+        // Stop the work server-side, don't just drop it. A REPL bridge can't
+        // run foreign sessions (no spawner), and the poll loop already ACK'd
+        // — but it never heartbeats work it didn't accept, so the lease
+        // expires and the server re-delivers the same item every ~60s
+        // forever (self-hosted /code dispatch to a REPL-held machine).
+        void api.stopWork(environmentId, workId, false).catch((err: unknown) =>
+          logForDebugging(
+            `[bridge:repl] stopWork for foreign session failed: ${errorMessage(err)}`,
+          ),
+        )
         return
       }
 

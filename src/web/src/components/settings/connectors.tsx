@@ -32,8 +32,10 @@ function RemoteControlCard() {
       </div>
       <p className="mb-3 text-[13px] text-muted-foreground">
         Connect the Jarvis CLI on any machine to drive coding tasks from{" "}
-        <span className="font-medium text-foreground">Code</span>. Run this once on that machine, then start a session
-        with <code className="text-[12px]">jarvis --remote-control</code>. Machines you connect appear only under your
+        <span className="font-medium text-foreground">Code</span>. Easiest: run{" "}
+        <code className="text-[12px]">jarvis auth login</code> on that machine and sign in with this account — it saves
+        these credentials for you. Or paste the setup below, then start a session with{" "}
+        <code className="text-[12px]">jarvis --remote-control</code>. Machines you connect appear only under your
         account.
       </p>
       <div className="rounded-lg border border-border/60 bg-card/60 p-3 font-mono text-[12px] leading-relaxed">

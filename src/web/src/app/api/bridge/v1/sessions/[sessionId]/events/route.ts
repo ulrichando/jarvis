@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server'
 import { extractBearer } from '@/lib/bridge/auth'
 import { getStore } from '@/lib/bridge/db'
-import { appendSessionEvent, listSessionEvents } from '@/lib/bridge/store'
+import {
+  appendSessionEvent,
+  findSession,
+  listSessionEvents,
+} from '@/lib/bridge/store'
 import { bridgeError } from '@/lib/bridge/errors'
 
 export async function POST(
@@ -60,7 +64,21 @@ export async function GET(
       created_at: r.created_at,
     }))
     const cursor = rows.length ? rows[rows.length - 1].rowid : since
-    return NextResponse.json({ events, cursor })
+    // Worker runtime state (PUT /worker): status drives the UI spinner,
+    // requires_action_details drives the permission approve/deny card.
+    const session = findSession(store, sessionId)
+    let worker: Record<string, unknown> | null = null
+    if (session?.worker_state_json) {
+      try {
+        worker = JSON.parse(session.worker_state_json) as Record<
+          string,
+          unknown
+        >
+      } catch {
+        worker = null
+      }
+    }
+    return NextResponse.json({ events, cursor, worker })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return bridgeError(500, 'internal_error', `DB error: ${msg}`)

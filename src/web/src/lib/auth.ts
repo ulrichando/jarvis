@@ -14,9 +14,50 @@ if (!db) {
   throw new Error("DATABASE_URL is required for JARVIS login (better-auth).");
 }
 
+/**
+ * Self-hosted: the app is reached by whatever name this box answers to —
+ * localhost, 127.0.0.1, a LAN IP, a single-label hostname, or *.local. By
+ * default better-auth only trusts BETTER_AUTH_URL's origin, so signing in
+ * from http://127.0.0.1:3000 (or a LAN address) failed the CSRF origin check
+ * with 403 INVALID_ORIGIN. We additionally trust a same-origin request
+ * (Origin host equals the Host header) when that host is private-network
+ * shaped. Public DNS names stay untrusted so a DNS-rebinding page can't pass
+ * the check. Reverse-proxy / extra origins: set BETTER_AUTH_TRUSTED_ORIGINS
+ * (comma-separated; read natively by better-auth).
+ */
+function isPrivateHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h === "::1" || h.endsWith(".localhost")) return true;
+  if (/^127\./.test(h)) return true;
+  if (/^(10\.|192\.168\.|169\.254\.)/.test(h)) return true;
+  if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(h)) return true;
+  if (!h.includes(".")) return true; // single-label intranet name (e.g. "moon")
+  return (
+    h.endsWith(".local") ||
+    h.endsWith(".lan") ||
+    h.endsWith(".internal") ||
+    h.endsWith(".home.arpa")
+  );
+}
+
 export const auth = betterAuth({
   baseURL: process.env.BETTER_AUTH_URL ?? "http://localhost:3000",
   secret: process.env.BETTER_AUTH_SECRET,
+  trustedOrigins: async (request?: Request) => {
+    const origin = request?.headers.get("origin");
+    const host =
+      request?.headers.get("x-forwarded-host") ?? request?.headers.get("host");
+    if (!origin || !host) return [];
+    try {
+      const parsed = new URL(origin);
+      if (parsed.host === host && isPrivateHost(parsed.hostname)) {
+        return [origin];
+      }
+    } catch {
+      /* malformed Origin header — not trusted */
+    }
+    return [];
+  },
   database: drizzleAdapter(db, {
     provider: "pg",
     schema: {

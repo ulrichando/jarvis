@@ -47,6 +47,19 @@ export function getJarvisBridgeToken(): string | undefined {
 }
 
 /**
+ * Org UUID for the bridge Sessions-API headers (x-organization-uuid). The
+ * self-hosted server ignores the header, but the call sites in
+ * createSession.ts / initReplBridge.ts hard-bail without one (they predate
+ * self-hosted) — return a fixed sentinel so fresh JARVIS machines with no
+ * claude.ai login history can attach. claude.ai path unchanged.
+ */
+export async function getBridgeOrgUUID(): Promise<string | null> {
+  if (getJarvisBridgeBaseUrl()) return 'jarvis-local'
+  const { getOrganizationUUID } = await import('../services/oauth/client.js')
+  return getOrganizationUUID()
+}
+
+/**
  * Access token for bridge API calls: dev override first, then the OAuth
  * keychain. Undefined means "not logged in".
  */

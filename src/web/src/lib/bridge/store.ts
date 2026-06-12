@@ -95,6 +95,21 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- Per-user CLI auth: maps a long-lived JARVIS token (sent by the CLI on
 -- register) to a JARVIS user id. The token-generation endpoint writes these
 -- (session-authenticated); register resolves token → user to own the env.
+CREATE TABLE IF NOT EXISTS session_inbound (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS session_inbound_session ON session_inbound(session_id, seq);
+CREATE TABLE IF NOT EXISTS session_internal_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  subagent INTEGER NOT NULL DEFAULT 0,
+  payload_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS session_internal_events_session ON session_internal_events(session_id, id);
 CREATE TABLE IF NOT EXISTS bridge_tokens (
   token TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
@@ -111,6 +126,34 @@ export function initSchema(db: Database.Database): void {
   // exists — swallow that specific case).
   try {
     db.exec('ALTER TABLE environments ADD COLUMN user_id TEXT')
+  } catch {
+    /* column already present */
+  }
+  // Additive migration (2026-06-12): session titles are a real column, not
+  // session_events rows — title events rendered as bare "title" lines in the
+  // /code session view, which displays unknown event types by name.
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN title TEXT')
+  } catch {
+    /* column already present */
+  }
+  // Additive migrations (2026-06-12, CCR v2 worker endpoints): per-session
+  // ingress token (bearer for /v1/code/sessions/{id}/worker/*) and the
+  // worker epoch (bumped on register; heartbeats/writes 409 on mismatch).
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN session_token TEXT')
+  } catch {
+    /* column already present */
+  }
+  try {
+    db.exec(
+      'ALTER TABLE sessions ADD COLUMN worker_epoch INTEGER NOT NULL DEFAULT 0',
+    )
+  } catch {
+    /* column already present */
+  }
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN worker_state_json TEXT')
   } catch {
     /* column already present */
   }
@@ -422,6 +465,10 @@ export interface SessionRow {
   archived: number
   created_at: number
   archived_at: number | null
+  title: string | null
+  session_token: string | null
+  worker_epoch: number
+  worker_state_json: string | null
 }
 
 /**
@@ -439,18 +486,231 @@ export function listEnvironments(store: Store, userId?: string | null): Environm
     .all() as EnvironmentRow[]
 }
 
+/** Single session by id, or null. */
+export function findSession(
+  store: Store,
+  sessionId: string,
+): SessionRow | null {
+  const row = store.db
+    .prepare('SELECT * FROM sessions WHERE session_id = ?')
+    .get(sessionId) as SessionRow | undefined
+  return row ?? null
+}
+
 /** Idempotently register a UI-initiated session against an environment. */
 export function getOrCreateSession(
   store: Store,
   sessionId: string,
   environmentId: string,
+  title?: string | null,
 ): void {
   store.db
     .prepare(
-      `INSERT OR IGNORE INTO sessions (session_id, environment_id, archived, created_at)
-       VALUES (?, ?, 0, ?)`,
+      `INSERT OR IGNORE INTO sessions (session_id, environment_id, archived, created_at, title)
+       VALUES (?, ?, 0, ?, ?)`,
     )
-    .run(sessionId, environmentId, Date.now())
+    .run(sessionId, environmentId, Date.now(), title ?? null)
+}
+
+/** Set/replace a session's display title (CLI retitle via PATCH). */
+export function setSessionTitle(
+  store: Store,
+  sessionId: string,
+  title: string,
+): void {
+  store.db
+    .prepare('UPDATE sessions SET title = ? WHERE session_id = ?')
+    .run(title, sessionId)
+}
+
+/** Store the per-session ingress token (bearer for the worker endpoints). */
+export function setSessionToken(
+  store: Store,
+  sessionId: string,
+  token: string,
+): void {
+  store.db
+    .prepare('UPDATE sessions SET session_token = ? WHERE session_id = ?')
+    .run(token, sessionId)
+}
+
+/** True when `token` is the session's ingress token. */
+export function validateSessionToken(
+  store: Store,
+  sessionId: string,
+  token: string,
+): boolean {
+  const row = findSession(store, sessionId)
+  return !!row && !!row.session_token && row.session_token === token
+}
+
+/** Register-worker semantics: bump and return the session's worker epoch. */
+export function bumpWorkerEpoch(store: Store, sessionId: string): number {
+  store.db
+    .prepare(
+      'UPDATE sessions SET worker_epoch = worker_epoch + 1 WHERE session_id = ?',
+    )
+    .run(sessionId)
+  const row = findSession(store, sessionId)
+  return row?.worker_epoch ?? 1
+}
+
+/** Single work row scoped to an environment, or null. */
+export function findWork(
+  store: Store,
+  envId: string,
+  workId: string,
+): WorkRow | null {
+  const row = store.db
+    .prepare('SELECT * FROM work WHERE id = ? AND environment_id = ?')
+    .get(workId, envId) as
+    | (Omit<WorkRow, 'data'> & { data_json: string })
+    | undefined
+  if (!row) return null
+  return {
+    id: row.id,
+    environment_id: row.environment_id,
+    session_id: row.session_id,
+    state: row.state,
+    data: JSON.parse(row.data_json) as unknown,
+    secret_b64url: row.secret_b64url,
+    leased_at: row.leased_at,
+    lease_expires_at: row.lease_expires_at,
+    created_at: row.created_at,
+  }
+}
+
+/**
+ * True when `token` is the session ingress token of the session a work item
+ * targets. The CLI acks/heartbeats work with the secret's
+ * session_ingress_token (NOT the environment secret), so those routes accept
+ * either credential.
+ */
+export function validateWorkSessionToken(
+  store: Store,
+  envId: string,
+  workId: string,
+  token: string,
+): boolean {
+  const row = store.db
+    .prepare(
+      `SELECT s.session_token AS t FROM work w
+       JOIN sessions s ON s.session_id = w.session_id
+       WHERE w.id = ? AND w.environment_id = ?`,
+    )
+    .get(workId, envId) as { t: string | null } | undefined
+  return !!row?.t && row.t === token
+}
+
+/**
+ * True when an inbound (client→worker) event with this uuid exists. Used to
+ * drop the worker's echo of a web-sent user message (--replay-user-messages)
+ * so the transcript doesn't show the prompt twice.
+ */
+export function hasInboundUuid(
+  store: Store,
+  sessionId: string,
+  uuid: string,
+): boolean {
+  const row = store.db
+    .prepare(
+      `SELECT 1 AS hit FROM session_inbound
+       WHERE session_id = ? AND json_extract(payload_json, '$.uuid') = ?
+       LIMIT 1`,
+    )
+    .get(sessionId, uuid) as { hit: number } | undefined
+  return !!row
+}
+
+/**
+ * Merge a CCR v2 worker-state PUT into the session's stored state.
+ * Top-level keys replace; external_metadata merges per-key (the CLI clears
+ * individual keys by sending explicit nulls).
+ */
+export function mergeWorkerState(
+  store: Store,
+  sessionId: string,
+  update: Record<string, unknown>,
+): void {
+  const row = findSession(store, sessionId)
+  if (!row) return
+  let state: Record<string, unknown> = {}
+  try {
+    state = row.worker_state_json
+      ? (JSON.parse(row.worker_state_json) as Record<string, unknown>)
+      : {}
+  } catch {
+    state = {}
+  }
+  const { external_metadata, worker_epoch: _epoch, ...rest } = update
+  Object.assign(state, rest)
+  if (external_metadata && typeof external_metadata === 'object') {
+    const merged = {
+      ...((state.external_metadata as Record<string, unknown>) ?? {}),
+      ...(external_metadata as Record<string, unknown>),
+    }
+    state.external_metadata = merged
+  }
+  store.db
+    .prepare('UPDATE sessions SET worker_state_json = ? WHERE session_id = ?')
+    .run(JSON.stringify(state), sessionId)
+}
+
+/** Queue an inbound (web → CLI) payload; returns its sequence number. */
+export function appendInbound(
+  store: Store,
+  sessionId: string,
+  payload: unknown,
+): number {
+  const res = store.db
+    .prepare(
+      'INSERT INTO session_inbound (session_id, payload_json, created_at) VALUES (?, ?, ?)',
+    )
+    .run(sessionId, JSON.stringify(payload), Date.now())
+  return Number(res.lastInsertRowid)
+}
+
+/** Inbound payloads with seq > sinceSeq, oldest first. */
+export function listInboundSince(
+  store: Store,
+  sessionId: string,
+  sinceSeq: number,
+): Array<{ seq: number; payload_json: string }> {
+  return store.db
+    .prepare(
+      'SELECT seq, payload_json FROM session_inbound WHERE session_id = ? AND seq > ? ORDER BY seq ASC',
+    )
+    .all(sessionId, sinceSeq) as Array<{ seq: number; payload_json: string }>
+}
+
+/** Store worker internal events (session-resume state; not shown in the UI). */
+export function appendInternalEvents(
+  store: Store,
+  sessionId: string,
+  events: unknown[],
+  subagent: boolean,
+): void {
+  const insert = store.db.prepare(
+    'INSERT INTO session_internal_events (session_id, subagent, payload_json, created_at) VALUES (?, ?, ?, ?)',
+  )
+  const now = Date.now()
+  for (const event of events) {
+    insert.run(sessionId, subagent ? 1 : 0, JSON.stringify(event), now)
+  }
+}
+
+/** All stored internal events for resume (oldest first). */
+export function listInternalEvents(
+  store: Store,
+  sessionId: string,
+  subagent: boolean,
+): unknown[] {
+  const rows = store.db
+    .prepare(
+      'SELECT payload_json FROM session_internal_events WHERE session_id = ? AND subagent = ? ORDER BY id ASC',
+    )
+    .all(sessionId, subagent ? 1 : 0) as Array<{ payload_json: string }>
+  return rows.map((r) => JSON.parse(r.payload_json) as unknown)
 }
 
 /**

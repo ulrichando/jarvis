@@ -10,7 +10,11 @@ import { waitForWork } from '@/lib/bridge/events'
 import { bridgeError } from '@/lib/bridge/errors'
 
 const LEASE_TTL_MS = 60_000
-const DEFAULT_POLL_TIMEOUT_MS = 25_000
+// MUST stay under the CLI's poll budget: bridgeApi.pollForWork uses
+// axios timeout 10_000. The original 25s (claude.ai-style long-poll) made
+// every idle poll time out CLIENT-side — the REPL bridge read that as a
+// poll failure and sat in "Remote Control reconnecting…" forever.
+const DEFAULT_POLL_TIMEOUT_MS = 8_000
 
 function pollTimeoutMs(): number {
   const env = process.env.BRIDGE_POLL_TIMEOUT_MS

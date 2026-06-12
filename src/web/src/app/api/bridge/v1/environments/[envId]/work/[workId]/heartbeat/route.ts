@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server'
 import { extractBearer } from '@/lib/bridge/auth'
 import { getStore } from '@/lib/bridge/db'
-import { validateEnvSecret, heartbeatWork } from '@/lib/bridge/store'
+import {
+  validateEnvSecret,
+  validateWorkSessionToken,
+  heartbeatWork,
+} from '@/lib/bridge/store'
 import { bridgeError } from '@/lib/bridge/errors'
 
 const LEASE_TTL_MS = 60_000
@@ -15,8 +19,16 @@ export async function POST(
   if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
   try {
     const store = getStore()
-    if (!validateEnvSecret(store, envId, token)) {
-      return bridgeError(401, 'unauthorized', 'Invalid environment_secret')
+    // The CLI heartbeats active session work with the work secret's
+    // session_ingress_token (bridgeApi.heartbeatWork), not the environment
+    // secret — accept either, like /ack. Without this every heartbeat
+    // 401'd, leases silently expired, and session work was re-delivered
+    // every ~60s (transport churn on the REPL, log noise on the daemon).
+    if (
+      !validateEnvSecret(store, envId, token) &&
+      !validateWorkSessionToken(store, envId, workId, token)
+    ) {
+      return bridgeError(401, 'unauthorized', 'Invalid credential')
     }
     const result = heartbeatWork(store, envId, workId, LEASE_TTL_MS)
     return NextResponse.json(

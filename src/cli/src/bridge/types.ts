@@ -3,9 +3,9 @@ export const DEFAULT_SESSION_TIMEOUT_MS = 24 * 60 * 60 * 1000
 
 /** Reusable login guidance appended to bridge auth errors. */
 export const BRIDGE_LOGIN_INSTRUCTION =
-  'Remote Control is only available with claude.ai subscriptions. Please use `/login` to sign in with your claude.ai account.'
+  'Run `jarvis auth login` in a terminal to connect your JARVIS account (self-hosted, no claude.ai subscription needed), or use `/login` to sign in with a claude.ai subscription.'
 
-/** Full error printed when `claude remote-control` is run without auth. */
+/** Full error printed when `jarvis remote-control` is run without auth. */
 export const BRIDGE_LOGIN_ERROR =
   'Error: You must be logged in to use Remote Control.\n\n' +
   BRIDGE_LOGIN_INSTRUCTION

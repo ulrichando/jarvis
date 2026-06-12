@@ -19,7 +19,6 @@ import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
 import type { SDKMessage } from '../entrypoints/agentSdkTypes.js'
 import type { SDKControlResponse } from '../entrypoints/sdk/controlTypes.js'
 import { getFeatureValue_CACHED_WITH_REFRESH } from '../services/analytics/growthbook.js'
-import { getOrganizationUUID } from '../services/oauth/client.js'
 import {
   isPolicyAllowed,
   waitForPolicyLimitsToLoad,
@@ -51,8 +50,7 @@ import { generateShortWordSlug } from '../utils/words.js'
 import {
   getBridgeAccessToken,
   getBridgeBaseUrl,
-  getBridgeTokenOverride,
-} from './bridgeConfig.js'
+  getBridgeTokenOverride, getBridgeOrgUUID } from './bridgeConfig.js'
 import {
   checkBridgeMinVersion,
   isBridgeEnabledBlocking,
@@ -387,7 +385,7 @@ export async function initReplBridge(
   // environment registration; v2 for archive (which lives at the compat
   // /v1/sessions/{id}/archive, not /v1/code/sessions). Without it, v2
   // archive 404s and sessions stay alive in CCR after /exit.
-  const orgUUID = await getOrganizationUUID()
+  const orgUUID = await getBridgeOrgUUID()
   if (!orgUUID) {
     logBridgeSkip('no_org_uuid', '[bridge:repl] Skipping: no org UUID')
     onStateChange?.('failed', '/login')

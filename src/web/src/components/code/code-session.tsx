@@ -28,6 +28,47 @@ type CodeEvent = {
   created_at: number;
 };
 
+// Worker runtime state from the events poll (PUT /worker, stored
+// server-side). worker_status: 'idle' | 'running' | 'requires_action'.
+// pending_action (external_metadata) carries the blocked tool call,
+// including its raw input — needed to echo updatedInput on approve.
+type WorkerInfo = {
+  worker_status?: string;
+  requires_action_details?: {
+    tool_name?: string;
+    action_description?: string;
+    request_id?: string;
+  } | null;
+  external_metadata?: {
+    pending_action?: {
+      tool_name?: string;
+      action_description?: string;
+      request_id?: string;
+      input?: Record<string, unknown>;
+    } | null;
+  } | null;
+};
+
+/** The permission prompt currently blocking the worker, if any. */
+function pendingAction(w: WorkerInfo | null): {
+  tool_name: string;
+  action_description: string;
+  request_id: string;
+  input?: Record<string, unknown>;
+} | null {
+  if (!w || w.worker_status !== "requires_action") return null;
+  const fromMeta = w.external_metadata?.pending_action;
+  const fromDetails = w.requires_action_details;
+  const merged = { ...(fromDetails ?? {}), ...(fromMeta ?? {}) };
+  if (!merged.request_id) return null;
+  return {
+    tool_name: merged.tool_name ?? "tool",
+    action_description: merged.action_description ?? "Run a tool",
+    request_id: merged.request_id,
+    input: fromMeta?.input,
+  };
+}
+
 const MENU = [
   { icon: ExternalLink, label: "Open in", chord: "", sub: true },
   { icon: Pencil, label: "Rename", chord: "R", sub: false },
@@ -39,6 +80,26 @@ const MENU = [
 
 function str(p: Record<string, unknown>, k: string): string | undefined {
   return typeof p[k] === "string" ? (p[k] as string) : undefined;
+}
+
+// Display text for SDK-shaped messages (type user/assistant from the CLI's
+// CCR v2 transcript flush): message.content is a string or an array of
+// blocks — show text blocks, name tool uses, skip tool results.
+function sdkText(p: Record<string, unknown>): string | undefined {
+  const msg = p.message as Record<string, unknown> | undefined;
+  const content = msg?.content;
+  if (typeof content === "string") return content.trim() || undefined;
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const block of content as Array<Record<string, unknown>>) {
+      if (block?.type === "text" && typeof block.text === "string") parts.push(block.text);
+      else if (block?.type === "tool_use" && typeof block.name === "string") parts.push(`⚙ ${block.name}`);
+    }
+    const joined = parts.join("\n").trim();
+    return joined || undefined;
+  }
+  if (p.type === "result" && typeof p.result === "string") return p.result.trim() || undefined;
+  return undefined;
 }
 
 export function CodeSession({
@@ -60,6 +121,13 @@ export function CodeSession({
   const [waiting, setWaiting] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
   const [layoutOpen, setLayoutOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [worker, setWorker] = useState<WorkerInfo | null>(null);
+  // request_ids the user already answered — hides the card instantly while
+  // the CLI processes the response and clears requires_action server-side.
+  const [answered, setAnswered] = useState<Set<string>>(new Set());
   const cursorRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -69,18 +137,25 @@ export function CodeSession({
     setEvents([]);
     cursorRef.current = 0;
     setWaiting(true);
+    setWorker(null);
+    setAnswered(new Set());
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
         const r = await fetch(`/api/bridge/v1/sessions/${sessionId}/events?since=${cursorRef.current}`);
         if (r.ok) {
-          const j = (await r.json()) as { events: CodeEvent[]; cursor: number };
+          const j = (await r.json()) as {
+            events: CodeEvent[];
+            cursor: number;
+            worker?: WorkerInfo | null;
+          };
           if (active && j.events?.length) {
             cursorRef.current = j.cursor;
             setEvents((prev) => [...prev, ...j.events]);
             if (j.events.some((e) => e.type !== "user_prompt")) setWaiting(false);
           }
+          if (active) setWorker(j.worker ?? null);
         }
       } catch {
         /* transient */
@@ -115,6 +190,44 @@ export function CodeSession({
     window.addEventListener("mousedown", onDown);
     return () => window.removeEventListener("mousedown", onDown);
   }, [layoutOpen]);
+
+  const post = (payload: Record<string, unknown>) =>
+    fetch(`/api/bridge/v1/sessions/${sessionId}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).then(async (r) => {
+      if (!r.ok) {
+        const j = (await r.json().catch(() => null)) as {
+          error?: { message?: string };
+        } | null;
+        throw new Error(j?.error?.message ?? `HTTP ${r.status}`);
+      }
+    });
+
+  const pending = pendingAction(worker);
+  const running = worker?.worker_status === "running";
+
+  const answerPermission = (
+    action: NonNullable<ReturnType<typeof pendingAction>>,
+    behavior: "allow" | "deny",
+  ) => {
+    setAnswered((prev) => new Set(prev).add(action.request_id));
+    post({
+      permission: {
+        request_id: action.request_id,
+        behavior,
+        // Approve = run with the original input (pending_action.input); the
+        // CLI treats updatedInput as a full replacement, so echoing it back
+        // unchanged is the "yes, do that" answer.
+        ...(behavior === "allow" && action.input
+          ? { updated_input: action.input }
+          : {}),
+      },
+    }).catch((err: unknown) => {
+      setSendError(err instanceof Error ? err.message : String(err));
+    });
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -192,11 +305,15 @@ export function CodeSession({
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4">
         <div className="mx-auto max-w-3xl space-y-3">
           {events.map((e) => {
-            if (e.type === "user_prompt") {
+            if (e.type === "user_prompt" || e.type === "user") {
+              const prompt = str(e.payload, "prompt") ?? sdkText(e.payload);
+              // SDK user messages with only tool_result blocks carry no
+              // human text — skip rather than render an empty bubble.
+              if (!prompt) return null;
               return (
                 <div key={e.cursor} className="flex justify-end">
-                  <div className="max-w-[80%] rounded-2xl bg-accent/40 px-3.5 py-1.5 text-[13px] text-foreground">
-                    {str(e.payload, "prompt")}
+                  <div className="max-w-[80%] whitespace-pre-wrap break-words rounded-2xl bg-accent/40 px-3.5 py-1.5 text-[13px] text-foreground">
+                    {prompt}
                   </div>
                 </div>
               );
@@ -209,7 +326,7 @@ export function CodeSession({
                 </button>
               );
             }
-            const text = str(e.payload, "text") ?? str(e.payload, "content") ?? str(e.payload, "message");
+            const text = str(e.payload, "text") ?? str(e.payload, "content") ?? str(e.payload, "message") ?? sdkText(e.payload);
             return (
               <div key={e.cursor} className="flex gap-2.5">
                 <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-amber-500" />
@@ -220,12 +337,87 @@ export function CodeSession({
             );
           })}
 
-          {waiting && (
+          {pending && !answered.has(pending.request_id) && (
+            <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3">
+              <p className="text-[13px] font-medium text-foreground">
+                Permission needed: <span className="font-mono">{pending.tool_name}</span>
+              </p>
+              <p className="mt-0.5 text-[12px] text-muted-foreground">{pending.action_description}</p>
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => answerPermission(pending, "allow")}
+                  className="rounded-md bg-primary px-3 py-1 text-[12px] font-medium text-primary-foreground"
+                >
+                  Allow
+                </button>
+                <button
+                  type="button"
+                  onClick={() => answerPermission(pending, "deny")}
+                  className="rounded-md border border-border px-3 py-1 text-[12px] text-foreground hover:bg-accent/40"
+                >
+                  Deny
+                </button>
+              </div>
+            </div>
+          )}
+
+          {(waiting || running) && (
             <div className="flex items-center gap-2 pt-1 text-orange-500">
               <span className="inline-block animate-pulse text-[18px] leading-none">✳</span>
             </div>
           )}
         </div>
+      </div>
+
+      {/* Composer — sends into the connected CLI session */}
+      <div className="border-t border-border/60 px-6 py-3">
+        <form
+          className="mx-auto flex max-w-3xl items-center gap-2"
+          onSubmit={(ev) => {
+            ev.preventDefault();
+            const text = draft.trim();
+            if (!text || sending) return;
+            setSending(true);
+            setSendError(null);
+            post({ text })
+              .then(() => setDraft(""))
+              .catch((err: unknown) => {
+                setSendError(err instanceof Error ? err.message : String(err));
+              })
+              .finally(() => setSending(false));
+          }}
+        >
+          <input
+            value={draft}
+            onChange={(ev) => setDraft(ev.target.value)}
+            placeholder="Message this session…"
+            className="flex-1 rounded-lg border border-border/60 bg-accent/20 px-3 py-2 text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/40"
+          />
+          {running && (
+            <button
+              type="button"
+              onClick={() => {
+                post({ interrupt: true }).catch((err: unknown) => {
+                  setSendError(err instanceof Error ? err.message : String(err));
+                });
+              }}
+              className="rounded-lg border border-border px-3 py-2 text-[13px] text-foreground hover:bg-accent/40"
+            >
+              Stop
+            </button>
+          )}
+          <button
+            type="submit"
+            disabled={!draft.trim() || sending}
+            className="rounded-lg bg-primary px-3 py-2 text-[13px] font-medium text-primary-foreground disabled:opacity-50"
+          >
+            Send
+          </button>
+        </form>
+        {sendError && (
+          <p className="mx-auto mt-1 max-w-3xl text-[12px] text-red-500">{sendError}</p>
+        )}
       </div>
     </div>
   );
