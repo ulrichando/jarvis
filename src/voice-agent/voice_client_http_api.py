@@ -253,25 +253,65 @@ class VoiceClientHttpApi:
         / device re-open latency). LiveKit carries the mute bit to
         the agent, which stops running STT on our (now-silent) audio.
         """
-        mic_pub = self.get_mic_pub()
-        if mic_pub is None:
-            return web.json_response({"error": "not connected"}, status=503)
         try:
             body = await req.json()
         except Exception:
             body = {}
+        # A USER toggle (tray "mute" button) sends NO `mute` field; the
+        # mode watchdog (bin/jarvis-mode) sends an EXPLICIT one every ~10s
+        # to keep JARVIS-Claude's mic muted while a direct mode (Gemini/
+        # OpenAI) is the active voice. Only the user toggle expresses
+        # "make the voice I HEAR go quiet" — so only it drives the
+        # universal silent-mode flag (below). Without this distinction the
+        # watchdog's mic-mute would also silence the direct voice forever.
+        user_toggle = "mute" not in body
+        mic_pub = self.get_mic_pub()
         target = bool(body.get("mute", not self.state.muted))  # default = toggle
         try:
-            # LocalAudioTrack.mute/unmute are sync in livekit-rtc Python —
-            # they only flip a flag that the engine picks up on the next
-            # audio frame. No await.
-            if target:
-                mic_pub.track.mute()
-            else:
-                mic_pub.track.unmute()
-            self.state.muted = target
+            # OUTPUT mute. SILENT_MODE_FILE is the one signal every voice
+            # honors: the Claude agent suppresses its TTS (and proactive
+            # say()), and the Gemini/OpenAI direct tools pause mic-send +
+            # drop audio-out. Muting the LiveKit mic track alone only stops
+            # JARVIS from HEARING — this is what stops him TALKING. Write
+            # the file directly (authoritative, works even if the agent is
+            # busy) on user toggles only.
+            if user_toggle:
+                try:
+                    if target:
+                        SILENT_MODE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                        SILENT_MODE_FILE.write_text("on\n", encoding="utf-8")
+                    else:
+                        SILENT_MODE_FILE.unlink(missing_ok=True)
+                    self.state.silent_mode = target
+                except Exception as e:
+                    self.log.warning("mute: silent-mode file write failed: %s", e)
+                # Also nudge the agent to interrupt its CURRENT utterance now
+                # (the file only gates FUTURE turns). Best-effort.
+                room = self.get_room()
+                if room is not None:
+                    try:
+                        payload = json.dumps(
+                            {"type": "silent", "on": target}
+                        ).encode("utf-8")
+                        await room.local_participant.publish_data(
+                            payload, reliable=True
+                        )
+                    except Exception as e:
+                        self.log.warning(
+                            "mute: silent-toggle publish failed: %s", e
+                        )
+            # Mic track mute (input side). LocalAudioTrack.mute/unmute are
+            # sync in livekit-rtc Python — they flip a flag the engine picks
+            # up on the next audio frame. Skip gracefully if not connected;
+            # the output mute above is the part the user actually hears.
+            if mic_pub is not None:
+                if target:
+                    mic_pub.track.mute()
+                else:
+                    mic_pub.track.unmute()
+                self.state.muted = target
             return web.json_response(
-                {"muted": target},
+                {"muted": target, "silent": bool(SILENT_MODE_FILE.exists())},
                 headers={"Access-Control-Allow-Origin": "*"},
             )
         except Exception as e:

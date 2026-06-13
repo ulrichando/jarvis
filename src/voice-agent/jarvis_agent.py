@@ -7236,6 +7236,13 @@ async def entrypoint(ctx: JobContext) -> None:
     async def _cron_pending_watcher() -> None:
         first = True
         while True:
+            # Silent mode (incl. a mute-button click): don't drain or voice
+            # scheduled digests — drain_pending is destructive, so checking
+            # here keeps them QUEUED until the user unmutes rather than
+            # losing them to a dropped, never-spoken digest.
+            if _is_silent():
+                await asyncio.sleep(_crondelivery.PENDING_POLL_S)
+                continue
             prefix = "While you were away: " if first else "Scheduled update — "
             digest = _crondelivery.drain_pending(prefix=prefix)
             if digest:
@@ -7261,6 +7268,12 @@ async def entrypoint(ctx: JobContext) -> None:
 
     async def _background_task_watcher() -> None:
         while True:
+            # Silent mode / mute button: hold announcements (don't drain)
+            # until unmuted, so a muted JARVIS doesn't blurt a background-
+            # task result. They wait in the queue rather than being lost.
+            if _is_silent():
+                await asyncio.sleep(_bgtasks.poll_s())
+                continue
             for ann in _bgtasks.drain_announcements():
                 spoken = False
                 if getattr(session, "_activity", None) is not None:
@@ -7424,6 +7437,23 @@ async def entrypoint(ctx: JobContext) -> None:
                 session.interrupt()
             except RuntimeError:
                 pass
+        elif t == "silent":
+            # OUTPUT mute, published by the voice-client /mute handler so
+            # the desktop mute BUTTON also stops JARVIS from talking — not
+            # just from hearing. Engages the same silent-mode flag the
+            # spoken "Jarvis, mute" command uses: reactive turns drop at
+            # on_user_turn_completed, and the proactive say() watchers
+            # (cron digest, background-task announcements) hold while it's
+            # set. Interrupt any in-flight utterance immediately so a mute
+            # mid-sentence cuts him off now, not at the end of the phrase.
+            on = bool(msg.get("on", True))
+            _set_silent(on)
+            logger.info(f"data-silent: silent mode {'ON' if on else 'OFF'}")
+            if on:
+                try:
+                    session.interrupt()
+                except RuntimeError:
+                    pass
 
     # Auto-greeting intentionally removed — JARVIS stays silent until
     # the user speaks or a /speak message arrives. Keeps reboots + any

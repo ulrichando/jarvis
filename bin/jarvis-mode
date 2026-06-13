@@ -59,6 +59,12 @@ write_mode_state() {
     mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
     local tmp="${STATE_FILE}.tmp.$$"
     printf '%s\n' "$mode" > "$tmp" 2>/dev/null && mv -f "$tmp" "$STATE_FILE"
+    # Clear the user-mute flag on every mode switch so the newly-active
+    # voice starts UNMUTED. ~/.jarvis/.silent-mode is the shared "user
+    # wants quiet" signal honored by every voice (Claude agent + the
+    # gemini/openai direct tools); a stale mute from the previous mode
+    # must not carry over and start the new voice silent.
+    rm -f "$HOME/.jarvis/.silent-mode" 2>/dev/null || true
 }
 
 
@@ -106,7 +112,7 @@ set_jarvis_mute() {
         sleep 1
     done
     echo "  note: voice-client never became reachable at ${MUTE_URL}" >&2
-    echo "        — JARVIS-Claude mic may be HOT alongside the direct mode." >&2
+    echo "        — the JARVIS mic may be HOT alongside the direct mode." >&2
     return 1
 }
 
@@ -188,22 +194,26 @@ start_direct() {
     _muted_for_direct=0
     _trap_unmute_on_failure() {
         if (( _muted_for_direct == 1 )); then
-            echo "  → safety net: unmuting JARVIS-Claude (script exited after muting)…" >&2
+            echo "  → safety net: unmuting JARVIS (script exited after muting)…" >&2
             set_jarvis_mute "false" >/dev/null 2>&1 || true
         fi
     }
     trap _trap_unmute_on_failure EXIT
 
-    echo "→ muting JARVIS-Claude mic + stopping any in-flight TTS…"
+    echo "→ muting the JARVIS mic + stopping any in-flight TTS…"
     set_jarvis_mute "true" || true
     stop_jarvis_tts
     _muted_for_direct=1
 
     # Forward provider API keys from ~/.jarvis/keys.env if the caller
     # didn't already export them — systemd --user env is usually empty.
+    # ANTHROPIC_API_KEY rides along too (2026-06-11): the shared `webcam`
+    # registry tool does its scene analysis through Anthropic vision and
+    # self-gates off without the key.
     local google_key="${GOOGLE_API_KEY:-}"
     local openai_key="${OPENAI_API_KEY:-}"
-    if [[ -z "$google_key" || -z "$openai_key" ]] && [[ -f "$HOME/.jarvis/keys.env" ]]; then
+    local anthropic_key="${ANTHROPIC_API_KEY:-}"
+    if [[ -z "$google_key" || -z "$openai_key" || -z "$anthropic_key" ]] && [[ -f "$HOME/.jarvis/keys.env" ]]; then
         local v
         if [[ -z "$google_key" ]]; then
             v="$(grep -E '^GOOGLE_API_KEY=' "$HOME/.jarvis/keys.env" | head -1 | cut -d= -f2- | tr -d \"\')"
@@ -212,6 +222,10 @@ start_direct() {
         if [[ -z "$openai_key" ]]; then
             v="$(grep -E '^OPENAI_API_KEY=' "$HOME/.jarvis/keys.env" | head -1 | cut -d= -f2- | tr -d \"\')"
             openai_key="$v"
+        fi
+        if [[ -z "$anthropic_key" ]]; then
+            v="$(grep -E '^ANTHROPIC_API_KEY=' "$HOME/.jarvis/keys.env" | head -1 | cut -d= -f2- | tr -d \"\')"
+            anthropic_key="$v"
         fi
     fi
     local voice="${!voice_env:-$default_voice}"
@@ -242,6 +256,7 @@ start_direct() {
         -p StartLimitIntervalSec=300
         --setenv="GOOGLE_API_KEY=$google_key"
         --setenv="OPENAI_API_KEY=$openai_key"
+        --setenv="ANTHROPIC_API_KEY=$anthropic_key"
         --setenv="${voice_env}=${voice}"
         --setenv="DISPLAY=${DISPLAY:-:0}"
         --setenv="XAUTHORITY=${XAUTHORITY:-$HOME/.Xauthority}"
@@ -307,7 +322,7 @@ start_direct() {
         echo "✓ $label active. Run 'jarvis-mode jarvis' to switch back."
         write_mode_state "$label"
         ensure_jarvis_mute_watchdog
-        notify "Switched to $pretty" "Voice: $voice — audio + vision + tools. JARVIS-Claude muted."
+        notify "Switched to $pretty" "Voice: $voice — audio + vision + tools. JARVIS muted."
         # Success — disarm the safety trap
         _muted_for_direct=0
         trap - EXIT
@@ -318,12 +333,12 @@ start_direct() {
         # (Claude muted + direct mode dead), stop the flapping unit, and
         # clear its failed state so the next attempt starts clean.
         echo "✗ $label didn't stay up — check 'journalctl --user -u $scope'" >&2
-        echo "  → restoring JARVIS-Claude (unmuting mic)…" >&2
+        echo "  → restoring JARVIS (unmuting mic)…" >&2
         systemctl --user stop "$scope" 2>/dev/null || true
         systemctl --user reset-failed "$scope" 2>/dev/null || true
         set_jarvis_mute "false" >/dev/null 2>&1 || true
         write_mode_state "jarvis"
-        notify "Mode switch failed" "$label didn't start (see journalctl). Stayed on JARVIS-Claude."
+        notify "Mode switch failed" "$label didn't start (see journalctl). Stayed on JARVIS."
         # Safety trap already handles unmute, but be explicit
         _muted_for_direct=0
         trap - EXIT
@@ -338,9 +353,9 @@ stop_all_direct() {
     if (( was_running == 0 )); then
         echo "→ no direct mode was running"
     fi
-    echo "→ unmuting JARVIS-Claude mic…"
+    echo "→ unmuting the JARVIS mic…"
     set_jarvis_mute "false" || true
-    echo "✓ back on JARVIS-Claude."
+    echo "✓ back on JARVIS."
     write_mode_state "jarvis"
     notify "Switched to JARVIS · Claude" "Whisper → Claude → Orpheus. Full tool registry, mic unmuted."
 }
