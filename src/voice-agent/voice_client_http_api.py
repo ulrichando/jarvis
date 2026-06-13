@@ -266,7 +266,14 @@ class VoiceClientHttpApi:
         # watchdog's mic-mute would also silence the direct voice forever.
         user_toggle = "mute" not in body
         mic_pub = self.get_mic_pub()
-        target = bool(body.get("mute", not self.state.muted))  # default = toggle
+        # Direction of a user toggle is derived from the SILENT flag's own
+        # state — NOT self.state.muted, which the mode watchdog drives to
+        # True every ~10s (deriving from it would make a mute-click compute
+        # "unmute"). The watchdog's explicit calls set the mic directly.
+        if user_toggle:
+            target = not SILENT_MODE_FILE.exists()
+        else:
+            target = bool(body.get("mute"))
         try:
             # OUTPUT mute. SILENT_MODE_FILE is the one signal every voice
             # honors: the Claude agent suppresses its TTS (and proactive
