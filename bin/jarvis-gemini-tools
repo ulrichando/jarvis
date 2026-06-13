@@ -535,11 +535,17 @@ async def main() -> int:
             is_muted = os.path.exists(_SILENT_FILE)
             if is_muted and not muted.is_set():
                 muted.set()
+                # Reflect the mute in the tray status so the icon shows it
+                # (the tray polls this tool's /status in direct mode).
+                status.set_muted(True)
+                status.set_silent_mode(True)
                 status.set_speaking(False)
                 status.set_listening(False)
                 log.info("[gemini-tools] muted (user) — pausing mic + output")
             elif not is_muted and muted.is_set():
                 muted.clear()
+                status.set_muted(False)
+                status.set_silent_mode(False)
                 status.set_listening(True)
                 log.info("[gemini-tools] unmuted (user)")
             await asyncio.sleep(0.15)
