@@ -10,7 +10,7 @@ type Props = {
 };
 
 // xterm.js connects to the standalone PTY sidecar (scripts/pty-server.mjs).
-// Default URL ws://localhost:8769/pty; override via NEXT_PUBLIC_PTY_URL.
+// Default URL ws://localhost:8772/pty; override via NEXT_PUBLIC_PTY_URL.
 
 export function WorkbenchTerminal({ workspaceId }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -43,7 +43,7 @@ export function WorkbenchTerminal({ workspaceId }: Props) {
     // if you want to point at a remote PTY host.
     const wsUrl =
       process.env.NEXT_PUBLIC_PTY_URL ??
-      `ws://${window.location.hostname}:8769/pty`;
+      `ws://${window.location.hostname}:8772/pty`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 

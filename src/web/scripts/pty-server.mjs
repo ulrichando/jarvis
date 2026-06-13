@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Standalone WebSocket PTY server. Next.js can't host websockets cleanly,
-// so the workbench terminal connects directly to ws://localhost:8769/pty
+// so the workbench terminal connects directly to ws://localhost:8772/pty
 // while the main app stays on 3000.
 //
 // Two modes:
@@ -30,10 +30,13 @@ import {
   execShellArgs,
 } from "./lib/docker.mjs";
 
-const PORT = Number(process.env.JARVIS_PTY_PORT ?? 8769);
+// 8772 (NOT 8769): 8767-8769 is the voice-client status port block
+// (jarvis/gemini/openai); jarvis-gpt-tools' status server owns 8769, and
+// the desktop tray hardcodes it. Keep the PTY sidecar out of that range.
+const PORT = Number(process.env.JARVIS_PTY_PORT ?? 8772);
 // Bind 127.0.0.1 by default — pre-2026-05-17 this defaulted to
 // 0.0.0.0 which exposed an unauthenticated PTY shell to every device
-// on the LAN. Anyone on the WiFi could `wscat ws://192.168.x.x:8769/pty`
+// on the LAN. Anyone on the WiFi could `wscat ws://192.168.x.x:8772/pty`
 // and get a `$SHELL` session as the local user (no auth, no allowlist).
 // The next.js app itself binds 127.0.0.1 in package.json scripts; this
 // matches that posture. Set JARVIS_PTY_HOST explicitly to override for
