@@ -152,6 +152,13 @@ ALLOWED_TOOLS = {
     "skills_list", "skill_view", "skill_manage",
     "dispatch_agent",
     "vuln_check", "clarify",
+    # Shared camera tools (2026-06-11): `webcam` = one-frame scene answer with
+    # IR dark-room fallback + tracker/face-ID enrichment (needs ANTHROPIC_API_KEY
+    # in this service's env or it self-gates); `face_recognition` = local
+    # enroll/identify/forget (YuNet+SFace, no API key). Native frame injection
+    # (WEBCAM_REGEX above) stays the primary "see" path — these add identity
+    # + night vision.
+    "webcam", "face_recognition",
 }
 
 # Vision-trigger heuristic — only inject a screen frame when the
@@ -410,6 +417,30 @@ async def main() -> int:
 
     stop = asyncio.Event()
 
+    # User mute. SILENT_MODE_FILE (~/.jarvis/.silent-mode) is the one signal
+    # every JARVIS voice honors — the tray "mute" button writes it via the
+    # voice-client. When set we stop sending the mic to OpenAI (so it stops
+    # hearing you) AND drop its output audio (so it stops talking). It is
+    # NOT the mode watchdog's mic-mute of JARVIS-Claude — that uses an
+    # explicit-form call the voice-client keeps off this flag, so normal
+    # OpenAI operation never trips it. Polled by _mute_watcher.
+    _SILENT_FILE = os.path.join(os.path.expanduser("~"), ".jarvis", ".silent-mode")
+    muted = asyncio.Event()
+
+    async def _mute_watcher() -> None:
+        while not stop.is_set():
+            is_muted = os.path.exists(_SILENT_FILE)
+            if is_muted and not muted.is_set():
+                muted.set()
+                status.set_speaking(False)
+                status.set_listening(False)
+                log.info("[gpt-tools] muted (user) — pausing mic + output")
+            elif not is_muted and muted.is_set():
+                muted.clear()
+                status.set_listening(True)
+                log.info("[gpt-tools] unmuted (user)")
+            await asyncio.sleep(0.15)
+
     def _stop(signo, frame=None) -> None:  # type: ignore
         log.info(f"[gpt-tools] signal {signo} → stopping")
         stop.set()
@@ -517,6 +548,10 @@ async def main() -> int:
             assert mic_proc.stdout is not None
             while not stop.is_set():
                 chunk = await mic_proc.stdout.readexactly(CHUNK_BYTES)
+                # Muted → keep draining the mic (avoid PortAudio backpressure)
+                # but DON'T forward it to OpenAI, so it stops responding.
+                if muted.is_set():
+                    continue
                 await ws.send(json.dumps({
                     "type": "input_audio_buffer.append",
                     "audio": base64.b64encode(chunk).decode("ascii"),
@@ -606,6 +641,11 @@ async def main() -> int:
                 # Audio output → paplay
                 if etype == "response.audio.delta" or etype == "response.output_audio.delta":
                     b = evt.get("delta") or evt.get("audio") or ""
+                    # Muted → drop OpenAI's output audio (don't play it, don't
+                    # animate the face). The mic gate above usually leaves it
+                    # nothing to say; this cuts any in-flight reply.
+                    if b and muted.is_set():
+                        b = ""
                     if b:
                         # Flip indicator state on the first delta of a
                         # reply. agent_thinking clears here in case the
@@ -727,6 +767,7 @@ async def main() -> int:
         tasks = [
             asyncio.create_task(pump_mic(),      name="mic"),
             asyncio.create_task(drain_replies(), name="replies"),
+            asyncio.create_task(_mute_watcher(), name="mute-watch"),
             asyncio.create_task(stop.wait(),     name="stop"),
         ]
         try:
