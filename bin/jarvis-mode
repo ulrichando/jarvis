@@ -59,12 +59,12 @@ write_mode_state() {
     mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
     local tmp="${STATE_FILE}.tmp.$$"
     printf '%s\n' "$mode" > "$tmp" 2>/dev/null && mv -f "$tmp" "$STATE_FILE"
-    # Clear the user-mute flag on every mode switch so the newly-active
-    # voice starts UNMUTED. ~/.jarvis/.silent-mode is the shared "user
-    # wants quiet" signal honored by every voice (Claude agent + the
-    # gemini/openai direct tools); a stale mute from the previous mode
-    # must not carry over and start the new voice silent.
-    rm -f "$HOME/.jarvis/.silent-mode" 2>/dev/null || true
+    # NOTE: deliberately do NOT clear ~/.jarvis/.silent-mode here. Mute is a
+    # user intent that must PERSIST across mode switches and idle auto-revert
+    # — clearing it meant "I muted Jarvis, then it switched modes and started
+    # talking again." The new voice starts in whatever mute state the user
+    # last chose; the tray icon now reflects it (the direct tools report mute
+    # to their status server), and the user unmutes explicitly when ready.
 }
 
 
