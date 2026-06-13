@@ -126,12 +126,31 @@ ensure_jarvis_mute_watchdog() {
         return 0  # already running
     fi
     (
-        while is_active "$GEMINI_SCOPE" || is_active "$OPENAI_SCOPE"; do
-            curl --silent --fail --max-time 1 \
-                -X POST "$MUTE_URL" \
-                -H "Content-Type: application/json" \
-                -d '{"mute": true}' >/dev/null 2>&1 || true
-            sleep 10
+        while true; do
+            if is_active "$GEMINI_SCOPE" || is_active "$OPENAI_SCOPE"; then
+                curl --silent --fail --max-time 1 \
+                    -X POST "$MUTE_URL" \
+                    -H "Content-Type: application/json" \
+                    -d '{"mute": true}' >/dev/null 2>&1 || true
+                sleep 10
+            else
+                # Tolerate a TRANSIENT restart of the direct-mode unit
+                # (crash recovery, code update, `systemctl restart`). The
+                # old `while is_active` exited the instant the unit blinked
+                # inactive during a restart — which killed the watchdog and
+                # left JARVIS-Claude's mic HOT, so the user heard BOTH the
+                # Claude agent AND the direct voice answer. Re-check for a
+                # few seconds before giving up so a quick restart is ridden
+                # out instead of un-muting Claude.
+                local back=0
+                for _ in 1 2 3 4 5 6; do
+                    sleep 1
+                    if is_active "$GEMINI_SCOPE" || is_active "$OPENAI_SCOPE"; then
+                        back=1; break
+                    fi
+                done
+                (( back == 1 )) || break
+            fi
         done
         rm -f "$watcher_pidfile"
     ) &
