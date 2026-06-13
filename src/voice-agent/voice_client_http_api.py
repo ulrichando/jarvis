@@ -74,6 +74,19 @@ _CORS_HEADERS = {
     "Access-Control-Allow-Headers": "Content-Type",
 }
 
+# Active conversation mode (bin/jarvis-mode writes it): jarvis|gemini|openai.
+# In a direct mode the active voice is a separate process and JARVIS-Claude's
+# mic is owned by the mode watchdog — see the /mute handler.
+_ACTIVE_MODE_FILE = os.path.join(os.path.expanduser("~"), ".jarvis", "active-mode")
+
+
+def _direct_mode_active() -> bool:
+    try:
+        with open(_ACTIVE_MODE_FILE, encoding="utf-8") as f:
+            return f.read().strip() in ("gemini", "openai")
+    except Exception:
+        return False
+
 
 class VoiceClientHttpApi:
     """Aiohttp control-plane server with explicit state injection.
@@ -311,7 +324,18 @@ class VoiceClientHttpApi:
             # sync in livekit-rtc Python — they flip a flag the engine picks
             # up on the next audio frame. Skip gracefully if not connected;
             # the output mute above is the part the user actually hears.
-            if mic_pub is not None:
+            #
+            # In a DIRECT mode (Gemini/OpenAI) JARVIS-Claude's mic is owned by
+            # the mode watchdog (bin/jarvis-mode) which keeps it muted so only
+            # the direct voice answers. A USER toggle must NOT unmute it — doing
+            # so let Claude hear "Jarvis" and answer ("Yes?") ON TOP of the
+            # direct voice for the ~10s until the watchdog re-muted ("Jarvis
+            # started talking when I clicked mute"). So for user toggles in a
+            # direct mode, leave the mic to the watchdog and only drive the
+            # silent flag above (which mutes the direct voice + Claude TTS). The
+            # watchdog's own explicit calls still flow through to keep it muted.
+            skip_mic = user_toggle and _direct_mode_active()
+            if mic_pub is not None and not skip_mic:
                 if target:
                     mic_pub.track.mute()
                 else:
