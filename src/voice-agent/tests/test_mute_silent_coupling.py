@@ -26,13 +26,23 @@ from aiohttp.test_utils import TestClient, TestServer
 
 @pytest.fixture()
 def silent_file(tmp_path, monkeypatch):
-    """Isolate SILENT_MODE_FILE to a tmp path so tests don't touch the real
-    ~/.jarvis/.silent-mode and are deterministic."""
+    """Isolate SILENT_MODE_FILE + active-mode to tmp paths so tests don't read
+    the real ~/.jarvis state and are deterministic. Defaults to JARVIS mode
+    (no direct mode) unless a test writes the active-mode file."""
     import voice_client_http_api as mod
 
     f = tmp_path / ".silent-mode"
     monkeypatch.setattr(mod, "SILENT_MODE_FILE", f)
+    monkeypatch.setattr(mod, "_ACTIVE_MODE_FILE", str(tmp_path / "active-mode"))
     return f
+
+
+@pytest.fixture()
+def set_mode(tmp_path):
+    """Helper to write the (isolated) active-mode file."""
+    def _w(mode: str) -> None:
+        (tmp_path / "active-mode").write_text(mode, encoding="utf-8")
+    return _w
 
 
 def _make_api(*, muted_now: bool, room: object | None):
@@ -149,6 +159,44 @@ async def test_publish_failure_does_not_500(silent_file):
     assert silent_file.exists()                # file write still happened
 
 
+@pytest.mark.asyncio
+async def test_direct_mode_user_toggle_does_not_unmute_claude_mic(
+    silent_file, set_mode
+):
+    # In Gemini/OpenAI mode JARVIS-Claude's mic is owned by the watchdog. A
+    # user mute toggle must drive the silent flag but NEVER touch the mic —
+    # unmuting it let Claude answer "Yes?" over the direct voice.
+    set_mode("gemini")
+    silent_file.write_text("on\n")  # currently muted
+    room = _fake_room()
+    api, mic = _make_api(muted_now=True, room=room)
+    app = api.build_app()
+    async with TestClient(TestServer(app)) as client:
+        async with client.post("/mute", json={}) as resp:  # unmute toggle
+            assert resp.status == 200
+            assert (await resp.json())["silent"] is False
+    assert not silent_file.exists()              # silent flag cleared (Gemini)
+    mic.track.unmute.assert_not_called()         # but Claude's mic untouched
+    mic.track.mute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_jarvis_mode_user_toggle_still_drives_claude_mic(
+    silent_file, set_mode
+):
+    # In JARVIS mode Claude IS the active voice, so the toggle must mute its
+    # mic as before.
+    set_mode("jarvis")
+    room = _fake_room()
+    api, mic = _make_api(muted_now=False, room=room)
+    app = api.build_app()
+    async with TestClient(TestServer(app)) as client:
+        async with client.post("/mute", json={}) as resp:  # mute toggle
+            assert resp.status == 200
+            assert (await resp.json())["silent"] is True
+    mic.track.mute.assert_called_once()
+
+
 def test_silent_flag_roundtrip(tmp_path, monkeypatch):
     """The agent's silent-mode flag (set by the `silent` data packet) gates
     _is_silent(), which the proactive watchers consult."""
@@ -157,8 +205,16 @@ def test_silent_flag_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr(
         jarvis_agent, "_SILENT_MODE_FILE", tmp_path / ".silent-mode"
     )
+    monkeypatch.setattr(
+        jarvis_agent, "_ACTIVE_MODE_FILE", tmp_path / "active-mode"
+    )
     assert jarvis_agent._is_silent() is False
     jarvis_agent._set_silent(True)
     assert jarvis_agent._is_silent() is True
     jarvis_agent._set_silent(False)
+    assert jarvis_agent._is_silent() is False
+    # A direct mode silences Claude even with no user mute flag.
+    (tmp_path / "active-mode").write_text("gemini", encoding="utf-8")
+    assert jarvis_agent._is_silent() is True
+    (tmp_path / "active-mode").write_text("jarvis", encoding="utf-8")
     assert jarvis_agent._is_silent() is False

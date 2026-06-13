@@ -1194,10 +1194,32 @@ def _reset_tool_call_count() -> None:
 # mutes the LiveKit local audio track (and would prevent JARVIS
 # from hearing "wake up" entirely).
 _SILENT_MODE_FILE = Path.home() / ".jarvis" / ".silent-mode"
+# Active conversation mode (written by bin/jarvis-mode): "jarvis" | "gemini" |
+# "openai". In a DIRECT mode (gemini/openai) the active voice is a separate
+# process (jarvis-gemini-tools/jarvis-gpt-tools) — the Claude agent here is NOT
+# the voice the user hears and must stay fully silent, NOT just mic-muted.
+# Without this, Claude's proactive say() paths (cron digest, background-task
+# announcements, reconnect lines) voice OVER the direct model → the user hears
+# two voices / "Jarvis started talking" in Gemini mode.
+_ACTIVE_MODE_FILE = Path.home() / ".jarvis" / "active-mode"
+
+
+def _direct_mode_active() -> bool:
+    try:
+        return _ACTIVE_MODE_FILE.read_text(encoding="utf-8").strip() in (
+            "gemini",
+            "openai",
+        )
+    except Exception:
+        return False
 
 
 def _is_silent() -> bool:
-    return _SILENT_MODE_FILE.exists()
+    # Silent when the user muted (flag file) OR a direct mode owns the voice
+    # (Claude is dormant — see _direct_mode_active). Both routes suppress every
+    # gated Claude TTS path: reactive turns (on_user_turn_completed) and the
+    # proactive watchers (cron digest, background-task announcements).
+    return _SILENT_MODE_FILE.exists() or _direct_mode_active()
 
 
 def _set_silent(on: bool) -> None:
