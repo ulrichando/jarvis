@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Reliable JARVIS voice mute/unmute toggle — independent of the desktop
+# tray (which can drop click events on Linux/WebKitGTK).
+#
+# Bind this to a keyboard shortcut in your DE (e.g. Super+M) for a mute
+# button that always works, or run it directly. It toggles
+# ~/.jarvis/.silent-mode — the one signal every voice honors:
+#   - JARVIS-Claude: suppresses its TTS (and proactive announcements)
+#   - Gemini / OpenAI direct tools: pause mic-send + drop audio-out
+# and pings the voice-client so the Claude-path mic + in-flight
+# interrupt fire too. Works in every mode (jarvis / gemini / openai).
+set -uo pipefail
+
+SILENT="$HOME/.jarvis/.silent-mode"
+PORT="${JARVIS_VOICE_CLIENT_PORT:-8767}"
+BASE="http://127.0.0.1:${PORT}"
+
+if [ -f "$SILENT" ]; then
+    rm -f "$SILENT" 2>/dev/null || true
+    state="UNMUTED"
+    mute_arg=false
+else
+    mkdir -p "$(dirname "$SILENT")" 2>/dev/null || true
+    printf 'on\n' > "$SILENT"
+    state="MUTED"
+    mute_arg=true
+fi
+
+# Nudge the voice-client. In JARVIS mode this also (un)mutes the LiveKit
+# mic; in a direct mode the handler leaves the mic to the mode watchdog.
+# Best-effort — the .silent-mode write above is the authoritative signal.
+curl -s --max-time 1 -X POST "${BASE}/mute" \
+    -H "Content-Type: application/json" \
+    -d "{\"mute\": ${mute_arg}}" >/dev/null 2>&1 || true
+
+# When muting, cut any utterance already playing (the flag only gates
+# what comes next).
+if [ "$state" = MUTED ]; then
+    curl -s --max-time 1 -X POST "${BASE}/stop" >/dev/null 2>&1 || true
+fi
+
+echo "JARVIS voice: ${state}"
+notify-send "JARVIS" "Voice ${state}" 2>/dev/null || true
