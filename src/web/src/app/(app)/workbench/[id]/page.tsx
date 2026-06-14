@@ -3,6 +3,7 @@
 import { use, useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import type { UIMessage } from "ai";
 import { Chat } from "@/components/chat/chat";
@@ -148,14 +149,25 @@ export default function WorkbenchEditPage({
   // the URL so a manual reload doesn't replay either).
   const [seedPrompt] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
-    const params = new URLSearchParams(window.location.search);
-    return params.get("seed");
+    // Primary source: sessionStorage (set by the Design tab's Build action
+    // — the seed is too large for a URL param). Fallback: legacy ?seed=.
+    try {
+      const fromStore = sessionStorage.getItem(`workbench:seed:${id}`);
+      if (fromStore) return fromStore;
+    } catch {
+      /* storage disabled — fall through to the URL param */
+    }
+    return new URLSearchParams(window.location.search).get("seed");
   });
   useEffect(() => {
-    if (seedPrompt) {
-      // Clean the URL so a refresh doesn't re-trigger.
-      router.replace(`/workbench/${id}`);
+    if (!seedPrompt) return;
+    // Clear both sources so a refresh doesn't replay the build seed.
+    try {
+      sessionStorage.removeItem(`workbench:seed:${id}`);
+    } catch {
+      /* ignore */
     }
+    router.replace(`/workbench/${id}`);
   }, [seedPrompt, id, router]);
 
   // Esc exits fullscreen.
@@ -169,6 +181,14 @@ export default function WorkbenchEditPage({
   }, [fullscreen]);
 
   const refresh = () => setIframeKey((k) => k + 1);
+
+  const reduceMotion = useReducedMotion();
+
+  // Collapse code+terminal into one "view" so toggling between those two
+  // top-level tabs doesn't remount CodeTab (which would tear down the live
+  // terminal + lose open editor tabs). Preview / Settings animate normally.
+  const viewKey =
+    active === "preview" ? "preview" : active === "settings" ? "settings" : "code";
 
   const right = (
     <div className="flex h-full w-full flex-col">
@@ -185,25 +205,36 @@ export default function WorkbenchEditPage({
         onViewportChange={setViewport}
       />
       <div className="flex-1 min-h-0 overflow-hidden">
-        {(active === "code" || active === "terminal") && (
-          <CodeTab
-            workspaceId={id}
-            activePath={activePath}
-            onOpen={setActivePath}
-            onClosePath={() => setActivePath(null)}
-            iframeKey={iframeKey}
-            viewport={viewport}
-          />
-        )}
-        {active === "preview" && (
-          <PreviewTab workspaceId={id} iframeKey={iframeKey} viewport={viewport} />
-        )}
-        {active === "settings" && (
-          <SettingsTab
-            workspaceId={id}
-            workspaceName={ws?.name ?? "workspace"}
-          />
-        )}
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={viewKey}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: reduceMotion ? 0 : 0.15, ease: "easeOut" }}
+            className="h-full w-full"
+          >
+            {(active === "code" || active === "terminal") && (
+              <CodeTab
+                workspaceId={id}
+                activePath={activePath}
+                onOpen={setActivePath}
+                onClosePath={() => setActivePath(null)}
+                iframeKey={iframeKey}
+                viewport={viewport}
+              />
+            )}
+            {active === "preview" && (
+              <PreviewTab workspaceId={id} iframeKey={iframeKey} viewport={viewport} />
+            )}
+            {active === "settings" && (
+              <SettingsTab
+                workspaceId={id}
+                workspaceName={ws?.name ?? "workspace"}
+              />
+            )}
+          </motion.div>
+        </AnimatePresence>
       </div>
     </div>
   );

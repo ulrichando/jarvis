@@ -9,8 +9,9 @@ type Props = {
   workspaceId: string;
 };
 
-// xterm.js connects to the standalone PTY sidecar (scripts/pty-server.mjs).
-// Default URL ws://localhost:8772/pty; override via NEXT_PUBLIC_PTY_URL.
+// xterm.js connects to the standalone PTY sidecar (scripts/pty-server.mjs),
+// which is started alongside Next by `npm run dev` (concurrently → pty).
+// Default URL ws://<host>:8772/pty; override via NEXT_PUBLIC_PTY_URL.
 
 export function WorkbenchTerminal({ workspaceId }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -34,48 +35,90 @@ export function WorkbenchTerminal({ workspaceId }: Props) {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(containerRef.current);
-    try { fit.fit(); } catch {}
     termRef.current = term;
     fitRef.current = fit;
 
-    // Derive WS URL from the current page so it works whether the user
-    // hits localhost:3001 or the LAN IP. Override with NEXT_PUBLIC_PTY_URL
-    // if you want to point at a remote PTY host.
+    // Defer the first fit to the next frame: fitting synchronously right
+    // after open() can size the terminal to a 0×0 box (layout hasn't run
+    // yet) and leave it tiny until the first resize event.
+    const rafId = requestAnimationFrame(() => {
+      try {
+        fit.fit();
+      } catch {
+        /* container not measurable yet — the ResizeObserver will retry */
+      }
+    });
+
     const wsUrl =
       process.env.NEXT_PUBLIC_PTY_URL ??
       `ws://${window.location.hostname}:8772/pty`;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
 
-    let opened = false;
+    let disposed = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+    let everOpened = false;
+    let hintShown = false;
+    let ws: WebSocket | null = null;
 
-    ws.onopen = () => {
-      opened = true;
-      ws.send(
-        JSON.stringify({
-          type: "init",
-          workspaceId,
-          cols: term.cols,
-          rows: term.rows,
-        }),
-      );
+    const connect = () => {
+      if (disposed) return;
+      if (attempt === 0) {
+        term.write("\r\n\x1b[2m[connecting to terminal…]\x1b[0m\r\n");
+      }
+      ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        everOpened = true;
+        attempt = 0; // reset backoff after a good connection
+        hintShown = false;
+        ws!.send(
+          JSON.stringify({
+            type: "init",
+            workspaceId,
+            cols: term.cols,
+            rows: term.rows,
+          }),
+        );
+      };
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === "output") term.write(msg.data);
+          else if (msg.type === "exit")
+            term.write(`\r\n[exited code=${msg.code}]\r\n`);
+        } catch (err) {
+          if (process.env.NODE_ENV !== "production")
+            console.warn("[terminal] unparseable PTY frame:", err);
+        }
+      };
+      ws.onerror = () => {
+        // Don't assert a cause — the sidecar may be down, restarting, or
+        // briefly unreachable. Show the hint once; reconnect handles the
+        // transient cases.
+        if (!everOpened && !hintShown) {
+          hintShown = true;
+          term.write(
+            "\r\n\x1b[31m[can't reach the terminal sidecar on :8772 — it starts with `npm run dev`]\x1b[0m\r\n",
+          );
+        }
+      };
+      ws.onclose = () => {
+        if (disposed) return;
+        if (everOpened)
+          term.write("\r\n\x1b[2m[disconnected — reconnecting…]\x1b[0m\r\n");
+        // Exponential backoff (capped at 5s) so a sidecar restart or a
+        // network blip self-heals instead of leaving a dead terminal.
+        const delay = Math.min(500 * 2 ** attempt, 5000);
+        attempt += 1;
+        reconnectTimer = setTimeout(connect, delay);
+      };
     };
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data);
-        if (msg.type === "output") term.write(msg.data);
-        else if (msg.type === "exit") term.write(`\r\n[exited code=${msg.code}]\r\n`);
-      } catch {}
-    };
-    ws.onerror = () => {
-      term.write("\r\n\x1b[31m[pty connection error — is `npm run dev:pty` running?]\x1b[0m\r\n");
-    };
-    ws.onclose = () => {
-      if (opened) term.write("\r\n[disconnected]\r\n");
-    };
+
+    connect();
 
     term.onData((data) => {
-      if (ws.readyState === ws.OPEN) {
+      if (ws && ws.readyState === ws.OPEN) {
         ws.send(JSON.stringify({ type: "input", data }));
       }
     });
@@ -83,7 +126,7 @@ export function WorkbenchTerminal({ workspaceId }: Props) {
     const onResize = () => {
       try {
         fit.fit();
-        if (ws.readyState === ws.OPEN) {
+        if (ws && ws.readyState === ws.OPEN) {
           ws.send(
             JSON.stringify({
               type: "resize",
@@ -92,17 +135,30 @@ export function WorkbenchTerminal({ workspaceId }: Props) {
             }),
           );
         }
-      } catch {}
+      } catch {
+        /* ignore transient measure failures */
+      }
     };
     window.addEventListener("resize", onResize);
     const ro = new ResizeObserver(onResize);
     ro.observe(containerRef.current);
 
     return () => {
+      disposed = true;
+      cancelAnimationFrame(rafId);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       window.removeEventListener("resize", onResize);
       ro.disconnect();
-      try { ws.close(); } catch {}
-      try { term.dispose(); } catch {}
+      try {
+        ws?.close();
+      } catch {
+        /* already closing */
+      }
+      try {
+        term.dispose();
+      } catch {
+        /* already disposed */
+      }
     };
   }, [workspaceId]);
 

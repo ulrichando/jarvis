@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import CodeMirror from "@uiw/react-codemirror";
 import { javascript } from "@codemirror/lang-javascript";
 import { html } from "@codemirror/lang-html";
@@ -71,29 +72,35 @@ export function Editor({ workspaceId, path }: Props) {
 
   const extensions = useMemo(() => (path ? langFor(path) : []), [path]);
 
-  const save = async () => {
+  const save = useCallback(async () => {
     if (!path || saving) return;
     setSaving(true);
     try {
       await apiWriteFile(workspaceId, path, content);
       lastLoadedRef.current = content;
       setDirty(false);
+    } catch (e) {
+      // Don't fail silently — the previous version swallowed write errors,
+      // so a failed save looked identical to a successful one. Surface it
+      // and keep dirty=true so the user knows their change didn't persist.
+      toast.error(`Save failed: ${(e as Error).message ?? "unknown error"}`);
     } finally {
       setSaving(false);
     }
-  };
+  }, [workspaceId, path, content, saving]);
 
-  // Cmd/Ctrl+S
+  // Cmd/Ctrl+S. Depend on `save` (a useCallback) so the listener isn't
+  // re-registered on every render, but always calls the current closure.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
-        save();
+        void save();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  });
+  }, [save]);
 
   if (!path) {
     return (

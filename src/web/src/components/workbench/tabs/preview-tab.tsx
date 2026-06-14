@@ -20,6 +20,7 @@ type AutostartResult = {
   reason?: string;
   devScript?: string;
   patched?: boolean;
+  details?: string;
 };
 
 async function autostart(id: string): Promise<AutostartResult> {
@@ -68,7 +69,9 @@ export function PreviewTab({ workspaceId, iframeKey, viewport = "desktop" }: Pro
             ? "No package.json yet — ask Jarvis to scaffold the project first."
             : r.reason === "docker_unavailable"
               ? "Docker not available."
-              : `Autostart failed (${r.reason ?? "unknown"}).`,
+              : r.reason === "install_failed"
+                ? "Dependency install failed — open the Terminal or dev log to see why."
+                : `Autostart failed (${r.reason ?? "unknown"}).`,
         );
       }
     } catch (e) {

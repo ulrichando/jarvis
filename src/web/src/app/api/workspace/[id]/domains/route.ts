@@ -8,6 +8,21 @@ import {
 
 export const runtime = "nodejs";
 
+// Strict-ish hostname validation. The previous /^[a-z0-9.-]+\.[a-z]{2,}$/
+// accepted "..", leading/trailing hyphens, and all-numeric labels like
+// "0.0.0.0". Validate per-label: each label 1-63 chars of [a-z0-9-] with
+// no leading/trailing hyphen, an alphabetic TLD, total length <= 253.
+function isValidDomain(d: string): boolean {
+  if (!d || d.length > 253) return false;
+  const labels = d.split(".");
+  if (labels.length < 2) return false;
+  const tld = labels[labels.length - 1];
+  if (!/^[a-z]{2,}$/.test(tld)) return false;
+  return labels.every(
+    (l) => /^[a-z0-9-]{1,63}$/.test(l) && !l.startsWith("-") && !l.endsWith("-"),
+  );
+}
+
 /**
  * GET    /api/workspace/[id]/domains  → list domains attached to the
  *                                       workspace's Vercel project
@@ -61,7 +76,7 @@ export async function POST(
   const { id } = await ctx.params;
   const body = (await req.json().catch(() => ({}))) as { domain?: string };
   const domain = (body.domain ?? "").trim().toLowerCase();
-  if (!domain || !/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) {
+  if (!isValidDomain(domain)) {
     return NextResponse.json({ error: "invalid_domain" }, { status: 400 });
   }
   const ws = await getWorkspace(id);

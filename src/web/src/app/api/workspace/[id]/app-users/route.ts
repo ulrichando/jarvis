@@ -116,7 +116,7 @@ export async function GET(
         rowCount: 0,
         error: err instanceof Error ? err.message : String(err),
       },
-      { status: 200 },
+      { status: 500 },
     );
   }
   return NextResponse.json({
@@ -135,18 +135,25 @@ export async function DELETE(
   const url = new URL(req.url);
   const userId = (url.searchParams.get("id") ?? "").trim();
   if (!userId) return NextResponse.json({ error: "missing_id" }, { status: 400 });
+  // Hard-validate the id charset BEFORE it touches a shell. The delete
+  // runs as `sqlite3 ... "DELETE ... '<id>';"` INSIDE the container, so an
+  // id containing a double-quote / $ / backtick would break out of the
+  // shell double-quotes (command injection in the sandbox), and a single
+  // quote would break the SQL. App-user ids are integers / uuids / cuids
+  // in practice — allow only that safe charset and reject anything else.
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(userId)) {
+    return NextResponse.json({ error: "invalid_id" }, { status: 400 });
+  }
   if (!(await tableExists(id))) {
     return NextResponse.json(
       { error: "no_users_table" },
       { status: 400 },
     );
   }
-  // Escape quotes in the id — SQLite-safe by replacing ' with ''.
-  const safeId = userId.replace(/'/g, "''");
   try {
     await execInRuntime(
       id,
-      `sqlite3 ${PRIMARY_DB} "DELETE FROM users WHERE id = '${safeId}';"`,
+      `sqlite3 ${PRIMARY_DB} "DELETE FROM users WHERE id = '${userId}';"`,
       { timeoutMs: 5000 },
     );
     return NextResponse.json({ ok: true });

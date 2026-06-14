@@ -82,22 +82,86 @@ export type Workspace = {
      *  "Configure". */
     scaffolded?: boolean;
   };
+  /** Read-only public share link. The token is unguessable; the public
+   *  /share/<token> page renders ONLY the deployed site (if any) — never
+   *  source files or secrets. Expires, and the owner can revoke. */
+  share?: {
+    token: string;
+    createdAt: number;
+    expiresAt: number;
+  };
 };
 
 type Meta = { workspaces: Workspace[] };
 
+const META_BAK = META_FILE + ".bak";
+const META_TMP = META_FILE + ".tmp";
+
 async function loadMeta(): Promise<Meta> {
+  let primaryErr: NodeJS.ErrnoException | undefined;
   try {
-    const raw = await fs.readFile(META_FILE, "utf8");
-    return JSON.parse(raw);
+    return JSON.parse(await fs.readFile(META_FILE, "utf8")) as Meta;
+  } catch (e) {
+    primaryErr = e as NodeJS.ErrnoException;
+  }
+  // Primary missing or corrupt. Try the backup before giving up so a torn
+  // write / truncated file doesn't orphan every workspace — _meta.json is
+  // the single source of truth and is not otherwise backed up.
+  try {
+    const recovered = JSON.parse(await fs.readFile(META_BAK, "utf8")) as Meta;
+    if (primaryErr?.code !== "ENOENT") {
+      console.warn(
+        "[workspace] _meta.json unreadable; recovered from .bak:",
+        primaryErr?.message,
+      );
+    }
+    return recovered;
   } catch {
+    // ENOENT on the primary is normal (first run). Anything else is real
+    // corruption with no usable backup — surface it loudly rather than
+    // silently presenting an empty workspace list.
+    if (primaryErr && primaryErr.code !== "ENOENT") {
+      console.error(
+        "[workspace] _meta.json AND .bak unreadable; starting empty:",
+        primaryErr.message,
+      );
+    }
     return { workspaces: [] };
   }
 }
 
 async function saveMeta(meta: Meta) {
   await fs.mkdir(WORKSPACES_ROOT, { recursive: true });
-  await fs.writeFile(META_FILE, JSON.stringify(meta, null, 2));
+  const data = JSON.stringify(meta, null, 2);
+  // Atomic write: write a temp file then rename over the target, so a
+  // crash mid-write can never leave a half-written _meta.json. Back up
+  // the previous good file first (best-effort) so loadMeta can recover.
+  await fs.writeFile(META_TMP, data);
+  try {
+    await fs.copyFile(META_FILE, META_BAK);
+  } catch {
+    /* no prior file on first write — nothing to back up */
+  }
+  await fs.rename(META_TMP, META_FILE);
+}
+
+// Serialize every read-modify-write of _meta.json. All mutating helpers
+// below run their load→mutate→save through this single promise chain so
+// two concurrent requests can't clobber each other's changes (the file
+// is the single source of truth and has no transactions of its own).
+// Readers (listWorkspaces / getWorkspace) don't need the lock: the atomic
+// rename means a reader sees either the old or the new complete file,
+// never a torn one.
+let metaWriteChain: Promise<unknown> = Promise.resolve();
+function withMetaLock<T>(fn: () => Promise<T>): Promise<T> {
+  const result = metaWriteChain.then(fn, fn);
+  // Keep the chain alive regardless of this op's outcome; swallow here so
+  // one failed op doesn't reject the next op waiting on the chain.
+  metaWriteChain = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
 }
 
 export async function listWorkspaces(): Promise<Workspace[]> {
@@ -135,9 +199,11 @@ export async function createWorkspace(
     kind,
   };
   await fs.mkdir(path.join(WORKSPACES_ROOT, id), { recursive: true });
-  const meta = await loadMeta();
-  meta.workspaces.push(ws);
-  await saveMeta(meta);
+  await withMetaLock(async () => {
+    const meta = await loadMeta();
+    meta.workspaces.push(ws);
+    await saveMeta(meta);
+  });
   // Init git so every workspace is a real repo from turn 1. Failures
   // here aren't fatal — the workspace still works without git, the
   // commit endpoint will retry init on first commit. Most likely cause
@@ -156,11 +222,13 @@ export async function getWorkspace(id: string): Promise<Workspace | null> {
 }
 
 export async function touchWorkspace(id: string) {
-  const meta = await loadMeta();
-  const ws = meta.workspaces.find((w) => w.id === id);
-  if (!ws) return;
-  ws.updatedAt = Date.now();
-  await saveMeta(meta);
+  await withMetaLock(async () => {
+    const meta = await loadMeta();
+    const ws = meta.workspaces.find((w) => w.id === id);
+    if (!ws) return;
+    ws.updatedAt = Date.now();
+    await saveMeta(meta);
+  });
 }
 
 /**
@@ -173,25 +241,29 @@ export async function setWorkspaceConversation(
   workspaceId: string,
   conversationId: string,
 ) {
-  const meta = await loadMeta();
-  const ws = meta.workspaces.find((w) => w.id === workspaceId);
-  if (!ws) return;
-  if (ws.conversationId === conversationId) return;
-  ws.conversationId = conversationId;
-  ws.updatedAt = Date.now();
-  await saveMeta(meta);
+  await withMetaLock(async () => {
+    const meta = await loadMeta();
+    const ws = meta.workspaces.find((w) => w.id === workspaceId);
+    if (!ws) return;
+    if (ws.conversationId === conversationId) return;
+    ws.conversationId = conversationId;
+    ws.updatedAt = Date.now();
+    await saveMeta(meta);
+  });
 }
 
 export async function renameWorkspace(id: string, name: string): Promise<Workspace | null> {
   const trimmed = name.trim();
   if (!trimmed) return null;
-  const meta = await loadMeta();
-  const ws = meta.workspaces.find((w) => w.id === id);
-  if (!ws) return null;
-  ws.name = trimmed;
-  ws.updatedAt = Date.now();
-  await saveMeta(meta);
-  return ws;
+  return withMetaLock(async () => {
+    const meta = await loadMeta();
+    const ws = meta.workspaces.find((w) => w.id === id);
+    if (!ws) return null;
+    ws.name = trimmed;
+    ws.updatedAt = Date.now();
+    await saveMeta(meta);
+    return ws;
+  });
 }
 
 /**
@@ -205,82 +277,102 @@ export async function updateWorkspaceMeta(
   patch: {
     customInstructions?: string;
     envVars?: Record<string, string>;
+    /** Explicit env-var deletions. The editor can't round-trip masked
+     *  secret values, so deletes come through here instead of by sending
+     *  a full envVars map that omits them (which used to silently drop
+     *  every unrevealed secret). */
+    removeEnvKeys?: string[];
     devCommand?: string;
     deploy?: Workspace["deploy"];
     auth?: Workspace["auth"];
   },
 ): Promise<Workspace | null> {
-  const meta = await loadMeta();
-  const ws = meta.workspaces.find((w) => w.id === id);
-  if (!ws) return null;
-  if (typeof patch.customInstructions === "string") {
-    const trimmed = patch.customInstructions.slice(0, 8192);
-    ws.customInstructions = trimmed.length > 0 ? trimmed : undefined;
-  }
-  if (patch.envVars && typeof patch.envVars === "object") {
-    const next: Record<string, string> = {};
-    for (const [k, v] of Object.entries(patch.envVars)) {
-      const key = String(k).trim().toUpperCase();
-      // Reject empty keys + keys with shell-unsafe chars (newlines,
-      // equals, quotes). Docker --env doesn't permit them either.
-      if (!key || !/^[A-Z_][A-Z0-9_]*$/.test(key)) continue;
-      const val = String(v ?? "");
-      if (val.length > 4096) continue;
-      next[key] = val;
+  return withMetaLock(async () => {
+    const meta = await loadMeta();
+    const ws = meta.workspaces.find((w) => w.id === id);
+    if (!ws) return null;
+    if (typeof patch.customInstructions === "string") {
+      const trimmed = patch.customInstructions.slice(0, 8192);
+      ws.customInstructions = trimmed.length > 0 ? trimmed : undefined;
     }
-    ws.envVars = Object.keys(next).length > 0 ? next : undefined;
-  }
-  if (typeof patch.devCommand === "string") {
-    const cmd = patch.devCommand.trim().slice(0, 512);
-    ws.devCommand = cmd.length > 0 ? cmd : undefined;
-  }
-  if (patch.deploy !== undefined) {
-    // Caller can pass null to clear, or a partial to merge. Validate
-    // provider explicitly so a typo doesn't poison the meta.
-    if (patch.deploy === null) {
-      ws.deploy = undefined;
-    } else if (patch.deploy.provider === "vercel") {
-      ws.deploy = {
-        ...(ws.deploy ?? {}),
-        ...patch.deploy,
-        provider: "vercel",
-      };
+    // Env vars: MERGE into the existing set (never wipe keys the caller
+    // didn't send). Secret values are masked in API responses, so the
+    // editor literally cannot round-trip them — replacing wholesale would
+    // silently drop every unrevealed secret. Deletions come through the
+    // explicit removeEnvKeys list.
+    if (
+      (patch.envVars && typeof patch.envVars === "object") ||
+      Array.isArray(patch.removeEnvKeys)
+    ) {
+      const merged: Record<string, string> = { ...(ws.envVars ?? {}) };
+      if (patch.envVars && typeof patch.envVars === "object") {
+        for (const [k, v] of Object.entries(patch.envVars)) {
+          const key = String(k).trim().toUpperCase();
+          // Reject empty keys + keys with shell-unsafe chars (newlines,
+          // equals, quotes). Docker --env doesn't permit them either.
+          if (!key || !/^[A-Z_][A-Z0-9_]*$/.test(key)) continue;
+          const val = String(v ?? "");
+          if (val.length > 4096) continue;
+          merged[key] = val;
+        }
+      }
+      if (Array.isArray(patch.removeEnvKeys)) {
+        for (const rk of patch.removeEnvKeys) {
+          delete merged[String(rk).trim().toUpperCase()];
+        }
+      }
+      ws.envVars = Object.keys(merged).length > 0 ? merged : undefined;
     }
-  }
-  if (patch.auth !== undefined) {
-    if (patch.auth === null) {
-      ws.auth = undefined;
-    } else {
-      // Validate provider list — drop any unknown values silently.
-      const validProviders: Array<
-        "credentials" | "magic-link" | "google" | "github"
-      > = ["credentials", "magic-link", "google", "github"];
-      const providers = Array.isArray(patch.auth.providers)
-        ? patch.auth.providers.filter((p) =>
-            validProviders.includes(p),
-          )
-        : ws.auth?.providers ?? [];
-      const sessionMins = Number.isFinite(patch.auth.sessionMins)
-        ? Math.max(5, Math.min(43200, Math.floor(patch.auth.sessionMins)))
-        : ws.auth?.sessionMins ?? 1440;
-      const cookieSameSite =
-        patch.auth.cookieSameSite === "strict" ||
-        patch.auth.cookieSameSite === "none" ||
-        patch.auth.cookieSameSite === "lax"
-          ? patch.auth.cookieSameSite
-          : ws.auth?.cookieSameSite ?? "lax";
-      ws.auth = {
-        providers,
-        sessionMins,
-        cookieSecure: !!patch.auth.cookieSecure,
-        cookieSameSite,
-        scaffolded: patch.auth.scaffolded ?? ws.auth?.scaffolded,
-      };
+    if (typeof patch.devCommand === "string") {
+      const cmd = patch.devCommand.trim().slice(0, 512);
+      ws.devCommand = cmd.length > 0 ? cmd : undefined;
     }
-  }
-  ws.updatedAt = Date.now();
-  await saveMeta(meta);
-  return ws;
+    if (patch.deploy !== undefined) {
+      // Caller can pass null to clear, or a partial to merge. Validate
+      // provider explicitly so a typo doesn't poison the meta.
+      if (patch.deploy === null) {
+        ws.deploy = undefined;
+      } else if (patch.deploy.provider === "vercel") {
+        ws.deploy = {
+          ...(ws.deploy ?? {}),
+          ...patch.deploy,
+          provider: "vercel",
+        };
+      }
+    }
+    if (patch.auth !== undefined) {
+      if (patch.auth === null) {
+        ws.auth = undefined;
+      } else {
+        // Validate provider list — drop any unknown values silently.
+        const validProviders: Array<
+          "credentials" | "magic-link" | "google" | "github"
+        > = ["credentials", "magic-link", "google", "github"];
+        const providers = Array.isArray(patch.auth.providers)
+          ? patch.auth.providers.filter((p) => validProviders.includes(p))
+          : ws.auth?.providers ?? [];
+        const sessionMins = Number.isFinite(patch.auth.sessionMins)
+          ? Math.max(5, Math.min(43200, Math.floor(patch.auth.sessionMins)))
+          : ws.auth?.sessionMins ?? 1440;
+        const cookieSameSite =
+          patch.auth.cookieSameSite === "strict" ||
+          patch.auth.cookieSameSite === "none" ||
+          patch.auth.cookieSameSite === "lax"
+            ? patch.auth.cookieSameSite
+            : ws.auth?.cookieSameSite ?? "lax";
+        ws.auth = {
+          providers,
+          sessionMins,
+          cookieSecure: !!patch.auth.cookieSecure,
+          cookieSameSite,
+          scaffolded: patch.auth.scaffolded ?? ws.auth?.scaffolded,
+        };
+      }
+    }
+    ws.updatedAt = Date.now();
+    await saveMeta(meta);
+    return ws;
+  });
 }
 
 // Heuristic: which env-var values should be masked in API responses.
@@ -314,12 +406,64 @@ export function maskEnvVars(
   return out;
 }
 
+// ── Public share links ─────────────────────────────────────────────────
+
+const SHARE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+/** Mint (or refresh) a read-only share token for a workspace. */
+export async function setShareToken(
+  id: string,
+  ttlMs = SHARE_TTL_MS,
+): Promise<Workspace["share"] | null> {
+  return withMetaLock(async () => {
+    const meta = await loadMeta();
+    const ws = meta.workspaces.find((w) => w.id === id);
+    if (!ws) return null;
+    const now = Date.now();
+    ws.share = {
+      token: randomUUID().replace(/-/g, ""),
+      createdAt: now,
+      expiresAt: now + ttlMs,
+    };
+    ws.updatedAt = now;
+    await saveMeta(meta);
+    return ws.share;
+  });
+}
+
+/** Revoke a workspace's share link. */
+export async function clearShareToken(id: string) {
+  await withMetaLock(async () => {
+    const meta = await loadMeta();
+    const ws = meta.workspaces.find((w) => w.id === id);
+    if (!ws || !ws.share) return;
+    ws.share = undefined;
+    ws.updatedAt = Date.now();
+    await saveMeta(meta);
+  });
+}
+
+/** Resolve a workspace by an active (non-expired) share token. Returns
+ *  null for unknown or expired tokens. Read-only — no lock needed. */
+export async function getWorkspaceByShareToken(
+  token: string,
+): Promise<Workspace | null> {
+  if (!token) return null;
+  const meta = await loadMeta();
+  const ws = meta.workspaces.find((w) => w.share?.token === token);
+  if (!ws || !ws.share) return null;
+  if (ws.share.expiresAt < Date.now()) return null;
+  return ws;
+}
+
 export async function deleteWorkspace(id: string) {
   const dir = path.join(WORKSPACES_ROOT, id);
   await fs.rm(dir, { recursive: true, force: true });
-  const meta = await loadMeta();
-  meta.workspaces = meta.workspaces.filter((w) => w.id !== id);
-  await saveMeta(meta);
+  await withMetaLock(async () => {
+    const meta = await loadMeta();
+    meta.workspaces = meta.workspaces.filter((w) => w.id !== id);
+    await saveMeta(meta);
+  });
 }
 
 // --- Filesystem ops scoped to a single workspace ----------------

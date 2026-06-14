@@ -173,9 +173,23 @@ module.exports = {
     .then(() => true)
     .catch(() => false);
   if (!hasNodeModules) {
-    await execInRuntime(id, `cd ${cwd} && bun install`, {
+    const inst = await execInRuntime(id, `cd ${cwd} && bun install`, {
       timeoutMs: 180_000,
     });
+    if (inst.exitCode !== 0) {
+      // Don't claim success when deps didn't install — the dev server
+      // would just crash-loop and the Preview tab would spin forever.
+      // Surface the failure so the UI can show a real error + the tail
+      // of the install log.
+      return NextResponse.json(
+        {
+          ok: false,
+          reason: "install_failed",
+          details: (inst.stdout + "\n" + inst.stderr).slice(-2000),
+        },
+        { status: 200 },
+      );
+    }
   }
 
   // Spawn the dev server detached. The Preview tab polls /preview every

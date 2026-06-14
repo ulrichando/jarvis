@@ -41,6 +41,7 @@ export async function PATCH(req: Request, ctx: RouteContext<"/api/workspace/[id]
     name?: unknown;
     customInstructions?: unknown;
     envVars?: unknown;
+    removeEnvKeys?: unknown;
     devCommand?: unknown;
     deploy?: unknown;
     auth?: unknown;
@@ -55,7 +56,7 @@ export async function PATCH(req: Request, ctx: RouteContext<"/api/workspace/[id]
     const renamed = await renameWorkspace(id, name);
     if (!renamed) return NextResponse.json({ error: "not_found" }, { status: 404 });
     // If the request ONLY contained name, return early.
-    const otherKeys = ["customInstructions", "envVars", "devCommand", "deploy", "auth"] as const;
+    const otherKeys = ["customInstructions", "envVars", "removeEnvKeys", "devCommand", "deploy", "auth"] as const;
     if (otherKeys.every((k) => body[k] === undefined)) {
       return NextResponse.json({ workspace: publicShape(renamed) });
     }
@@ -72,6 +73,11 @@ export async function PATCH(req: Request, ctx: RouteContext<"/api/workspace/[id]
     !Array.isArray(body.envVars)
   ) {
     patch.envVars = body.envVars as Record<string, string>;
+  }
+  if (Array.isArray(body.removeEnvKeys)) {
+    patch.removeEnvKeys = body.removeEnvKeys.filter(
+      (k): k is string => typeof k === "string",
+    );
   }
   if (typeof body.devCommand === "string") {
     patch.devCommand = body.devCommand;
@@ -135,13 +141,37 @@ export async function PATCH(req: Request, ctx: RouteContext<"/api/workspace/[id]
 
 export async function DELETE(_req: Request, ctx: RouteContext<"/api/workspace/[id]">) {
   const { id } = await ctx.params;
-  // Tear down the sandbox container first so we don't orphan it. Failures
-  // here are non-fatal — if docker isn't running, we still want to nuke
-  // the on-disk workspace.
+  // Tear down the sandbox container first so we don't orphan it. A failed
+  // teardown is non-fatal for the on-disk delete (if docker isn't running
+  // we still nuke the workspace dir), but it must NOT be swallowed: a
+  // running container with no UI handle leaks resources forever. Log it,
+  // retry once, and report the outcome so the client can warn.
+  let containerTeardown: "ok" | "failed" | "skipped" = "skipped";
   try {
     const s = await dockerStatus();
-    if (s.available) await destroyRuntime(id);
-  } catch {}
+    if (s.available) {
+      try {
+        await destroyRuntime(id);
+        containerTeardown = "ok";
+      } catch (err) {
+        console.warn(`[workspace] destroyRuntime failed for ${id}, retrying:`, err);
+        try {
+          await destroyRuntime(id);
+          containerTeardown = "ok";
+        } catch (err2) {
+          containerTeardown = "failed";
+          console.error(
+            `[workspace] destroyRuntime failed twice for ${id}; container may be orphaned:`,
+            err2,
+          );
+        }
+      }
+    }
+  } catch (err) {
+    // dockerStatus itself failed — can't confirm whether a container runs.
+    containerTeardown = "failed";
+    console.error(`[workspace] dockerStatus failed during delete of ${id}:`, err);
+  }
   await deleteWorkspace(id);
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, containerTeardown });
 }
