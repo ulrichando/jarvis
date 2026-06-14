@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Check,
+  Copy,
   ExternalLink,
   FileText,
   Maximize2,
@@ -13,6 +15,7 @@ import {
   RefreshCw,
   X,
 } from "lucide-react";
+import { codeToHtml } from "shiki";
 import { apiReadFile, type TreeEntry } from "@/lib/workspace/client";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -144,6 +147,9 @@ function PreviewContainer({
   const [zoom, setZoom] = useState(100);
   const [commentMode, setCommentMode] = useState(false);
   const [editMode, setEditMode] = useState(false);
+  // Preview ⇄ Code view toggle (Claude-artifact parity). Sticky across file
+  // switches so a user reading the source stays in source.
+  const [viewMode, setViewMode] = useState<"preview" | "code">("preview");
 
   // Comment and Edit are mutually exclusive — turning one on disables the other.
   const setCommentModeExclusive = (next: boolean) => {
@@ -184,26 +190,36 @@ function PreviewContainer({
             setZoom((z) => [...ZOOM_STEPS].reverse().find((s) => s < z) ?? z)
           }
           onZoomReset={() => setZoom(100)}
-          commentMode={isHtml ? commentMode : undefined}
-          onCommentModeChange={isHtml ? setCommentModeExclusive : undefined}
-          editMode={isHtml ? editMode : undefined}
-          onEditModeChange={isHtml ? setEditModeExclusive : undefined}
+          viewMode={isHtml ? viewMode : undefined}
+          onViewModeChange={isHtml ? setViewMode : undefined}
+          commentMode={isHtml && viewMode === "preview" ? commentMode : undefined}
+          onCommentModeChange={
+            isHtml && viewMode === "preview" ? setCommentModeExclusive : undefined
+          }
+          editMode={isHtml && viewMode === "preview" ? editMode : undefined}
+          onEditModeChange={
+            isHtml && viewMode === "preview" ? setEditModeExclusive : undefined
+          }
         />
       )}
       <div className="flex-1 min-h-0">
         {isHtml ? (
-          <HtmlPreview
-            workspaceId={workspaceId}
-            path={selected.path}
-            iframeKey={iframeKey}
-            zoom={zoom}
-            commentMode={commentMode}
-            onCommentModeOff={() => setCommentMode(false)}
-            onComment={onComment}
-            editMode={editMode}
-            tweaks={tweaks}
-            tweakOverrides={tweakOverrides}
-          />
+          viewMode === "code" ? (
+            <CodePreview workspaceId={workspaceId} path={selected.path} />
+          ) : (
+            <HtmlPreview
+              workspaceId={workspaceId}
+              path={selected.path}
+              iframeKey={iframeKey}
+              zoom={zoom}
+              commentMode={commentMode}
+              onCommentModeOff={() => setCommentMode(false)}
+              onComment={onComment}
+              editMode={editMode}
+              tweaks={tweaks}
+              tweakOverrides={tweakOverrides}
+            />
+          )
         ) : isImage ? (
           <ImagePreview
             workspaceId={workspaceId}
@@ -227,6 +243,8 @@ function PreviewToolbar({
   onZoomOut,
   onZoomReset,
   disabled = false,
+  viewMode,
+  onViewModeChange,
   commentMode,
   onCommentModeChange,
   editMode,
@@ -239,11 +257,14 @@ function PreviewToolbar({
   onZoomOut?: () => void;
   onZoomReset?: () => void;
   disabled?: boolean;
+  viewMode?: "preview" | "code";
+  onViewModeChange?: (next: "preview" | "code") => void;
   commentMode?: boolean;
   onCommentModeChange?: (next: boolean) => void;
   editMode?: boolean;
   onEditModeChange?: (next: boolean) => void;
 }) {
+  const showView = onViewModeChange != null;
   const showComment = onCommentModeChange != null;
   const showEdit = onEditModeChange != null;
   return (
@@ -263,6 +284,28 @@ function PreviewToolbar({
       >
         <RefreshCw className="size-3.5" />
       </Button>
+
+      {showView && (
+        <div className="flex items-center rounded-md border border-border/60 p-0.5 text-[12px]">
+          {(["preview", "code"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => onViewModeChange?.(m)}
+              disabled={disabled}
+              aria-pressed={viewMode === m}
+              className={cn(
+                "rounded px-2 py-0.5 capitalize transition-colors",
+                viewMode === m
+                  ? "bg-muted text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+      )}
 
       {showComment && (
         <Button
@@ -1359,6 +1402,41 @@ function ImagePreview({
   );
 }
 
+// Map a file extension to a shiki language id. Designs are html/css/js plus
+// the occasional jsx/ts for multi-file React mockups.
+function langFromExt(e: string): string {
+  switch (e) {
+    case "html":
+    case "htm":
+      return "html";
+    case "css":
+      return "css";
+    case "js":
+    case "mjs":
+    case "cjs":
+      return "javascript";
+    case "jsx":
+      return "jsx";
+    case "ts":
+      return "typescript";
+    case "tsx":
+      return "tsx";
+    case "json":
+      return "json";
+    case "md":
+      return "markdown";
+    case "svg":
+    case "xml":
+      return "xml";
+    default:
+      return "text";
+  }
+}
+
+// Full-panel, syntax-highlighted source view (the "Code" side of the
+// Preview/Code toggle). Uses the same shiki theme as the chat code blocks
+// (github-dark-dimmed) so the Code tab reads like Claude's. Falls back to
+// plain monospace if highlighting fails or is mid-load.
 function CodePreview({
   workspaceId,
   path,
@@ -1370,13 +1448,62 @@ function CodePreview({
     queryKey: ["design-file", workspaceId, path],
     queryFn: () => apiReadFile(workspaceId, path),
   });
+  const [html, setHtml] = useState("");
+  const [copied, setCopied] = useState(false);
+  const lang = useMemo(() => langFromExt(ext(path)), [path]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!content) {
+        if (!cancelled) setHtml("");
+        return;
+      }
+      try {
+        const out = await codeToHtml(content, {
+          lang,
+          theme: "github-dark-dimmed",
+        });
+        if (!cancelled) setHtml(out);
+      } catch {
+        if (!cancelled) setHtml("");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [content, lang]);
+
   if (isLoading) return <PreviewLoading />;
   if (isError) return <PreviewError />;
+
+  const copy = () => {
+    void navigator.clipboard.writeText(content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
   return (
-    <div className="h-full overflow-auto bg-background">
-      <pre className="m-0 whitespace-pre-wrap wrap-break-word p-5 font-mono text-[12px] leading-5 text-foreground/90">
-        {content}
-      </pre>
+    <div className="relative h-full overflow-hidden bg-[#22272e]">
+      <button
+        type="button"
+        onClick={copy}
+        aria-label="Copy code"
+        title="Copy code"
+        className="absolute right-3 top-3 z-10 flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900/90 px-2 py-1 text-[11px] text-zinc-300 transition-colors hover:text-white"
+      >
+        {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+        {copied ? "Copied" : "Copy"}
+      </button>
+      <div className="h-full overflow-auto text-[12.5px] leading-5 [&_code]:font-mono [&_pre]:m-0! [&_pre]:min-h-full [&_pre]:bg-transparent! [&_pre]:p-5">
+        {html ? (
+          <div dangerouslySetInnerHTML={{ __html: html }} />
+        ) : (
+          <pre className="m-0 whitespace-pre-wrap wrap-break-word p-5 font-mono text-zinc-200">
+            {content}
+          </pre>
+        )}
+      </div>
     </div>
   );
 }

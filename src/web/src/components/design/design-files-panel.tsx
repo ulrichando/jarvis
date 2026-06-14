@@ -3,7 +3,6 @@
 import {
   ChevronDown,
   ChevronRight,
-  ChevronUp,
   File as FileIcon,
   FileCode,
   FileText,
@@ -44,7 +43,6 @@ export function DesignFilesPanel({
   workspaceId,
   selectedPath,
   onSelectFile,
-  onUpClick,
   refetchKey,
   format,
   onStarter,
@@ -57,7 +55,6 @@ export function DesignFilesPanel({
   workspaceId: string;
   selectedPath: string | null;
   onSelectFile: (entry: TreeEntry) => void;
-  onUpClick?: () => void;
   refetchKey?: number;
   format?: Format;
   onStarter?: (prompt: string) => void;
@@ -169,21 +166,14 @@ export function DesignFilesPanel({
         <Button
           variant="ghost"
           size="icon-sm"
-          aria-label="Up"
-          onClick={onUpClick}
-          disabled={!onUpClick}
-        >
-          <ChevronUp className="size-4" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon-sm"
           aria-label="Refresh"
           onClick={() => refetch()}
         >
           <RefreshCw className="size-3.5" />
         </Button>
-        <span className="text-[13px] text-muted-foreground/80">project</span>
+        <span className="text-[13px] font-medium text-muted-foreground/90">
+          {total > 0 ? `${total} file${total === 1 ? "" : "s"}` : "Files"}
+        </span>
         <div className="ml-auto flex items-center gap-1">
           {total > 0 && (
             <Button
@@ -464,9 +454,6 @@ function FileRow({
   /** Tree depth — every level adds 16px of left padding. */
   indent?: number;
 }) {
-  // We don't have per-file mtime in the tree response yet; placeholder.
-  const updated = "—";
-
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (deleting) return;
@@ -520,9 +507,6 @@ function FileRow({
         <div className="truncate text-[11px] text-muted-foreground">
           {fileKindLabel(entry)}
         </div>
-      </div>
-      <div className="hidden shrink-0 text-[11px] text-muted-foreground/70 md:block">
-        {updated}
       </div>
       <button
         type="button"

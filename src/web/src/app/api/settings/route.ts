@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { loadSettings, redactForClient, saveSettings } from "@/lib/settings/store";
-import { settingsSchema } from "@/lib/settings/schema";
+import { DEFAULT_SETTINGS, settingsSchema } from "@/lib/settings/schema";
 
 export const runtime = "nodejs";
 
@@ -143,5 +143,21 @@ export async function PATCH(req: Request) {
   });
 
   const saved = await saveSettings(next);
+  return Response.json(redactForClient(saved));
+}
+
+/**
+ * DELETE — reset settings to defaults. Preserves secrets (provider API keys +
+ * integration tokens) so the Account → Reset action matches its copy
+ * ("API keys and conversations are unaffected").
+ */
+export async function DELETE() {
+  const current = await loadSettings();
+  const reset = settingsSchema.parse({
+    ...DEFAULT_SETTINGS,
+    providers: current.providers,
+    integrations: current.integrations,
+  });
+  const saved = await saveSettings(reset);
   return Response.json(redactForClient(saved));
 }

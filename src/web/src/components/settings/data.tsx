@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Download, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -9,7 +10,34 @@ import { useConversations } from "@/hooks/use-conversations";
 
 export function DataSection() {
   const { data: conversations } = useConversations();
+  const qc = useQueryClient();
   const [exporting, setExporting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const deleteAll = async () => {
+    if (deleting || !conversations || conversations.length === 0) return;
+    if (
+      !window.confirm(
+        `Delete all ${conversations.length} conversation${conversations.length === 1 ? "" : "s"}? This can't be undone. Settings are kept.`,
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      await Promise.all(
+        conversations.map((c) =>
+          fetch(`/api/conversations/${c.id}`, { method: "DELETE" }),
+        ),
+      );
+      await qc.invalidateQueries({ queryKey: ["conversations"] });
+      toast.success("All conversations deleted");
+    } catch (e) {
+      toast.error(`Delete failed: ${(e as Error).message}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   const exportAll = async () => {
     if (!conversations || conversations.length === 0) {
@@ -98,7 +126,7 @@ export function DataSection() {
 
       <SettingsSection
         title="Danger zone"
-        description="Irreversible. Not wired to a destructive action yet — will ask for confirmation when enabled."
+        description="Irreversible. You'll be asked to confirm first."
       >
         <div className="flex items-center justify-between">
           <div>
@@ -109,9 +137,14 @@ export function DataSection() {
               Wipes every chat and message. Settings remain.
             </p>
           </div>
-          <Button variant="destructive" size="sm" disabled>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={deleteAll}
+            disabled={deleting || !conversations || conversations.length === 0}
+          >
             <Trash2 className="size-3.5" />
-            Delete all
+            {deleting ? "Deleting…" : "Delete all"}
           </Button>
         </div>
       </SettingsSection>

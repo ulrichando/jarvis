@@ -188,11 +188,7 @@ export function ConnectorsSection() {
               Allow Jarvis to reference other apps and services.
             </p>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => toast.message("Connector marketplace — coming soon")}
-          >
+          <Button variant="outline" size="sm" disabled>
             Browse connectors
           </Button>
         </div>
@@ -205,11 +201,7 @@ export function ConnectorsSection() {
 
       <section>
         <div className="border-t border-border/60 pt-4">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => toast.message("Custom connectors — coming soon")}
-          >
+          <Button variant="outline" size="sm" disabled>
             Add custom connector
           </Button>
         </div>

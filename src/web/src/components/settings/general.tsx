@@ -390,12 +390,7 @@ export function GeneralSection() {
               <button
                 key={v}
                 type="button"
-                onClick={() => {
-                  setVoice(v);
-                  toast.message(`Voice set to ${v} — coming soon`, {
-                    description: "Whisper streaming is being wired in.",
-                  });
-                }}
+                onClick={() => setVoice(v)}
                 className={cn(
                   "rounded-full border px-5 py-2 text-[13px] font-medium transition-colors",
                   voice === v
@@ -407,6 +402,11 @@ export function GeneralSection() {
               </button>
             ))}
           </div>
+          <p className="mt-3 text-[12px] text-muted-foreground">
+            Voice output is configured in the JARVIS desktop app (tray →
+            settings). This picker sets your preferred voice for when it&apos;s
+            available on the web.
+          </p>
         </div>
       </section>
     </div>

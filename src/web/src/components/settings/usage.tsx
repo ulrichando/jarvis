@@ -127,16 +127,17 @@ export function UsageSection() {
         <SectionHeader
           title="Provider limits"
           sub={
-            <a
-              href="#"
-              onClick={(e) => {
-                e.preventDefault();
-                toast.message("Provider rate limits are set by each API provider.");
-              }}
+            <button
+              type="button"
+              onClick={() =>
+                toast.message(
+                  "Provider rate limits are set by each API provider.",
+                )
+              }
               className="text-[13px] text-primary hover:underline"
             >
               Learn more about provider limits
-            </a>
+            </button>
           }
         />
 
@@ -180,30 +181,18 @@ export function UsageSection() {
         />
       </section>
 
-      {/* Cost tracking */}
+      {/* Cost tracking — needs real per-turn usage instrumentation, not yet
+          wired. Shown honestly as "Coming soon" with inert controls rather
+          than buttons that fake a "coming soon" toast on click. */}
       <section>
-        <SectionHeader title="Cost tracking" />
+        <SectionHeader title="Cost tracking" right="Coming soon" />
 
         <div className="flex items-center justify-between gap-4 py-3.5">
           <p className="text-[13px] text-muted-foreground">
-            Turn on cost alerts to get notified when you approach your budget
-            limit.{" "}
-            <button
-              type="button"
-              onClick={() => toast.message("Cost tracking docs coming soon.")}
-              className="text-primary hover:underline"
-            >
-              Learn more
-            </button>
+            Cost alerts notify you when you approach your budget limit — coming
+            once per-turn usage metering is wired.
           </p>
-          <Switch
-            checked={false}
-            onCheckedChange={() =>
-              toast.message("Cost alerts — coming soon", {
-                description: "Usage instrumentation will be wired in a future update.",
-              })
-            }
-          />
+          <Switch checked={false} disabled />
         </div>
 
         <div className="border-t border-border/60">
@@ -221,13 +210,7 @@ export function UsageSection() {
             label="Monthly API budget"
             info
             actions={
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  toast.message("Budget limits — coming soon")
-                }
-              >
+              <Button variant="outline" size="sm" disabled>
                 Set limit
               </Button>
             }
@@ -240,11 +223,7 @@ export function UsageSection() {
             label="Billing model"
             sub="Costs billed directly by each provider"
             actions={
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => toast.message("Provider billing docs coming soon.")}
-              >
+              <Button variant="outline" size="sm" disabled>
                 View providers
               </Button>
             }

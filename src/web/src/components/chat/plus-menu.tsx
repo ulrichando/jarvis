@@ -4,13 +4,20 @@ import { Plus, type LucideIcon } from "lucide-react";
 import type { MenuGroup } from "@/lib/ai/provider-ux";
 import { MenuButton } from "./menu-button";
 
-export function PlusMenu({ groups }: { groups: MenuGroup[] }) {
+export function PlusMenu({
+  groups,
+  onAction,
+}: {
+  groups: MenuGroup[];
+  onAction?: (id: string) => boolean | void;
+}) {
   return (
     <MenuButton
       label="Add content or tool"
       groups={groups}
       trigger={<Plus className="size-4" />}
       align="start"
+      onAction={onAction}
     />
   );
 }

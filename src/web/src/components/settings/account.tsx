@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -37,8 +38,28 @@ function CopyButton({ value }: { value: string }) {
 const INSTANCE_ID = "jarvis-local";
 
 export function AccountSection() {
-  const resetSettings = () => {
-    toast.error("Reset settings — not yet wired. Delete .jarvis/settings.json manually to reset.");
+  const qc = useQueryClient();
+  const [resetting, setResetting] = useState(false);
+  const resetSettings = async () => {
+    if (resetting) return;
+    if (
+      !window.confirm(
+        "Reset all settings to defaults? Your API keys and conversations are kept.",
+      )
+    ) {
+      return;
+    }
+    setResetting(true);
+    try {
+      const r = await fetch("/api/settings", { method: "DELETE" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      await qc.invalidateQueries({ queryKey: ["settings"] });
+      toast.success("Settings reset to defaults");
+    } catch (e) {
+      toast.error(`Reset failed: ${(e as Error).message}`);
+    } finally {
+      setResetting(false);
+    }
   };
 
   return (
@@ -77,8 +98,13 @@ export function AccountSection() {
                 Clears all settings. API keys and conversations are unaffected.
               </p>
             </div>
-            <Button variant="outline" size="sm" onClick={resetSettings}>
-              Reset
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={resetSettings}
+              disabled={resetting}
+            >
+              {resetting ? "Resetting…" : "Reset"}
             </Button>
           </div>
         </div>

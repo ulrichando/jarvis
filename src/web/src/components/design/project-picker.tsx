@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { ChevronDown, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import {
   apiCreateWorkspace,
@@ -42,7 +43,7 @@ export function ProjectPicker({
       onChanged?.();
       router.push(`/design?ws=${encodeURIComponent(ws.id)}`);
     } catch (err) {
-      window.alert(`Create failed: ${err instanceof Error ? err.message : err}`);
+      toast.error(`Create failed: ${err instanceof Error ? err.message : err}`);
     } finally {
       setBusy(null);
     }
@@ -57,7 +58,7 @@ export function ProjectPicker({
       onChanged?.();
       router.refresh();
     } catch (err) {
-      window.alert(`Rename failed: ${err instanceof Error ? err.message : err}`);
+      toast.error(`Rename failed: ${err instanceof Error ? err.message : err}`);
     } finally {
       setBusy(null);
     }
@@ -92,7 +93,7 @@ export function ProjectPicker({
       onChanged?.();
       router.refresh();
     } catch (err) {
-      window.alert(`Delete failed: ${err instanceof Error ? err.message : err}`);
+      toast.error(`Delete failed: ${err instanceof Error ? err.message : err}`);
     } finally {
       setBusy(null);
     }
