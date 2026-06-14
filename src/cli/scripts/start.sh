@@ -101,6 +101,17 @@ export SHELL=/bin/bash
 
 export ANTHROPIC_BASE_URL=http://localhost:4000
 export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-jarvis-proxy}"
+# JARVIS proxy credential ("OAuth via login"): when `jarvis auth login` has
+# provisioned a proxy token (sourced from ~/.jarvis/keys.env above), hand it to
+# the Anthropic SDK as the auth token so requests go out as
+# `Authorization: Bearer <token>` — which the proxy verifies when
+# JARVIS_PROXY_AUTH_REQUIRED=1. Mirrors run-cli.mjs's mapping: start.sh launches
+# cli.tsx DIRECTLY (not via run-cli.mjs), so without this the interactive
+# `jarvis` path attaches no Bearer and an auth-required proxy 401s every request.
+# Inert when the token is unset, so pre-login / fresh sessions are unchanged.
+if [ -z "${ANTHROPIC_AUTH_TOKEN:-}" ] && [ -n "${JARVIS_PROXY_TOKEN:-}" ]; then
+  export ANTHROPIC_AUTH_TOKEN="$JARVIS_PROXY_TOKEN"
+fi
 export JARVIS_PROVIDER="$SELECTED_PROVIDER"   # proxy default — /model overrides per-request
 # When the cli-model file pinned a specific upstream model, surface
 # it so the proxy uses that exact model rather than the provider's
