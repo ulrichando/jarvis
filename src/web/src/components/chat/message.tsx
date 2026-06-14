@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import type { UIMessage } from "ai";
 import {
+  Check,
   Copy,
   ThumbsUp,
   ThumbsDown,
@@ -424,6 +425,9 @@ export function Message({
                 text={text}
                 messageId={message.id}
                 workspaceId={workspaceId}
+                onRegenerate={
+                  !isUser && isLast ? () => onRetry?.(message.id) : undefined
+                }
               />
             </div>
           )}
@@ -837,13 +841,43 @@ function MessageActions({
   text,
   messageId,
   workspaceId,
+  onRegenerate,
 }: {
   text: string;
   messageId?: string;
   workspaceId?: string;
+  /** When provided, Regenerate re-runs this turn (re-submits the preceding
+   *  user prompt and replaces this assistant message). Omitted on user rows
+   *  and on non-final turns. */
+  onRegenerate?: () => void;
 }) {
   const qc = useQueryClient();
   const [undoing, setUndoing] = useState(false);
+  const [copied, setCopied] = useState(false);
+  // Thumbs feedback, persisted per-message in localStorage so it survives a
+  // refresh without a server round-trip (personal-app scale).
+  const fbKey = messageId ? `jarvis:chat:feedback:${messageId}` : null;
+  const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
+  useEffect(() => {
+    if (!fbKey) return;
+    const v = window.localStorage.getItem(fbKey);
+    if (v === "up" || v === "down") setFeedback(v);
+  }, [fbKey]);
+  const setFb = (next: "up" | "down") =>
+    setFeedback((cur) => {
+      const value = cur === next ? null : next;
+      if (fbKey) {
+        if (value) window.localStorage.setItem(fbKey, value);
+        else window.localStorage.removeItem(fbKey);
+      }
+      return value;
+    });
+  const onCopy = () => {
+    void navigator.clipboard.writeText(text);
+    setCopied(true);
+    toast.success("Copied to clipboard");
+    setTimeout(() => setCopied(false), 1500);
+  };
   const onUndo = async () => {
     if (!workspaceId || !messageId || undoing) return;
     if (
@@ -884,13 +918,33 @@ function MessageActions({
   };
   return (
     <div className="mt-2 flex items-center gap-0.5">
-      <ActionBtn aria-label="Copy" icon={Copy} onClick={() => navigator.clipboard.writeText(text)} />
-      <ActionBtn aria-label="Like" icon={ThumbsUp} onClick={() => {}} />
-      <ActionBtn aria-label="Dislike" icon={ThumbsDown} onClick={() => {}} />
-      <ActionBtn aria-label="Regenerate" icon={RotateCcw} onClick={() => {}} />
+      <ActionBtn aria-label="Copy" title="Copy" icon={copied ? Check : Copy} onClick={onCopy} />
+      <ActionBtn
+        aria-label="Good response"
+        title="Good response"
+        icon={ThumbsUp}
+        active={feedback === "up"}
+        onClick={() => setFb("up")}
+      />
+      <ActionBtn
+        aria-label="Bad response"
+        title="Bad response"
+        icon={ThumbsDown}
+        active={feedback === "down"}
+        onClick={() => setFb("down")}
+      />
+      {onRegenerate && (
+        <ActionBtn
+          aria-label="Regenerate"
+          title="Regenerate response"
+          icon={RotateCcw}
+          onClick={onRegenerate}
+        />
+      )}
       {workspaceId && messageId && (
         <ActionBtn
           aria-label="Undo this turn"
+          title="Undo this turn"
           icon={undoing ? Loader2 : Undo2}
           onClick={onUndo}
           spinning={undoing}
@@ -904,18 +958,27 @@ function ActionBtn({
   icon: Icon,
   onClick,
   spinning,
+  active,
   ...props
 }: {
   icon: LucideIcon;
   onClick: () => void;
   spinning?: boolean;
+  active?: boolean;
   "aria-label": string;
+  title?: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="flex size-7 items-center justify-center rounded-md text-muted-foreground/50 hover:bg-accent/40 hover:text-muted-foreground transition-colors"
+      aria-pressed={active}
+      className={cn(
+        "flex size-7 items-center justify-center rounded-md transition-colors",
+        active
+          ? "text-primary hover:bg-accent/40"
+          : "text-muted-foreground/50 hover:bg-accent/40 hover:text-muted-foreground",
+      )}
       {...props}
     >
       <Icon className={cn("size-3.5", spinning && "animate-spin")} />

@@ -30,12 +30,16 @@ export function MenuButton({
   trigger,
   align = "start",
   contentClassName,
+  onAction,
 }: {
   label: string;
   groups: MenuGroup[];
   trigger: React.ReactNode;
   align?: "start" | "end";
   contentClassName?: string;
+  /** Handle an action/submenu item by id. Return truthy if handled — only
+   *  unhandled items fall back to the "not wired yet" toast. */
+  onAction?: (id: string) => boolean | void;
 }) {
   const initialToggles: Record<string, boolean> = {};
   for (const g of groups) {
@@ -96,7 +100,7 @@ export function MenuButton({
                     if (item.kind === "toggle") {
                       e.preventDefault();
                       setToggles((t) => ({ ...t, [item.id]: !t[item.id] }));
-                    } else {
+                    } else if (!onAction?.(item.id)) {
                       soon(item.label);
                     }
                   }}

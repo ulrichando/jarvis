@@ -1,6 +1,5 @@
 "use client";
 
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -48,14 +47,7 @@ export function JarvisInChromeSection() {
                 Choose whether Jarvis in Chrome works on all sites by default.
               </p>
             </div>
-            <Select
-              defaultValue="allow"
-              onValueChange={() =>
-                toast.message("Jarvis in Chrome — not yet available", {
-                  description: "The browser extension is coming in a future release.",
-                })
-              }
-            >
+            <Select defaultValue="allow" disabled>
               <SelectTrigger className="w-44">
                 <SelectValue />
               </SelectTrigger>
@@ -81,15 +73,7 @@ export function JarvisInChromeSection() {
             <p className="text-[13px] text-muted-foreground">
               Jarvis in Chrome cannot be used on these sites.
             </p>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                toast.message("Blocked sites — coming soon", {
-                  description: "Manage per-site extension access once the extension is available.",
-                })
-              }
-            >
+            <Button variant="outline" size="sm" disabled>
               Add websites
             </Button>
           </div>

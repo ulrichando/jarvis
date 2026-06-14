@@ -11,6 +11,21 @@ import { PlusMenu, SecondaryMenu } from "./plus-menu";
 import type { Provider } from "@/lib/ai/models-meta";
 import { getProviderUX } from "@/lib/ai/provider-ux";
 
+// Minimal shape of the Web Speech API we use (lib.dom doesn't ship
+// SpeechRecognition types). Enough to drive start/stop + read transcripts.
+type SpeechRecognitionLike = {
+  lang: string;
+  interimResults: boolean;
+  continuous: boolean;
+  start: () => void;
+  stop: () => void;
+  onresult:
+    | ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void)
+    | null;
+  onerror: ((e: { error: string }) => void) | null;
+  onend: (() => void) | null;
+};
+
 export type AttachedImage = {
   // Stable id so we can remove a specific one without index drift.
   id: string;
@@ -96,10 +111,56 @@ export function Composer({
     onSubmit({ images: carry });
   };
 
-  const startDictation = () =>
-    toast.message("Voice input — coming soon", {
-      description: "Whisper streaming will be wired next.",
-    });
+  // Browser dictation (Web Speech API). Real where supported (Chrome/Edge);
+  // honest toast where not (e.g. the Linux Tauri webview — desktop users have
+  // the full voice agent regardless). Click to start, click again to stop.
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const valueRef = useRef(value);
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
+
+  const startDictation = () => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      return;
+    }
+    const w = window as unknown as {
+      SpeechRecognition?: new () => SpeechRecognitionLike;
+      webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+    };
+    const SR = w.SpeechRecognition ?? w.webkitSpeechRecognition;
+    if (!SR) {
+      toast.error("Voice input isn't supported in this browser.");
+      return;
+    }
+    const rec = new SR();
+    rec.lang = navigator.language || "en-US";
+    rec.interimResults = true;
+    rec.continuous = true;
+    // Append dictated text to whatever was already typed.
+    const base = valueRef.current ? `${valueRef.current.trimEnd()} ` : "";
+    rec.onresult = (e) => {
+      let transcript = "";
+      for (let i = 0; i < e.results.length; i++) {
+        transcript += e.results[i][0]?.transcript ?? "";
+      }
+      onChange(base + transcript);
+    };
+    rec.onerror = (e) => {
+      if (e.error !== "aborted" && e.error !== "no-speech") {
+        toast.error(`Voice input error: ${e.error}`);
+      }
+    };
+    rec.onend = () => {
+      recognitionRef.current = null;
+      setListening(false);
+    };
+    recognitionRef.current = rec;
+    setListening(true);
+    rec.start();
+  };
 
   // Image attachments (drop-screenshot-get-code workflow). Stored as
   // data URLs so we can preview thumbnails and ship them inline as
@@ -262,7 +323,19 @@ export function Composer({
             pickers truncate via `min-w-0` instead. */}
         <div className="flex items-center justify-between gap-2 px-2 pb-2">
           <div className="flex shrink-0 items-center gap-1">
-            <PlusMenu groups={ux.plus} />
+            <PlusMenu
+              groups={ux.plus}
+              onAction={(id) => {
+                // "Add files or photos" reuses the composer's existing
+                // attach picker; everything else stays an honest "not
+                // wired yet" disclosure inside the menu.
+                if (id === "files") {
+                  attach();
+                  return true;
+                }
+                return false;
+              }}
+            />
           </div>
           <div className="flex min-w-0 flex-1 items-center justify-end gap-1">
             <Button
@@ -284,7 +357,19 @@ export function Composer({
                 <ComposerWorkspacePicker />
               </div>
             )}
-            {value.trim().length === 0 && images.length === 0 && !isBusy ? (
+            {listening ? (
+              <Button
+                type="button"
+                onClick={startDictation}
+                size="icon"
+                variant="ghost"
+                className="size-8 shrink-0 rounded-lg text-primary hover:text-primary"
+                aria-label="Stop voice input"
+                title="Listening… click to stop"
+              >
+                <AudioLines className="size-4 animate-pulse" />
+              </Button>
+            ) : value.trim().length === 0 && images.length === 0 && !isBusy ? (
               <Button
                 type="button"
                 onClick={startDictation}
@@ -292,6 +377,7 @@ export function Composer({
                 variant="ghost"
                 className="size-8 shrink-0 rounded-lg text-muted-foreground hover:text-foreground"
                 aria-label="Voice input"
+                title="Voice input (dictate)"
               >
                 <AudioLines className="size-4" />
               </Button>
