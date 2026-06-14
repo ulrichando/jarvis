@@ -336,24 +336,9 @@ ${clarifyBlock}
     "Design mode mocks the visuals — for a working build, switch to the regular chat or workbench. I'll mock the [format] side here."
   Then mock the visual surface they described. "Build me a food-delivery app" → a 3-screen iPhone prototype that LOOKS like the app. "Build me a calculator" → a calculator screen with buttons that look right but don't compute.
 
-  ORGANIZATION (required for multi-file output):
-    - 1 file: ship it as a single HTML at the root. Done.
-    - 2 files: HTML entry + one companion (CSS or JS) at the root is fine.
-    - **3+ files: you MUST organize them into folders by purpose.** Don't dump everything at the root. Use these conventions:
-        \`screens/\` — sub-screens of a prototype (\`screens/home.html\`, \`screens/detail.html\`)
-        \`scenes/\` — animation scenes (\`scenes/intro.jsx\`, \`scenes/build.jsx\`, \`scenes/outro.jsx\`)
-        \`components/\` — reusable JSX/HTML pieces (\`components/Card.jsx\`, \`components/Header.jsx\`)
-        \`styles/\` — split stylesheets when there's more than one (\`styles/typography.css\`, \`styles/layout.css\`)
-        \`src/\` — shared helpers (\`src/easings.js\`, \`src/palette.js\`)
-        \`references/\` — uploaded images, brand logo, source PDFs
-    - The entry point file is always at the root, named per the format (see the <format> block below for the exact filename).
-    - Each file is a separate boltAction \`type="file"\` block. Entry first, then companions in source-order (CSS before JS that uses it, helpers before the components that import them).
-    - Files import each other via plain relative paths (\`<link rel="stylesheet" href="./styles/layout.css">\`, \`import Cover from "./components/Cover.jsx"\`). Use \`<script type="module">\` for JSX/ESM, loaded from esm.sh.
-
-  Concrete examples:
-    - Pitch deck with 8 slides → \`slides.html\` + \`styles/deck.css\` + \`components/CoverSlide.jsx\` + \`components/StatSlide.jsx\` + \`components/QuoteSlide.jsx\` (3 components → must use \`components/\`).
-    - Motion piece with intro/build/outro → \`animations.jsx\` + \`scenes/intro.jsx\` + \`scenes/build.jsx\` + \`scenes/outro.jsx\` + \`src/easings.js\` (3 scenes + a helper → must use \`scenes/\` and \`src/\`).
-    - Prototype with home + list + detail → \`prototype.html\` + \`screens/home.html\` + \`screens/list.html\` + \`screens/detail.html\` + \`styles/app.css\` (3 screens → must use \`screens/\`).
+  ORGANIZATION:
+    - Ship ONE self-contained HTML file at the root, named per the format (see the <format> block below for the exact filename). Everything inline — all CSS in a single \`<style>\` (or Tailwind classes), all JS in a single \`<script>\`. This is exactly how Claude Design ships an artifact: one file that opens and renders standalone.
+    - Do NOT split into companion files — no \`components/\`, \`screens/\`, \`scenes/\`, \`styles/\`, \`src/\`, no \`App.jsx\`, no relative imports of local files. The ONLY subfolder you ever reference is \`references/\` (images/PDFs the user already uploaded).
 
   STILL FORBIDDEN (no exceptions):
     - package.json, package-lock, vite.config, next.config, tsconfig, any build manifest. The browser opens the entry-point HTML directly.
@@ -415,32 +400,7 @@ function formatBlock(format: Format): string {
   File path: "${file}"
   Canvas: fluid width, scrollable.
 
-  =============== FILE STRUCTURE — NON-NEGOTIABLE ===============
-  A landing page is a MULTI-FILE project. This is exactly how Lovable, v0, Bolt, and Claude Design organize their output — and it is what every user expects when they ask jarvis to build a landing page.
-
-  EMITTING ONE BIG HTML FILE WITH EVERYTHING INLINE IS A FAILURE MODE. The user opens the file tree and sees one bloated index.html instead of editable components. They cannot say "redesign just the Hero" or "tweak the Footer" because there are no separate files. Don't do this.
-
-  YOU MUST emit BETWEEN 8 AND 12 SEPARATE FILES per landing page. ANY artifact with fewer than 7 boltAction file blocks is wrong and must be expanded before you stop.
-
-  Required file list — emit each as a separate \`<boltAction type="file" filePath="...">\`:
-    1. \`landing.html\`              — entry shell ONLY. Tailwind CDN, fonts, viewport, prefers-reduced-motion CSS, and the inline \`<script type="module">\` that mounts \`<App/>\` from \`./App.jsx\`. ~25-50 lines. NO page content here, no headlines, no sections.
-    2. \`App.jsx\`                   — root component. Imports every section, composes them. ~25-40 lines. NO inline JSX content beyond \`<Header/>\`, the section components in order, and \`<Footer/>\`. Composition only.
-    3. \`components/Header.jsx\`     — sticky header. Brand mark + 4-6 nav links + primary CTA. ~40-80 lines.
-    4. \`components/Hero.jsx\`       — hero section, content-led, asymmetric or full-bleed. Real Unsplash photo. ~60-120 lines.
-    5. \`components/LogoCloud.jsx\`  — social-proof band ("As featured in" / "Trusted by" with grayscale wordmarks). ~30-60 lines.
-    6. \`components/Features.jsx\` (or \`AlternatingRows.jsx\`) — primary features as alternating image-left/image-right rows. ~80-150 lines.
-    7. \`components/<Section>.jsx\`   — secondary section using a DIFFERENT pattern from the library (bento, stat-band, quote-pull, timeline, before-after, etc.). ~60-120 lines.
-    8. \`components/Testimonials.jsx\` — testimonial carousel or grid with real Unsplash portraits + name + role + company. ~60-120 lines.
-    9. \`components/Pricing.jsx\` OR \`components/FAQ.jsx\` — pricing tiers OR accordion of 4-6 questions. ~50-120 lines.
-    10. \`components/CTABand.jsx\`    — sticky-CTA band before the footer. ~30-50 lines.
-    11. \`components/Footer.jsx\`     — substantive 5-column footer (brand+social, product, company, resources, newsletter). ~80-150 lines.
-
-  (no \`src/cn.js\` — \`cn\` is imported from \`/jarvis-shadcn.mjs\`)
-
-  Self-check before you emit \`</boltArtifact>\`:
-    - Did I write at least 8 separate \`<boltAction type="file">\` blocks? If no → keep going, you're not done.
-    - Is \`landing.html\` under 60 lines? If it has section content inline, you broke the rule — move it to a component file.
-    - Is \`App.jsx\` purely composition (no inline copy/markup beyond component tags)? If no → factor sections out.
+  FILE STRUCTURE: a landing page is ONE self-contained \`${file}\` — Tailwind CDN + fonts in \`<head>\`, every section directly in the \`<body>\`, custom CSS in an inline \`<style>\`, and any interactivity in an inline \`<script>\`. Everything in one file, exactly like a Claude Design artifact. No \`components/\` split, no \`App.jsx\`, no \`./\` imports of local files.
 
   REQUIRED ANATOMY (every section is mandatory — a "landing page" missing the header or footer is not a landing page, it's a fragment):
 
@@ -856,9 +816,9 @@ ${themeHead}
 
   return `
 <stack>
-  Build with: React + Tailwind + shadcn-pattern + motion via CDN/esm.sh. NO build step, NO package.json.
+  ONE self-contained HTML file (named "${FORMAT_FILE[format]}"). Plain HTML + Tailwind via CDN + inline <style> + inline <script>. NO React component tree, NO esm.sh imports of local files, NO build step, NO package.json — exactly like a Claude Design artifact: the single file opens and renders standalone.
 
-  ENTRY HTML SCAFFOLD (the entry-point file the user opens). The <head> below is PRE-BAKED — drop it in verbatim. Colors, fonts, Tailwind config, easings, prefers-reduced-motion — all set. DO NOT modify the CSS variables in :root, the tailwind.config, or the body classes. The contrast and font wiring are correct as-is.
+  ENTRY HTML SCAFFOLD. The <head> below is PRE-BAKED — drop it in verbatim. Colors, fonts, Tailwind config, easings, prefers-reduced-motion — all set. DO NOT modify the CSS variables in :root, the tailwind.config, or the body classes.
 
     <!doctype html>
     <html lang="en">
@@ -869,17 +829,14 @@ ${themeHead}
 ${themeHead.split("\n").map((l) => "      " + l).join("\n")}
     </head>
     <body class="bg-(--bg) text-(--fg) antialiased">
-      <div id="root"></div>
-      <script type="module">
-        import { createElement } from "https://esm.sh/react@18";
-        import { createRoot } from "https://esm.sh/react-dom@18/client";
-        import App from "./App.jsx";
-        createRoot(document.getElementById("root")).render(createElement(App));
+      <!-- Every section inline, directly here. -->
+      <script>
+        // Optional vanilla interactivity (slide nav, data-route screens, tabs, sliders).
       </script>
     </body>
     </html>
 
-  HOW TO COLOR + STYLE COMPONENTS — Tailwind arbitrary values referencing the CSS variables (these are guaranteed to resolve at runtime; named utilities like \`bg-bg\` do NOT work with @tailwindcss/browser):
+  HOW TO COLOR + STYLE — Tailwind arbitrary values referencing the CSS variables (these are guaranteed to resolve at runtime; named utilities like \`bg-bg\` do NOT work with @tailwindcss/browser):
 
     Backgrounds: \`bg-[var(--bg)]\` (page), \`bg-[var(--supporting)]\` (cards/headers), \`bg-[var(--accent)]\` (CTAs).
     Text:        \`text-[var(--fg)]\` (primary), \`text-[var(--muted)]\` (secondary), \`text-[var(--accent)]\` (links/highlights).
@@ -887,83 +844,24 @@ ${themeHead.split("\n").map((l) => "      " + l).join("\n")}
     Fonts:       use the helper classes \`font-display\` (headlines, defined in :root) or \`font-body\` (UI). Headings (h1/h2/h3) are auto-set to display via CSS — no class needed.
     Easings:     use the helper class \`ease-out-expo\` for transitions.
 
-  STRICT RULES:
+  STRICT CONTRAST RULES:
     1. NEVER use \`text-[var(--bg)]\` or \`text-[var(--supporting)]\` for body content. Those are background tones — the result is dark-on-dark or near-dark-on-near-dark, invisible.
     2. Inverted text (button label on a colored bg): \`bg-[var(--accent)] text-[var(--bg)]\` is OK ONLY when --accent is bright enough to contrast with --bg as the text color. The pre-baked themes are tuned so this works; do NOT use it on generic \`bg-[var(--supporting)]\`.
     3. NEVER stack opacity modifiers on already-muted tokens (\`text-[var(--muted)]/50\` becomes near-invisible). For very-quiet text use \`text-[var(--muted)]\` plain.
     4. Do NOT invent new CSS variable names (--paper, --ink, --parchment, etc.). The five tokens above are all you have.
 
-  HOW MULTI-FILE WORKS: JARVIS transforms each \`.jsx\` / \`.tsx\` file server-side via esbuild before serving, using the automatic JSX runtime. So you DO NOT need to \`import React\` in component files — \`<div/>\` and \`<MyComp/>\` just work. Bare ES module imports like \`./components/Button.jsx\` are real browser-native ESM imports — fast, no Babel runtime in the iframe.
+  INTERACTIVITY — one inline vanilla \`<script>\` at the end of <body>. Plenty for everything design mode needs: slide nav / a fixed "Present" toggle, \`data-route="<screen>"\` buttons that show/hide \`<section data-screen="<screen>">\` blocks, tabs, accordions, sliders, hover/scroll reveals, JARVIS tweaks.
 
-  COMPONENT FILES (.jsx):
-    // App.jsx — note: no \`import React\` needed; the JSX runtime is auto-imported.
-    import { motion, AnimatePresence } from "https://esm.sh/motion@12/react";
-    import Button from "./components/Button.jsx";
-    import Home from "./screens/Home.jsx";
+  For a genuinely component-heavy interactive prototype you MAY use React INLINE in the SAME file via Babel standalone — never as separate files:
+    - In <head>: the React + react-dom UMD builds (\`https://unpkg.com/react@18/umd/react.production.min.js\` + the matching react-dom) and \`https://unpkg.com/@babel/standalone/babel.min.js\`.
+    - One \`<script type="text/babel">\` at the end of <body> with EVERY component defined inline and \`ReactDOM.createRoot(document.getElementById('root')).render(<App/>)\` at the bottom (add a \`<div id="root"></div>\` to the body). React/hooks come from the \`React\` global — no imports.
+    - NO \`./App.jsx\`, NO \`./components/*.jsx\`, NO esm.sh imports of local files.
+  Icons: \`<i data-lucide="arrow-right"></i>\` + the lucide CDN script + \`lucide.createIcons()\`, or author small inline SVGs.
 
-    export default function App() {
-      return (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.6 }}>
-          <Home />
-          <Button>Reserve</Button>
-        </motion.div>
-      );
-    }
-
-  LIBRARY IMPORTS (use these exact specifiers — only in the entry HTML; component files don't need React imports):
-    React (entry only): \`import { createElement } from "https://esm.sh/react@18"\`
-    React DOM (entry):  \`import { createRoot } from "https://esm.sh/react-dom@18/client"\`
-    React hooks:        \`import { useState, useEffect, useRef, useMemo } from "https://esm.sh/react@18"\`
-    Motion:       \`import { motion, AnimatePresence } from "https://esm.sh/motion@12/react"\`
-    Radix Dialog: \`import * as Dialog from "https://esm.sh/@radix-ui/react-dialog@1"\`
-    Radix Tabs:   \`import * as Tabs from "https://esm.sh/@radix-ui/react-tabs@1"\`
-    Lucide icons: \`import { ArrowRight, Check, X } from "https://esm.sh/lucide-react@0.469"\`
-    clsx:         \`import clsx from "https://esm.sh/clsx@2"\`
-    cva:          \`import { cva } from "https://esm.sh/class-variance-authority@0"\`
-
-  SHADCN COMPONENTS (use the bundled JARVIS shadcn primitives — DO NOT re-implement them):
-  JARVIS ships a curated shadcn-pattern bundle at \`/jarvis-shadcn.mjs\`. Import the primitives you need from there directly — saves you from re-writing Button/Card/Dialog every generation, AND ensures consistency across designs.
-
-    import {
-      Button, Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter,
-      Input, Label, Badge, Separator, Avatar, AvatarImage, AvatarFallback,
-      Tabs, TabsList, TabsTrigger, TabsContent,
-      Dialog, DialogTrigger, DialogContent, DialogHeader, DialogFooter,
-      DialogTitle, DialogDescription,
-      TooltipProvider, Tooltip, TooltipTrigger, TooltipContent,
-      Section, cn,
-    } from "/jarvis-shadcn.mjs";
-
-  Available variants:
-    - Button: \`variant\` = default | outline | ghost | destructive | secondary | link.   \`size\` = sm | md | lg | icon.
-    - Badge:  \`variant\` = default | secondary | outline | destructive.
-
-  All primitives consume the theme CSS variables (--bg, --fg, --accent, --muted, --supporting), so they automatically match whatever theme the entry HTML sets up. No styling needed.
-
-  When to fall back to inline JSX (instead of importing): only when you need a component the bundle doesn't have (e.g. a custom Hero layout, a marketing-specific Pricing card). Common interactive primitives are ALWAYS in the bundle.
-
-  HELPERS — DON'T duplicate:
-    \`cn\` is already exported by \`/jarvis-shadcn.mjs\` (named export). DO NOT create \`src/cn.js\`. DO NOT \`import cn from "../src/cn.js"\`. Use \`import { cn } from "/jarvis-shadcn.mjs"\` everywhere.
-
-  ICONS:
-    \`import { ArrowRight, Check, X } from "https://esm.sh/lucide-react@0.469"\` — same package the bundle uses, deduped by the iframe's import map.
-
-  FOLDER LAYOUT (REQUIRED for multi-file React projects):
-    \`<entry>.html\`               — the format's entry-point HTML (loads Tailwind + Babel standalone)
-    \`App.jsx\`                    — root React component
-    \`components/Button.jsx\`      — shadcn-pattern components (Button, Card, etc.)
-    \`components/Card.jsx\`
-    \`screens/Home.jsx\`           — for prototype: each route gets its own file
-    \`screens/Detail.jsx\`
-    \`scenes/Intro.jsx\`           — for animated slides: each scene gets its own file
-    (no \`src/cn.js\` needed — \`cn()\` is imported from \`/jarvis-shadcn.mjs\`)
-    \`src/palette.js\`             — color/space tokens as constants (optional)
-    \`tailwind.config.json\`       — custom tokens, OPTIONAL (declared inline in HTML works too)
-    \`references/\`                — uploaded assets
-
-  TWO HARD RULES STILL APPLY:
-    1. NO \`package.json\`, no \`npm/bun/pnpm install\` instructions, no \`bun dev\`. The user opens the HTML directly.
-    2. NO real backend, no real auth, no CRUD. Visual mocks only — interactivity inside the design is great, deployed software is not the goal.
+  HARD RULES:
+    1. ONE file. NO separate .jsx/.css/.js companion files, NO \`./components/…\`, \`./screens/…\`, \`./styles/…\`, \`App.jsx\`, no relative imports of local files.
+    2. NO \`package.json\`, no \`npm/bun/pnpm install\` instructions, no \`bun dev\`. The user opens the HTML directly.
+    3. NO real backend, no real auth, no CRUD. Visual mocks only — interactivity inside the design is great, deployed software is not the goal.
 </stack>`;
 }
 
@@ -1031,20 +929,13 @@ function artifactRulesBlock(format: Format): string {
   const folderExample = artifactFolderExample(format, file);
   return `
 <artifact_format>
-  Wrap your output in a single boltArtifact. Inside it, emit ONE OR MORE boltAction file blocks — the entry-point first, then companion files.
-
-  CRITICAL — the \`filePath\` attribute on each boltAction MUST encode the folder. Files don't end up in folders by magic; they end up wherever the \`filePath\` says they go. \`filePath="components/Button.jsx"\` → ends up in components/. \`filePath="Button.jsx"\` → ends up at the root. If your filePath has no slash, the file lands at the root, period.
+  Wrap your output in a single boltArtifact containing ONE boltAction file block — the self-contained entry HTML named "${file}".
 
   Concrete shape (THIS is what your output looks like, not commented hints):
 
 ${folderExample}
 
-  Splitting rules (re-stating because this gets ignored a lot):
-    - When you write 3+ files, AT LEAST 2 of them MUST have a folder prefix in their filePath. No exceptions.
-    - Group helpers under \`src/\`, sub-screens under \`screens/\`, scenes under \`scenes/\`, components under \`components/\`. Don't invent random folder names.
-    - The entry-point file is "${file}" — it's the only file that always lives at the root.
-    - Companion files reference each other via plain relative paths inside their content (\`./components/Button.jsx\`, \`./src/cn.js\`). The folder you wrote in filePath = the folder they import from.
-    - One design = one boltArtifact, even if it spans many files. Don't split one design into multiple artifacts.
+  - One design = one file = one boltAction inside one boltArtifact. Everything inline; no companion files and no folder prefixes (the only slash-path you'd ever write points at an existing \`references/\` upload).
 
   Provide complete file contents in every boltAction — never diffs, never "// rest unchanged", never placeholders.
   Do NOT emit boltAction type="shell" or type="start". No package.json, no install scripts.
@@ -1066,33 +957,15 @@ function artifactFolderExample(format: Format, entry: string): string {
   switch (format) {
     case "slides":
       return `    <boltArtifact id="kindling-pitch" title="Kindling pitch deck">
-      <boltAction type="file" filePath="${entry}">[entry HTML — loads Tailwind, Babel standalone, mounts App.jsx]</boltAction>
-      <boltAction type="file" filePath="App.jsx">[root component — sequences slides]</boltAction>
-      <boltAction type="file" filePath="components/CoverSlide.jsx">[cover slide]</boltAction>
-      <boltAction type="file" filePath="components/StatSlide.jsx">[big-stat slide]</boltAction>
-      <boltAction type="file" filePath="components/QuoteSlide.jsx">[quote slide]</boltAction>
-      <!-- no src/cn.js — cn is exported by /jarvis-shadcn.mjs -->
+      <boltAction type="file" filePath="${entry}">[ONE file — every <section class="slide"> inline, Tailwind CDN in <head>, optional inline <script> for a Present toggle]</boltAction>
     </boltArtifact>`;
     case "prototype":
       return `    <boltArtifact id="reading-tracker" title="Reading tracker prototype">
-      <boltAction type="file" filePath="${entry}">[entry HTML — loads Tailwind, Babel standalone, mounts App.jsx]</boltAction>
-      <boltAction type="file" filePath="App.jsx">[root — device frame + screen router]</boltAction>
-      <boltAction type="file" filePath="screens/Home.jsx">[home screen]</boltAction>
-      <boltAction type="file" filePath="screens/Library.jsx">[library screen]</boltAction>
-      <boltAction type="file" filePath="screens/Timer.jsx">[active reading screen]</boltAction>
-      <boltAction type="file" filePath="components/Button.jsx">[shadcn-pattern button]</boltAction>
-      <boltAction type="file" filePath="components/Card.jsx">[shadcn-pattern card]</boltAction>
-      <!-- no src/cn.js — cn is exported by /jarvis-shadcn.mjs -->
+      <boltAction type="file" filePath="${entry}">[ONE file — device frame + every <section data-screen="…"> inline, inline <script> data-route controller switches screens]</boltAction>
     </boltArtifact>`;
     case "landing":
       return `    <boltArtifact id="hearing-saas" title="Hearing scheduler landing">
-      <boltAction type="file" filePath="${entry}">[entry HTML — loads Tailwind, Babel standalone, mounts App.jsx]</boltAction>
-      <boltAction type="file" filePath="App.jsx">[root — composes sections]</boltAction>
-      <boltAction type="file" filePath="components/Hero.jsx">[asymmetric hero]</boltAction>
-      <boltAction type="file" filePath="components/StatBand.jsx">[stat band section]</boltAction>
-      <boltAction type="file" filePath="components/Quote.jsx">[testimonial section]</boltAction>
-      <boltAction type="file" filePath="components/CTA.jsx">[footer CTA]</boltAction>
-      <!-- no src/cn.js — cn is exported by /jarvis-shadcn.mjs -->
+      <boltAction type="file" filePath="${entry}">[ONE file — header, hero, features, testimonials, pricing/FAQ, CTA, footer all inline, Tailwind CDN in <head>]</boltAction>
     </boltArtifact>`;
     case "onepager":
       return `    <boltArtifact id="weekly-briefing" title="Weekly team briefing">
