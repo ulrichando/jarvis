@@ -607,8 +607,15 @@ function EnvVarsSection({
   const keys = Object.keys(env).sort();
 
   const save = useMutation({
-    mutationFn: (next: Record<string, string>) =>
-      patchWorkspace(workspaceId, { envVars: next }),
+    // The server MERGES envVars and applies removeEnvKeys explicitly, so
+    // we only ever send the keys that actually changed. Masked secrets we
+    // can't see are preserved server-side instead of being silently
+    // dropped (the old "send back everything we have plaintext for"
+    // approach wiped every unrevealed secret on any edit).
+    mutationFn: (patch: {
+      envVars?: Record<string, string>;
+      removeEnvKeys?: string[];
+    }) => patchWorkspace(workspaceId, patch),
     onSuccess: () => {
       toast.success("Environment variables saved", {
         description:
@@ -619,17 +626,6 @@ function EnvVarsSection({
     onError: (err: Error) => toast.error(`Save failed: ${err.message}`),
   });
 
-  const buildPlainEnv = (): Record<string, string> => {
-    // Server returns masked values for secrets — we can't faithfully
-    // round-trip those without revealing them. So when saving, send
-    // back ONLY the keys we have plaintext for (revealed + new).
-    const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(env)) {
-      if (!v.masked) out[k] = v.value;
-    }
-    return out;
-  };
-
   const addVar = () => {
     const key = newKey.trim().toUpperCase();
     if (!key || !/^[A-Z_][A-Z0-9_]*$/.test(key)) {
@@ -638,16 +634,19 @@ function EnvVarsSection({
       });
       return;
     }
-    const next = { ...buildPlainEnv(), [key]: newValue };
-    save.mutate(next);
+    if (newValue.length > 4096) {
+      toast.error("Value too long", {
+        description: "Environment variable values are capped at 4096 characters.",
+      });
+      return;
+    }
+    save.mutate({ envVars: { [key]: newValue } });
     setNewKey("");
     setNewValue("");
   };
 
   const removeVar = (key: string) => {
-    const next = { ...buildPlainEnv() };
-    delete next[key];
-    save.mutate(next);
+    save.mutate({ removeEnvKeys: [key] });
   };
 
   return (
@@ -1950,11 +1949,31 @@ function DomainsHostingSection({
               <button
                 type="button"
                 onClick={() => {
-                  const d = newDomain.trim();
-                  if (d) {
-                    addDom.mutate(d);
-                    setNewDomain("");
+                  const d = newDomain.trim().toLowerCase();
+                  if (!d) return;
+                  // Fail fast in the UI instead of round-tripping to the
+                  // server's stricter validator (matches it: per-label,
+                  // alphabetic TLD, no leading/trailing hyphen).
+                  const ok =
+                    d.length <= 253 &&
+                    d.split(".").length >= 2 &&
+                    /^[a-z]{2,}$/.test(d.split(".").pop() ?? "") &&
+                    d
+                      .split(".")
+                      .every(
+                        (l) =>
+                          /^[a-z0-9-]{1,63}$/.test(l) &&
+                          !l.startsWith("-") &&
+                          !l.endsWith("-"),
+                      );
+                  if (!ok) {
+                    toast.error("Invalid domain", {
+                      description: "Enter a valid hostname, e.g. example.com",
+                    });
+                    return;
                   }
+                  addDom.mutate(d);
+                  setNewDomain("");
                 }}
                 disabled={addDom.isPending || !newDomain.trim()}
                 className="rounded-md border border-border px-3 py-1.5 text-[11.5px] hover:bg-accent disabled:opacity-50"
@@ -2033,8 +2052,11 @@ function KnowledgeSection({ workspaceId }: { workspaceId: string }) {
       if (!r.ok) throw new Error(r.statusText);
       return r.json();
     },
-    onSuccess: () =>
-      qc.invalidateQueries({ queryKey: ["ws", workspaceId, "knowledge"] }),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["ws", workspaceId, "knowledge"] });
+      toast.success(vars.enabled ? "Document enabled" : "Document disabled");
+    },
+    onError: (e: Error) => toast.error(`Update failed: ${e.message}`),
   });
 
   const remove = useMutation({

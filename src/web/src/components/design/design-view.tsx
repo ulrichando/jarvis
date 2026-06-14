@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ChevronDown, Download, ExternalLink, Hammer, Loader2, Maximize, Palette, Play, Plus, Share2, Sliders, X } from "lucide-react";
+import { Check, ChevronDown, Copy, Download, ExternalLink, Hammer, Link2, Loader2, Maximize, Palette, Play, Plus, Share2, Sliders, X } from "lucide-react";
 import type { TreeEntry } from "@/lib/workspace/client";
 import { Chat } from "@/components/chat/chat";
 import { Button } from "@/components/ui/button";
@@ -544,10 +544,24 @@ export function DesignView({
         id: buildToast,
         description: `Copied ${j.copiedFiles ?? "?"} design files. Opening workbench…`,
       });
-      // Navigate to the new workbench workspace with the seed prompt.
-      // The workbench page's Chat auto-fires it on mount.
+      // Hand the seed to the workbench via sessionStorage, NOT the URL.
+      // The seed runs from a few KB up to ~80KB (inlined design source on
+      // the codegen-fallback path), which overflows URL/header limits and
+      // makes the App Router RSC navigation 431 / truncate — silently
+      // breaking the build on larger designs. The workbench reads + clears
+      // it on mount and the Chat auto-fires it. URL param kept only as a
+      // private-mode fallback (works for small seeds).
+      let stashed = false;
+      try {
+        sessionStorage.setItem(`workbench:seed:${j.workspaceId}`, j.seed);
+        stashed = true;
+      } catch {
+        /* storage disabled — fall back to the URL param */
+      }
       router.push(
-        `/workbench/${j.workspaceId}?seed=${encodeURIComponent(j.seed)}`,
+        stashed
+          ? `/workbench/${j.workspaceId}`
+          : `/workbench/${j.workspaceId}?seed=${encodeURIComponent(j.seed)}`,
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -730,13 +744,7 @@ export function DesignView({
               </div>
             </details>
           )}
-          <Button
-            size="sm"
-            className="rounded-md bg-foreground text-background hover:bg-foreground/90"
-          >
-            <Share2 className="size-3.5" />
-            Share
-          </Button>
+          <ShareButton workspaceId={workspaceId} />
           <Link
             href="/settings"
             className="flex size-7 items-center justify-center rounded-full bg-primary/20 font-mono text-[11px] font-semibold text-primary"
@@ -904,6 +912,130 @@ export function DesignView({
         )}
       </div>
     </div>
+  );
+}
+
+// Share — mints a public, read-only link to the design via the existing
+// /api/workspace/[id]/share endpoint. The /share/<token> page renders the
+// design's entry HTML (served through the token-scoped asset route) so anyone
+// with the link sees the live design, never the source files.
+function ShareButton({ workspaceId }: { workspaceId: string }) {
+  const [loading, setLoading] = useState(false);
+  const [url, setUrl] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const create = async () => {
+    if (loading) return;
+    setLoading(true);
+    try {
+      const r = await fetch(`/api/workspace/${workspaceId}/share`, {
+        method: "POST",
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.error ?? `HTTP ${r.status}`);
+      }
+      const j = (await r.json()) as { path: string };
+      setUrl(`${window.location.origin}${j.path}`);
+    } catch (e) {
+      toast.error(`Couldn't create share link: ${(e as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const revoke = async () => {
+    try {
+      await fetch(`/api/workspace/${workspaceId}/share`, { method: "DELETE" });
+      setUrl(null);
+      toast.success("Share link revoked");
+    } catch (e) {
+      toast.error(`Couldn't revoke link: ${(e as Error).message}`);
+    }
+  };
+
+  const copy = () => {
+    if (!url) return;
+    void navigator.clipboard.writeText(url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <details className="relative">
+      <summary className="flex h-7 cursor-pointer list-none items-center gap-1.5 rounded-md bg-foreground px-2.5 text-[13px] font-medium text-background transition-colors hover:bg-foreground/90">
+        <Share2 className="size-3.5" />
+        Share
+      </summary>
+      <div className="absolute right-0 top-full z-20 mt-1 w-72 rounded-md border border-border/60 bg-popover p-3 shadow-md">
+        {url ? (
+          <div className="space-y-2">
+            <p className="text-[12px] leading-4 text-muted-foreground">
+              Anyone with this link can view this design (read-only, expires in
+              7 days).
+            </p>
+            <div className="flex items-center gap-1.5">
+              <input
+                readOnly
+                value={url}
+                onFocus={(e) => e.currentTarget.select()}
+                className="min-w-0 flex-1 rounded border border-border/60 bg-card px-2 py-1 text-[12px] text-foreground outline-none"
+              />
+              <button
+                type="button"
+                onClick={copy}
+                aria-label="Copy link"
+                title="Copy link"
+                className="flex size-7 shrink-0 items-center justify-center rounded-md border border-border/60 text-muted-foreground transition-colors hover:text-foreground"
+              >
+                {copied ? (
+                  <Check className="size-3.5 text-primary" />
+                ) : (
+                  <Copy className="size-3.5" />
+                )}
+              </button>
+            </div>
+            <div className="flex items-center justify-between pt-0.5">
+              <a
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1 text-[12px] text-primary hover:underline"
+              >
+                Open <ExternalLink className="size-3" />
+              </a>
+              <button
+                type="button"
+                onClick={revoke}
+                className="text-[12px] text-muted-foreground transition-colors hover:text-destructive"
+              >
+                Revoke link
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-[12px] leading-4 text-muted-foreground">
+              Create a public, read-only link to this design that anyone can
+              open.
+            </p>
+            <button
+              type="button"
+              onClick={create}
+              disabled={loading}
+              className="flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-2.5 py-1.5 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
+            >
+              {loading ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Link2 className="size-3.5" />
+              )}
+              Create share link
+            </button>
+          </div>
+        )}
+      </div>
+    </details>
   );
 }
 

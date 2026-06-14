@@ -11,6 +11,12 @@ import {
 
 export const runtime = "nodejs";
 
+// Size caps so a single request can't read a huge file fully into memory
+// and OOM the server. Raw mode serves binary assets to the iframe
+// (images / pdf), so it gets a larger ceiling than the text/editor path.
+const MAX_RAW_BYTES = 25 * 1024 * 1024;
+const MAX_TEXT_BYTES = 2 * 1024 * 1024;
+
 const MIME: Record<string, string> = {
   png: "image/png",
   jpg: "image/jpeg",
@@ -45,6 +51,13 @@ export async function GET(req: Request, ctx: RouteContext<"/api/workspace/[id]/f
   if (raw) {
     try {
       const abs = resolveSafe(id, rel);
+      const st = await fs.stat(abs);
+      if (st.size > MAX_RAW_BYTES) {
+        return NextResponse.json(
+          { error: `file too large (${st.size} bytes; max ${MAX_RAW_BYTES})` },
+          { status: 413 },
+        );
+      }
       const buf = await fs.readFile(abs);
       const ext = path.extname(rel).slice(1).toLowerCase();
       const type = MIME[ext] ?? "application/octet-stream";
@@ -61,6 +74,14 @@ export async function GET(req: Request, ctx: RouteContext<"/api/workspace/[id]/f
   }
 
   try {
+    const abs = resolveSafe(id, rel);
+    const st = await fs.stat(abs);
+    if (st.size > MAX_TEXT_BYTES) {
+      return NextResponse.json(
+        { error: "file too large to open in the editor (max 2MB)" },
+        { status: 413 },
+      );
+    }
     const content = await readFile(id, rel);
     return NextResponse.json({ content });
   } catch (e) {

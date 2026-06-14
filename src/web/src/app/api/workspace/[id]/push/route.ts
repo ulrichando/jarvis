@@ -46,12 +46,14 @@ export async function POST(
     const { url } = await gitPush({ workspaceId: id, ownerRepo, token });
     return NextResponse.json({ ok: true, url });
   } catch (err) {
-    console.error("[push] failed:", err);
+    // git errors frequently echo the remote URL, which embeds the token
+    // (https://x-access-token:<TOKEN>@github.com/…). Redact the exact
+    // token before it can reach the server logs OR the client response.
+    const raw = String(err instanceof Error ? err.message : err);
+    const redacted = token ? raw.split(token).join("***") : raw;
+    console.error("[push] failed:", redacted);
     return NextResponse.json(
-      {
-        error: "push_failed",
-        message: String(err instanceof Error ? err.message : err),
-      },
+      { error: "push_failed", message: redacted },
       { status: 500 },
     );
   }

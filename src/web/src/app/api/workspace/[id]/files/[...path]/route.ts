@@ -47,9 +47,15 @@ export async function GET(
   ctx: RouteContext<"/api/workspace/[id]/files/[...path]">,
 ) {
   const { id, path: parts } = await ctx.params;
-  const rel = (parts ?? []).join("/");
+  const segments = parts ?? [];
+  const rel = segments.join("/");
   if (!rel) {
     return NextResponse.json({ error: "missing path" }, { status: 400 });
+  }
+  // Bound the path so a pathological request can't allocate a giant string
+  // / deeply-nested walk. resolveSafe still enforces the no-escape rule.
+  if (segments.length > 64 || rel.length > 1024) {
+    return NextResponse.json({ error: "path too long" }, { status: 400 });
   }
   try {
     const abs = resolveSafe(id, rel);
