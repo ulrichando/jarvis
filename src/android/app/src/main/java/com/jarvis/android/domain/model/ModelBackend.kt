@@ -46,23 +46,4 @@ enum class ModelBackend(
         label      = "llama.cpp",
         extensions = listOf(".gguf"),
     ),
-
-    /**
-     * Ollama REST bridge — model runs on a LAN server.
-     * No local file; model name used as server-side identifier.
-     * Fallback to on-device if server is unreachable.
-     */
-    OLLAMA(
-        label      = "Ollama",
-        extensions = emptyList(),   // server-managed
-    ),
-
-    /**
-     * OpenAI-compatible endpoint (LM Studio, vLLM, llama-server).
-     * Same protocol as Ollama but with /v1/chat/completions.
-     */
-    OPENAI_COMPAT(
-        label      = "OpenAI API",
-        extensions = emptyList(),
-    ),
 }

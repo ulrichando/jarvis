@@ -6,7 +6,6 @@ import com.jarvis.android.system.llm.LiteRtLmBackend
 import com.jarvis.android.system.llm.LlamaJNI
 import com.jarvis.android.system.llm.ModelDownloader
 import com.jarvis.android.system.llm.ModelRegistry
-import com.jarvis.android.system.llm.OllamaBridge
 import dagger.Module
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
