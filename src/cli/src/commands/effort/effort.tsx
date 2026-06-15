@@ -8,6 +8,7 @@ import { type EffortValue, getDisplayedEffortLevel, getEffortEnvOverride, getEff
 import { modelDisplayString } from '../../utils/model/model.js';
 import { formatJarvisModelLabels, getJarvisModelsWithCapability, isJarvisModelRegistryEnabled } from '../../utils/model/jarvisModelRegistry.js';
 import { updateSettingsForSource } from '../../utils/settings/settings.js';
+import { EffortSlider } from './EffortSlider.js';
 const COMMON_HELP_ARGS = ['help', '-h', '--help'];
 type EffortCommandResult = {
   message: string;
@@ -143,7 +144,7 @@ export function executeEffort(args: string): EffortCommandResult {
   }
   if (!isEffortLevel(normalized)) {
     return {
-      message: `Invalid argument: ${args}. Valid options are: low, medium, high, max, auto`
+      message: `Invalid argument: ${args}. Valid options are: low, medium, high, xhigh, max, auto`
     };
   }
   return setEffortValue(normalized);
@@ -206,11 +207,16 @@ function ApplyEffortAndClose(t0) {
 export async function call(onDone: LocalJSXCommandOnDone, _context: unknown, args?: string): Promise<React.ReactNode> {
   args = args?.trim() || '';
   if (COMMON_HELP_ARGS.includes(args)) {
-    onDone('Usage: /effort [low|medium|high|max|auto]\n\nEffort levels:\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- max: Maximum capability with deepest reasoning\n- auto: Use the default effort level for your model');
+    onDone('Usage: /effort [low|medium|high|xhigh|max|auto]\n\nRun /effort with no argument to open the slider (←/→ to adjust, Enter to confirm).\n\nEffort levels:\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- xhigh: Extra-high effort — extended reasoning on complex multi-step problems\n- max: Maximum capability with deepest reasoning (Opus 4.6+, Sonnet 4.6, Fable 5)\n- auto: Use the default effort level for your model');
     return;
   }
-  if (!args || args === 'current' || args === 'status') {
+  if (args === 'current' || args === 'status') {
     return <ShowCurrentEffort onDone={onDone} />;
+  }
+  if (!args) {
+    // No args → interactive ←/→ slider (Claude Code parity). `current` /
+    // `status` keep the text readout above.
+    return <EffortSlider onDone={onDone} />;
   }
   const result = executeEffort(args);
   return <ApplyEffortAndClose result={result} onDone={onDone} />;
