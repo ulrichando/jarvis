@@ -6,7 +6,6 @@ package com.jarvis.android.domain.model
  * Instances are either:
  *   - Pre-populated from [ModelRegistry] (the built-in catalog)
  *   - Created by the user via the custom URL import flow
- *   - Discovered from an Ollama server via `/api/tags`
  *
  * ── Lifecycle ────────────────────────────────────────────────────────────────
  *

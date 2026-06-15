@@ -118,7 +118,7 @@ class ModelRepositoryImpl @Inject constructor(
         reconcileDownloads()
 
         // Purge legacy MediaPipe (.task) rows left by older app versions. The
-        // current catalog is 100 % GGUF (llama.cpp) + Ollama, but the Room DB
+        // current catalog is LiteRT-LM (+ user-imported GGUF), but the Room DB
         // persists across APK upgrades so any user who once downloaded a
         // MediaPipe Gemma build still has the row — and hitting "Load" on it
         // would either dispatch to an unsupported backend or, before that
@@ -168,9 +168,6 @@ class ModelRepositoryImpl @Inject constructor(
      *      jobs can die silently (process killed under memory pressure, reboot,
      *      install of a new APK). Without this reset the UI shows a progress bar
      *      forever and the Download button is replaced by Cancel — user is stuck.
-     *
-     * Ollama rows use an `ollama://` sentinel instead of a real file and are
-     * skipped.
      */
     private suspend fun reconcileDownloads() {
         var healed = 0
@@ -178,7 +175,6 @@ class ModelRepositoryImpl @Inject constructor(
         // 1) DOWNLOADED → file missing
         modelDao.getDownloaded().forEach { entity ->
             val path = entity.localPath ?: return@forEach
-            if (path.startsWith("ollama://")) return@forEach
             if (path.isBlank() || !File(path).exists()) {
                 modelDao.markDeleted(entity.id)
                 healed++
@@ -309,7 +305,7 @@ class ModelRepositoryImpl @Inject constructor(
         // Guard against a stale DOWNLOADED row pointing at a file that was deleted
         // outside the app. Reset DB state so the card flips back to Download and
         // surface a specific, user-actionable message instead of a deep backend
-        // IllegalStateException. Ollama uses an `ollama://` sentinel, not a file.
+        // IllegalStateException.
         val requiresLocalFile = entity.backend == ModelBackend.MEDIAPIPE ||
                                 entity.backend == ModelBackend.LITERTLM  ||
                                 entity.backend == ModelBackend.LLAMACPP

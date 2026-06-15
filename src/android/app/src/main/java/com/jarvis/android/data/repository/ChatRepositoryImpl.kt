@@ -637,7 +637,7 @@ class ChatRepositoryImpl @Inject constructor(
     /**
      * Converts the conversation [history] to a ChatML-formatted prompt string.
      * ChatML is natively understood by Qwen, TinyLlama, Phi-3, and most modern
-     * instruction-tuned GGUF models. Ollama also forwards it correctly.
+     * instruction-tuned GGUF models.
      *
      * Format:
      *   <|im_start|>system\n{system}\n<|im_end|>\n

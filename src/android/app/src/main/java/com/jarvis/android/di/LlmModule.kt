@@ -24,7 +24,6 @@ import dagger.hilt.components.SingletonComponent
  *      └─ ModelRepositoryImpl          @Singleton — bound in RepositoryModule
  *           ├─ LlamaJNI                @Singleton — JNI bridge to llama.cpp
  *           ├─ MediaPipeLLM            @Singleton — MediaPipe AI Edge
- *           ├─ OllamaBridge            @Singleton — HTTP/NDJSON Ollama client
  *           ├─ ModelDownloader         @Singleton — WorkManager download engine
  *           │    └─ WorkManager        @Singleton — provided in DatabaseModule
  *           ├─ ModelRegistry           @Singleton — built-in catalog

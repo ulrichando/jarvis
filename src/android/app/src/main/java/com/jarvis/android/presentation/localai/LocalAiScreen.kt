@@ -48,7 +48,7 @@ private val JarvisAccent = Color(0xFF1E7FFF)
  *   - **Models**    — catalog, download management, routing mode selector
  *   - **Inference** — load a model and run interactive local chat
  *   - **Benchmark** — run and compare inference performance
- *   - **Settings**  — GPU layers, context size, threads, Ollama config
+ *   - **Settings**  — GPU layers, context size, threads
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
