@@ -91,6 +91,17 @@ jarvis-cli/
 .pytest_cache/
 .remember/
 
+# The generic data/ and llm/ rules above (intended for runtime data dirs and
+# top-level LLM docs) ALSO match SOURCE directories inside the Android app —
+# .../com/jarvis/android/data/ and .../system/llm/ — silently leaving large
+# parts of the app unversioned. Re-include the app's own Kotlin source (main +
+# test); placed after both rules so the negation wins. The vendored
+# cpp/llama.cpp tree keeps its own ignores and is untouched by this.
+!src/android/app/src/main/java/com/jarvis/android/**/
+!src/android/app/src/main/java/com/jarvis/android/**
+!src/android/app/src/test/java/com/jarvis/android/**/
+!src/android/app/src/test/java/com/jarvis/android/**
+
 # Claude Code — personal overrides stay local
 CLAUDE.local.md
 .claude/CLAUDE.local.md
@@ -104,6 +115,10 @@ CLAUDE.local.md
 .env.providers
 .env.production
 .env.tmp
+# Rotation backups (.env.local.bak-<ts>, .env.bak.<date>, …) — these slipped
+# past the bare ".env.local" rule and were committable, re-leaking old secrets.
+.env*.bak*
+*.env.bak*
 !.env.example
 !**/.env.example
 
