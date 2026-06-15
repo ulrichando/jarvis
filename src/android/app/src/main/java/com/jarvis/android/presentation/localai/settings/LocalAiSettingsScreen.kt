@@ -174,78 +174,6 @@ fun LocalAiSettingsScreen(viewModel: LocalAiSettingsViewModel = hiltViewModel())
                 }
             }
 
-            // ── Ollama / OpenAI-compat section ────────────────────────────────
-            SettingsSection(title = "Ollama / OpenAI-compat Server") {
-                OutlinedTextField(
-                    value         = state.ollamaUrl,
-                    onValueChange = viewModel::onOllamaUrlChange,
-                    label         = { Text("Base URL") },
-                    placeholder   = { Text("http://10.10.0.50:11434", color = JarvisPalette.TextDisabled) },
-                    singleLine    = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                    colors        = jarvisTextFieldColors(),
-                    modifier      = Modifier.fillMaxWidth(),
-                )
-
-                Spacer(Modifier.height(8.dp))
-
-                // Quick-set buttons
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick  = viewModel::onUseLocalhost,
-                        colors   = ButtonDefaults.outlinedButtonColors(contentColor = JarvisPalette.GoldGlow),
-                        shape    = RoundedCornerShape(8.dp),
-                        modifier = Modifier.weight(1f),
-                        border   = androidx.compose.foundation.BorderStroke(1.dp, JarvisPalette.GoldBorder),
-                    ) {
-                        Text("Localhost", fontSize = 12.sp)
-                    }
-
-                    val testColor = when (state.ollamaTestStatus) {
-                        OllamaTestStatus.OK   -> JarvisPalette.SuccessGreen
-                        OllamaTestStatus.FAIL -> JarvisPalette.ErrorRed
-                        else                  -> JarvisPalette.GoldGlow
-                    }
-                    val testLabel = when (state.ollamaTestStatus) {
-                        OllamaTestStatus.OK      -> "Connected"
-                        OllamaTestStatus.FAIL    -> "Unreachable"
-                        OllamaTestStatus.TESTING -> ""
-                        OllamaTestStatus.IDLE    -> "Test Connection"
-                    }
-                    OutlinedButton(
-                        onClick  = viewModel::onTestConnection,
-                        enabled  = state.ollamaTestStatus != OllamaTestStatus.TESTING,
-                        colors   = ButtonDefaults.outlinedButtonColors(contentColor = testColor),
-                        shape    = RoundedCornerShape(8.dp),
-                        modifier = Modifier.weight(1f),
-                        border   = androidx.compose.foundation.BorderStroke(1.dp, testColor.copy(alpha = 0.5f)),
-                    ) {
-                        if (state.ollamaTestStatus == OllamaTestStatus.TESTING) {
-                            CircularProgressIndicator(
-                                color    = JarvisPalette.GoldPrimary,
-                                modifier = Modifier.size(14.dp),
-                                strokeWidth = 2.dp,
-                            )
-                        } else {
-                            Text(testLabel, fontSize = 12.sp)
-                        }
-                    }
-                }
-
-                Spacer(Modifier.height(8.dp))
-
-                OutlinedTextField(
-                    value         = state.ollamaToken,
-                    onValueChange = viewModel::onOllamaTokenChange,
-                    label         = { Text("Auth Token (optional)") },
-                    singleLine    = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    colors        = jarvisTextFieldColors(),
-                    modifier      = Modifier.fillMaxWidth(),
-                )
-            }
-
             // ── Save ──────────────────────────────────────────────────────────
             FilledTonalButton(
                 onClick  = viewModel::onSave,
@@ -317,18 +245,3 @@ private fun SettingRow(
         control()
     }
 }
-
-// ── Text field colours ────────────────────────────────────────────────────────
-
-@Composable
-private fun jarvisTextFieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedBorderColor      = JarvisPalette.GoldPrimary,
-    unfocusedBorderColor    = JarvisPalette.GoldBorder,
-    focusedLabelColor       = JarvisPalette.GoldPrimary,
-    unfocusedLabelColor     = JarvisPalette.TextSecondary,
-    focusedTextColor        = JarvisPalette.TextPrimary,
-    unfocusedTextColor      = JarvisPalette.TextPrimary,
-    cursorColor             = JarvisPalette.GoldPrimary,
-    focusedContainerColor   = JarvisPalette.SurfaceElevated,
-    unfocusedContainerColor = JarvisPalette.SurfaceDark,
-)
