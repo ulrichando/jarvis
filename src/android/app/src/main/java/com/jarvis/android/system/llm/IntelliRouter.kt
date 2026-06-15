@@ -304,7 +304,7 @@ data class RoutingDecision(
 /**
  * The three execution paths [IntelliRouter] can select.
  *
- *   [LOCAL]  — Run the query through [LlamaJNI] / [MediaPipeLLM] / [OllamaBridge].
+ *   [LOCAL]  — Run the query through [LlamaJNI] / [LiteRtLmBackend].
  *   [CLOUD]  — Send the query to the Claude API.
  *   [HYBRID] — Run a local draft turn, then feed the draft to Claude for refinement.
  */

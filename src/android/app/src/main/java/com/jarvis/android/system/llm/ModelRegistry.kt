@@ -17,10 +17,10 @@ import javax.inject.Singleton
  * same models and quantisations that ship in Google's reference on-device
  * inference app and are the ones LiteRT-LM is actually tested against.
  *
- * Previous catalog (GGUF + Ollama + MediaPipe entries) has been removed — the
- * user-visible download list is now LiteRT-LM only. LlamaJNI / OllamaBridge
- * remain in the backend graph for user-imported custom models but are not
- * exposed in the catalog UI.
+ * Previous catalog (GGUF + MediaPipe entries) has been removed — the
+ * user-visible download list is now LiteRT-LM only. LlamaJNI remains in the
+ * backend graph for user-imported custom (GGUF) models but is not exposed in
+ * the catalog UI.
  *
  * ## Download URL shape
  *

@@ -157,8 +157,7 @@ fun ModelsScreen(viewModel: ModelsViewModel = hiltViewModel()) {
                 // reflects the mental model of each chip:
                 //   Local  → things that live on THIS device already
                 //   Cloud  → things that DON'T live on this device, i.e. the
-                //            download menu (plus Ollama entries which are
-                //            "cloud-local" via your LAN server)
+                //            download menu
                 //   Auto / Hybrid → everything (no filter)
                 val filtered = when (state.routingMode) {
                     RoutingMode.LOCAL  -> state.models.filter {

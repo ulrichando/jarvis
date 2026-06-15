@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.Flow
 /**
  * Parameters for loading a model into a backend.
  *
- * @param modelPath      Absolute path to the model file (.gguf / .task / ignored for Ollama)
+ * @param modelPath      Absolute path to the model file (.gguf / .litertlm / .task)
  * @param nGpuLayers     llama.cpp: transformer layers to GPU-offload. 0 = CPU only, -1 = all.
  * @param contextSize    KV-cache window in tokens.
  * @param nThreads       CPU inference threads (llama.cpp only).
@@ -31,7 +31,7 @@ data class LlmLoadConfig(
  * [images] and [audioClips] are optional multimodal inputs — only backends
  * whose model actually supports them (currently LiteRT-LM with Gemma 4 /
  * Gemma 3n) will pass them to the runtime. Text-only backends (llama.cpp,
- * Ollama, Qwen via LiteRT-LM) silently ignore these so callers can always
+ * Qwen via LiteRT-LM) silently ignore these so callers can always
  * attach multimedia without branching by backend.
  */
 data class GenerationConfig(
@@ -58,7 +58,7 @@ data class LlmInfo(
     val backendId:   String,
     val modelName:   String,
     val paramCount:  String,       // e.g. "7B"
-    val quantFormat: String,       // e.g. "Q4_K_M" or "MediaPipe" or "Ollama"
+    val quantFormat: String,       // e.g. "Q4_K_M" or "MediaPipe"
     val sizeMb:      Float,
     val contextLen:  Int,
     val tokensPerSec: Float = 0f,  // populated after first inference
