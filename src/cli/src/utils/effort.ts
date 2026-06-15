@@ -57,14 +57,23 @@ export function modelSupportsEffort(model: string): boolean {
   return getAPIProvider() === 'firstParty'
 }
 
-// @[MODEL LAUNCH]: Add the new model to the allowlist if it supports 'max' effort.
-// Per API docs, 'max' is Opus 4.6 only for public models — other models return an error.
+// @[MODEL LAUNCH]: Add the new max-capable model substring to the allowlist below.
+// Per Anthropic's effort docs (platform.claude.com/docs/en/build-with-claude/effort),
+// 'max' is GA on Opus 4.6+, Sonnet 4.6, and Fable 5. The earlier single 'opus-4-6'
+// check wrongly reported 'max' as unsupported on Opus 4.7/4.8 (clamping max→high).
 export function modelSupportsMaxEffort(model: string): boolean {
   const supported3P = get3PModelCapabilityOverride(model, 'max_effort')
   if (supported3P !== undefined) {
     return supported3P
   }
-  if (model.toLowerCase().includes('opus-4-6')) {
+  const m = model.toLowerCase()
+  if (
+    m.includes('opus-4-6') ||
+    m.includes('opus-4-7') ||
+    m.includes('opus-4-8') ||
+    m.includes('sonnet-4-6') ||
+    m.includes('fable')
+  ) {
     return true
   }
   if (process.env.USER_TYPE === 'ant' && resolveAntModel(model)) {
@@ -236,17 +245,22 @@ export function convertEffortValueToLevel(value: EffortValue): EffortLevel {
  * @returns Human-readable description
  */
 export function getEffortLevelDescription(level: EffortLevel): string {
+  // Descriptions track Anthropic's official effort docs
+  // (platform.claude.com/docs/en/build-with-claude/effort): each level trades
+  // response thoroughness against token efficiency. Keep them free of a leading
+  // em-dash — the slider and the "Set effort to X: …" readout add their own
+  // separator before this string.
   switch (level) {
     case 'low':
-      return 'Quick, straightforward implementation with minimal overhead'
+      return 'Most efficient; biggest token savings for simple, speed-sensitive tasks'
     case 'medium':
-      return 'Balanced approach with standard implementation and testing'
+      return 'Balanced speed, cost, and quality for everyday agentic work'
     case 'high':
-      return 'Comprehensive implementation with extensive testing and documentation'
+      return 'High capability (the default) for complex reasoning and difficult coding'
     case 'xhigh':
-      return 'Extra-high effort — extended reasoning on complex multi-step problems'
+      return 'Extended effort for long-horizon coding and agentic work; recommended on Opus'
     case 'max':
-      return 'Maximum capability with deepest reasoning'
+      return 'Maximum capability and deepest reasoning; reserve for the hardest tasks'
   }
 }
 
