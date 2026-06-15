@@ -84,6 +84,41 @@ _POLICY: Dict[str, Dict[str, Any]] = {
     },
 }
 
+# Policy for a user-authored agent — one discovered under ~/.jarvis/agents/
+# (a markdown definition bin/jarvis loads) rather than baked into _POLICY.
+# cli_agent is the agent's own name: bin/jarvis matches --agent against the
+# file's frontmatter `name`, which equals the dispatch subagent_type here.
+_CUSTOM_TIMEOUT_ENV = "JARVIS_DISPATCH_AGENT_TIMEOUT_CUSTOM_S"
+_CUSTOM_DEFAULT_TIMEOUT_S = 120.0
+
+
+def _resolve_policy(subagent_type: str) -> Optional[Dict[str, Any]]:
+    """Return the dispatch policy for ``subagent_type`` — a built-in entry from
+    _POLICY, or a synthesized entry for a user-authored agent discoverable by
+    bin/jarvis, or None if the name matches neither.
+
+    Built-ins are matched FIRST and win on a name collision (a user file named
+    'researcher' does not shadow the tuned built-in). Discovery is best-effort:
+    it must never raise into the dispatch path, so any failure → None (the
+    name is then reported as unknown)."""
+    if subagent_type in _POLICY:
+        return _POLICY[subagent_type]
+    try:
+        from pipeline import agent_authoring
+        info = agent_authoring.find_agent(subagent_type)
+    except Exception:  # pragma: no cover — discovery must never break dispatch
+        info = None
+    if not info:
+        return None
+    return {
+        "cli_agent": info["name"],
+        "default_timeout_s": _CUSTOM_DEFAULT_TIMEOUT_S,
+        "timeout_env": _CUSTOM_TIMEOUT_ENV,
+        "ack": f"Handing that to the {info['name']} agent…",
+        "_dynamic": True,
+    }
+
+
 # Single-slot session-id tracker. The agent updates this on every turn start;
 # the dispatcher snapshots it at dispatch time and compares on completion. A
 # swap means the user's turn has been abandoned (barge-in / new conversation)
@@ -106,7 +141,9 @@ _last_dispatch: dict = {
 
 
 def _timeout_for(subagent_type: str) -> float:
-    pol = _POLICY[subagent_type]
+    pol = _resolve_policy(subagent_type)
+    if pol is None:  # defensive — the handler validates before reaching here
+        return _CUSTOM_DEFAULT_TIMEOUT_S
     override = os.environ.get(pol["timeout_env"], "").strip()
     if override:
         try:
@@ -135,7 +172,8 @@ def _bg_timeout() -> float:
 
 
 def _build_argv(subagent_type: str, task: str) -> list[str]:
-    cli_agent = _POLICY[subagent_type]["cli_agent"]
+    pol = _resolve_policy(subagent_type)
+    cli_agent = pol["cli_agent"] if pol else subagent_type
     return [str(_BIN_JARVIS), "--print", "--agent", cli_agent, task]
 
 
@@ -212,9 +250,15 @@ async def handle_dispatch_agent(args: Dict[str, Any]) -> str:
     background = bool(args.get("background"))
 
     # Quick-reject paths (don't write side-channel — these never spawned).
-    if subagent_type not in _POLICY:
+    if _resolve_policy(subagent_type) is None:
+        valid = list(_POLICY)
+        try:
+            from pipeline import agent_authoring
+            valid += [a["name"] for a in agent_authoring.discover_agents()]
+        except Exception:  # pragma: no cover — discovery is best-effort
+            pass
         return tool_error(
-            f"unknown subagent_type {subagent_type!r}; expected one of {list(_POLICY)}"
+            f"unknown subagent_type {subagent_type!r}; expected one of {valid}"
         )
     if not task:
         return tool_error("task is required and must be non-empty")
@@ -439,8 +483,9 @@ def _format_completion(label: str, text: str, task_id: str) -> str:
 
 
 def get_ack_phrase(subagent_type: str) -> str | None:
-    """Return the canned ack phrase for a subagent type, or None for unknown."""
-    pol = _POLICY.get(subagent_type)
+    """Return the canned ack phrase for a subagent type (built-in or
+    user-authored), or None for an unknown name."""
+    pol = _resolve_policy(subagent_type)
     return pol["ack"] if pol else None
 
 
@@ -454,7 +499,9 @@ SCHEMA: Dict[str, Any] = {
         "  - 'explore'        : fast file/code search (1-5s). Returns synthesis, not raw grep.\n"
         "  - 'researcher'     : deep web research (15-60s). Returns synthesized answer + sources.\n"
         "  - 'code_reviewer'  : review uncommitted diff against project rules (10-30s).\n"
-        "  - 'plan'           : design how to implement a feature (10-30s).\n\n"
+        "  - 'plan'           : design how to implement a feature (10-30s).\n"
+        "  - <custom name>    : any user-authored agent (see agents_list / "
+        "create one with agent_manage). Pass its exact name.\n\n"
         "background (optional, default false): set TRUE for a long task you "
         "want to run WITHOUT blocking the conversation — JARVIS replies "
         "immediately, keeps talking with the user, and voices the result when "
@@ -471,7 +518,11 @@ SCHEMA: Dict[str, Any] = {
         "properties": {
             "subagent_type": {
                 "type": "string",
-                "enum": ["explore", "researcher", "code_reviewer", "plan"],
+                "description": (
+                    "Which agent to spawn. Built-ins: 'explore', 'researcher', "
+                    "'code_reviewer', 'plan'. Or the exact name of any user-authored "
+                    "agent (list them with agents_list; create with agent_manage)."
+                ),
             },
             "task":        {"type": "string", "description": "What the subagent should do, in 1-3 sentences"},
             "description": {"type": "string", "description": "Short 3-5 word label for telemetry"},
