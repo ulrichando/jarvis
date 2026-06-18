@@ -498,6 +498,29 @@ _mic_pub_ref: Optional[rtc.LocalTrackPublication] = None
 # Set inside run_once(); lets /speak publish data packets without
 # every handler having to carry the Room reference around.
 _room_ref: Optional[rtc.Room] = None
+# Local wake-listener (Phase 2, silent-mode token-leak fix). Persistent
+# singleton created once on first run_once (only when JARVIS_SILENT_LOCAL_WAKE=1)
+# and surviving reconnects: while silenced, the mic pump feeds it raw frames
+# instead of publishing to the SFU, so silent mode costs no cloud STT and no
+# room audio leaves the box — yet "Jarvis / wake up" still works locally.
+_local_wake = None          # LocalWakeListener | None (lazy import in run_once)
+_local_wake_task: Optional[asyncio.Task] = None
+
+
+async def _on_local_wake(text: str) -> None:
+    """Wake heard LOCALLY while silenced. The listener has already cleared
+    .silent-mode (so the mic pump resumes publishing on the next frame); here
+    we voice a short ack via the same data-packet path /speak uses.
+    2026-06-18 Phase 2 (silent-mode token-leak fix)."""
+    room = _room_ref
+    if room is None:
+        return
+    try:
+        payload = json.dumps({"type": "speak", "text": "I'm back."}).encode("utf-8")
+        await room.local_participant.publish_data(payload, reliable=True)
+        log.info("[local-wake] resumed from silent mode (local wake): %r", text[:60])
+    except Exception as e:
+        log.debug("[local-wake] ack publish failed: %s", e)
 # Set inside main() right after construction; lets the data_received
 # handler (registered in run_once, a different function scope) forward
 # assistant_says packets to SSE subscribers without threading the
@@ -705,7 +728,7 @@ async def run_once(shutdown: asyncio.Event) -> None:
     # function (mic publish, room-ref in the finally, etc.) is
     # unambiguous. Python requires `global` to precede any assignment
     # to the name within the function body.
-    global _mic_pub_ref, _room_ref
+    global _mic_pub_ref, _room_ref, _local_wake, _local_wake_task
     token = mint_token()
     room = rtc.Room()
     loop = asyncio.get_running_loop()
@@ -1101,6 +1124,19 @@ async def run_once(shutdown: asyncio.Event) -> None:
         if state.muted:
             state.listening = False  # don't latch the tray indicator through a mute
             return
+        # Silenced + local-wake armed (Phase 2): do NOT publish to the SFU —
+        # no cloud STT, no token/privacy leak. Feed raw frames to the LOCAL
+        # wake-listener so "Jarvis / wake up" still works. When the flag is off
+        # (_local_wake is None) or not silenced (.active False) this is skipped
+        # and silent mode keeps its prior behaviour. 2026-06-18.
+        if _local_wake is not None and _local_wake.active:
+            try:
+                _wake_rms = float(np.sqrt(np.mean(indata.astype(np.float32) ** 2)))
+            except Exception:
+                _wake_rms = 0.0
+            _local_wake.feed(_wake_rms, indata.tobytes())
+            state.listening = False
+            return
         # RMS on raw audio (pre-APM, pre-AGC) for the listening detector.
         if not state.speaking and len(indata):
             raw_rms = float(np.sqrt(np.mean(indata.astype(np.float32) ** 2)))
@@ -1231,6 +1267,21 @@ async def run_once(shutdown: asyncio.Event) -> None:
     # — with the fully-decoupled deque bridge — never saturates the loop
     # (2026-05-29/30 :8767 + watchdog root cause).
     mic_pump_task = asyncio.create_task(_mic_pump(), name="mic-pump")
+    # Local wake-listener (Phase 2): persistent singleton, armed once when
+    # JARVIS_SILENT_LOCAL_WAKE=1. While silenced, _mic_cb diverts frames to it
+    # instead of publishing, so silent mode costs no cloud STT. Default off →
+    # _local_wake stays None and silent mode keeps its prior behaviour.
+    _wake_on = os.environ.get("JARVIS_SILENT_LOCAL_WAKE", "0").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    if _local_wake is None and _wake_on:
+        from local_wake import LocalWakeListener
+        _local_wake = LocalWakeListener(
+            silent_file=SILENT_MODE_FILE, on_wake=_on_local_wake,
+        )
+        _local_wake_task = asyncio.create_task(_local_wake.run(), name="local-wake")
+        log.info("[local-wake] armed (JARVIS_SILENT_LOCAL_WAKE=1, model=%s)",
+                 _local_wake._model_size)
     mic_stream.start()
     log.info(
         f"[mic] capture started device={AUDIO_INPUT_DEVICE!r} "
