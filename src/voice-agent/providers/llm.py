@@ -47,6 +47,7 @@ except Exception:  # pragma: no cover — install-only guard
 from pipeline import specialty_routes as _specialty
 from pipeline.dispatching_llm import DispatchingLLM
 from pipeline.settings import read_unified_setting
+from providers.local_model_picker import resolve_model_tag
 from resilience import LLM_BREAKER
 from resilience.circuit_breaker import (
     CircuitOpenError,
@@ -322,6 +323,14 @@ if _ANTHROPIC_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY", ""):
         "label": "Anthropic · Claude Opus 4.7",
         "build": lambda: _make_anthropic_speech_llm("claude-opus-4-7"),
     }
+    # Opus 4.8 — current most-capable tier (2026-05-28). Same request surface
+    # as 4.7 (adaptive thinking only, no sampling params) and Anthropic's
+    # strongest computer-use / browser-agent model; the default escalation
+    # target for the agentic routes (pipeline/specialty_routes.py).
+    SPEECH_MODELS["claude-opus-4-8"] = {
+        "label": "Anthropic · Claude Opus 4.8",
+        "build": lambda: _make_anthropic_speech_llm("claude-opus-4-8"),
+    }
 # OpenRouter — one OpenAI-compatible endpoint (https://openrouter.ai/api/v1)
 # that proxies hundreds of models. Only voice-suitable models are listed here:
 # they must support streaming AND tool/function calls — models that are
@@ -479,6 +488,41 @@ if os.environ.get("JARVIS_KIMI_VOICE_EXPERIMENTAL", "0") == "1":
             temperature=0.7,
         ),
     }
+
+
+# ── Local models (Ollama / vLLM / llama.cpp via OpenAI-compat) ───────
+# Always registered so the tray can PIN a local model regardless of the
+# JARVIS_LOCAL_LLM_ENABLED rung-0 auto-injection. Each build lambda reads
+# JARVIS_LOCAL_LLM_URL fresh, so pointing at a remote GPU box (e.g. the
+# Windows server) is one env change + restart away. No API key needed for
+# Ollama; `_strict_tool_schema=False` is MANDATORY (local servers reject
+# OpenAI strict schema → JARVIS's 20+ tools silently break otherwise).
+def _make_local_speech_llm(model_id: str):
+    url = os.environ.get(
+        "JARVIS_LOCAL_LLM_URL", "http://127.0.0.1:11434/v1"
+    ).strip() or "http://127.0.0.1:11434/v1"
+    key = os.environ.get("JARVIS_LOCAL_LLM_API_KEY", "ollama").strip() or "ollama"
+    return lk_openai.LLM(
+        model=model_id,
+        base_url=url,
+        api_key=key,
+        temperature=0.6,
+        _strict_tool_schema=False,
+    )
+
+
+SPEECH_MODELS["ollama/auto"] = {
+    "label": "Local · Auto (best fit for this GPU)",
+    "build": lambda: _make_local_speech_llm(resolve_model_tag("auto")),
+}
+SPEECH_MODELS["ollama/llama3.1:8b"] = {
+    "label": "Local · Llama 3.1 8B (Ollama)",
+    "build": lambda: _make_local_speech_llm("llama3.1:8b"),
+}
+SPEECH_MODELS["ollama/qwen3:14b"] = {
+    "label": "Local · Qwen3 14B (Ollama)",
+    "build": lambda: _make_local_speech_llm("qwen3:14b"),
+}
 
 
 def read_speech_model() -> str:
@@ -1083,6 +1127,87 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
     else:
         logger.info("[dispatch] DEEPSEEK_API_KEY missing, no cross-provider fallback")
 
+    # ── Rung-0: optional local / remote OpenAI-compatible LLM ──────────
+    # When JARVIS_LOCAL_LLM_ENABLED=1, a local model (Ollama / vLLM /
+    # llama.cpp) is PREPENDED to every in-scope route's FallbackAdapter
+    # as the first-tried rung — local becomes primary while the existing
+    # Anthropic → Groq → DeepSeek chain becomes the cloud fallback. An
+    # unreachable endpoint (connection refused → APIConnectionError) or a
+    # slow one (past JARVIS_LOCAL_LLM_TIMEOUT) cascades transparently to
+    # cloud: no restart, no tray change. `_strict_tool_schema=False` is
+    # MANDATORY — every local server rejects/ignores OpenAI strict schema,
+    # which silently breaks JARVIS's 20+ tools (livekit-plugins-openai
+    # defaults it True; `with_ollama()` forgets to flip it — plugin bug).
+    # URL-portable: 127.0.0.1 (this box) and a remote GPU server are
+    # identical from JARVIS's view — just change JARVIS_LOCAL_LLM_URL.
+    # Design: ~/.claude/plans/we-need-to-find-polymorphic-allen.md (2026-06-15).
+    _local_enabled = os.environ.get("JARVIS_LOCAL_LLM_ENABLED", "0") == "1"
+    _local_url     = os.environ.get(
+        "JARVIS_LOCAL_LLM_URL", "http://127.0.0.1:11434/v1"
+    ).strip() or "http://127.0.0.1:11434/v1"
+    # `auto` → hardware-pick the best-fitting tool-capable Ollama tag
+    # (VRAM/RAM scan); any explicit tag passes through unchanged.
+    _local_model   = resolve_model_tag(
+        os.environ.get("JARVIS_LOCAL_LLM_MODEL", "qwen3:14b").strip() or "qwen3:14b"
+    )
+    _local_api_key = os.environ.get("JARVIS_LOCAL_LLM_API_KEY", "ollama").strip() or "ollama"
+
+    def _local_envf(name: str, default: float) -> float:
+        try:
+            raw = os.environ.get(name, "").strip()
+            return float(raw) if raw else float(default)
+        except (TypeError, ValueError):
+            return float(default)
+
+    _local_temp = _local_envf("JARVIS_LOCAL_LLM_TEMP", 0.6)
+    # Generous default: a cold local-model load (or a big model on CPU)
+    # can take far longer than the cloud rungs' 5s. A DOWN endpoint still
+    # fails fast (APIConnectionError, not a timeout), so it cascades
+    # immediately regardless of this value — the timeout only bounds the
+    # reachable-but-slow case.
+    _local_timeout = _local_envf("JARVIS_LOCAL_LLM_TIMEOUT", 60.0)
+    _local_routes_raw = os.environ.get("JARVIS_LOCAL_LLM_ROUTES", "").strip()
+    _local_routes = (
+        {r.strip() for r in _local_routes_raw.split(",") if r.strip()}
+        if _local_routes_raw else None
+    )
+    if _local_enabled:
+        logger.info(
+            "[dispatch] local LLM rung-0 ENABLED: model=%s url=%s routes=%s timeout=%.0fs",
+            _local_model, _local_url,
+            ",".join(sorted(_local_routes)) if _local_routes else "ALL",
+            _local_timeout,
+        )
+
+    def _make_local_llm(route: str):
+        """Build the rung-0 local OpenAI-compat LLM for `route`. Returns
+        None when disabled, the route is filtered out by
+        JARVIS_LOCAL_LLM_ROUTES, or construction fails (route then starts
+        at its cloud primary). `_strict_tool_schema=False` is MANDATORY
+        (see block comment above)."""
+        if not _local_enabled:
+            return None
+        if _local_routes is not None and route not in _local_routes:
+            return None
+        try:
+            inst = lk_openai.LLM(
+                model=_local_model,
+                base_url=_local_url,
+                api_key=_local_api_key,
+                temperature=_local_temp,
+                timeout=_local_timeout,
+                max_retries=0,
+                _strict_tool_schema=False,
+            )
+            inst._jarvis_label = f"local:{_local_model}"
+            return inst
+        except Exception as e:
+            logger.warning(
+                f"[dispatch] {route} local LLM rung-0 construction failed: {e} "
+                "(route starts at cloud primary)"
+            )
+            return None
+
     def _build_groq_legacy(route: str):
         """Build the route's legacy Groq primary (now rung 2). Returns
         None when GROQ_API_KEY is missing so callers can degrade. The
@@ -1241,11 +1366,12 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
             return None
 
     def _wrap_chain(route: str, primary):
-        """Wrap a route's primary LLM in a FallbackAdapter chain with
-        the route's Groq legacy at rung 2 and DeepSeek at rung 3 (when
-        each is available). Preserves the primary's _jarvis_label for
-        telemetry. Returns the primary unwrapped when no fallback rungs
-        are available."""
+        """Wrap a route's primary LLM in a FallbackAdapter chain. When
+        JARVIS_LOCAL_LLM_ENABLED=1 a local LLM is prepended as rung 0
+        (tried first); the route's Groq legacy is rung 2 and DeepSeek
+        rung 3 (when each is available). Labels the chain by its FIRST
+        rung for telemetry. Returns the primary unwrapped when no other
+        rungs are available."""
         rungs: list[Any] = [primary]
         # Rung 2: this route's Groq legacy model. Skip if primary IS the
         # Groq legacy (degraded boot — no Anthropic key) to avoid
@@ -1262,12 +1388,26 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
         # rungs and the chain is effectively "DeepSeek → Groq → (dead)".
         if ds_fallback is not None and not primary_label.startswith("deepseek:"):
             rungs.append(ds_fallback)
+        # Rung 0: prepend the local LLM so it is TRIED FIRST (local-primary).
+        # Unreachable/slow → FallbackAdapter cascades to `primary` (cloud).
+        # Gated + route-filtered inside _make_local_llm (returns None when
+        # JARVIS_LOCAL_LLM_ENABLED!=1), so this is a no-op by default.
+        local_rung = _make_local_llm(route)
+        if local_rung is not None:
+            rungs.insert(0, local_rung)
         if len(rungs) == 1:
             return primary
         try:
             from livekit.agents.llm import FallbackAdapter as _LLMFallback
             wrapped = _LLMFallback(rungs)
-            wrapped._jarvis_label = primary_label or "?"
+            # Label the chain by its FIRST rung (what's actually tried
+            # first): `local:<model>` when rung-0 is active, else the
+            # cloud primary's label — behavior-preserving when local is
+            # off (rungs[0] IS primary). dispatching_llm reads this for
+            # the telemetry `model` column.
+            wrapped._jarvis_label = (
+                getattr(rungs[0], "_jarvis_label", "") or primary_label or "?"
+            )
             return wrapped
         except Exception as e:
             logger.warning(
@@ -1285,12 +1425,26 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
         if primary is None:
             primary = _build_groq_legacy(route)
         if primary is None:
-            # Both providers failed at construction time. Caller will
+            # No cloud primary built (missing keys / construction error).
+            # If a local rung is enabled for this route, the local model
+            # BECOMES the primary so a true offline / cloud-keyless boot
+            # still works — this is the plan's "stay alive when ALL cloud
+            # is unavailable" path. Returned bare (not via _wrap_chain,
+            # which would re-inject local and double it); there's no cloud
+            # rung left to fall back to anyway.
+            local_only = _make_local_llm(route)
+            if local_only is not None:
+                logger.info(
+                    f"[dispatch] {route} primary: {local_only._jarvis_label} "
+                    "(local-only; no cloud primary available)"
+                )
+                return local_only
+            # Both cloud providers AND local failed/disabled. Caller will
             # substitute the TASK route's chain (which is also the
             # dispatcher fallback) — see the post-loop assembly below.
             logger.error(
                 f"[dispatch] {route} primary construction failed entirely "
-                "(no Anthropic, no Groq); route will inherit TASK fallback"
+                "(no Anthropic, no Groq, no local); route will inherit TASK fallback"
             )
             return None
         primary_label = getattr(primary, "_jarvis_label", "?")

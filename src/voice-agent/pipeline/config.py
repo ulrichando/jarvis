@@ -261,6 +261,46 @@ OLLAMA_URL: str          = _str("JARVIS_OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_VISION_MODEL: str = _str("JARVIS_OLLAMA_VISION_MODEL", "llava")
 
 
+# ── Local offline fallback stack (LLM / STT / TTS / Vision) ──────────
+# Last-resort local alternatives so JARVIS stays alive when ALL cloud
+# providers are unreachable. Each component degrades INDEPENDENTLY via
+# its own FallbackAdapter rung — there is no single "offline switch".
+# Default OFF; cloud stays primary.
+#
+# NOTE: the LLM rung is read LIVE inside
+# providers/llm.py::build_dispatching_llm (and the tray builders) from
+# os.environ — NOT from these module constants — so unit tests can
+# monkeypatch env and a tray restart picks up changes. These constants
+# mirror the same names + defaults for operator discoverability and for
+# the STT/TTS/vision build paths that consult them. Keep both in sync.
+LOCAL_LLM_ENABLED: bool   = _bool("JARVIS_LOCAL_LLM_ENABLED", False)
+LOCAL_LLM_URL: str        = _str("JARVIS_LOCAL_LLM_URL", "http://127.0.0.1:11434/v1")
+LOCAL_LLM_MODEL: str      = _str("JARVIS_LOCAL_LLM_MODEL", "qwen3:14b")
+LOCAL_LLM_API_KEY: str    = _str("JARVIS_LOCAL_LLM_API_KEY", "ollama")
+LOCAL_LLM_TEMP: float     = _float("JARVIS_LOCAL_LLM_TEMP", 0.6)
+LOCAL_LLM_TIMEOUT: float  = _float("JARVIS_LOCAL_LLM_TIMEOUT", 60.0)
+LOCAL_LLM_ROUTES: str     = _str("JARVIS_LOCAL_LLM_ROUTES", "")  # csv; empty = all routes
+
+# STT — faster-whisper (same Whisper family Groq uses), local last rung.
+LOCAL_STT_ENABLED: bool   = _bool("JARVIS_LOCAL_STT_ENABLED", False)
+LOCAL_STT_MODEL: str      = _str("JARVIS_LOCAL_STT_MODEL", "large-v3")
+LOCAL_STT_DEVICE: str     = _str("JARVIS_LOCAL_STT_DEVICE", "auto")     # auto|cpu|cuda
+LOCAL_STT_COMPUTE: str    = _str("JARVIS_LOCAL_STT_COMPUTE", "default") # e.g. int8, float16
+
+# TTS — Piper (in-process, default) or Kokoro (separate OpenAI-compat
+# /audio/speech server) — local last rung.
+LOCAL_TTS_ENABLED: bool   = _bool("JARVIS_LOCAL_TTS_ENABLED", False)
+LOCAL_TTS_ENGINE: str     = _str("JARVIS_LOCAL_TTS_ENGINE", "piper")    # piper|kokoro
+LOCAL_TTS_VOICE: str      = _str("JARVIS_LOCAL_TTS_VOICE", "")          # engine default if empty
+LOCAL_TTS_MODEL_PATH: str = _str("JARVIS_LOCAL_TTS_MODEL_PATH", "")     # piper: .onnx path
+LOCAL_TTS_URL: str        = _str("JARVIS_LOCAL_TTS_URL", "http://127.0.0.1:8880/v1")  # kokoro server
+LOCAL_TTS_SPEED: float    = _float("JARVIS_LOCAL_TTS_SPEED", 1.0)       # kokoro speech speed
+
+# Vision — wire the existing OLLAMA_VISION_MODEL as an ACTIVE fallback
+# rung for computer_use when Anthropic vision fails.
+LOCAL_VISION_ENABLED: bool = _bool("JARVIS_LOCAL_VISION_ENABLED", False)
+
+
 # ── Bundled namespace ────────────────────────────────────────────────
 # Equivalent to the module constants above, just accessible as
 # `config.dispatch_disabled` etc. Same values; pick whichever style

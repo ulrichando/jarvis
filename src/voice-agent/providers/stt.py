@@ -43,6 +43,7 @@ from livekit.agents import APIConnectionError, APITimeoutError
 from livekit.agents.stt import FallbackAdapter
 from livekit.plugins import groq
 
+from providers.faster_whisper_stt import build_local_stt
 from resilience import STT_BREAKER
 from resilience.circuit_breaker import CircuitOpenError
 
@@ -268,13 +269,28 @@ def build_stt_chain(vad=None):
     """
     deepgram_stt = _build_deepgram_stt()
     whisper_stt = build_breakered_stt()
-    if deepgram_stt is None:
+    # Offline last rung: local faster-whisper. None unless
+    # JARVIS_LOCAL_STT_ENABLED=1, so this is a no-op by default.
+    local_stt = build_local_stt()
+
+    # Ordered rungs: Deepgram (primary, streaming) → Groq Whisper Turbo →
+    # local faster-whisper (offline last resort). Drop any unavailable.
+    rungs = [s for s in (deepgram_stt, whisper_stt, local_stt) if s is not None]
+    if not rungs:  # whisper is always built — defensive
         return whisper_stt
+    if len(rungs) == 1:
+        # Single rung: return bare. AgentSession wraps a non-streaming STT
+        # with its own StreamAdapter + VAD, so no vad is needed here.
+        return rungs[0]
+    # Multi-rung FallbackAdapter needs the prewarmed Silero VAD to wrap the
+    # non-streaming members (Groq Whisper, faster-whisper) as streaming.
     if vad is None:
         logger.warning(
-            "[stt] build_stt_chain called without vad — Whisper can't be "
-            "wrapped as streaming; degrading to Deepgram-only (no failover)."
+            "[stt] build_stt_chain called without vad — can't wrap non-streaming "
+            "STTs into a chain; degrading to the first rung alone (%s).",
+            getattr(rungs[0], "label", type(rungs[0]).__name__),
         )
-        return deepgram_stt
-    logger.info("[stt] chain: Deepgram Nova-3 (primary) → Groq Whisper Turbo (backup)")
-    return FallbackAdapter([deepgram_stt, whisper_stt], vad=vad)
+        return rungs[0]
+    labels = " → ".join(getattr(s, "label", type(s).__name__) for s in rungs)
+    logger.info("[stt] chain: %s", labels)
+    return FallbackAdapter(rungs, vad=vad)
