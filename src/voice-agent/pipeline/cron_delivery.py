@@ -3,7 +3,6 @@ next session connect. No network, no LLM. SILENT jobs deliver nothing."""
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import logging
 import os
@@ -11,6 +10,7 @@ import shutil
 import subprocess
 
 from pipeline import cron_jobs as cj
+from pipeline import portable_lock
 
 logger = logging.getLogger("jarvis.cron_delivery")
 
@@ -31,7 +31,7 @@ def _pending_lock():
     # checker (Windows defaults to cp1252 otherwise).
     f = open(cj.CRON_DIR / ".pending.lock", "w", encoding="utf-8")
     try:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        portable_lock.lock_exclusive(f)
         yield
     finally:
         f.close()  # releasing the fd releases the flock

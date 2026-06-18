@@ -200,6 +200,17 @@ def _is_xdotool_subprocess(match: "re.Match", line: str) -> bool:
     return False
 
 
+def _is_direct_import(*modules: str) -> Callable:
+    """post_filter factory: match only a real top-of-line ``import <mod>`` /
+    ``from <mod> import`` statement, skipping comments + docstring mentions."""
+    prefixes = tuple(p for m in modules for p in (f"import {m}", f"from {m} ", f"from {m}."))
+
+    def _filter(match: "re.Match", line: str) -> bool:
+        return line.strip().startswith(prefixes)
+
+    return _filter
+
+
 FOOTGUNS: list[Footgun] = [
     # ── Linux-only stdlib that import-time crashes on Windows ───────────
     Footgun(
@@ -531,6 +542,44 @@ FOOTGUNS: list[Footgun] = [
             "run PowerShell [Environment]::GetFolderPath('Desktop'), or "
             "use platformdirs.user_desktop_dir()."
         ),
+    ),
+    # ── Linux-only modules whose direct import crashes module-load on Windows ──
+    Footgun(
+        name="direct import fcntl (use pipeline.portable_lock)",
+        # Broad token match; the post_filter narrows to real import statements so
+        # comments/docstrings mentioning fcntl don't false-match.
+        pattern=re.compile(r"\bfcntl\b"),
+        message=(
+            "fcntl is a Unix-only stdlib module — a direct `import fcntl` "
+            "hard-ImportErrors on Windows (it broke voice-agent startup via "
+            "cron_delivery/cron_scheduler before this rule existed). File "
+            "locking must go through pipeline.portable_lock, which dispatches "
+            "to fcntl on POSIX and msvcrt on Windows."
+        ),
+        fix=(
+            "from pipeline import portable_lock\n"
+            "with portable_lock.exclusive_lock(fileobj):  # or lock_exclusive/unlock\n"
+            "    ...\n"
+            "(portable_lock.py is the ONE allowed home for `import fcntl`, "
+            "suppressed inline with `# windows-footgun: ok`.)"
+        ),
+        post_filter=_is_direct_import("fcntl"),
+    ),
+    Footgun(
+        name="direct import sdnotify (use pipeline.notify)",
+        pattern=re.compile(r"\bsdnotify\b"),
+        message=(
+            "sdnotify speaks the systemd notify protocol (Linux+systemd only). "
+            "A direct import couples the voice-agent to systemd and is dead "
+            "weight on Windows/macOS. Use pipeline.notify."
+        ),
+        fix=(
+            "from pipeline import notify\n"
+            "notifier = notify.get_notifier()  # real sdnotify on Linux, no-op elsewhere\n"
+            "(notify.py is the ONE allowed home for `import sdnotify`, "
+            "suppressed inline with `# windows-footgun: ok`.)"
+        ),
+        post_filter=_is_direct_import("sdnotify"),
     ),
 ]
 

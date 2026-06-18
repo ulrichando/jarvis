@@ -53,7 +53,9 @@ _BIN_JARVIS = Path(__file__).resolve().parents[3] / "bin" / "jarvis"
 
 # Where a background task's FULL result is stashed when it's too long to voice
 # in one breath (the spoken announcement carries a summary + a pointer here).
-_BG_RESULTS_DIR = Path(os.path.expanduser("~/.local/share/jarvis/background_tasks"))
+# Cross-platform data dir: ~/.local/share/jarvis on Linux, %LOCALAPPDATA%\jarvis\data on Windows.
+from tools.runtime import get_jarvis_data_dir
+_BG_RESULTS_DIR = get_jarvis_data_dir() / "background_tasks"
 
 # Per-type policy. cli_agent is the exact string bin/jarvis --agent expects
 # (per the project's agent registry — verified via bin/jarvis --help).

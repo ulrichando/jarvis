@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import sdnotify
+from pipeline import notify
 
 logger = logging.getLogger("jarvis.watchdog")
 
@@ -36,11 +36,12 @@ async def watchdog_loop(
     Args:
         stop: asyncio.Event signalling shutdown.
         notifier: SystemdNotifier-like object (for test injection).
-                  Defaults to a fresh sdnotify.SystemdNotifier.
+                  Defaults to pipeline.notify.get_notifier() (real sdnotify
+                  on Linux, no-op on Windows/macOS).
         interval_s: how often to ping (half of WatchdogSec).
     """
     if notifier is None:
-        notifier = sdnotify.SystemdNotifier()
+        notifier = notify.get_notifier()
     notifier.notify("READY=1")
     logger.info("[watchdog] READY=1; ping interval %.1fs", interval_s)
     try:

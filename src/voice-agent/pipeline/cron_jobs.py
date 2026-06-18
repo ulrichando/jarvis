@@ -130,9 +130,10 @@ def compute_next_run(schedule: dict, *, _now: datetime | None = None,
 
 
 import contextlib
-import fcntl
 import functools
 import time as _time
+
+from pipeline import portable_lock
 
 _VALID_DELIVERY = {"notify", "voice", "notify+voice", "local"}
 
@@ -159,7 +160,7 @@ def _store_lock():
     # checker (Windows defaults to cp1252 otherwise).
     f = open(CRON_DIR / ".store.lock", "w", encoding="utf-8")
     try:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        portable_lock.lock_exclusive(f)
         yield
     finally:
         f.close()  # releasing the fd releases the flock

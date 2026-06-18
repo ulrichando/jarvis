@@ -98,6 +98,8 @@ def test_list_runs(checker):
         "systemctl --user",
         "hardcoded /tmp/jarvis-* path",
         "hardcoded ~/.jarvis path",
+        "direct import fcntl",
+        "direct import sdnotify",
     ):
         assert required_rule in result.stdout, (
             f"--list output missing {required_rule!r} — checker shipped without "
@@ -161,6 +163,23 @@ def test_detects_os_setsid(in_repo_py):
     assert code == 1, "expected detection (exit 1)"
     assert "bare os.setsid" in out
     assert target.name in out
+
+
+def test_detects_direct_import_fcntl(in_repo_py):
+    """A real top-of-line `import fcntl` is flagged; a comment mention is not."""
+    target = in_repo_py("import fcntl\n# import fcntl is only a comment\n")
+    code, out, _ = _run_checker(target)
+    assert code == 1, "expected detection (exit 1)"
+    assert "direct import fcntl" in out
+    assert f"{target.name}:2" not in out  # the comment line must NOT be flagged
+
+
+def test_detects_direct_import_sdnotify(in_repo_py):
+    """`from sdnotify import ...` is flagged → use pipeline.notify."""
+    target = in_repo_py("from sdnotify import SystemdNotifier\n")
+    code, out, _ = _run_checker(target)
+    assert code == 1, "expected detection (exit 1)"
+    assert "direct import sdnotify" in out
 
 
 def test_detects_os_killpg(in_repo_py):

@@ -5,7 +5,7 @@ through throttle.admit_intent(), and on admit launches
 `bin/jarvis-automod-impl <intent_file>` via
 asyncio.create_subprocess_exec.
 
-Lockfile (fcntl.flock exclusive) serializes spawns globally -- at most
+Lockfile (exclusive, via pipeline.portable_lock) serializes spawns globally -- at most
 one auto-mod subprocess runs at a time. Per-topic in-flight cap = 1
 is naturally enforced by this.
 
@@ -53,19 +53,16 @@ def _spawn_live() -> bool:
 
 @contextlib.contextmanager
 def _global_lock():
-    """Exclusive lockfile via fcntl.flock -- at most one spawn at a time."""
+    """Exclusive lockfile via pipeline.portable_lock -- at most one spawn at a time."""
     p = lockfile_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    import fcntl
+    from pipeline import portable_lock
     fd = open(p, "a+", encoding="utf-8")
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        portable_lock.lock_exclusive(fd)
         yield
     finally:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        except (OSError, IOError):
-            pass
+        portable_lock.unlock(fd)
         fd.close()
 
 

@@ -142,7 +142,7 @@ def _direct_unit_live(mode: str) -> bool:
             return True
         try:
             rc = subprocess.run(
-                ["systemctl", "--user", "is-active", "--quiet", unit],
+                ["systemctl", "--user", "is-active", "--quiet", unit],  # windows-footgun: ok (guarded by shutil.which('systemctl') above)
                 timeout=2,
             ).returncode
             live = rc == 0

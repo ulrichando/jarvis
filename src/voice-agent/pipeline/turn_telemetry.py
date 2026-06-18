@@ -489,9 +489,8 @@ def _self_rss_mb() -> Optional[float]:
     Returns None on any failure (non-Linux, sandbox); cheap one-file read.
     """
     try:
-        with open("/proc/self/statm", "r") as f:
-            rss_pages = int(f.read().split()[1])
-        return round(rss_pages * 4096 / (1024 * 1024), 1)
+        import psutil  # cross-platform RSS (reads /proc/self/statm on Linux)
+        return round(psutil.Process().memory_info().rss / (1024 * 1024), 1)
     except Exception:
         return None
 

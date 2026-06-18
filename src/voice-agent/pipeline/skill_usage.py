@@ -41,12 +41,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("jarvis.skill_usage")
 
-# fcntl is Unix-only. JARVIS runs on Linux, but keep the import guarded so the
-# module imports cleanly anywhere and degrades to no-lock rather than crashing.
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - platform-specific fallback
-    fcntl = None
+from pipeline import portable_lock
 
 
 STATE_ACTIVE = "active"
@@ -93,19 +88,12 @@ def _usage_file_lock():
         yield
         return
 
-    if fcntl is None:
-        yield
-        return
-
     fd = open(lock_path, "a+", encoding="utf-8")
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        portable_lock.lock_exclusive(fd)
         yield
     finally:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        except (OSError, IOError):
-            pass
+        portable_lock.unlock(fd)
         fd.close()
 
 

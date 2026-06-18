@@ -131,7 +131,7 @@ async def run_job(job: dict) -> tuple[bool, str]:
         return False, f"Job failed: {e}"
 
 
-import fcntl
+from pipeline import portable_lock
 
 TICK_INTERVAL_S = int(os.environ.get("JARVIS_CRON_TICK_S", "60"))
 _LOCK_PATH = cj.CRON_DIR / ".tick.lock"
@@ -148,7 +148,7 @@ async def tick(*, _now=None) -> None:
 
 
 async def run_forever() -> None:
-    """60s tick loop for the daemon. Gated by JARVIS_CRON_DISABLED; an fcntl
+    """60s tick loop for the daemon. Gated by JARVIS_CRON_DISABLED; an exclusive
     lock prevents overlap if a tick overruns. Never raises out of the loop."""
     if os.environ.get("JARVIS_CRON_DISABLED") == "1":
         logger.info("[cron] scheduler disabled via JARVIS_CRON_DISABLED=1")
@@ -158,10 +158,9 @@ async def run_forever() -> None:
     while True:
         try:
             with open(_LOCK_PATH, "w", encoding="utf-8") as lock:
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if portable_lock.lock_exclusive(lock, blocking=False):
                     await tick()
-                except BlockingIOError:
+                else:
                     logger.warning("[cron] previous tick still running; skipping")
         except Exception as e:
             logger.warning("[cron] tick error: %s", e)

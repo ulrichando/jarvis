@@ -22,6 +22,7 @@ if str(_VA_ROOT) not in sys.path:
 
 from pipeline.automod import artifact, test_gate
 from pipeline.automod._state import _automod_home
+from pipeline.service_control import restart_service
 
 logger = logging.getLogger("jarvis.automod.cli")
 
@@ -204,12 +205,12 @@ def revert(args) -> int:
         subprocess.check_call(
             ["git", "push", "--force-with-lease", "origin", "master:master"],
         )
-        # Restart voice-agent so the reverted code is live.
-        subprocess.run(
-            ["systemctl", "--user", "restart",
-             "jarvis-voice-agent.service"],
-            check=False,
-        )
+        # Restart voice-agent so the reverted code is live (cross-platform:
+        # systemctl on Linux, nssm on Windows, via service_control).
+        try:
+            restart_service("jarvis-voice-agent")
+        except Exception:
+            pass
         try:
             artifact.audit(
                 "automod_reverted",

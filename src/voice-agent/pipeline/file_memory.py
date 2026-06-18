@@ -44,12 +44,7 @@ from typing import Any, Dict, List, Optional
 
 from tools.runtime import get_jarvis_home
 
-# fcntl is POSIX-only (JARVIS runs on Linux); guard the import so the module
-# still loads on a non-POSIX dev box — locking degrades to a no-op there.
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - JARVIS is Linux-only in practice
-    fcntl = None  # type: ignore[assignment]
+from pipeline import portable_lock
 
 logger = logging.getLogger("jarvis.file_memory")
 
@@ -389,18 +384,12 @@ class MemoryStore:
         replaced via os.replace()."""
         lock_path = path.with_suffix(path.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        if fcntl is None:  # pragma: no cover - non-POSIX fallback
-            yield
-            return
         fd = open(lock_path, "a+", encoding="utf-8")
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            portable_lock.lock_exclusive(fd)
             yield
         finally:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
-                pass
+            portable_lock.unlock(fd)
             fd.close()
 
     @staticmethod

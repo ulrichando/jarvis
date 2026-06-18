@@ -44,7 +44,7 @@ def default_monitor_device() -> str:
     if shutil.which("pactl"):
         try:
             sink = subprocess.check_output(
-                ["pactl", "get-default-sink"], text=True, timeout=2
+                ["pactl", "get-default-sink"], text=True, timeout=2  # windows-footgun: ok (guarded by shutil.which('pactl') above; returns '' fallback off-Linux)
             ).strip()
             if sink:
                 return f"{sink}.monitor"

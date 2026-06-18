@@ -1246,7 +1246,7 @@ def _direct_unit_live(mode: str) -> bool:
     else:
         try:
             rc = _subprocess.run(
-                ["systemctl", "--user", "is-active", "--quiet", unit],
+                ["systemctl", "--user", "is-active", "--quiet", unit],  # windows-footgun: ok (except→return True when systemctl absent off-Linux)
                 timeout=2,
             ).returncode
             live = rc == 0
@@ -2006,7 +2006,7 @@ async def launch_app(binary: str, args: str = "") -> str:
     # write child stdout/stderr to log_path.
     if platform.system() == "Linux":
         import shlex as _shlex
-        argv = ["setsid", "-f", bin_path, *(_shlex.split(args_clean) if args_clean else [])]
+        argv = ["setsid", "-f", bin_path, *(_shlex.split(args_clean) if args_clean else [])]  # windows-footgun: ok (Linux branch; Windows uses detached_popen_kwargs above)
         logger.info(f"launch_app → {argv}")
         try:
             log_fh = open(log_path, "wb")
@@ -7471,9 +7471,9 @@ if __name__ == "__main__":
     # (Task 5), so this watchdog is a backstop for general
     # supervisor liveness, not a wedge detector.
     import threading as _threading
-    import sdnotify as _sdnotify
+    from pipeline import notify as _notify
 
-    _sd = _sdnotify.SystemdNotifier()
+    _sd = _notify.get_notifier()
     _sd.notify("READY=1")
     logger.info("[watchdog] main process READY=1 sent to systemd")
 
