@@ -1,0 +1,75 @@
+name: windows-desktop
+
+# Builds the native-Windows Tauri desktop binary on a GitHub windows-latest
+# runner (the dev box is Linux, where Tauri/MSVC Windows builds aren't possible)
+# and publishes jarvis-desktop.exe as a downloadable asset.
+#
+# Triggers:
+#   - push of a `windows-preview` (or v*-win*) tag  → builds + attaches to a
+#     prerelease of that tag (the Windows release asset).
+#   - manual workflow_dispatch (available once this file is on the default
+#     branch) → builds + uploads a workflow artifact only.
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "windows-preview"
+      - "v*-win*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write   # needed to attach the .exe to a release
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Rust toolchain (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build frontend (vite → dist/)
+        working-directory: src/desktop-tauri
+        run: |
+          npm install
+          npm run build
+
+      - name: Build desktop binary (cargo release — re-embeds dist/)
+        working-directory: src/desktop-tauri/src-tauri
+        run: cargo build --release
+
+      - name: Stage jarvis-desktop.exe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist-windows | Out-Null
+          Copy-Item src/desktop-tauri/src-tauri/target/release/jarvis-desktop.exe dist-windows/jarvis-desktop.exe
+          Get-Item dist-windows/jarvis-desktop.exe | Format-List Name,Length
+
+      - name: Upload workflow artifact (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-desktop-windows-x64
+          path: dist-windows/jarvis-desktop.exe
+
+      - name: Attach to prerelease (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          tag_name: ${{ github.ref_name }}
+          name: "Windows desktop preview (${{ github.ref_name }})"
+          body: |
+            Unsigned native-Windows Tauri desktop build (`jarvis-desktop.exe`),
+            built on a windows-latest runner from `feat/windows-port`.
+
+            - Windows SmartScreen will warn on first launch (unsigned — signing is deferred).
+            - Requires the WebView2 runtime (preinstalled on Windows 11; evergreen download on Win10).
+            - This is the desktop UI only. Voice-agent / CLI / web still install via `install.ps1`
+              (which also builds this same binary locally). Native-Windows voice boot is pending
+              on-device validation — see CHANGELOG.md.
+          files: dist-windows/jarvis-desktop.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
