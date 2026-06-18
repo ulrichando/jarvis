@@ -33,6 +33,8 @@ export type Checkpoint = {
 const CHECKPOINTS_REL = ".jarvis/checkpoints";
 const MAX_CHECKPOINTS = 20;       // auto-prune oldest beyond this
 const MAX_FILE_BYTES = 256 * 1024; // skip files bigger than this
+const MAX_SNAPSHOT_BYTES = 25 * 1024 * 1024; // aggregate cap per checkpoint
+const MAX_SNAPSHOT_FILES = 5000;  // secondary guard on total file count
 
 // File / dir patterns we never snapshot. Mirrors the IGNORE_DIRS list
 // in storage.ts but adds binary/build outputs that change on every run.
@@ -61,7 +63,10 @@ async function readSourceTree(
 ): Promise<{ path: string; content: string; bytes: number }[]> {
   const out: { path: string; content: string; bytes: number }[] = [];
   const root = workspaceRoot(id);
+  let total = 0;
+  let capped = false;
   async function walk(currentRel: string) {
+    if (capped) return;
     const dir = path.join(root, currentRel);
     let entries;
     try {
@@ -70,6 +75,7 @@ async function readSourceTree(
       return;
     }
     for (const e of entries) {
+      if (capped) return;
       if (e.name.startsWith(".") && e.name !== ".env" && e.name !== ".gitignore") continue;
       const childRel = currentRel
         ? path.posix.join(currentRel, e.name)
@@ -82,8 +88,22 @@ async function readSourceTree(
         try {
           const stat = await fs.stat(path.join(root, childRel));
           if (stat.size > MAX_FILE_BYTES) continue;
+          // Aggregate cap: stop once the snapshot would exceed the total
+          // byte / file-count ceiling, so a pathological workspace can't
+          // fill the disk with one checkpoint (20 are retained at a time).
+          if (
+            total + stat.size > MAX_SNAPSHOT_BYTES ||
+            out.length >= MAX_SNAPSHOT_FILES
+          ) {
+            capped = true;
+            console.warn(
+              `[checkpoints] snapshot for ${id} hit the cap; truncated at ${out.length} files / ${total} bytes`,
+            );
+            return;
+          }
           const content = await fs.readFile(path.join(root, childRel), "utf8");
           out.push({ path: childRel, content, bytes: stat.size });
+          total += stat.size;
         } catch {
           /* unreadable / non-text — skip */
         }

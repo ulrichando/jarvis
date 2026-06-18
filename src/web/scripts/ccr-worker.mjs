@@ -22,7 +22,7 @@ import os from "node:os";
 const BASE = process.env.JARVIS_BRIDGE_BASE_URL || "http://localhost:3000/api/bridge";
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 const GROQ_KEY = process.env.GROQ_API_KEY;
-const MODEL = process.env.WORKER_MODEL || "llama-3.3-70b-versatile";
+const MODEL = process.env.WORKER_MODEL || "openai/gpt-oss-120b";
 const ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
 const MACHINE = process.env.WORKER_NAME || os.hostname();
 const DIR = process.env.WORKER_DIR || process.cwd();

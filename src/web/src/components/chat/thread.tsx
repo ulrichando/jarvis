@@ -177,7 +177,14 @@ export function Thread({
     // bottom. If they've scrolled up to look at earlier turns,
     // leave them alone.
     if (!isAtBottom) return;
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    // This effect re-fires on every streamed token — `messages` changes
+    // on each rAF flush (~60×/s). Smooth-scrolling per token stacks
+    // animations and stutters (the visible jank), so scroll INSTANTLY
+    // while streaming and reserve smooth for discrete idle height changes.
+    bottomRef.current?.scrollIntoView({
+      behavior: isStreaming ? "auto" : "smooth",
+      block: "end",
+    });
   }, [messages, isStreaming, isAtBottom]);
 
   // Apply the auto-continue coalesce ONCE per messages-array reference

@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# jarvis-voice-healthcheck — periodic backstop for the voice stack.
+#
+# Detects a stack broken in a way the event hooks (resume / network) + the
+# systemd WatchdogSec + the ReconnectLadder all miss, and — only on a SUSTAINED
+# break, never a transient restart — hands off to jarvis-voice-recover.
+#
+# "Broken" = /status unreachable, OR connected:false / agent_present:false, OR
+# (connected + agent_present + UNMUTED + the mic hasn't drained for
+# >DRAIN_STALL_S). The drain signal is idle-safe: PortAudio produces frames even
+# in silence and healthy frames always drain, so a stall while unmuted means a
+# dead audio path (stale PortAudio after resume / dead uplink after a net blip),
+# NOT a quiet user.
+#
+# CONSERVATIVE by design — a false recovery is worse than none:
+#   - the break must persist across THRESHOLD consecutive ticks (a cross-run
+#     counter), so the ~30-45s agent reload / nightly recycle / crash-restart —
+#     which all clear within a tick or two — never trips it;
+#   - skips while a recover is already in flight (RECOVER_GRACE_S since the last
+#     recover) — the "broken" reading is just the restart settling;
+#   - skips + resets if a turn fired within TURN_GUARD_S (a live session can't
+#     be wedged).
+#
+# Invoked by jarvis-voice-health.timer (~every 30s). Safe to run by hand.
+set -uo pipefail
+
+VC_PORT="${JARVIS_VOICE_CLIENT_PORT:-8767}"
+DB="${JARVIS_TELEMETRY_PATH:-$HOME/.local/share/jarvis/turn_telemetry.db}"
+DRAIN_STALL_S="${JARVIS_HEALTH_DRAIN_STALL_S:-20}"
+TURN_GUARD_S="${JARVIS_HEALTH_TURN_GUARD_S:-60}"
+RECOVER_GRACE_S="${JARVIS_HEALTH_RECOVER_GRACE_S:-90}"   # > the longest legit restart (agent reload)
+THRESHOLD="${JARVIS_HEALTH_THRESHOLD:-2}"                # consecutive broken ticks before recover
+COUNTER_FILE="${XDG_RUNTIME_DIR:-/tmp}/jarvis-voice-health.count"
+RECOVER_STAMP="/tmp/jarvis-voice-recover.stamp"
+RECOVER="$(dirname "$(readlink -f "$0")")/jarvis-voice-recover"
+
+log() { logger -t jarvis-voice-health "$*" 2>/dev/null || true; }
+reset_counter() { rm -f "$COUNTER_FILE" 2>/dev/null || true; }
+
+# Echoes a short reason when the stack looks broken; empty when healthy.
+probe_broken() {
+    local st age
+    st="$(curl -s --max-time 2 "http://127.0.0.1:${VC_PORT}/status" 2>/dev/null)" || { echo "no-status"; return; }
+    [ -n "$st" ] || { echo "no-status"; return; }
+    printf '%s' "$st" | grep -q '"connected": *true'     || { echo "disconnected"; return; }
+    printf '%s' "$st" | grep -q '"agent_present": *true' || { echo "no-agent"; return; }
+    # Deaf-but-connected: only meaningful while UNMUTED (a muted mic legitimately
+    # doesn't drain; soft-mute keeps the mic on so it still drains).
+    printf '%s' "$st" | grep -q '"muted": *true' && return
+    age="$(printf '%s' "$st" | grep -oE '"mic_last_drain_age_s": *[0-9.]+' | grep -oE '[0-9.]+$')"
+    [ -n "$age" ] || return    # null/unknown → don't treat as broken
+    awk -v a="$age" -v t="$DRAIN_STALL_S" 'BEGIN{exit !(a>t)}' && echo "mic-stall:${age}s"
+}
+
+# True if a turn fired within TURN_GUARD_S (a live session isn't wedged).
+recent_turn() {
+    local last epoch now
+    last="$(sqlite3 "$DB" 'SELECT MAX(ts_utc) FROM turns' 2>/dev/null)" || return 1
+    [ -n "$last" ] || return 1
+    epoch="$(date -u -d "$last" +%s 2>/dev/null)" || return 1
+    now="$(date -u +%s)"
+    [ "$(( now - epoch ))" -lt "$TURN_GUARD_S" ]
+}
+
+reason="$(probe_broken)"
+if [ -z "$reason" ]; then
+    reset_counter            # healthy → clear the streak
+    exit 0
+fi
+
+# A recover is already in flight → the restart just hasn't settled. Don't pile on.
+if [ -f "$RECOVER_STAMP" ]; then
+    rs="$(cat "$RECOVER_STAMP" 2>/dev/null || echo 0)"
+    if [ "$(( $(date +%s) - rs ))" -lt "$RECOVER_GRACE_S" ]; then
+        log "broken ($reason) but recover ran $(( $(date +%s) - rs ))s ago — letting it settle"
+        reset_counter
+        exit 0
+    fi
+fi
+
+# A live session can't be wedged.
+if recent_turn; then
+    reset_counter
+    exit 0
+fi
+
+count=$(( $(cat "$COUNTER_FILE" 2>/dev/null || echo 0) + 1 ))
+echo "$count" > "$COUNTER_FILE" 2>/dev/null || true
+if [ "$count" -lt "$THRESHOLD" ]; then
+    log "broken ($reason) [$count/$THRESHOLD consecutive] — watching"
+    exit 0
+fi
+
+log "broken for $count consecutive checks ($reason) — invoking recover"
+reset_counter
+[ -x "$RECOVER" ] && "$RECOVER" healthcheck || true
+exit 0

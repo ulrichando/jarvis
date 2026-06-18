@@ -1,12 +1,14 @@
 import { NextResponse } from 'next/server'
+import { randomUUID } from 'node:crypto'
 import { getStore } from '@/lib/bridge/db'
 import {
+  appendInbound,
   appendSessionEvent,
   findSession,
   hasInboundUuid,
   validateSessionToken,
 } from '@/lib/bridge/store'
-import { clearLiveText, setLiveText } from '@/lib/bridge/events'
+import { clearLiveText, emitInbound, setLiveText } from '@/lib/bridge/events'
 import { extractBearer } from '@/lib/bridge/auth'
 import { bridgeError } from '@/lib/bridge/errors'
 
@@ -80,6 +82,37 @@ export async function POST(
             typeof se.event.index === 'number'
           ) {
             setLiveText(sessionId, se.event.index, se.event.delta.text)
+          }
+        }
+        // can_use_tool: the CLI is asking the host to approve a tool call.
+        // Container sessions are isolated, autonomous sandboxes dispatched with
+        // bypassPermissions — there is no human in the loop to click "allow",
+        // so the server auto-approves. Without this the worker blocks forever
+        // on the first permission-gated tool (Write, Bash…) and the session
+        // view spins indefinitely. Browser-driven local sessions answer
+        // permissions through the messages route instead, so gate on
+        // container_json (only set for launched container sessions).
+        if (payload.type === 'control_request' && session?.container_json) {
+          const r = payload.request as
+            | { subtype?: string; input?: Record<string, unknown> }
+            | undefined
+          const requestId =
+            typeof payload.request_id === 'string' ? payload.request_id : ''
+          if (r?.subtype === 'can_use_tool' && requestId) {
+            appendInbound(store, sessionId, {
+              type: 'control_response',
+              uuid: randomUUID(),
+              response: {
+                subtype: 'success',
+                request_id: requestId,
+                response: {
+                  behavior: 'allow',
+                  updatedInput:
+                    r.input && typeof r.input === 'object' ? r.input : {},
+                },
+              },
+            })
+            emitInbound(sessionId)
           }
         }
         continue

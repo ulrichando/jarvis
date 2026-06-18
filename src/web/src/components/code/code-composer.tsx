@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import Link from "next/link";
 import {
   Cloud,
@@ -12,6 +12,7 @@ import {
   ChevronDown,
   Mic,
   Gauge,
+  Square,
   Loader2,
   Check,
   ExternalLink,
@@ -21,9 +22,13 @@ import {
   CircleDot,
   SquareSlash,
   Blocks,
+  X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { MODELS_META, PROVIDER_LABEL, type Provider } from "@/lib/ai/models-meta";
 import { ConnectorsModal, ImportIssueModal } from "./code-connectors";
+import { shouldSubmitOnEnter, useAutoResize } from "@/lib/chat/enter-submit";
 
 const TOOLBAR_ICON_BTN =
   "flex size-6 items-center justify-center rounded text-foreground/50 hover:bg-accent/40 hover:text-foreground transition-colors";
@@ -63,7 +68,46 @@ type Machine = {
   last_seen_at: number;
 };
 
-type Popover = null | "env" | "repo" | "plus" | "model" | "effort" | "mode" | "mic" | "usage";
+/** A pending image attachment (base64, no data: prefix) for the next send. */
+export type Attachment = {
+  name: string;
+  media_type: string;
+  /** base64 of the image bytes, no `data:...;base64,` prefix (images only). */
+  data: string;
+  /** data URL for the inline thumbnail (images only). */
+  preview: string;
+  /** "image" → vision content block; "file" → text inlined into the prompt. */
+  kind?: "image" | "file";
+  /** Decoded text content (files only). */
+  text?: string;
+};
+
+const MAX_ATTACH_BYTES = 5 * 1024 * 1024; // 5MB/image — keep request bodies sane
+
+type Popover = null | "env" | "repo" | "plus" | "plus2" | "model" | "effort" | "mode" | "mic" | "usage" | "conn";
+
+// Slash-command palette (claude.ai/code parity). "web" commands are handled by
+// the page (onCommand) or open a composer popover (/model); "send" commands are
+// dispatched as the message text — the worker IS Claude Code and runs them
+// natively (it accepts bridge-safe slash commands over the inbound).
+type SlashCommand = { name: string; desc: string; kind: "web" | "send" };
+// Verified live against the container worker (2026-06-13): only commands that
+// produce a useful response over the bridge are listed. Dropped: /status,
+// /skills, /memory (interactive Ink UI — no web output), /pr-comments (no
+// response), /rename (not a real command over the bridge).
+const SLASH_COMMANDS: SlashCommand[] = [
+  { name: "clear", desc: "Start a new session", kind: "web" },
+  { name: "init", desc: "Analyze the repo and write an AGENTS.md", kind: "send" },
+  { name: "review", desc: "Review the current changes", kind: "send" },
+  { name: "commit", desc: "Stage and commit the changes", kind: "send" },
+  { name: "compact", desc: "Compact the conversation to free up context", kind: "send" },
+  { name: "diff", desc: "Show the changes (Diff panel)", kind: "web" },
+  { name: "model", desc: "Switch the model", kind: "web" },
+  { name: "cost", desc: "Token usage and cost for this session", kind: "send" },
+  { name: "context", desc: "Context-window usage breakdown", kind: "send" },
+  { name: "security-review", desc: "Security review of the changes", kind: "send" },
+  { name: "help", desc: "List keyboard shortcuts & commands", kind: "web" },
+];
 
 // Permission modes, claude.ai/code naming. Values are the CLI's
 // ExternalPermissionMode strings, applied via set_permission_mode
@@ -74,17 +118,21 @@ const MODE_OPTIONS: { label: string; value: string; n: string }[] = [
   { label: "Auto mode", value: "bypassPermissions", n: "3" },
 ];
 
-const MODELS: { name: string; n: string; legacy?: boolean; ctx?: string }[] = [
-  { name: "Fable 5", n: "1" },
-  { name: "Fable 5", ctx: "1M context", n: "2" },
-  { name: "Opus 4.8", n: "3" },
-  { name: "Opus 4.8", ctx: "1M context", n: "4" },
-  { name: "Sonnet 4.6", n: "5" },
-  { name: "Haiku 4.5", n: "6" },
-  { name: "Opus 4.7", n: "7", legacy: true },
-  { name: "Opus 4.7", ctx: "1M context", n: "8", legacy: true },
-  { name: "Opus 4.6", n: "9", legacy: true },
+// Real model catalog grouped by provider (from the browser-safe MODELS_META —
+// Anthropic / DeepSeek / Google / Groq / Kimi / OpenAI), in this display order.
+const MODEL_PROVIDER_ORDER: Provider[] = [
+  "anthropic",
+  "deepseek",
+  "google",
+  "groq",
+  "kimi",
+  "openai",
 ];
+const MODEL_GROUPS = MODEL_PROVIDER_ORDER.map((provider) => ({
+  provider,
+  label: PROVIDER_LABEL[provider],
+  models: Object.values(MODELS_META).filter((m) => m.provider === provider),
+})).filter((g) => g.models.length > 0);
 
 const PLUS_ITEMS: { icon: LucideIcon; label: string; chord: string; sub?: boolean }[] = [
   { icon: Paperclip, label: "Add files or photos", chord: "Ctrl+U" },
@@ -116,6 +164,17 @@ export function CodeComposer({
   mode = "acceptEdits",
   onModeChange,
   onPickRepo,
+  attachments = [],
+  onAttachmentsChange,
+  model = "claude-sonnet-4-6",
+  onModelChange,
+  connectors = [],
+  onConnectorsChange,
+  availableConnectors = [],
+  connectorsEditable = true,
+  running = false,
+  onStop,
+  onCommand,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -131,11 +190,138 @@ export function CodeComposer({
   onModeChange?: (mode: string) => void;
   /** Picking a GitHub repo targets a cloud container for the next task. */
   onPickRepo?: (fullName: string | null) => void;
+  /** Pending image attachments for the next send (owned by the page). */
+  attachments?: Attachment[];
+  onAttachmentsChange?: (a: Attachment[]) => void;
+  /** Selected model id (MODELS_META key); applied to the session/task. */
+  model?: string;
+  onModelChange?: (id: string) => void;
+  /** Per-session MCP connectors opted in for the next task (server ids). Empty
+   *  by default — nothing attaches unless the user picks it. */
+  connectors?: string[];
+  onConnectorsChange?: (ids: string[]) => void;
+  /** Enabled, container-capable connectors the picker offers. */
+  availableConnectors?: { id: string; name: string }[];
+  /** False on an already-open session — connectors are baked in at launch, so
+   *  the picker only shows for a new session. */
+  connectorsEditable?: boolean;
+  /** True while the open session's agent is running → send becomes Stop. */
+  running?: boolean;
+  onStop?: () => void;
+  /** Web-action slash commands (/clear, /diff, /help) handled by the page; the
+   *  rest are sent to the worker, which runs them natively. */
+  onCommand?: (name: string) => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState<Popover>(null);
-  const [model, setModel] = useState("Opus 4.8");
+  const [attachErr, setAttachErr] = useState<string | null>(null);
+
+  // ── Slash-command palette (type "/" → menu) ────────────────────────────
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  // Open while typing a bare "/command" (no space yet); a space → args mode.
+  const slashQuery = /^\/(\S*)$/.exec(value)?.[1]?.toLowerCase() ?? null;
+  const slashResults =
+    slashQuery === null ? [] : SLASH_COMMANDS.filter((c) => c.name.includes(slashQuery));
+  const slashOpen = slashQuery !== null && !slashDismissed && slashResults.length > 0;
+  const slashActive = Math.min(slashIndex, Math.max(0, slashResults.length - 1));
+
+  const handleInputChange = (v: string) => {
+    setSlashDismissed(false);
+    setSlashIndex(0);
+    onChange(v);
+  };
+  const runSlash = (cmd: SlashCommand) => {
+    if (cmd.kind === "web") {
+      if (cmd.name === "model") setOpen("model");
+      else onCommand?.(cmd.name);
+      onChange("");
+    } else {
+      // Fill "/name " (trailing space closes the palette → args mode); the
+      // user hits Enter and the normal submit path delivers it to the worker.
+      onChange("/" + cmd.name + " ");
+      textareaRef.current?.focus();
+    }
+  };
+  const handleKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashOpen) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashIndex((i) => Math.min(i + 1, slashResults.length - 1));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashIndex((i) => Math.max(i - 1, 0));
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        runSlash(slashResults[slashActive]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSlashDismissed(true);
+        return;
+      }
+    }
+    // IME-safe: don't submit while composing a CJK candidate / dead-key
+    // accent — otherwise Enter-to-confirm sends a half-written message.
+    if (shouldSubmitOnEnter(e)) {
+      e.preventDefault();
+      if (value.trim() || attachments.length) onSubmit();
+    }
+  };
+
+  // Read picked files. Images → base64 (a vision model sees them as content
+  // blocks); any other file → decoded text inlined into the prompt (handy for
+  // logs, configs, snippets). Binary non-images come through as text and may
+  // be garbled — pick text files.
+  const onFilesPicked = (files: FileList | null) => {
+    if (!files || !onAttachmentsChange) return;
+    setAttachErr(null);
+    const picked = Array.from(files);
+    Promise.all(
+      picked.map(
+        (f) =>
+          new Promise<Attachment | null>((resolve) => {
+            if (f.size > MAX_ATTACH_BYTES) {
+              setAttachErr(`${f.name} is over 5MB.`);
+              resolve(null);
+              return;
+            }
+            const reader = new FileReader();
+            if (!f.type.startsWith("image/")) {
+              // Non-image → inline as text.
+              reader.onload = () =>
+                resolve({
+                  name: f.name,
+                  media_type: f.type || "text/plain",
+                  data: "",
+                  preview: "",
+                  kind: "file",
+                  text: String(reader.result),
+                });
+              reader.onerror = () => resolve(null);
+              reader.readAsText(f);
+              return;
+            }
+            reader.onload = () => {
+              const url = String(reader.result);
+              resolve({ name: f.name, media_type: f.type, data: url.split(",")[1] ?? "", preview: url, kind: "image" });
+            };
+            reader.onerror = () => resolve(null);
+            reader.readAsDataURL(f);
+          }),
+      ),
+    ).then((results) => {
+      const added = results.filter((a): a is Attachment => !!a);
+      if (added.length) onAttachmentsChange([...attachments, ...added]);
+    });
+  };
   const [repoQuery, setRepoQuery] = useState("");
   const [modal, setModal] = useState<null | "connectors" | "import">(null);
   const [ghRepos, setGhRepos] = useState<{ full_name: string }[] | null>(null);
@@ -190,12 +376,10 @@ export function CodeComposer({
   const toggleRec = () => (recording ? stopRec() : startRec());
   useEffect(() => () => recRef.current?.abort(), []);
 
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [value]);
+  // Auto-grow up to 240px, then scroll internally — shared with the chat
+  // composer (enter-submit.ts). Previously this had NO cap, so a long
+  // paste pushed the toolbar + send button off-screen.
+  useAutoResize(textareaRef, value, 240);
 
   useEffect(() => {
     if (!open) return;
@@ -222,6 +406,32 @@ export function CodeComposer({
   const ghFiltered = (ghRepos ?? []).filter((r) =>
     r.full_name.toLowerCase().includes(repoQuery.toLowerCase()),
   );
+
+  // Shared plus-menu items — rendered from both the pills-row "+" (welcome
+  // view) and the always-visible bottom-toolbar "+" (next to the mic).
+  const onPlusItem = (label: string) => {
+    if (label === "Connectors") setModal("connectors");
+    else if (label === "Import GitHub issue") setModal("import");
+    else if (label === "Add files or photos") fileInputRef.current?.click();
+    else if (label === "Slash commands") {
+      if (!value.startsWith("/")) onChange("/" + value);
+      textareaRef.current?.focus();
+    }
+    setOpen(null);
+  };
+  const plusItems = PLUS_ITEMS.map((it) => (
+    <button
+      key={it.label}
+      type="button"
+      onClick={() => onPlusItem(it.label)}
+      className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] text-foreground/90 hover:bg-accent/50"
+    >
+      <it.icon className="size-3.5 text-muted-foreground" />
+      <span className="flex-1">{it.label}</span>
+      {it.sub && <ChevronDown className="size-3.5 -rotate-90 text-muted-foreground" />}
+      {it.chord && <span className="text-[11px] text-muted-foreground/60">{it.chord}</span>}
+    </button>
+  ));
 
   return (
     <div className="border border-border/60 rounded-2xl overflow-visible bg-card" ref={rootRef}>
@@ -317,48 +527,93 @@ export function CodeComposer({
           </button>
           {open === "plus" && (
             <div className="absolute bottom-full left-32 mb-2 w-[240px] rounded-xl border border-border bg-card p-1 shadow-xl z-50">
-              {PLUS_ITEMS.map((it) => (
-                <button
-                  key={it.label}
-                  type="button"
-                  onClick={() => {
-                    if (it.label === "Connectors") setModal("connectors");
-                    else if (it.label === "Import GitHub issue") setModal("import");
-                    else if (it.label === "Slash commands") {
-                      // Match the CLI: seed a "/" so the user types a command;
-                      // the CLI interprets it on submit.
-                      if (!value.startsWith("/")) onChange("/" + value);
-                      textareaRef.current?.focus();
-                    }
-                    setOpen(null);
-                  }}
-                  className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[13px] text-foreground/90 hover:bg-accent/50"
-                >
-                  <it.icon className="size-3.5 text-muted-foreground" />
-                  <span className="flex-1">{it.label}</span>
-                  {it.sub && <ChevronDown className="size-3.5 -rotate-90 text-muted-foreground" />}
-                  {it.chord && <span className="text-[11px] text-muted-foreground/60">{it.chord}</span>}
-                </button>
-              ))}
+              {plusItems}
             </div>
           )}
         </div>
       )}
 
+      {/* hidden file picker for "Add files or photos" */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          onFilesPicked(e.target.files);
+          e.target.value = ""; // allow re-picking the same file
+        }}
+      />
+
+      {/* attachment thumbnails (above the input) */}
+      {attachments.length > 0 && (
+        <div className="flex flex-wrap gap-2 px-3 pt-2">
+          {attachments.map((a, i) => (
+            <div key={`${a.name}-${i}`} className="group relative">
+              {a.kind === "file" ? (
+                <div
+                  title={a.name}
+                  className="flex size-12 flex-col items-center justify-center rounded-md border border-border/60 bg-accent/30 px-1 text-center"
+                >
+                  <Paperclip className="size-4 text-muted-foreground" />
+                  <span className="mt-0.5 w-full truncate text-[8px] text-muted-foreground">{a.name}</span>
+                </div>
+              ) : (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={a.preview} alt={a.name} className="size-12 rounded-md border border-border/60 object-cover" />
+              )}
+              <button
+                type="button"
+                aria-label={`Remove ${a.name}`}
+                onClick={() => onAttachmentsChange?.(attachments.filter((_, j) => j !== i))}
+                className="absolute -right-1.5 -top-1.5 flex size-4 items-center justify-center rounded-full bg-card text-muted-foreground shadow ring-1 ring-border hover:text-foreground"
+              >
+                <X className="size-2.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {attachErr && <div className="px-3 pt-1 text-[12px] text-red-500">{attachErr}</div>}
+
       {/* input + send */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-border/40">
+      <div className="relative flex items-center gap-2 px-3 py-2 border-b border-border/40">
+        {slashOpen && (
+          <div className="absolute bottom-full left-2 right-2 mb-2 max-h-[280px] overflow-y-auto rounded-xl border border-border bg-card p-1 shadow-xl z-50">
+            {slashResults.map((c, i) => (
+              <button
+                key={c.name}
+                type="button"
+                onMouseEnter={() => setSlashIndex(i)}
+                // mousedown (not click) + preventDefault keeps textarea focus
+                // so runSlash's focus()/value change isn't fighting a blur.
+                onMouseDown={(e) => { e.preventDefault(); runSlash(c); }}
+                className={`flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left ${i === slashActive ? "bg-accent/60" : "hover:bg-accent/40"}`}
+              >
+                <span className="shrink-0 font-mono text-[13px] text-foreground">/{c.name}</span>
+                <span className="truncate text-[12px] text-muted-foreground">{c.desc}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           value={value}
-          onChange={(e) => onChange(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSubmit(); } }}
+          onChange={(e) => handleInputChange(e.target.value)}
+          onKeyDown={handleKeyDown}
           placeholder={placeholder}
           rows={1}
           className="flex-1 resize-none bg-transparent text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none"
         />
-        <button type="button" onClick={onSubmit} disabled={busy || !value.trim()} aria-label="Send" className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:pointer-events-none">
-          {busy ? <Loader2 className="size-3.5 animate-spin" /> : <CornerDownLeft className="size-3.5" />}
-        </button>
+        {running ? (
+          <button type="button" onClick={onStop} aria-label="Stop" title="Stop" className="flex size-7 shrink-0 items-center justify-center rounded-md bg-foreground/90 text-background hover:bg-foreground transition-colors">
+            <Square className="size-3 fill-current" />
+          </button>
+        ) : (
+          <button type="button" onClick={onSubmit} disabled={busy || (!value.trim() && attachments.length === 0)} aria-label="Send" className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:pointer-events-none">
+            {busy ? <Loader2 className="size-3.5 animate-spin" /> : <CornerDownLeft className="size-3.5" />}
+          </button>
+        )}
       </div>
 
       {/* toolbar */}
@@ -371,7 +626,22 @@ export function CodeComposer({
           >
             {MODE_OPTIONS.find((m) => m.value === mode)?.label ?? "Accept edits"}
           </button>
-          <button type="button" aria-label="Attach" className={TOOLBAR_ICON_BTN}><Plus className="size-3.5" /></button>
+          {connectorsEditable && availableConnectors.length > 0 && (
+            <button
+              type="button"
+              onClick={() => toggle("conn")}
+              className="rounded bg-accent/40 px-2 py-1 text-[12px] text-foreground/80 hover:bg-accent/60 hover:text-foreground"
+              title="Choose which connectors this session can use"
+            >
+              {connectors.length ? `Connectors · ${connectors.length}` : "Connectors"}
+            </button>
+          )}
+          <button type="button" aria-label="Attach" onClick={() => toggle("plus2")} className={`${TOOLBAR_ICON_BTN} ${open === "plus2" ? "bg-accent/40 text-foreground" : ""}`}><Plus className="size-3.5" /></button>
+          {open === "plus2" && (
+            <div className="absolute bottom-full left-2 mb-2 w-[240px] rounded-xl border border-border bg-card p-1 shadow-xl z-50">
+              {plusItems}
+            </div>
+          )}
           <button
             type="button"
             aria-label={recording ? "Stop recording" : "Record"}
@@ -396,16 +666,10 @@ export function CodeComposer({
           {open === "mic" && (
             <div className="absolute bottom-full left-24 mb-2 w-[210px] rounded-xl border border-border bg-card p-2 shadow-xl z-50">
               <div className="px-1 pb-1.5 text-[11px] font-medium text-muted-foreground/60">Microphone</div>
-              <button
-                type="button"
-                onClick={() => setHoldToRecord((h) => !h)}
-                className="flex w-full items-center gap-2 rounded px-1 py-1 text-left text-[13px] text-foreground/90 hover:bg-accent/40"
-              >
+              <label className="flex w-full cursor-pointer items-center gap-2 rounded px-1 py-1 text-[13px] text-foreground/90 hover:bg-accent/40">
                 <span className="flex-1">Hold to record</span>
-                <span className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${holdToRecord ? "bg-primary" : "bg-accent"}`}>
-                  <span className={`absolute top-0.5 size-3 rounded-full bg-white transition-transform ${holdToRecord ? "translate-x-3.5" : "translate-x-0.5"}`} />
-                </span>
-              </button>
+                <Switch checked={holdToRecord} onCheckedChange={setHoldToRecord} size="sm" />
+              </label>
               {!speechSupported && (
                 <p className="mt-1 px-1 text-[11px] text-muted-foreground/60">Voice input needs Chrome or Edge.</p>
               )}
@@ -413,7 +677,7 @@ export function CodeComposer({
           )}
         </div>
         <div className="flex items-center gap-2 text-[11.5px] text-foreground/55">
-          <button type="button" onClick={() => toggle("model")} className="rounded px-1.5 py-0.5 hover:bg-accent/40 hover:text-foreground">{model}</button>
+          <button type="button" onClick={() => toggle("model")} className="rounded px-1.5 py-0.5 hover:bg-accent/40 hover:text-foreground">{MODELS_META[model]?.label ?? model}</button>
           <button type="button" onClick={() => toggle("effort")} className="rounded px-1.5 py-0.5 hover:bg-accent/40 hover:text-foreground">Max</button>
           <button type="button" aria-label="Usage" onClick={() => toggle("usage")} className="flex size-5 items-center justify-center rounded hover:bg-accent/40 hover:text-foreground">
             <Gauge className="size-3.5" />
@@ -453,23 +717,57 @@ export function CodeComposer({
           </div>
         )}
 
-        {open === "model" && (
-          <div className="absolute bottom-full right-2 mb-2 w-[260px] rounded-xl border border-border bg-card p-1 shadow-xl z-50">
-            <div className="flex items-center justify-between px-2.5 py-1.5 text-[11px] text-muted-foreground/60">
-              <span>Models</span>
-              <span className="font-mono">Ctrl ⇧ I</span>
+        {open === "conn" && (
+          <div className="absolute bottom-full left-2 mb-2 max-h-[360px] w-[250px] overflow-y-auto rounded-xl border border-border bg-card p-1 shadow-xl z-50">
+            <div className="px-2.5 pb-1 pt-2 text-[11px] font-medium text-muted-foreground/60">
+              Connectors for this session
             </div>
-            {MODELS.map((m) => {
-              const label = m.ctx ? `${m.name} (${m.ctx})` : m.name;
-              const active = label === model;
+            {availableConnectors.map((c) => {
+              const on = connectors.includes(c.id);
               return (
-                <button key={m.n} type="button" onClick={() => { setModel(label); setOpen(null); }} className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-[13px] hover:bg-accent/50">
-                  <Check className={`size-3.5 ${active ? "text-primary" : "opacity-0"}`} />
-                  <span className="flex-1 text-foreground/90">{m.name}{m.ctx && <span className="text-muted-foreground"> ({m.ctx})</span>}{m.legacy && <span className="text-muted-foreground/60"> Legacy</span>}</span>
-                  <span className="text-[11px] text-muted-foreground/50">{m.n}</span>
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() =>
+                    onConnectorsChange?.(
+                      on ? connectors.filter((x) => x !== c.id) : [...connectors, c.id],
+                    )
+                  }
+                  className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-[13px] hover:bg-accent/50"
+                >
+                  <Check className={`size-3.5 shrink-0 ${on ? "text-primary" : "opacity-0"}`} />
+                  <span className="min-w-0 flex-1 truncate text-foreground/90">{c.name}</span>
                 </button>
               );
             })}
+            <p className="px-2.5 pb-1.5 pt-1 text-[11px] leading-snug text-muted-foreground/50">
+              Off by default — pick only what this task needs.
+            </p>
+          </div>
+        )}
+
+        {open === "model" && (
+          <div className="absolute bottom-full right-2 mb-2 max-h-[400px] w-[280px] overflow-y-auto rounded-xl border border-border bg-card p-1 shadow-xl z-50">
+            {MODEL_GROUPS.map((g) => (
+              <div key={g.provider}>
+                <div className="px-2.5 pb-1 pt-2 text-[11px] font-medium text-muted-foreground/60">{g.label}</div>
+                {g.models.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => { onModelChange?.(m.id); setOpen(null); }}
+                    className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-[13px] hover:bg-accent/50"
+                  >
+                    <Check className={`size-3.5 shrink-0 ${m.id === model ? "text-primary" : "opacity-0"}`} />
+                    <span className="min-w-0 flex-1">
+                      <span className="text-foreground/90">{m.label}</span>
+                      {m.badge && <span className="ml-1 rounded bg-accent px-1 py-0.5 text-[9.5px] text-muted-foreground">{m.badge}</span>}
+                      <span className="block truncate text-[11px] text-muted-foreground/60">{m.description}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ))}
           </div>
         )}
 

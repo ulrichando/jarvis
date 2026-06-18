@@ -124,10 +124,10 @@ def test_no_anthropic_key_falls_back_to_groq_primaries(monkeypatch):
     from providers.llm import build_dispatching_llm
 
     labels = _labels(build_dispatching_llm())
-    assert labels["BANTER"] == "groq:llama-3.1-8b-instant"
-    assert labels["TASK"] == "groq:llama-3.3-70b-versatile"
+    assert labels["BANTER"] == "groq:qwen/qwen3.6-27b"
+    assert labels["TASK"] == "groq:openai/gpt-oss-120b"
     assert labels["REASONING"] == "groq:qwen/qwen3-32b"
-    assert labels["EMOTIONAL"] == "groq:meta-llama/llama-4-scout-17b-16e-instruct"
+    assert labels["EMOTIONAL"] == "groq:qwen/qwen3.6-27b"
 
 
 def test_no_anthropic_key_with_task_override_still_wins(monkeypatch):
@@ -144,7 +144,7 @@ def test_no_anthropic_key_with_task_override_still_wins(monkeypatch):
 
     labels = _labels(build_dispatching_llm(task_override=pinned))
     assert labels["TASK"] == "tray-pinned:gpt-5-mini"
-    assert labels["BANTER"] == "groq:llama-3.1-8b-instant"
+    assert labels["BANTER"] == "groq:qwen/qwen3.6-27b"
 
 
 def test_fallback_chain_includes_groq_and_deepseek(monkeypatch):

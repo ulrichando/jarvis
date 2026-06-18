@@ -449,6 +449,11 @@ export function Chat({
   }, [model, setModel]);
 
   const abortRef = useRef<AbortController | null>(null);
+  // Fires once: after the first server-assigned conversation id on a
+  // brand-new standalone /chat, replaceState the URL to /chat/<id> so a
+  // refresh keeps the thread. Guarded so the auto-continue loop and
+  // follow-up turns don't repeat it.
+  const didSyncUrlRef = useRef(false);
   // Scroll container for the message thread. The useStickToBottom
   // hook tracks how close the user is to the bottom; isAtBottom
   // gates Thread's auto-scroll on stream so the page doesn't yank
@@ -907,6 +912,22 @@ export function Chat({
       // persist it (per-workspace) and reload on refresh.
       const cid = res.headers.get("X-Conversation-Id");
       if (cid && onConversationId) onConversationId(cid);
+      // Standalone /chat: sync the URL to /chat/<id> after the first
+      // message so refresh / back / share keep the open thread. Uses
+      // replaceState (not a Next navigation) so the in-flight stream
+      // isn't remounted; a later refresh hits the /chat/[id] server route
+      // and rehydrates from the DB. Gated on pathname === "/chat" so it
+      // never fires for the embedded composers (workbench, design) or an
+      // already-id'd /chat/[id] thread.
+      if (
+        cid &&
+        !didSyncUrlRef.current &&
+        typeof window !== "undefined" &&
+        window.location.pathname === "/chat"
+      ) {
+        didSyncUrlRef.current = true;
+        window.history.replaceState(null, "", `/chat/${cid}`);
+      }
 
       if (!res.ok || !res.body) {
         let detail = `HTTP ${res.status}`;

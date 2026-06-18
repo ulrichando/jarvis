@@ -16,7 +16,16 @@ from collections import deque
 from typing import Optional
 
 import numpy as np
-from scipy.signal import resample_poly
+from scipy.signal import firwin, resample_poly
+
+# Anti-alias FIR for the fixed 48k→16k decimation, designed ONCE. With the
+# default tuple window, resample_poly designs a fresh Kaiser FIR on EVERY
+# call — at 100 frames/s on the playback path that filter design dominated
+# the whole voice-client (74% CPU pinned on the event loop, 2026-06-11
+# silence outage). These taps replicate scipy's internal design for
+# (up=1, down=3, window=('kaiser', 5.0)): half_len = 10*max_rate = 30,
+# cutoff = 1/max_rate — verified numerically identical (max diff ~3e-7).
+_DECIM_48K_TO_16K_TAPS = firwin(2 * 30 + 1, 1.0 / 3.0, window=("kaiser", 5.0))
 
 
 class APMDelayEstimator:
@@ -77,8 +86,11 @@ class ReverseRefRingBuffer:
         self._lock = threading.Lock()
 
     def write(self, frame_48k: np.ndarray, dac_ts: float) -> None:
-        # 48k → 16k (decimate by 3). 480 → 160 samples.
-        f16 = resample_poly(frame_48k.astype(np.float32), up=1, down=3).astype(np.float32)
+        # 48k → 16k (decimate by 3). 480 → 160 samples. Cached taps — see
+        # _DECIM_48K_TO_16K_TAPS above; never pass a tuple window here.
+        f16 = resample_poly(
+            frame_48k.astype(np.float32), up=1, down=3, window=_DECIM_48K_TO_16K_TAPS
+        ).astype(np.float32)
         with self._lock:
             self._buf.append((dac_ts, f16))
             if len(self._buf) > self._cap:

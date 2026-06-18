@@ -40,6 +40,21 @@ export const PROVIDER_LABEL: Record<Provider, string> = {
 };
 
 export const MODELS_META: Record<string, ModelMeta> = {
+  "claude-fable-5": {
+    id: "claude-fable-5",
+    label: "Fable 5",
+    description: "Newest Claude. Built for long-running, complex agentic work.",
+    provider: "anthropic",
+    contextWindow: 1_000_000,
+    badge: "New",
+  },
+  "claude-opus-4-8": {
+    id: "claude-opus-4-8",
+    label: "Claude Opus 4.8",
+    description: "Most capable Claude. Deep reasoning, long agentic tasks.",
+    provider: "anthropic",
+    contextWindow: 1_000_000,
+  },
   "claude-opus-4-7": {
     id: "claude-opus-4-7",
     label: "Claude Opus 4.7",
@@ -208,6 +223,13 @@ export const MODELS_META: Record<string, ModelMeta> = {
     id: "qwen3-32b",
     label: "Qwen 3 32B (Groq)",
     description: "Mid-tier reasoning on Groq.",
+    provider: "groq",
+    contextWindow: 128_000,
+  },
+  "qwen3.6-27b": {
+    id: "qwen3.6-27b",
+    label: "Qwen 3.6 27B (Groq)",
+    description: "Newer Qwen on Groq. Fast, strong tool calling.",
     provider: "groq",
     contextWindow: 128_000,
   },

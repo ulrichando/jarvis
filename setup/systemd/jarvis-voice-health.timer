@@ -1,0 +1,14 @@
+[Unit]
+Description=JARVIS voice health backstop — recovers a deaf/disconnected voice stack
+Documentation=file:%h/Documents/Projects/jarvis/bin/jarvis-voice-healthcheck
+
+[Timer]
+# Start ~90s after boot (let the stack come up first), then run ~30s after each
+# previous run COMPLETES (OnUnitActiveSec avoids overlap with the ~12s+ check).
+OnBootSec=90
+OnUnitActiveSec=30
+AccuracySec=5
+Unit=jarvis-voice-health.service
+
+[Install]
+WantedBy=timers.target

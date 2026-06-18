@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { getUserId } from "@/lib/auth-helpers";
 
@@ -13,9 +13,23 @@ export async function GET(req: Request) {
       id: schema.conversations.id,
       title: schema.conversations.title,
       model: schema.conversations.model,
-      updatedAt: schema.conversations.updatedAt,
+      // `updated_at` is `timestamp` WITHOUT time zone, written as the PG
+      // session's local wall-clock (America/New_York) but parsed by node-pg
+      // as UTC → a multi-hour skew on every relative time. Re-interpret it in
+      // the session tz so the client receives a correct `timestamptz` instant.
+      // Fixes the sidebar's times too (same hook).
+      updatedAt: sql<string>`(${schema.conversations.updatedAt} AT TIME ZONE current_setting('TimeZone'))`,
+      projectId: schema.conversations.projectId,
+      // LEFT JOIN: null for chats not attached to a project. Lets the
+      // /chats page render the project tag + "Filter by project" without
+      // a second round-trip. Additive — existing consumers ignore it.
+      projectName: schema.projects.name,
     })
     .from(schema.conversations)
+    .leftJoin(
+      schema.projects,
+      eq(schema.conversations.projectId, schema.projects.id),
+    )
     .where(eq(schema.conversations.userId, userId))
     .orderBy(desc(schema.conversations.updatedAt))
     .limit(100);

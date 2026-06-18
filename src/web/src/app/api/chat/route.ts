@@ -624,8 +624,8 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
   let mcpTools: ToolSet = {};
   if (!workspaceId) {
     try {
-      const servers = await listMcpServers(userId);
-      if (servers.some((s) => s.enabled)) {
+      const servers = await listMcpServers();
+      if (servers.some((s) => s.enabled && s.url)) {
         const loaded = await loadMcpTools(servers);
         mcpTools = loaded.tools;
         mcpClose = loaded.close;
@@ -658,11 +658,27 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
     // research. webSearch stays available only for plain chats.
     tools: workspaceId ? undefined : { webSearch: webSearchTool, ...mcpTools },
     stopWhen: stepCountIs(5),
-    onError: (err) => {
+    onError: (event) => {
       // streamText surfaces provider errors via this hook — they don't
-      // throw out of the function. Without logging we'd silently get an
-      // empty stream and the client would just see "loading…" forever.
-      console.error("[chat] streamText error:", err);
+      // throw out of the function. An AI SDK error's useful fields
+      // (message/statusCode/responseBody) are NON-enumerable, so a bare
+      // console.error(err) / JSON.stringify serializes them to `{}` —
+      // which is exactly why non-Anthropic provider rejections were
+      // undiagnosable. Extract them explicitly.
+      const err = (event as { error?: unknown })?.error ?? event;
+      const d: Record<string, unknown> = {};
+      if (err instanceof Error) {
+        const a = err as unknown as Record<string, unknown>;
+        d.name = err.name;
+        d.message = err.message;
+        if (a.statusCode !== undefined) d.statusCode = a.statusCode;
+        if (a.responseBody !== undefined) d.responseBody = a.responseBody;
+        if (a.url !== undefined) d.url = a.url;
+        if (err.cause) d.cause = err.cause instanceof Error ? err.cause.message : err.cause;
+      } else {
+        d.raw = err;
+      }
+      console.error(`[chat] streamText error (model=${modelId}):`, JSON.stringify(d));
     },
     onFinish: async ({ text, totalUsage, finishReason }) => {
       // Disconnect MCP servers now that all tool-calling steps are done.

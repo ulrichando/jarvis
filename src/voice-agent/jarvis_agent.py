@@ -774,6 +774,11 @@ CLI_MODELS: dict[str, dict] = {
         "model":    "qwen/qwen3-32b",
         "label":    "Groq · qwen3-32b",
     },
+    "qwen/qwen3.6-27b": {
+        "provider": "groq",
+        "model":    "qwen/qwen3.6-27b",
+        "label":    "Groq · qwen3.6-27b",
+    },
     "llama-3.3-70b-versatile": {
         "provider": "groq",
         "model":    "llama-3.3-70b-versatile",
@@ -800,6 +805,11 @@ CLI_MODELS: dict[str, dict] = {
         "provider": "anthropic",
         "model":    "claude-opus-4-7",
         "label":    "Anthropic · Claude Opus 4.7",
+    },
+    "claude-opus-4-8": {
+        "provider": "anthropic",
+        "model":    "claude-opus-4-8",
+        "label":    "Anthropic · Claude Opus 4.8",
     },
     "claude-sonnet-4-6": {
         "provider": "anthropic",
@@ -1204,14 +1214,62 @@ _SILENT_MODE_FILE = Path.home() / ".jarvis" / ".silent-mode"
 _ACTIVE_MODE_FILE = Path.home() / ".jarvis" / "active-mode"
 
 
+# Direct-mode units. A direct mode is only TRULY active when its backend
+# process is alive — a stale active-mode file (the tool was killed/crashed
+# without `jarvis-mode jarvis`) must NOT keep Claude dormant forever.
+_DIRECT_UNITS = {
+    "gemini": "jarvis-gemini-tools.service",
+    "openai": "jarvis-gpt-tools.service",
+}
+_DIRECT_LIVE_TTL_S = 2.0      # cache the systemctl probe (called on the turn path)
+_DIRECT_LIVE_GRACE_S = 20.0   # ride out a transient restart gap (GoAway → RestartSec=2)
+_direct_live_cache: dict = {"mode": "", "ts": 0.0, "live": False, "last_live": 0.0}
+
+
+def _direct_unit_live(mode: str) -> bool:
+    """True iff the direct-mode backend for `mode` is actually running.
+
+    Cached for a couple seconds with a short GRACE window so a legitimate
+    backend restart (Gemini/OpenAI send a GoAway every ~10-15min → clean exit
+    → RestartSec=2 ~7s gap) doesn't read as dead and let Claude talk over the
+    resuming direct voice ('two voices'). Fail SAFE: if systemctl can't be
+    probed, assume LIVE — preserving the direct-mode mute is more important
+    than the wedge auto-recovery.
+    """
+    unit = _DIRECT_UNITS.get(mode)
+    if not unit:
+        return False
+    now = time.monotonic()
+    c = _direct_live_cache
+    if c["mode"] == mode and (now - c["ts"]) < _DIRECT_LIVE_TTL_S:
+        live = c["live"]
+    else:
+        try:
+            rc = _subprocess.run(
+                ["systemctl", "--user", "is-active", "--quiet", unit],
+                timeout=2,
+            ).returncode
+            live = rc == 0
+        except Exception:
+            return True
+        c.update(mode=mode, ts=now, live=live)
+        if live:
+            c["last_live"] = now
+    if live:
+        return True
+    return c["mode"] == mode and (now - c["last_live"]) < _DIRECT_LIVE_GRACE_S
+
+
 def _direct_mode_active() -> bool:
+    # A direct mode (Gemini/OpenAI) owns the voice ONLY when its backend is
+    # alive. A stale active-mode file (the tool died without `jarvis-mode
+    # jarvis`) must NOT keep Claude dormant forever — auto-recover by treating
+    # a dead direct mode as not-active (the deaf+mute wedge, 2026-06-13).
     try:
-        return _ACTIVE_MODE_FILE.read_text(encoding="utf-8").strip() in (
-            "gemini",
-            "openai",
-        )
+        mode = _ACTIVE_MODE_FILE.read_text(encoding="utf-8").strip()
     except Exception:
         return False
+    return mode in ("gemini", "openai") and _direct_unit_live(mode)
 
 
 def _is_silent() -> bool:
@@ -4027,7 +4085,8 @@ class JarvisAgent(Agent):
                         desc = latest_description_global()
                     except Exception:
                         desc = None
-                inj = _cuv.build_injection(cap=cap, mode=mode, desc=desc)
+                inj = _cuv.build_injection(cap=cap, mode=mode, desc=desc,
+                                           dispatch_llm=getattr(self, "_dispatch_llm", None))
                 if inj is not None:
                     role, content = inj
                     chat_ctx.add_message(role=role, content=content)
@@ -7451,12 +7510,23 @@ async def entrypoint(ctx: JobContext) -> None:
                 logger.info(f"data-user-input: {text[:60]}…")
                 _asyncio.create_task(_user_input_when_ready(text))
         elif t == "stop":
-            # interrupt() has the same activity guard. Swallow its
-            # RuntimeError if the session is idle — there's nothing
-            # to interrupt anyway.
-            logger.info("data-stop: interrupting current utterance")
+            # force=True is load-bearing: in echo-aware mode (the default,
+            # JARVIS_ECHO_AWARE_BARGEIN=1) the session sets
+            # turn_handling.interruption.enabled=False, and a speech's
+            # allow_interruptions falls back to that flag (agent_activity.py
+            # allow_interruptions property). So EVERY JARVIS utterance is
+            # non-interruptible — a plain session.interrupt() raises
+            # "does not allow interruptions", which the except below would
+            # swallow, leaving the current utterance playing. That made the
+            # mute button / bin/jarvis-mute (both hit /stop) no-op on the
+            # in-flight sentence ("Claude still talking while on mute").
+            # force bypasses the guard — a deliberate user stop is the
+            # highest-trust interrupt intent. Matches the kill-phrase handler.
+            # The except RuntimeError now only catches the idle
+            # "AgentSession isn't running" case.
+            logger.info("data-stop: force-interrupting current utterance")
             try:
-                session.interrupt()
+                session.interrupt(force=True)
             except RuntimeError:
                 pass
         elif t == "silent":
@@ -7472,8 +7542,14 @@ async def entrypoint(ctx: JobContext) -> None:
             _set_silent(on)
             logger.info(f"data-silent: silent mode {'ON' if on else 'OFF'}")
             if on:
+                # force=True for the same reason as the data-stop handler
+                # above: JARVIS speeches are non-interruptible in echo-aware
+                # mode (interruption.enabled=False), so a plain interrupt()
+                # raises + gets swallowed and the mute button only suppresses
+                # FUTURE turns (via _set_silent) — the CURRENT sentence keeps
+                # playing. force cuts him off mid-sentence now.
                 try:
-                    session.interrupt()
+                    session.interrupt(force=True)
                 except RuntimeError:
                     pass
 

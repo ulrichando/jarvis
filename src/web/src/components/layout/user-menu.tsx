@@ -20,7 +20,15 @@ export function UserMenu({ fallbackName = "You" }: { fallbackName?: string }) {
   const { data } = useSession();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  // useSession() resolves the cached session synchronously on the client but
+  // is empty during SSR, so reading it on the first render mismatches the
+  // server-rendered fallback ("You"→Y vs "Ulrich"→U → hydration error). Gate
+  // the session-derived values behind a mount flag: first client render uses
+  // the fallback (matching the server), then we swap to the real user.
+  const [mounted, setMounted] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => setMounted(true), []);
 
   useEffect(() => {
     if (!open) return;
@@ -31,8 +39,8 @@ export function UserMenu({ fallbackName = "You" }: { fallbackName?: string }) {
     return () => window.removeEventListener("mousedown", onDown);
   }, [open]);
 
-  const name = data?.user?.name || fallbackName;
-  const email = data?.user?.email ?? "local";
+  const name = (mounted && data?.user?.name) || fallbackName;
+  const email = (mounted && data?.user?.email) || "local";
 
   const logout = async () => {
     setBusy(true);

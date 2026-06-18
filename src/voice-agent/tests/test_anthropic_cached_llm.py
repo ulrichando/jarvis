@@ -48,7 +48,7 @@ def _drive_chat(wrapper, ctx):
     asyncio.run(_run())
 
 
-def _build_wrapper(stable_prefix: str | None = None):
+def _build_wrapper(stable_prefix: str | None = None, model: str = "claude-haiku-4-5"):
     """Construct an AnthropicCachedLLM with mocked transport.
 
     Returns ``(wrapper, mock_messages_create)`` so the test can drive
@@ -56,7 +56,7 @@ def _build_wrapper(stable_prefix: str | None = None):
     from providers.anthropic_cached_llm import AnthropicCachedLLM
 
     wrapper = AnthropicCachedLLM(
-        model="claude-haiku-4-5",
+        model=model,
         api_key="test-anthropic-key",
         temperature=0.6,
         max_tokens=200,
@@ -269,6 +269,67 @@ def test_no_caching_kwarg_passed_to_parent():
     # resolve to "ephemeral" or the parent's chat() path would interfere.
     # We explicitly popped it in __init__ so the parent stores NOT_GIVEN.
     assert not (is_given(wrapper._opts.caching) and wrapper._opts.caching == "ephemeral")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sampling-param gate — Opus 4.7+/Fable reject temperature/top_k (400)
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "model", ["claude-opus-4-7", "claude-opus-4-8", "claude-fable-5"]
+)
+def test_sampling_params_omitted_for_opus_47_plus(model):
+    """Opus 4.7+/Fable reject temperature/top_k with a 400. The shared
+    builder sets temperature=0.6 for every Claude tier, so the wrapper
+    must drop it on the wire for these models — otherwise every
+    tray-select / escalation turn fails. This is the bug fix."""
+    wrapper, mock_create = _build_wrapper(stable_prefix=None, model=model)
+    _drive_chat(wrapper, _build_chat_ctx("FLAT SYSTEM PROMPT"))
+
+    assert mock_create.called, "messages.create was not invoked"
+    kwargs = mock_create.call_args.kwargs
+    assert "temperature" not in kwargs, (
+        f"{model} must NOT receive temperature (400s); "
+        f"got {kwargs.get('temperature')!r}"
+    )
+    assert "top_k" not in kwargs, f"{model} must NOT receive top_k (400s)"
+
+
+@pytest.mark.parametrize("model", ["claude-haiku-4-5", "claude-sonnet-4-6"])
+def test_sampling_params_kept_for_haiku_sonnet(model):
+    """Haiku 4.5 / Sonnet 4.6 still accept temperature — the wrapper must
+    keep forwarding the configured 0.6 so behaviour is unchanged for the
+    default voice path."""
+    wrapper, mock_create = _build_wrapper(stable_prefix=None, model=model)
+    _drive_chat(wrapper, _build_chat_ctx("FLAT SYSTEM PROMPT"))
+
+    kwargs = mock_create.call_args.kwargs
+    assert kwargs.get("temperature") == 0.6, (
+        f"{model} must keep temperature=0.6; got {kwargs.get('temperature')!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "model,rejects",
+    [
+        ("claude-haiku-4-5", False),
+        ("claude-sonnet-4-6", False),
+        ("claude-opus-4-6", False),   # ≤ 4.6 still accepts sampling params
+        ("claude-opus-4-7", True),
+        ("claude-opus-4-8", True),
+        ("claude-opus-4-10", True),   # forward-looking: 4.10+
+        ("claude-opus-5", True),      # forward-looking: Opus 5+
+        ("claude-fable-5", True),
+    ],
+)
+def test_model_rejects_sampling_params_predicate(model, rejects):
+    """The predicate matches the families FORWARD (Opus ≥ 4.7, Opus ≥ 5,
+    any Fable) and leaves Haiku / Sonnet / Opus ≤ 4.6 untouched, so it
+    doesn't rot as newer adaptive-thinking-only models ship."""
+    from providers.anthropic_cached_llm import _model_rejects_sampling_params
+
+    assert _model_rejects_sampling_params(model) is rejects
 
 
 # ──────────────────────────────────────────────────────────────────────

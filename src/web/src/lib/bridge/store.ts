@@ -29,6 +29,22 @@ export interface EnvironmentRow {
   user_id: string | null
   created_at: number
   last_seen_at: number
+  config_json: string | null
+}
+
+export type NetworkLevel = 'full' | 'trusted' | 'custom' | 'none'
+
+export type EnvironmentConfig = {
+  /** Extra env vars passed to every container session for this environment. */
+  envVars: Record<string, string>
+  /** Bash run before the CLI launches (in addition to a repo .jarvis/setup.sh). */
+  setupScript: string
+  /** Container egress policy (claude.ai/code network access). `full` = today's
+   *  --network=host (default, no proxy). Others route egress through an
+   *  allowlist proxy. `custom` adds customAllowlist to the trusted defaults. */
+  networkLevel: NetworkLevel
+  /** Extra allowed domains for `custom`, e.g. ["api.example.com"]. */
+  customAllowlist: string[]
 }
 
 export interface WorkRow {
@@ -129,6 +145,14 @@ export function initSchema(db: Database.Database): void {
   } catch {
     /* column already present */
   }
+  // Additive (2026-06-12, env config): per-environment env vars + setup script
+  // applied to container sessions (claude.ai/code environment configuration).
+  // JSON: { envVars: Record<string,string>, setupScript: string }.
+  try {
+    db.exec('ALTER TABLE environments ADD COLUMN config_json TEXT')
+  } catch {
+    /* column already present */
+  }
   // Additive migration (2026-06-12): session titles are a real column, not
   // session_events rows — title events rendered as bare "title" lines in the
   // /code session view, which displays unknown event types by name.
@@ -165,6 +189,106 @@ export function initSchema(db: Database.Database): void {
   } catch {
     /* column already present */
   }
+  // Additive migration (2026-06-12): pin sessions to the top of the /code
+  // sidebar (claude.ai "Pin"). 0/1.
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    /* column already present */
+  }
+  // Additive (2026-06-12): read/unread (sidebar "Mark as read" clears the
+  // status dot) + group assignment ("Move to group").
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN read INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    /* column already present */
+  }
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN group_id TEXT')
+  } catch {
+    /* column already present */
+  }
+  // Additive (2026-06-12, auto-fix CI): when autofix=1, a background tick asks
+  // the session to fix failing CI; autofix_sha records the last commit fixed so
+  // it fires at most once per failing commit.
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN autofix INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    /* column already present */
+  }
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN autofix_sha TEXT')
+  } catch {
+    /* column already present */
+  }
+  // Additive (2026-06-12, auto-merge): when automerge=1, the background tick
+  // merges the session's PR once all checks pass (claude.ai/code Auto-merge).
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN automerge INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    /* column already present */
+  }
+  // Additive (2026-06-12, routine runs): the routine that spawned a session, so
+  // a routine's past runs can be listed (claude.ai/code routine detail page).
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN routine_id TEXT')
+  } catch {
+    /* column already present */
+  }
+  // Additive (2026-06-13, worker resume): the exact CLI worker launch spec
+  // (env + command + workdir) captured at launch, so a worker that died (e.g.
+  // a web-server restart drops its SSE connection) can be re-exec'd into its
+  // still-running container on reopen — without re-running the original task
+  // (the CLI persists its own cursor in CLAUDE_CONFIG_DIR).
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN worker_spec_json TEXT')
+  } catch {
+    /* column already present */
+  }
+  // Additive (2026-06-13, worker resume): the inbound sequence a resumed worker
+  // starts catch-up FROM. A relaunched CLI worker opens a fresh session and
+  // would otherwise replay inbound from seq 0 — re-running the original prompt.
+  // resumeContainerWorker raises this to the current inbound tip so a resumed
+  // worker comes up idle (ready for NEW messages). 0 on first launch → the
+  // seeded prompt is delivered normally.
+  try {
+    db.exec(
+      'ALTER TABLE sessions ADD COLUMN inbound_floor_seq INTEGER NOT NULL DEFAULT 0',
+    )
+  } catch {
+    /* column already present */
+  }
+  db.exec(`CREATE TABLE IF NOT EXISTS session_groups (
+    group_id TEXT PRIMARY KEY,
+    user_id TEXT,
+    name TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );`)
+  // Per-message pins (the /code message "Pin" action), server-synced so they
+  // survive across devices/browsers (localStorage was per-browser).
+  db.exec(`CREATE TABLE IF NOT EXISTS session_message_pins (
+    session_id TEXT NOT NULL,
+    uuid TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, uuid)
+  );`)
+  // Routines: templated tasks that run on a schedule / API trigger / GitHub
+  // event (decisions-pending §16). trigger_json holds the per-type config
+  // ({type:'schedule', cron} | {type:'api', token} | {type:'github', …}).
+  db.exec(`CREATE TABLE IF NOT EXISTS routines (
+    routine_id TEXT PRIMARY KEY,
+    user_id TEXT,
+    name TEXT NOT NULL,
+    instructions TEXT NOT NULL,
+    repo TEXT,
+    model TEXT,
+    permission_mode TEXT,
+    trigger_json TEXT NOT NULL,
+    paused INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    last_run_at INTEGER,
+    next_run_at INTEGER
+  );`)
   // FK enforcement is the load-bearing reason CASCADE DELETE works on the
   // `work` table when an environment is deleted. Set explicitly here rather
   // than relying on better-sqlite3's bundled SQLite default.
@@ -208,16 +332,39 @@ export function createEnvironment(
   store: Store,
   input: EnvironmentInput,
 ): { environment_id: string; environment_secret: string } {
-  if (input.reuse_id) {
-    const existing = findEnvironment(store, input.reuse_id)
-    if (existing) {
-      store.db
-        .prepare('UPDATE environments SET last_seen_at = ? WHERE environment_id = ?')
-        .run(Date.now(), existing.environment_id)
-      return {
-        environment_id: existing.environment_id,
-        environment_secret: existing.environment_secret,
-      }
+  // Identity of a machine = (owner, machine_name, directory). The CLI mints a
+  // fresh environment_id on every `/remote-control`, so without this the same
+  // machine registered a NEW row each attach — the picker filled up with
+  // duplicate "Moon" entries. Reuse by explicit id first, then by identity.
+  const existing =
+    (input.reuse_id ? findEnvironment(store, input.reuse_id) : null) ??
+    findEnvironmentByIdentity(
+      store,
+      input.user_id ?? null,
+      input.machine_name,
+      input.directory,
+    )
+  if (existing) {
+    const now = Date.now()
+    // Refresh the mutable facets that can change between attaches.
+    store.db
+      .prepare(
+        `UPDATE environments
+           SET last_seen_at = ?, branch = ?, git_repo_url = ?,
+               worker_type = ?, max_sessions = ?
+         WHERE environment_id = ?`,
+      )
+      .run(
+        now,
+        input.branch ?? existing.branch,
+        input.git_repo_url ?? existing.git_repo_url,
+        input.worker_type,
+        input.max_sessions,
+        existing.environment_id,
+      )
+    return {
+      environment_id: existing.environment_id,
+      environment_secret: existing.environment_secret,
     }
   }
   const id = genId()
@@ -251,6 +398,66 @@ export function findEnvironment(
   const row = store.db
     .prepare('SELECT * FROM environments WHERE environment_id = ?')
     .get(envId) as EnvironmentRow | undefined
+  return row ?? null
+}
+
+/** Parse an environment's stored config (env vars + setup script). Always
+ *  returns a usable object, even for legacy rows with no config_json. */
+export function parseEnvironmentConfig(row: EnvironmentRow | null): EnvironmentConfig {
+  const empty: EnvironmentConfig = {
+    envVars: {},
+    setupScript: '',
+    networkLevel: 'full',
+    customAllowlist: [],
+  }
+  if (!row?.config_json) return empty
+  try {
+    const c = JSON.parse(row.config_json) as Partial<EnvironmentConfig>
+    const lvl = c.networkLevel
+    return {
+      envVars:
+        c.envVars && typeof c.envVars === 'object'
+          ? (c.envVars as Record<string, string>)
+          : {},
+      setupScript: typeof c.setupScript === 'string' ? c.setupScript : '',
+      networkLevel:
+        lvl === 'trusted' || lvl === 'custom' || lvl === 'none' ? lvl : 'full',
+      customAllowlist: Array.isArray(c.customAllowlist)
+        ? c.customAllowlist.filter((d): d is string => typeof d === 'string')
+        : [],
+    }
+  } catch {
+    return empty
+  }
+}
+
+/** Save an environment's env vars + setup script. */
+export function setEnvironmentConfig(
+  store: Store,
+  envId: string,
+  config: EnvironmentConfig,
+): void {
+  store.db
+    .prepare('UPDATE environments SET config_json = ? WHERE environment_id = ?')
+    .run(JSON.stringify(config), envId)
+}
+
+/** Find a machine's environment by its natural identity (owner + machine +
+ * directory), newest first. Used to dedup re-registration. */
+export function findEnvironmentByIdentity(
+  store: Store,
+  userId: string | null,
+  machineName: string,
+  directory: string,
+): EnvironmentRow | null {
+  const row = store.db
+    .prepare(
+      `SELECT * FROM environments
+       WHERE machine_name = ? AND directory = ?
+         AND (user_id IS ? OR user_id = ?)
+       ORDER BY last_seen_at DESC LIMIT 1`,
+    )
+    .get(machineName, directory, userId, userId) as EnvironmentRow | undefined
   return row ?? null
 }
 
@@ -453,6 +660,14 @@ export function archiveSession(
   return 'archived'
 }
 
+/** Reverse archiveSession — clears the archived flag so the session can be
+ *  resumed (the /code "Unarchive" action). No-op if it was not archived. */
+export function unarchiveSession(store: Store, sessionId: string): void {
+  store.db
+    .prepare('UPDATE sessions SET archived = 0, archived_at = NULL WHERE session_id = ?')
+    .run(sessionId)
+}
+
 /** Permanently remove a session and all its rows (browser "Delete"). */
 export function deleteSession(store: Store, sessionId: string): void {
   const tables = [
@@ -499,6 +714,15 @@ export interface SessionRow {
   worker_epoch: number
   worker_state_json: string | null
   container_json: string | null
+  pinned: number
+  read: number
+  group_id: string | null
+  autofix: number
+  autofix_sha: string | null
+  automerge: number
+  routine_id: string | null
+  worker_spec_json: string | null
+  inbound_floor_seq: number
 }
 
 /** Record the docker container backing a session ({container, repo}). */
@@ -510,6 +734,223 @@ export function setSessionContainer(
   store.db
     .prepare('UPDATE sessions SET container_json = ? WHERE session_id = ?')
     .run(JSON.stringify(meta), sessionId)
+}
+
+/** The persisted CLI worker launch spec — enough to re-exec the worker into an
+ *  already-running container on resume (see resumeContainerWorker). */
+export interface WorkerSpec {
+  /** docker -e environment map (token, routing, epoch hint, …). */
+  env: Record<string, string>
+  /** The `sh -c` command line that runs the CLI child. */
+  cmd: string
+  /** Working directory inside the container (the primary repo). */
+  workdir: string
+}
+
+export function setWorkerSpec(
+  store: Store,
+  sessionId: string,
+  spec: WorkerSpec,
+): void {
+  store.db
+    .prepare('UPDATE sessions SET worker_spec_json = ? WHERE session_id = ?')
+    .run(JSON.stringify(spec), sessionId)
+}
+
+export function getWorkerSpec(store: Store, sessionId: string): WorkerSpec | null {
+  const row = store.db
+    .prepare('SELECT worker_spec_json FROM sessions WHERE session_id = ?')
+    .get(sessionId) as { worker_spec_json: string | null } | undefined
+  if (!row?.worker_spec_json) return null
+  try {
+    return JSON.parse(row.worker_spec_json) as WorkerSpec
+  } catch {
+    return null
+  }
+}
+
+/** Unix-ms timestamp of the session's most recent event, or null if none.
+ *  Cheap (indexed MAX) — used by resume to skip sessions that are actively
+ *  launching or streaming (recent events) vs. genuinely idle/dead. */
+export function latestSessionEventAt(
+  store: Store,
+  sessionId: string,
+): number | null {
+  const row = store.db
+    .prepare(
+      'SELECT MAX(created_at) AS ts FROM session_events WHERE session_id = ?',
+    )
+    .get(sessionId) as { ts: number | null } | undefined
+  return row?.ts ?? null
+}
+
+/** Highest inbound sequence for a session (0 if none). */
+export function latestInboundSeq(store: Store, sessionId: string): number {
+  const row = store.db
+    .prepare('SELECT MAX(seq) AS s FROM session_inbound WHERE session_id = ?')
+    .get(sessionId) as { s: number | null } | undefined
+  return row?.s ?? 0
+}
+
+/** The inbound seq a resumed worker should start catch-up AFTER: the last
+ *  inbound that belonged to a COMPLETED turn (created at/before the latest
+ *  `result` event). This skips already-processed prompts (no re-run) while
+ *  still delivering inbound the user sent while the worker was down (pending,
+ *  after the last result). 0 when no turn ever completed → deliver everything. */
+export function resumeFloorSeq(store: Store, sessionId: string): number {
+  const row = store.db
+    .prepare(
+      `SELECT COALESCE(MAX(i.seq), 0) AS s
+       FROM session_inbound i
+       WHERE i.session_id = ?
+         AND i.created_at <= (
+           SELECT COALESCE(MAX(e.created_at), 0)
+           FROM session_events e
+           WHERE e.session_id = ? AND e.type = 'result'
+         )`,
+    )
+    .get(sessionId, sessionId) as { s: number | null } | undefined
+  return row?.s ?? 0
+}
+
+/** The inbound seq a (re)connecting worker's SSE catch-up starts AFTER. Raised
+ *  by resumeContainerWorker to suppress replay of already-processed inbound. */
+export function setInboundFloorSeq(
+  store: Store,
+  sessionId: string,
+  seq: number,
+): void {
+  store.db
+    .prepare('UPDATE sessions SET inbound_floor_seq = ? WHERE session_id = ?')
+    .run(seq, sessionId)
+}
+
+export function getInboundFloorSeq(store: Store, sessionId: string): number {
+  const row = store.db
+    .prepare('SELECT inbound_floor_seq FROM sessions WHERE session_id = ?')
+    .get(sessionId) as { inbound_floor_seq: number } | undefined
+  return row?.inbound_floor_seq ?? 0
+}
+
+/** Pinned message uuids for a session (server-synced /code message pins). */
+export function listPinnedMessageUuids(store: Store, sessionId: string): string[] {
+  return (
+    store.db
+      .prepare('SELECT uuid FROM session_message_pins WHERE session_id = ?')
+      .all(sessionId) as { uuid: string }[]
+  ).map((r) => r.uuid)
+}
+
+/** Pin/unpin a message. */
+export function setMessagePin(
+  store: Store,
+  sessionId: string,
+  uuid: string,
+  on: boolean,
+): void {
+  if (on) {
+    store.db
+      .prepare(
+        'INSERT OR IGNORE INTO session_message_pins (session_id, uuid, created_at) VALUES (?, ?, ?)',
+      )
+      .run(sessionId, uuid, Date.now())
+  } else {
+    store.db
+      .prepare('DELETE FROM session_message_pins WHERE session_id = ? AND uuid = ?')
+      .run(sessionId, uuid)
+  }
+}
+
+/** Toggle auto-fix-CI for a session (the background tick reads this). */
+export function setSessionAutofix(store: Store, sessionId: string, on: boolean): void {
+  store.db
+    .prepare('UPDATE sessions SET autofix = ? WHERE session_id = ?')
+    .run(on ? 1 : 0, sessionId)
+}
+
+/** Record the last commit SHA auto-fix acted on (fire once per failing commit). */
+export function setSessionAutofixSha(store: Store, sessionId: string, sha: string): void {
+  store.db
+    .prepare('UPDATE sessions SET autofix_sha = ? WHERE session_id = ?')
+    .run(sha, sessionId)
+}
+
+/** Sessions with auto-fix-CI enabled (background tick scans these). */
+export function listAutofixSessions(store: Store): SessionRow[] {
+  return store.db
+    .prepare('SELECT * FROM sessions WHERE autofix = 1 AND archived = 0')
+    .all() as SessionRow[]
+}
+
+/** Toggle auto-merge for a session (the background tick reads this). */
+export function setSessionAutomerge(store: Store, sessionId: string, on: boolean): void {
+  store.db
+    .prepare('UPDATE sessions SET automerge = ? WHERE session_id = ?')
+    .run(on ? 1 : 0, sessionId)
+}
+
+/** Sessions with auto-merge enabled (background tick merges their PR when green). */
+export function listAutomergeSessions(store: Store): SessionRow[] {
+  return store.db
+    .prepare('SELECT * FROM sessions WHERE automerge = 1 AND archived = 0')
+    .all() as SessionRow[]
+}
+
+/** Sessions whose container has been idle since `before` (epoch ms) — no
+ *  session_event newer than that, container still recorded, not archived. Used
+ *  by the idle-reclaim tick to reap abandoned containers + free docker. */
+export function listIdleContainerSessions(store: Store, before: number): SessionRow[] {
+  return store.db
+    .prepare(
+      `SELECT s.* FROM sessions s
+       WHERE s.container_json IS NOT NULL AND s.archived = 0
+       AND COALESCE(
+         (SELECT MAX(created_at) FROM session_events e WHERE e.session_id = s.session_id),
+         s.created_at
+       ) < ?`,
+    )
+    .all(before) as SessionRow[]
+}
+
+/** Clear a session's container record (after its container is reaped). */
+export function clearSessionContainer(store: Store, sessionId: string): void {
+  store.db
+    .prepare('UPDATE sessions SET container_json = NULL WHERE session_id = ?')
+    .run(sessionId)
+}
+
+/** Tag a session with the routine that spawned it (for the routine run list). */
+export function setSessionRoutine(store: Store, sessionId: string, routineId: string): void {
+  store.db
+    .prepare('UPDATE sessions SET routine_id = ? WHERE session_id = ?')
+    .run(routineId, sessionId)
+}
+
+/** A routine's past runs (its sessions), newest first. */
+export function listRoutineRuns(store: Store, routineId: string, limit = 20): SessionRow[] {
+  return store.db
+    .prepare(
+      'SELECT * FROM sessions WHERE routine_id = ? ORDER BY created_at DESC LIMIT ?',
+    )
+    .all(routineId, limit) as SessionRow[]
+}
+
+/** Append a plain user-text turn to a session (shared by the messages route +
+ *  the auto-fix tick): an inbound `user` message the child replays, plus a
+ *  `user_prompt` event the /code view renders. */
+export function appendUserText(store: Store, sessionId: string, text: string): void {
+  const uuid = randomBytes(8).toString('hex')
+  appendInbound(store, sessionId, {
+    type: 'user',
+    uuid,
+    session_id: sessionId,
+    parent_tool_use_id: null,
+    message: { role: 'user', content: [{ type: 'text', text }] },
+  })
+  appendSessionEvent(store, sessionId, {
+    type: 'user_prompt',
+    payload: { type: 'user_prompt', prompt: text, uuid },
+  })
 }
 
 /**
@@ -760,19 +1201,216 @@ export function listInternalEvents(
  * returned (per-user scoping).
  */
 export function listSessions(store: Store, userId?: string | null): SessionRow[] {
+  // Pinned first, then newest. Matches the /code sidebar's display order.
   if (userId) {
     return store.db
       .prepare(
         `SELECT s.* FROM sessions s
          JOIN environments e ON e.environment_id = s.environment_id
          WHERE e.user_id = ?
-         ORDER BY s.created_at DESC`,
+         ORDER BY s.pinned DESC, s.created_at DESC`,
       )
       .all(userId) as SessionRow[]
   }
   return store.db
-    .prepare('SELECT * FROM sessions ORDER BY created_at DESC')
+    .prepare('SELECT * FROM sessions ORDER BY pinned DESC, created_at DESC')
     .all() as SessionRow[]
+}
+
+/** Pin/unpin a session (sidebar "Pin"). */
+export function setSessionPinned(
+  store: Store,
+  sessionId: string,
+  pinned: boolean,
+): void {
+  store.db
+    .prepare('UPDATE sessions SET pinned = ? WHERE session_id = ?')
+    .run(pinned ? 1 : 0, sessionId)
+}
+
+/** Mark a session read/unread (sidebar "Mark as read"). */
+export function setSessionRead(
+  store: Store,
+  sessionId: string,
+  read: boolean,
+): void {
+  store.db
+    .prepare('UPDATE sessions SET read = ? WHERE session_id = ?')
+    .run(read ? 1 : 0, sessionId)
+}
+
+export interface SessionGroupRow {
+  group_id: string
+  user_id: string | null
+  name: string
+  created_at: number
+}
+
+/** Groups owned by a user (or all, anonymous), newest first. */
+export function listGroups(
+  store: Store,
+  userId?: string | null,
+): SessionGroupRow[] {
+  if (userId) {
+    return store.db
+      .prepare(
+        'SELECT * FROM session_groups WHERE user_id IS ? OR user_id = ? ORDER BY created_at DESC',
+      )
+      .all(userId, userId) as SessionGroupRow[]
+  }
+  return store.db
+    .prepare('SELECT * FROM session_groups ORDER BY created_at DESC')
+    .all() as SessionGroupRow[]
+}
+
+/** Create a named group, returning its id. */
+export function createGroup(
+  store: Store,
+  name: string,
+  userId: string | null,
+): string {
+  const id = genId()
+  store.db
+    .prepare(
+      'INSERT INTO session_groups (group_id, user_id, name, created_at) VALUES (?, ?, ?, ?)',
+    )
+    .run(id, userId, name, Date.now())
+  return id
+}
+
+/** Assign a session to a group, or clear it (null). */
+export function setSessionGroup(
+  store: Store,
+  sessionId: string,
+  groupId: string | null,
+): void {
+  store.db
+    .prepare('UPDATE sessions SET group_id = ? WHERE session_id = ?')
+    .run(groupId, sessionId)
+}
+
+// ── Routines (§16) ─────────────────────────────────────────────────────────
+
+/** GitHub-trigger filters (claude.ai/code): a routine fires only when the
+ *  delivered event payload matches every set field. */
+export type GithubFilters = {
+  author?: string
+  titleContains?: string
+  baseBranch?: string
+  headBranch?: string
+  labels?: string[]
+  isDraft?: boolean
+  isMerged?: boolean
+}
+
+export type RoutineTrigger =
+  // `at` (epoch ms) marks a one-time schedule: fire once at/after that instant,
+  // then pause. Otherwise `cron` recurs.
+  | { type: 'schedule'; cron: string; label?: string; at?: number }
+  | { type: 'api'; token: string }
+  | { type: 'github'; events: string[]; filters?: GithubFilters }
+
+export interface RoutineRow {
+  routine_id: string
+  user_id: string | null
+  name: string
+  instructions: string
+  repo: string | null
+  model: string | null
+  permission_mode: string | null
+  trigger_json: string
+  paused: number
+  created_at: number
+  last_run_at: number | null
+  next_run_at: number | null
+}
+
+export interface RoutineInput {
+  name: string
+  instructions: string
+  repo?: string | null
+  model?: string | null
+  permission_mode?: string | null
+  trigger: RoutineTrigger
+  user_id?: string | null
+}
+
+export function listRoutines(
+  store: Store,
+  userId?: string | null,
+): RoutineRow[] {
+  if (userId) {
+    return store.db
+      .prepare(
+        'SELECT * FROM routines WHERE user_id IS ? OR user_id = ? ORDER BY created_at DESC',
+      )
+      .all(userId, userId) as RoutineRow[]
+  }
+  return store.db
+    .prepare('SELECT * FROM routines ORDER BY created_at DESC')
+    .all() as RoutineRow[]
+}
+
+export function findRoutine(store: Store, id: string): RoutineRow | null {
+  const row = store.db
+    .prepare('SELECT * FROM routines WHERE routine_id = ?')
+    .get(id) as RoutineRow | undefined
+  return row ?? null
+}
+
+export function createRoutine(store: Store, input: RoutineInput): RoutineRow {
+  const id = genId()
+  store.db
+    .prepare(
+      `INSERT INTO routines (routine_id, user_id, name, instructions, repo, model, permission_mode, trigger_json, paused, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+    )
+    .run(
+      id,
+      input.user_id ?? null,
+      input.name,
+      input.instructions,
+      input.repo ?? null,
+      input.model ?? null,
+      input.permission_mode ?? null,
+      JSON.stringify(input.trigger),
+      Date.now(),
+    )
+  return findRoutine(store, id)!
+}
+
+export function updateRoutine(
+  store: Store,
+  id: string,
+  patch: { paused?: boolean; name?: string; instructions?: string; last_run_at?: number },
+): void {
+  const sets: string[] = []
+  const vals: unknown[] = []
+  if (typeof patch.paused === 'boolean') {
+    sets.push('paused = ?')
+    vals.push(patch.paused ? 1 : 0)
+  }
+  if (typeof patch.name === 'string') {
+    sets.push('name = ?')
+    vals.push(patch.name)
+  }
+  if (typeof patch.instructions === 'string') {
+    sets.push('instructions = ?')
+    vals.push(patch.instructions)
+  }
+  if (typeof patch.last_run_at === 'number') {
+    sets.push('last_run_at = ?')
+    vals.push(patch.last_run_at)
+  }
+  if (sets.length === 0) return
+  vals.push(id)
+  store.db
+    .prepare(`UPDATE routines SET ${sets.join(', ')} WHERE routine_id = ?`)
+    .run(...vals)
+}
+
+export function deleteRoutine(store: Store, id: string): void {
+  store.db.prepare('DELETE FROM routines WHERE routine_id = ?').run(id)
 }
 
 /**

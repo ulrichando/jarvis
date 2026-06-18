@@ -90,18 +90,19 @@ SPEECH_MODEL_FILE: Path = Path.home() / ".jarvis" / "voice-model"
 # `user_pinned_llm = active_speech_id != DEFAULT_SPEECH_MODEL`. If the
 # user picks the same model that is the default, the pin logic treats
 # that as "no pin" and per-route dispatcher defaults take over (BANTER
-# = llama-3.1-8b, TASK = llama-3.3-70b, etc.). For the user to get
+# = qwen3.6-27b, TASK = gpt-oss-120b, etc.). For the user to get
 # OpenAI gpt-5-mini on the TASK route, the default must be SOMETHING
 # OTHER THAN gpt-5-mini.
 #
-# Set to llama-3.3-70b-versatile (Groq) on 2026-05-17 so:
+# Set to openai/gpt-oss-120b (Groq) on 2026-06-17 — was
+# llama-3.3-70b-versatile, which Groq is discontinuing — so:
 # - Picking gpt-5-mini in the tray → user_pinned_llm=True →
 #   build_dispatching_llm(task_override=gpt-5-mini) → TASK route
 #   gets OpenAI (per user request 2026-05-17).
-# - Picking llama-3.3-70b-versatile (the default) → no pin →
+# - Picking openai/gpt-oss-120b (the default) → no pin →
 #   per-route dispatcher takes over with Groq specialists.
 # - JARVIS_PIN_ALL_ROUTES=1 still works when a non-default is picked.
-DEFAULT_SPEECH_MODEL: str = "llama-3.3-70b-versatile"
+DEFAULT_SPEECH_MODEL: str = "openai/gpt-oss-120b"
 
 # IDs match the upstream model names verbatim so the registry stays
 # legible. Each entry: (provider+model labels for display, factory
@@ -123,6 +124,13 @@ SPEECH_MODELS: dict[str, dict] = {
         # markedly more reliable at structured function calls.
         "label": "Groq · qwen3-32b",
         "build": lambda: groq.LLM(model="qwen/qwen3-32b", temperature=0.6),
+    },
+    "qwen/qwen3.6-27b": {
+        # Groq's newer Qwen3.6 27B (2026). Fast + strong tool calling; the
+        # BANTER/EMOTIONAL Groq-legacy fallback after the 2026-06-17 migration
+        # off the discontinued llama-3.1-8b-instant / llama-4-scout.
+        "label": "Groq · qwen3.6-27b",
+        "build": lambda: groq.LLM(model="qwen/qwen3.6-27b", temperature=0.6),
     },
     "openai/gpt-oss-120b": {
         # Same model the CLI tool uses by default. Robust at tool
@@ -943,21 +951,22 @@ class BreakeredGroqLLM(groq.LLM):
 # without an Anthropic key (graceful degrade, per the 2026-05-23
 # Anthropic-primary refactor).
 _GROQ_LEGACY_PER_ROUTE: dict[str, tuple[str, float]] = {
-    "BANTER":    ("llama-3.1-8b-instant",                    0.6),
-    "TASK":      ("llama-3.3-70b-versatile",                 0.6),
+    "BANTER":    ("qwen/qwen3.6-27b",                        0.6),
+    "TASK":      ("openai/gpt-oss-120b",                     0.6),
     "REASONING": ("qwen/qwen3-32b",                          0.6),
-    "EMOTIONAL": ("meta-llama/llama-4-scout-17b-16e-instruct", 0.7),
-    # 2026-05-24: TASK_* sub-routes inherit the TASK Groq-legacy
-    # rung (llama-3.3-70b-versatile). The per-sub-route primary in
-    # _ANTH_DEFAULT_PER_ROUTE differs, but rung 2 is uniform for
-    # task-shaped work — Groq's 70B model is the established
-    # tool-using fallback. Pre-TTS gate (Task 6) consumes the
-    # retry-tier slots of the spec ladder when it trips.
-    "TASK_DESKTOP": ("llama-3.3-70b-versatile",              0.6),
-    "TASK_BROWSER": ("llama-3.3-70b-versatile",              0.6),
-    "TASK_CODE":    ("llama-3.3-70b-versatile",              0.6),
-    "TASK_FILES":   ("llama-3.3-70b-versatile",              0.6),
-    "TASK_OTHER":   ("llama-3.3-70b-versatile",              0.6),
+    "EMOTIONAL": ("qwen/qwen3.6-27b",                        0.7),
+    # 2026-06-17: migrated off the discontinued Groq Llama models
+    # (llama-3.3-70b-versatile / llama-3.1-8b-instant / llama-4-scout) →
+    # openai/gpt-oss-120b for TASK-shaped tool work, qwen/qwen3.6-27b for
+    # chat/emotional. REASONING stays on qwen/qwen3-32b (still live).
+    # TASK_* sub-routes share the TASK Groq-legacy rung (gpt-oss-120b),
+    # the established tool-using fallback. Pre-TTS gate (Task 6) consumes
+    # the retry-tier slots of the spec ladder when it trips.
+    "TASK_DESKTOP": ("openai/gpt-oss-120b",                  0.6),
+    "TASK_BROWSER": ("openai/gpt-oss-120b",                  0.6),
+    "TASK_CODE":    ("openai/gpt-oss-120b",                  0.6),
+    "TASK_FILES":   ("openai/gpt-oss-120b",                  0.6),
+    "TASK_OTHER":   ("openai/gpt-oss-120b",                  0.6),
 }
 
 # Anthropic primary defaults — overridable per route via env. Chosen

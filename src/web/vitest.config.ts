@@ -8,6 +8,13 @@ export default defineConfig({
     setupFiles: ["./vitest.setup.ts"],
     include: ["tests/**/*.test.{ts,tsx}"],
     exclude: ["node_modules/**", ".next/**"],
+    // The bridge integration tests `await import()` Next route handlers, which
+    // pull in drizzle + better-sqlite3 on first load. Under the full parallel
+    // run the cold import alone can exceed the default 5s per-test timeout —
+    // not a hang, just a slow first import. 20s gives headroom while still
+    // failing genuinely stuck tests.
+    testTimeout: 20000,
+    hookTimeout: 20000,
     coverage: {
       provider: "v8",
       reporter: ["text", "html"],

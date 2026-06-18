@@ -25,6 +25,7 @@ import { KimiReasoning } from "./kimi-reasoning";
 import { KimiToolTrace, type ToolTraceEntry } from "./kimi-tool-trace";
 import { KimiSwarmProgress } from "./kimi-swarm-progress";
 import { cn } from "@/lib/utils";
+import { MODELS_META } from "@/lib/ai/models-meta";
 
 // Synthetic-prompt patterns the chat layer's plumbing emits but the
 // user shouldn't see. Stripped at the SOURCE (textFromParts) so every
@@ -819,7 +820,15 @@ function UsageChip({
     : null;
   return (
     <div className="mt-1 flex items-center gap-2 text-[10.5px] text-muted-foreground/70 select-none">
-      {model && <span className="font-mono">{model}</span>}
+      {/* Friendly label (e.g. "Claude Sonnet 4.6") with the raw id on
+          hover. This is the model that ACTUALLY ran — on workbench/design
+          the server may override the composer's pick for build
+          reliability, so this chip is the honest source of truth. */}
+      {model && (
+        <span className="font-mono" title={model}>
+          {MODELS_META[model]?.label ?? model}
+        </span>
+      )}
       <span>
         {formatTokens(inputTokens)} in · {formatTokens(outputTokens)} out
         {reasoningTokens && reasoningTokens > 0

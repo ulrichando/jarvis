@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, Optional, cast
 
 import anthropic
@@ -99,6 +100,32 @@ def _stable_cache_control() -> dict[str, Any]:
     if ttl == "5m":
         return CACHE_CONTROL_EPHEMERAL
     return {"type": "ephemeral", "ttl": "1h"}
+
+
+# Anthropic removed the sampling parameters (temperature / top_p / top_k)
+# starting with Opus 4.7 and Fable 5 — sending any of them now returns a
+# 400. Haiku 4.5, Sonnet 4.6, and Opus ≤ 4.6 still accept them. The trend
+# is removal (newer models are adaptive-thinking-only), so match the
+# families FORWARD — Opus ≥ 4.7, Opus ≥ 5, any Fable — rather than a
+# denylist that rots as new models ship. Mirrors the plugin's own
+# `_model_disables_prefill` model-gating style.
+_NO_SAMPLING_PARAMS_RE = re.compile(
+    r"claude-(?:opus-4-(?:[7-9]|\d\d+)|opus-[5-9]|fable-\d)"
+)
+
+
+def _model_rejects_sampling_params(model: str) -> bool:
+    """True when the Anthropic model 400s on temperature / top_p / top_k.
+
+    The shared speech-LLM builder (`providers.llm._make_anthropic_speech_llm`)
+    sets ``temperature=0.6`` for EVERY Claude tier, including the Opus
+    tiers that are tray-selectable and the escalation target for the
+    desktop/browser/reasoning routes. Forwarding ``temperature`` to
+    Opus 4.7+/Fable fails every turn with a 400, so the wrapper omits
+    sampling params for those models while keeping them for
+    Haiku 4.5 / Sonnet 4.6 / Opus ≤ 4.6, which still accept them.
+    """
+    return bool(_NO_SAMPLING_PARAMS_RE.search(model or ""))
 
 
 class AnthropicCachedLLM(lk_anthropic.LLM):
@@ -173,10 +200,16 @@ class AnthropicCachedLLM(lk_anthropic.LLM):
         if is_given(self._opts.user):
             extra["user"] = self._opts.user
 
-        if is_given(self._opts.temperature):
+        # Opus 4.7+/Fable reject sampling params with a 400 (the shared
+        # speech-LLM builder sets temperature=0.6 for every Claude tier).
+        # Omit them for those models; Haiku/Sonnet/Opus≤4.6 keep them.
+        # See `_model_rejects_sampling_params`.
+        _allow_sampling = not _model_rejects_sampling_params(self._opts.model)
+
+        if _allow_sampling and is_given(self._opts.temperature):
             extra["temperature"] = self._opts.temperature
 
-        if is_given(self._opts.top_k):
+        if _allow_sampling and is_given(self._opts.top_k):
             extra["top_k"] = self._opts.top_k
 
         extra["max_tokens"] = (
