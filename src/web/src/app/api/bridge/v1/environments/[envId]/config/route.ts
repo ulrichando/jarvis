@@ -40,8 +40,25 @@ async function authorize(
   const env = findEnvironment(getStore(), envId);
   if (!env) return { res: bridgeError(404, "not_found", "Environment not found") };
   const userId = await getUserId(req.headers);
-  // Owner-scoped when the row is owned; legacy null-owner rows stay open.
+  // Owner-scoped when the row is owned; legacy null-owner rows stay readable.
   if (env.user_id && env.user_id !== userId) {
+    return { res: bridgeError(403, "forbidden", "Not your environment") };
+  }
+  return { ok: true };
+}
+
+// Stricter gate for MUTATIONS: env vars are secrets and the setup script runs
+// in the environment's container sessions (code exec). A legacy/unclaimed
+// NULL-owner row must NOT be writable by an arbitrary authenticated caller —
+// require a definite ownership match (null-owner is refused, not left open).
+async function authorizeWrite(
+  req: Request,
+  envId: string,
+): Promise<{ ok: true } | { res: NextResponse }> {
+  const env = findEnvironment(getStore(), envId);
+  if (!env) return { res: bridgeError(404, "not_found", "Environment not found") };
+  const userId = await getUserId(req.headers);
+  if (env.user_id !== userId) {
     return { res: bridgeError(403, "forbidden", "Not your environment") };
   }
   return { ok: true };
@@ -68,7 +85,7 @@ export async function PATCH(
   ctx: { params: Promise<{ envId: string }> },
 ): Promise<NextResponse> {
   const { envId } = await ctx.params;
-  const auth = await authorize(req, envId);
+  const auth = await authorizeWrite(req, envId);
   if ("res" in auth) return auth.res;
   const body = (await req.json().catch(() => null)) as {
     envText?: string;
