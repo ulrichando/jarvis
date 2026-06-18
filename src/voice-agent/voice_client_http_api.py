@@ -227,6 +227,8 @@ class VoiceClientHttpApi:
         app.router.add_post("/voice-model",  self.speech_model)
         app.router.add_get("/tts-provider",  self.tts_provider)
         app.router.add_post("/tts-provider", self.tts_provider)
+        app.router.add_get("/audio-devices",  self.audio_devices)
+        app.router.add_post("/audio-devices", self.audio_devices)
         app.router.add_get("/events",      self.events)
         app.router.add_route("OPTIONS", "/{tail:.*}", self.cors)
         return app
@@ -784,6 +786,75 @@ class VoiceClientHttpApi:
             return web.json_response(
                 {"provider": provider, "restarting": True}, headers=cors,
             )
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500, headers=cors)
+
+    async def audio_devices(self, req: web.Request) -> web.Response:
+        """GET  /audio-devices  -> {input:[names], output:[names], current:{input,output}}
+        POST /audio-devices {kind:'input'|'output', name:'<device>'|''} -> persist the
+        choice to ~/.jarvis/audio-<kind>-device. The desktop then restarts the voice
+        stack so the client re-opens on the new device. name='' clears (system default).
+
+        Device names come from PortAudio (sounddevice) — the SAME source the client's
+        _resolve_audio_device uses — so a name picked here resolves to the same device
+        (it disambiguates across host APIs, preferring MME on Windows). Cross-platform:
+        sounddevice enumerates wired + Bluetooth devices on Windows, Linux and macOS."""
+        cors = {"Access-Control-Allow-Origin": "*"}
+        cfgdir = os.path.join(os.path.expanduser("~"), ".jarvis")
+
+        def _current(kind: str) -> str:
+            try:
+                with open(os.path.join(cfgdir, "audio-%s-device" % kind), encoding="utf-8") as f:
+                    return f.read().strip()
+            except Exception:
+                return ""
+
+        if req.method == "GET":
+            try:
+                import sounddevice as sd
+                devs = sd.query_devices()
+
+                def uniq(kind: str) -> list:
+                    ch = "max_input_channels" if kind == "input" else "max_output_channels"
+                    out: list = []
+                    for d in devs:
+                        n = d["name"]
+                        if d.get(ch, 0) > 0 and n not in out:
+                            out.append(n)
+                    return out
+
+                payload = {
+                    "input":  uniq("input"),
+                    "output": uniq("output"),
+                    "current": {"input": _current("input"), "output": _current("output")},
+                }
+            except Exception as e:
+                payload = {"input": [], "output": [], "current": {}, "error": str(e)}
+            return web.json_response(payload, headers=cors)
+
+        # POST — persist the pick (desktop restarts the stack to apply).
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        kind = (body.get("kind") or "").strip().lower()
+        name = (body.get("name") or "").strip()
+        if kind not in ("input", "output"):
+            return web.json_response(
+                {"error": "kind must be 'input' or 'output'"}, status=400, headers=cors)
+        try:
+            os.makedirs(cfgdir, exist_ok=True)
+            path = os.path.join(cfgdir, "audio-%s-device" % kind)
+            if name:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(name + "\n")
+            else:
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
+            return web.json_response(
+                {"kind": kind, "name": name, "saved": True}, headers=cors)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500, headers=cors)
 

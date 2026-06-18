@@ -3,12 +3,18 @@ next session connect. No network, no LLM. SILENT jobs deliver nothing."""
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import logging
 import os
 import shutil
 import subprocess
+
+try:
+    import fcntl  # POSIX file locking
+    msvcrt = None
+except ImportError:  # Windows has no fcntl — fall back to msvcrt.locking
+    fcntl = None
+    import msvcrt
 
 from pipeline import cron_jobs as cj
 
@@ -25,16 +31,35 @@ def _pending_lock():
     """Cross-process exclusive lock on pending.jsonl. The jarvis-cron.timer
     process appends (queue_pending) and the voice agent reads+clears
     (drain_pending); without this, an append landing between drain's read and
-    clear would be silently lost."""
+    clear would be silently lost. Uses fcntl.flock on POSIX and msvcrt.locking
+    on Windows (which has no fcntl — the bare `import fcntl` previously crashed
+    EVERY voice session at the entrypoint; caught on the 2026-06-18 Windows
+    deploy)."""
     cj.ensure_dirs()
     # Empty lock file; encoding is harmless but quiets the cross-platform
     # checker (Windows defaults to cp1252 otherwise).
     f = open(cj.CRON_DIR / ".pending.lock", "w", encoding="utf-8")
     try:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        if fcntl is not None:
+            fcntl.flock(f, fcntl.LOCK_EX)
+        else:
+            # Windows: exclusive-lock a 1-byte region. LK_LOCK blocks (~10 s of
+            # retries) until free; queue_pending / drain_pending hold it only
+            # briefly. If it can't acquire, proceed best-effort rather than
+            # crash the voice session — the race it guards is rare.
+            try:
+                msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+            except OSError:
+                pass
         yield
     finally:
-        f.close()  # releasing the fd releases the flock
+        if fcntl is None and msvcrt is not None:
+            try:
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        f.close()  # releasing the fd releases a POSIX flock
 
 
 def notify(title: str, body: str) -> None:

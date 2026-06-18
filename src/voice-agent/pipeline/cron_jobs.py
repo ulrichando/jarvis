@@ -130,9 +130,13 @@ def compute_next_run(schedule: dict, *, _now: datetime | None = None,
 
 
 import contextlib
-import fcntl
 import functools
 import time as _time
+
+try:
+    import fcntl
+except ImportError:  # Windows has no fcntl — _store_lock skips locking there
+    fcntl = None
 
 _VALID_DELIVERY = {"notify", "voice", "notify+voice", "local"}
 
@@ -155,6 +159,9 @@ def _store_lock():
     concurrent write can't lose the other's update. CRON_DIR is read at call
     time so test monkeypatching of the path is honored."""
     ensure_dirs()
+    if fcntl is None:  # Windows: only the voice agent mutates the store (no
+        yield          # systemd cron timer), so there's no cross-process race.
+        return
     # Empty lock file; encoding is harmless but quiets the cross-platform
     # checker (Windows defaults to cp1252 otherwise).
     f = open(CRON_DIR / ".store.lock", "w", encoding="utf-8")
