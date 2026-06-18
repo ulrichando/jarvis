@@ -46,6 +46,7 @@ from livekit.agents import (
 from livekit.plugins import groq
 from livekit.plugins.groq.tts import ChunkedStream as _GroqChunkedStream
 from providers import edge_tts as edge_tts_plugin
+from providers.piper_tts import build_local_tts
 
 from pipeline.dispatching_tts import DispatchingTTS
 from pipeline.settings import read_unified_setting
@@ -358,7 +359,16 @@ def build_tts_chain(tts_provider_file) -> list:
         )
         logger.info(f"[tts] Groq Orpheus voice={groq_voice} [default]")
 
-    return [primary, edge_tts_plugin.EdgeTTS(voice=edge_voice)]
+    chain = [primary, edge_tts_plugin.EdgeTTS(voice=edge_voice)]
+    # Offline last rung: local Piper TTS. None unless
+    # JARVIS_LOCAL_TTS_ENABLED=1, so a no-op by default. Appended LAST so
+    # JARVIS still speaks when both Groq Orpheus AND Edge-TTS (both need
+    # the network) are unreachable.
+    local = build_local_tts()
+    if local is not None:
+        chain.append(local)
+        logger.info("[tts] local Piper TTS appended as offline last rung")
+    return chain
 
 
 def build_dispatching_tts() -> DispatchingTTS:
@@ -396,18 +406,31 @@ def build_dispatching_tts() -> DispatchingTTS:
         logger.warning(f"[dispatch] edge_tts construction failed ({e}); routes will have no fallback")
         _edge_fallback = None
 
+    # Offline last rung shared across every route's chain. None unless
+    # JARVIS_LOCAL_TTS_ENABLED=1 (then Piper, fully local). Lets each
+    # route keep a voice when both Orpheus AND Edge-TTS (network) are down.
+    _local_fallback = build_local_tts()
+    if _local_fallback is not None:
+        _local_fallback.voice_id = "piper:local"
+
     inners: dict[str, object] = {}
     fallback = None
 
     def _wrap_with_edge_fallback(primary):
-        """Wrap a per-route TTS in a FallbackAdapter so when the primary
-        returns no audio frames (Orpheus or ElevenLabs intermittent),
-        edge_tts takes over. Preserves the .voice_id attribute the
-        DispatchingTTS exposes for telemetry."""
-        if _edge_fallback is None:
+        """Wrap a per-route TTS in a FallbackAdapter: primary → Edge-TTS →
+        local Piper (offline). When the primary returns no audio frames
+        (Orpheus/EL intermittent) or the network is down, the next rung
+        takes over. Preserves the .voice_id attribute the DispatchingTTS
+        exposes for telemetry."""
+        rungs = [primary]
+        if _edge_fallback is not None:
+            rungs.append(_edge_fallback)
+        if _local_fallback is not None:
+            rungs.append(_local_fallback)
+        if len(rungs) == 1:
             return primary
         try:
-            wrapped = tts.FallbackAdapter([primary, _edge_fallback])
+            wrapped = tts.FallbackAdapter(rungs)
             wrapped.voice_id = getattr(primary, "voice_id", "?")
             return wrapped
         except Exception as e:
