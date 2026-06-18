@@ -1291,6 +1291,25 @@ def _set_silent(on: bool) -> None:
         pass
 
 
+def _should_sync_memory_item(role: str, text: str) -> bool:
+    """Whether a conversation item should be synced to the cloud memory
+    provider (honcho).
+
+    Skips non-user/assistant roles and empty text; and — added 2026-06-18
+    (silent-mode token-leak fix) — skips entirely while JARVIS is silenced,
+    so a voice-muted JARVIS stops feeding honcho's OpenAI-backed deriver
+    with every overheard utterance. Spec:
+    docs/superpowers/specs/2026-06-18-silent-mode-token-leak-fix-design.md
+    """
+    if role not in ("user", "assistant"):
+        return False
+    if not (text or "").strip():
+        return False
+    if _is_silent():
+        return False
+    return True
+
+
 # Phrases that toggle silent mode. Each pattern is a regex tested
 # against the lowercased transcript with word-boundary anchors, so
 # "mute" matches the bare imperative ("Jarvis, mute") but NOT
@@ -6560,7 +6579,10 @@ async def entrypoint(ctx: JobContext) -> None:
             try:
                 from pipeline import memory_provider
                 _mem_role = role or ""
-                if _mem_role in ("user", "assistant") and (text or "").strip():
+                # Gate: skip non-conversation roles, empty text, AND anything
+                # while silenced — a voice-muted JARVIS must not keep feeding
+                # honcho's deriver (2026-06-18 silent-mode token-leak fix).
+                if _should_sync_memory_item(_mem_role, text):
                     memory_provider.sync_item_async(_mem_role, text)
             except Exception:
                 pass
