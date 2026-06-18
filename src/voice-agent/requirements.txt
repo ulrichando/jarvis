@@ -72,14 +72,13 @@ redis~=5.0
 # browser-use still works with 2.0.
 google-genai>=2.0,<3.0
 
-# Face ID — InsightFace buffalo_l (RetinaFace + ArcFace ResNet-50),
-# the production-grade open-source face stack used by AWS Rekognition
-# clones, ID-verification SaaS, etc. 512-d L2-normalized embeddings,
-# cosine distance, ~99.83% LFW. ONNX Runtime executes the models on CPU.
-# Models (~280 MB) auto-download to ~/.insightface/ on first use.
-# Multi-frame averaged enrollment + IR/RGB cross-camera anti-spoof are
-# implemented in jarvis_computer_use.py:face_register/face_identify.
-insightface~=0.7
+# onnxruntime — CPU inference for the Piper local-TTS ONNX voice models
+# (providers/piper_tts.py, offline fallback stack). Ships prebuilt wheels.
+# NOTE: Face ID does NOT use this — it runs on cv2 YuNet+SFace via OpenCV's
+# own ONNX loader (vision/face_id.py). The former `insightface` dep was
+# vestigial (zero imports; referenced a deleted jarvis_computer_use.py) and
+# forced a from-source C++ build on distros lacking a prebuilt wheel
+# (Debian/Kali), breaking `install.sh` there — removed 2026-06-18.
 onnxruntime~=1.20
 ai-edge-litert~=2.1  # DTLN-aec L3 neural echo cancellation (audio/dtln_aec.py)
 
