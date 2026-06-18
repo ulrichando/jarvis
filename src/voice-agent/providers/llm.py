@@ -531,6 +531,20 @@ SPEECH_MODELS["ollama/qwen3:14b"] = {
     "label": "Local · Qwen3 14B (Ollama)",
     "build": lambda: _make_local_speech_llm("qwen3:14b"),
 }
+# MoE locals (2026-06-18). qwen3:30b-a3b is the sweet spot for a CPU-only box
+# (30B total but only ~3B active per token → fast tokens, ~18 GB pull, strong
+# tool calling). gpt-oss:120b (OpenAI open-weight MoE, ~5B active, ~65 GB) is
+# the heavy quality option — fits in 125 GB RAM but slower on CPU. Both are
+# tool-capable. Select via the ~/.jarvis/voice-model file / JARVIS_LOCAL_LLM_MODEL
+# (the tray submenu lists only the cloud models today).
+SPEECH_MODELS["ollama/qwen3:30b-a3b"] = {
+    "label": "Local · Qwen3 30B-A3B MoE (Ollama, ~3B active — fast on CPU)",
+    "build": lambda: _make_local_speech_llm("qwen3:30b-a3b"),
+}
+SPEECH_MODELS["ollama/gpt-oss:120b"] = {
+    "label": "Local · gpt-oss 120B MoE (Ollama, heavy — needs lots of RAM)",
+    "build": lambda: _make_local_speech_llm("gpt-oss:120b"),
+}
 
 
 def read_speech_model() -> str:
