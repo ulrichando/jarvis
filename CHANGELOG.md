@@ -7,6 +7,44 @@ For the full commit-level history, run `git log --oneline`.
 
 ---
 
+## [Unreleased] — Windows voice foundation (2026-06-18, branch `feat/windows-port`)
+
+The voice-agent now imports and boots on **native Windows** instead of
+hard-crashing. Verified on Linux (full suite **3253 passed / 3 skipped**,
+byte-identical); **native-Windows boot is pending on-device validation**
+(msvcrt / WASAPI / nssm aren't exercisable on the Linux dev box). Completes the
+existing phased port — Phase 1 installer, Phase 2.3 path/setsid/signal clusters,
+and Phase 3.3 nssm service registration were already shipped; this is the
+missing boot foundation that makes the registered service actually start.
+
+### Added
+
+- `pipeline/portable_lock.py` — cross-platform exclusive file lock
+  (`fcntl.flock` on POSIX, `msvcrt.locking` on Windows).
+- `pipeline/notify.py` — sd_notify shim (real `sdnotify` on Linux, no-op
+  elsewhere).
+- Two `check-windows-footguns.py` rules forbidding direct `import fcntl` /
+  `import sdnotify` (23 rules total); `test_windows_foundation_shims.py` +
+  checker detect-tests.
+
+### Fixed
+
+- **Boot blocker (`fcntl`):** module-level `import fcntl` in `cron_delivery`/
+  `cron_scheduler`/`cron_jobs` hard-`ImportError`'d on Windows → routed through
+  `portable_lock` (6 sites; `file_memory`/`skill_usage`/`automod.spawner` go
+  from no-op to real cross-platform locking).
+- **Boot blocker (`sdnotify`):** unconditional `import sdnotify` in
+  `watchdog.py` + `jarvis_agent.py` → `pipeline.notify.get_notifier()`.
+- Footgun sweep: `/proc/self/statm` + `/proc/meminfo` → `psutil`; hardcoded
+  `~/.local/share/jarvis` → `runtime.get_jarvis_data_dir()`; automod revert
+  `systemctl` → `service_control.restart_service`.
+
+### Deferred
+
+- `computer_use` Windows backend (pywinauto mouse + win32 window geometry —
+  `xdotool`/`setsid` still X11-only), bash-tool Windows sandbox, `blender_face`
+  kiosk (`/dev/shm` + Blender, Linux-only).
+
 ## [Unreleased] — SDLC review pass (2026-06-11)
 
 Follow-ups from the full lifecycle review (CI un-red + docs truth):

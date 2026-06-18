@@ -179,17 +179,20 @@ Initial run against the JARVIS tree flags 28 existing call sites — that's the 
 
 ## Phase 2 roadmap (separate project)
 
-The Phase 1 installer is the easy half. Phase 2 will:
+**Status 2026-06-18:** the voice-agent **boot foundation** is DONE — `695f354d`
+on `feat/windows-port` (Linux suite 3253 passed; native-Windows boot pending
+on-device validation). Items 1, 2, 7 below + the **`fcntl` boot-blocker** (which
+the original roadmap missed) landed; items 3–6 remain.
 
-1. **Audio platform-abstraction** — wrap the L1 PipeWire module load in a Linux-only branch, surface the L2 + L3 layers as the default on Windows.
-2. **Service-control shim** — replace direct `sdnotify` imports with a platform-aware "notify" helper (no-op on Windows, sdnotify on Linux). Register a Task Scheduler entry on Windows for the voice-agent.
-3. **Input automation shim** — abstract `xdotool` calls behind a `desktop_input` module that resolves to `pyautogui` on Windows, `xdotool` on Linux X11, `ydotool` / `wlrctl` on Wayland.
-4. **Screen capture** — `mss` is already cross-platform; the `computer_use` Linux-only branches just need detection.
-5. **bash tool sandbox** — design + ship an AppContainer / Job Object equivalent for the bash tool on Windows (or document the unsandboxed fallback loudly and gate the dangerous-command surface accordingly).
-6. **LiveKit server** — bundle `livekit-server.exe` alongside the Linux binary or document the Windows download path.
-7. **Path-helper sweep** — fix all 28 footgun-checker hits via `tools.runtime.get_jarvis_home()` + a new `get_jarvis_data_home()` helper.
+1. **Audio platform-abstraction** — ✓ DONE. L1 PipeWire stays Linux-only; the `pactl` monitor probe is `shutil.which`-guarded; L2 (WebRTC APM) + L3 (DTLN) are the cross-platform default; device selection via `audio/platform_audio.py` WASAPI on Windows.
+2. **Service-control shim** — ✓ DONE. `sdnotify` → `pipeline/notify.py` (no-op off-Linux). **`fcntl` → `pipeline/portable_lock.py`** — the bigger boot-blocker the roadmap missed: `import fcntl` was module-level in `cron_*` (hard ImportError on Windows). Windows service registration ships via **nssm** (`pipeline/service_control.py` + `install.ps1` Phase 3.3), not Task Scheduler.
+3. **Input automation shim** — PENDING (the biggest remaining piece). A `computer_use` Windows backend: `pywinauto` mouse + win32 window geometry; `desktop_control.py`'s pywinauto keyboard/window backend is the orphan to wire in. `xdotool`/`setsid` in `computer_use*.py` are still X11-only.
+4. **Screen capture** — `mss` is already cross-platform and used by `computer_use_backend`; folds into item 3.
+5. **bash tool sandbox** — PENDING. AppContainer / Job Object equivalent (or a documented unsandboxed fallback).
+6. **LiveKit server** — PENDING. bundle `livekit-server.exe` or document the Windows download.
+7. **Path-helper sweep** — ✓ DONE. footgun-checker `--all` is foundation-clean: `/proc` reads → `psutil`, hardcoded `~/.local/share/jarvis` → `tools.runtime.get_jarvis_data_dir()`, automod `systemctl` → `service_control`. Two new checker rules forbid direct `fcntl`/`sdnotify` imports (23 rules). Remaining hits: `computer_use*` (item 3) + `blender_face` kiosk (`/dev/shm`+Blender, Linux-only).
 
-Each of these is independent of the others and the installer. The installer just needs to flip `Install-WindowsVoiceServices` from "deferred" to a real Task Scheduler register call once Phase 2 ships.
+`Install-WindowsVoiceServices` is already wired (Phase 3.3, nssm-based, not Task Scheduler); the boot foundation above is what makes the service it registers actually start.
 
 ## Open questions for review
 
