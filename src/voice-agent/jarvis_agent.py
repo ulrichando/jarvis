@@ -4876,6 +4876,23 @@ def _spawn_worker_heartbeat() -> None:
         # before the next worker's `replace()` could find it. Atomic
         # rename to the SAME target file is fine — the target is the
         # shared latched heartbeat — but the .tmp source must be unique.
+        if os.name == "nt":
+            # Windows can't share one latched heartbeat across the 4
+            # prewarmed worker subprocesses: replace() over a file another
+            # process holds open raises WinError 32 (sharing violation) /
+            # WinError 2 / PermissionError, so the shared file went stale and
+            # the log filled with `[worker-heartbeat] write failed` every 3 s
+            # (caught on the 2026-06-18 Windows deploy). Each process instead
+            # writes its OWN file (jarvis-worker-heartbeat.<pid>) with a plain
+            # truncating write — no cross-process rename, no contention. The
+            # main-sd-watchdog reads the freshest across all of them.
+            own = HEARTBEAT_PATH.with_name(HEARTBEAT_PATH.name + f".{os.getpid()}")
+            while True:
+                try:
+                    own.write_text(str(time.monotonic()), encoding="utf-8")
+                except Exception as e:
+                    logger.warning(f"[worker-heartbeat] write failed: {e}")
+                time.sleep(3.0)
         tmp = HEARTBEAT_PATH.with_suffix(f".tmp.{os.getpid()}")
         while True:
             try:
@@ -7508,11 +7525,26 @@ if __name__ == "__main__":
             in_grace = (now - started_at) < GRACE_S
             stale = False
             try:
+                # Liveness = the freshest heartbeat across the shared latched
+                # file (POSIX) AND any per-PID files (Windows, where each of
+                # the 4 worker subprocesses writes its own to dodge the
+                # cross-process rename sharing-violation). Newest wins — one
+                # live worker is enough to prove the tree is alive.
+                newest = None
+                cands = list(HB.parent.glob(HB.name + ".*"))
                 if HB.exists():
-                    age = now - float(HB.read_text().strip())
-                    stale = age > STALE_AFTER_S
+                    cands.append(HB)
+                for f in cands:
+                    try:
+                        ts = float(f.read_text().strip())
+                    except Exception:
+                        continue
+                    if newest is None or ts > newest:
+                        newest = ts
+                if newest is not None:
+                    stale = (now - newest) > STALE_AFTER_S
                 else:
-                    stale = not in_grace  # missing file = stale (post-grace)
+                    stale = not in_grace  # no heartbeat at all = stale (post-grace)
             except Exception:
                 stale = not in_grace
             if stale:

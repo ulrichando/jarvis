@@ -129,6 +129,9 @@ hermes/
 # livekit-server binary — fetched at install time via ensure_livekit_binary() in install.sh.
 # Pinned SHA-256 lives in setup/livekit-server.bin.sha256.
 /src/voice-agent/livekit-server.bin
+# Windows equivalent — fetched at install time (livekit_<ver>_windows_amd64.zip).
+# Both are platform-specific ~16-50 MB binaries; never commit them.
+/src/voice-agent/livekit-server.exe
 
 # Native build outputs (defense-in-depth; .cxx covered in Android block above)
 *.o
