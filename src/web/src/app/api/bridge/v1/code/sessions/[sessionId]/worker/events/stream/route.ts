@@ -1,5 +1,9 @@
 import { getStore } from '@/lib/bridge/db'
-import { listInboundSince, validateSessionToken } from '@/lib/bridge/store'
+import {
+  getInboundFloorSeq,
+  listInboundSince,
+  validateSessionToken,
+} from '@/lib/bridge/store'
 import { waitForInbound } from '@/lib/bridge/events'
 import { extractBearer } from '@/lib/bridge/auth'
 import { bridgeError } from '@/lib/bridge/errors'
@@ -37,6 +41,12 @@ export async function GET(
     '0'
   let cursor = Number.parseInt(fromParam, 10)
   if (!Number.isFinite(cursor) || cursor < 0) cursor = 0
+  // Resume clamp: a relaunched worker reconnects from seq 0 (fresh CLI session)
+  // and would replay already-processed inbound — re-running the original task.
+  // resumeContainerWorker raises this floor to the inbound tip so a resumed
+  // worker starts idle. First launch: floor 0 → the seeded prompt still streams.
+  const floor = getInboundFloorSeq(store, sessionId)
+  if (cursor < floor) cursor = floor
 
   const encoder = new TextEncoder()
   const stream = new ReadableStream<Uint8Array>({

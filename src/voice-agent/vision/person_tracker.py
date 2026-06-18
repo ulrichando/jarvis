@@ -116,6 +116,7 @@ def _write_status_file():
             payload = {
                 "person_detected": _tracker_state["person_detected"],
                 "primary_face": _tracker_state["primary_face"],
+                "face_count": len(_tracker_state["faces"]),
                 "fps": round(_tracker_state["fps"], 1),
                 "error": _tracker_state["error"],
             }

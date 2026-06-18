@@ -161,11 +161,13 @@ async def test_publish_failure_does_not_500(silent_file):
 
 @pytest.mark.asyncio
 async def test_direct_mode_user_toggle_does_not_unmute_claude_mic(
-    silent_file, set_mode
+    silent_file, set_mode, monkeypatch
 ):
-    # In Gemini/OpenAI mode JARVIS-Claude's mic is owned by the watchdog. A
-    # user mute toggle must drive the silent flag but NEVER touch the mic —
-    # unmuting it let Claude answer "Yes?" over the direct voice.
+    # In a LIVE Gemini/OpenAI mode JARVIS-Claude's mic is owned by the
+    # watchdog. A user mute toggle must drive the silent flag but NEVER touch
+    # the mic — unmuting it let Claude answer "Yes?" over the direct voice.
+    import voice_client_http_api as mod
+    monkeypatch.setattr(mod, "_direct_unit_live", lambda _m: True)  # backend alive
     set_mode("gemini")
     silent_file.write_text("on\n")  # currently muted
     room = _fake_room()
@@ -178,6 +180,54 @@ async def test_direct_mode_user_toggle_does_not_unmute_claude_mic(
     assert not silent_file.exists()              # silent flag cleared (Gemini)
     mic.track.unmute.assert_not_called()         # but Claude's mic untouched
     mic.track.mute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_jarvis_mode_mic_muted_without_silent_flag_unmutes(
+    silent_file, set_mode, monkeypatch
+):
+    # THE bug behind "the unmute button does nothing": the desktop overlay
+    # mutes the mic via an explicit {mute:true} that never writes .silent-mode,
+    # so the mic is muted while the flag is ABSENT. A user toggle must read the
+    # REAL state (mic muted) and UNMUTE — not derive 'mute' from the missing
+    # flag and re-mute forever.
+    import voice_client_http_api as mod
+    monkeypatch.setattr(mod, "_direct_unit_live", lambda _m: False)
+    set_mode("jarvis")
+    assert not silent_file.exists()                  # flag absent…
+    room = _fake_room()
+    api, mic = _make_api(muted_now=True, room=room)  # …but the mic IS muted
+    app = api.build_app()
+    async with TestClient(TestServer(app)) as client:
+        async with client.post("/mute", json={}) as resp:  # user toggle
+            assert resp.status == 200
+            assert (await resp.json())["muted"] is False     # → UNMUTE, not re-mute
+    mic.track.unmute.assert_called_once()
+    mic.track.mute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stale_direct_mode_user_toggle_recovers_mic(
+    silent_file, set_mode, tmp_path, monkeypatch
+):
+    # Wedge: active-mode says a direct mode but the backend is DEAD (killed
+    # without `jarvis-mode jarvis`), leaving Claude's mic muted with no
+    # recovery path. A user toggle must unmute the mic AND revert active-mode
+    # to jarvis so the Claude agent's _is_silent() stops silencing it.
+    import voice_client_http_api as mod
+    monkeypatch.setattr(mod, "_direct_unit_live", lambda _m: False)  # backend dead
+    set_mode("openai")
+    room = _fake_room()
+    api, mic = _make_api(muted_now=True, room=room)  # mic stuck muted
+    app = api.build_app()
+    async with TestClient(TestServer(app)) as client:
+        async with client.post("/mute", json={}) as resp:
+            assert resp.status == 200
+            assert (await resp.json())["muted"] is False
+    mic.track.unmute.assert_called_once()                 # mic recovered
+    assert (tmp_path / "active-mode").read_text(
+        encoding="utf-8"
+    ).strip() == "jarvis"                                 # reverted for the agent
 
 
 @pytest.mark.asyncio
@@ -197,6 +247,62 @@ async def test_jarvis_mode_user_toggle_still_drives_claude_mic(
     mic.track.mute.assert_called_once()
 
 
+def test_mute_data_handlers_force_interrupt():
+    """The agent-side mute paths (the `_on_data` 'stop' + 'silent' data
+    packets) must call session.interrupt(force=True).
+
+    Regression for "Claude is still talking while on mute": in echo-aware
+    mode (the default, JARVIS_ECHO_AWARE_BARGEIN=1) the session sets
+    turn_handling.interruption.enabled=False, and a speech's
+    allow_interruptions falls back to that flag — so EVERY JARVIS utterance
+    is non-interruptible. A bare session.interrupt() then raises
+    "does not allow interruptions", which the handler's `except RuntimeError`
+    swallows, leaving the current utterance playing. The mute button +
+    bin/jarvis-mute (both hit /stop) therefore only suppressed FUTURE turns,
+    never the in-flight sentence. force=True bypasses the guard.
+
+    `_on_data` is a closure inside entrypoint() and can't be imported, so we
+    assert the contract at the AST level (reformatting-robust).
+    """
+    import ast
+    import inspect
+
+    import jarvis_agent
+
+    tree = ast.parse(inspect.getsource(jarvis_agent))
+    handlers = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_on_data"
+    ]
+    assert handlers, "_on_data data-packet handler not found in jarvis_agent"
+
+    checked = 0
+    for handler in handlers:
+        for call in ast.walk(handler):
+            if (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "interrupt"
+            ):
+                forced = any(
+                    kw.arg == "force"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value is True
+                    for kw in call.keywords
+                )
+                assert forced, (
+                    "session.interrupt() inside _on_data must pass force=True — "
+                    "a bare interrupt() no-ops on JARVIS's non-interruptible "
+                    "speeches (echo-aware mode), so the mute button can't cut the "
+                    "current utterance ('still talking while on mute')"
+                )
+                checked += 1
+    # The 'stop' and 'silent' handlers each interrupt → expect at least two.
+    assert checked >= 2, (
+        f"expected ≥2 forced interrupt() calls in _on_data, found {checked}"
+    )
+
+
 def test_silent_flag_roundtrip(tmp_path, monkeypatch):
     """The agent's silent-mode flag (set by the `silent` data packet) gates
     _is_silent(), which the proactive watchers consult."""
@@ -213,8 +319,29 @@ def test_silent_flag_roundtrip(tmp_path, monkeypatch):
     assert jarvis_agent._is_silent() is True
     jarvis_agent._set_silent(False)
     assert jarvis_agent._is_silent() is False
-    # A direct mode silences Claude even with no user mute flag.
+    # A LIVE direct mode silences Claude even with no user mute flag.
+    monkeypatch.setattr(jarvis_agent, "_direct_unit_live", lambda _m: True)
     (tmp_path / "active-mode").write_text("gemini", encoding="utf-8")
     assert jarvis_agent._is_silent() is True
     (tmp_path / "active-mode").write_text("jarvis", encoding="utf-8")
     assert jarvis_agent._is_silent() is False
+
+
+def test_dead_direct_mode_does_not_silence_claude(tmp_path, monkeypatch):
+    """Auto-recovery: a stale active-mode file (the direct backend died without
+    `jarvis-mode jarvis`) must NOT keep Claude dormant — _is_silent() returns
+    False once the backend is gone, so the Claude voice resumes by itself."""
+    import jarvis_agent
+
+    monkeypatch.setattr(
+        jarvis_agent, "_SILENT_MODE_FILE", tmp_path / ".silent-mode"
+    )
+    monkeypatch.setattr(
+        jarvis_agent, "_ACTIVE_MODE_FILE", tmp_path / "active-mode"
+    )
+    monkeypatch.setattr(jarvis_agent, "_direct_unit_live", lambda _m: False)  # dead
+    (tmp_path / "active-mode").write_text("openai", encoding="utf-8")
+    assert jarvis_agent._is_silent() is False    # un-silences (no wedge)
+    # …but an explicit user mute flag still silences, regardless of mode.
+    jarvis_agent._set_silent(True)
+    assert jarvis_agent._is_silent() is True

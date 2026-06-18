@@ -90,6 +90,7 @@ CLI_MODELS_AVAILABLE: tuple[str, ...] = (
     # for fast single-shot tool calls.
     "claude-sonnet-4-6",
     "claude-opus-4-7",
+    "claude-opus-4-8",
     "claude-haiku-4-5",
     # OpenAI — alternatives for tool-calling work. gpt-5.1 has the
     # best OpenAI-tier tool-call accuracy; mini is the speed-balance.
@@ -141,6 +142,7 @@ SPEECH_MODELS_AVAILABLE: tuple[str, ...] = (
     "claude-haiku-4-5",
     "claude-sonnet-4-6",
     "claude-opus-4-7",
+    "claude-opus-4-8",
     # OpenAI — alternatives if Anthropic credit dries up. gpt-5-mini
     # was the previous default; gpt-5.1 is the best tool-calling
     # accuracy in OpenAI's tier (~500ms slower TTFT than mini).

@@ -16,7 +16,6 @@
 //   POST   /api/kiosk { state:"off" }              → { ok, state }
 //   POST   /api/think                    → { response: string }  (WS-dead fallback)
 //   POST   /api/page-query               → SSE stream of { type: 'text'|'done'|'error' }
-//   POST   /api/analyze-screen           → { response, model } — vision LLM
 //   GET    /api/conversations/sessions   → { sessions: [...] }
 //   DELETE /api/conversations/session    → { deleted: N }
 //   GET    /ws?client=desktop            → WebSocket for chat + status events
@@ -144,13 +143,6 @@ function isAuthorized(req: Request, urlObj: URL): boolean {
 let ACTIVE_MODEL = process.env.JARVIS_BRIDGE_MODEL ?? getJarvisDefaultModel().id
 const THEME_PRIMARY = process.env.JARVIS_THEME_PRIMARY ?? '#67e8f9'
 const THEME_GLOW    = process.env.JARVIS_THEME_GLOW    ?? '#a5f3fc'
-
-// Vision path bypasses the proxy because convert.ts drops image blocks.
-// Groq's Llama 4 Scout is multimodal; swap via env if you point this at
-// another OpenAI-compatible vision endpoint.
-const GROQ_KEY       = process.env.GROQ_API_KEY ?? ''
-const VISION_MODEL   = process.env.JARVIS_VISION_MODEL ?? 'meta-llama/llama-4-scout-17b-16e-instruct'
-const VISION_BASEURL = process.env.JARVIS_VISION_BASEURL ?? 'https://api.groq.com/openai/v1'
 
 // LiveKit JWT minting. Client (Tauri webview / Android app) hits
 // /api/livekit/token to trade its identity for a short-lived token
@@ -353,51 +345,6 @@ function sseError(message: string): Response {
   )
 }
 
-// ── /api/analyze-screen: vision ──────────────────────────────────────────
-async function handleAnalyzeScreen(req: Request): Promise<Response> {
-  if (!GROQ_KEY) {
-    return Response.json({ error: 'GROQ_API_KEY not set — vision disabled' }, { status: 503 })
-  }
-  let body: any
-  try { body = await req.json() } catch {
-    return Response.json({ error: 'invalid JSON' }, { status: 400 })
-  }
-  const image = typeof body?.image === 'string' ? body.image : ''
-  const query = typeof body?.query === 'string' ? body.query : 'Describe what you see.'
-  if (!image.startsWith('data:image/')) {
-    return Response.json({ error: 'image must be a data URL' }, { status: 400 })
-  }
-
-  try {
-    const resp = await fetch(`${VISION_BASEURL}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${GROQ_KEY}`,
-      },
-      body: JSON.stringify({
-        model: VISION_MODEL,
-        max_tokens: 2000,
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'text', text: query },
-            { type: 'image_url', image_url: { url: image } },
-          ],
-        }],
-      }),
-    })
-    if (!resp.ok) {
-      return Response.json({ error: `vision upstream ${resp.status}: ${await resp.text()}` }, { status: 502 })
-    }
-    const data = await resp.json() as any
-    const response = data?.choices?.[0]?.message?.content ?? '(no response)'
-    return Response.json({ response, model: VISION_MODEL })
-  } catch (e: any) {
-    return Response.json({ error: e.message }, { status: 500 })
-  }
-}
-
 /**
  * Mint a short-lived LiveKit JWT for the given identity + room. Grants
  * the caller microphone-publish + subscribe rights so they can hold a
@@ -579,7 +526,6 @@ const server = Bun.serve({
     }
 
     if (url.pathname === '/api/page-query'     && req.method === 'POST') return handlePageQuery(req)
-    if (url.pathname === '/api/analyze-screen' && req.method === 'POST') return handleAnalyzeScreen(req)
     if (url.pathname === '/api/livekit/token'  && req.method === 'POST') return handleLiveKitToken(req)
     if (url.pathname === '/api/ext_browse'     && req.method === 'POST') return handleExtBrowse(req)
     if (url.pathname === '/api/ext_status') {

@@ -1,0 +1,27 @@
+[Unit]
+Description=JARVIS voice stack health backstop (recovers connected-but-deaf wedges)
+Documentation=file:%h/Documents/Projects/jarvis/bin/jarvis-voice-healthcheck
+# Don't race the agent's own stop/start.
+After=jarvis-voice-client.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/mkdir -p %h/.local/share/jarvis/logs
+ExecStart=/home/ulrich/Documents/Projects/jarvis/bin/jarvis-voice-healthcheck
+# The check sleeps ~12s between its two probes; recover (if it fires) adds
+# readiness + restart + verify. Give generous headroom before systemd considers
+# it hung.
+TimeoutStartSec=180
+StandardOutput=append:%h/.local/share/jarvis/logs/voice-health.log
+StandardError=append:%h/.local/share/jarvis/logs/voice-health.log
+
+# Minimal hardening only. This unit must reach the systemd --user manager (via
+# jarvis-voice-recover) to restart the voice services, so the heavier
+# Protect*/PrivateTmp sandbox used elsewhere (which can block systemctl) is
+# deliberately omitted. Mirrors jarvis-voice-recycle.service.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+# No [Install]: triggered by jarvis-voice-health.timer, never at boot directly.

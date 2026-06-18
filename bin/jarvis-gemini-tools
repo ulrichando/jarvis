@@ -167,8 +167,10 @@ ALLOWED_TOOLS = {
     "code_search", "find_definitions", "execute_code",
     # Desktop / shell / GUI
     "terminal", "computer_use",
-    # Browser / web
-    "browser_task", "web_search", "web_fetch",
+    # Browser / web — browser_control drives the user's LIVE/visible browser by
+    # keystroke (new tab, navigate, close, switch, scroll, find, read tab);
+    # browser_task is headless background. check_fn gates browser_control on X11.
+    "browser_control", "browser_task", "web_search", "web_fetch",
     # Long-running memory / state
     "memory", "todo", "schedule",
     # Skills (read-only registry + view + manage)

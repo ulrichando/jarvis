@@ -19,7 +19,7 @@ import cost from './commands/cost/index.js'
 import diff from './commands/diff/index.js'
 import ctx_viz from './commands/ctx_viz/index.js'
 import doctor from './commands/doctor/index.js'
-import memory from './commands/memory/index.js'
+import memory, { memoryNonInteractive } from './commands/memory/index.js'
 import help from './commands/help/index.js'
 import ide from './commands/ide/index.js'
 import init from './commands/init.js'
@@ -40,8 +40,8 @@ import resume from './commands/resume/index.js'
 import review, { ultrareview } from './commands/review.js'
 import session from './commands/session/index.js'
 import share from './commands/share/index.js'
-import skills from './commands/skills/index.js'
-import status from './commands/status/index.js'
+import skills, { skillsNonInteractive } from './commands/skills/index.js'
+import status, { statusNonInteractive } from './commands/status/index.js'
 import tasks from './commands/tasks/index.js'
 import teleport from './commands/teleport/index.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -298,6 +298,7 @@ const COMMANDS = memoize((): Command[] => [
   installSlackApp,
   mcp,
   memory,
+  memoryNonInteractive,
   mobile,
   model,
   outputStyle,
@@ -310,8 +311,10 @@ const COMMANDS = memoize((): Command[] => [
   resume,
   session,
   skills,
+  skillsNonInteractive,
   stats,
   status,
+  statusNonInteractive,
   statusline,
   stickers,
   tag,
@@ -350,7 +353,11 @@ const COMMANDS = memoize((): Command[] => [
   hooks,
   exportCommand,
   sandboxToggle,
-  ...(!isUsing3PServices() ? [logout, login()] : []),
+  // /login + /logout are the JARVIS self-hosted server auth commands (the CLI
+  // always runs in proxy mode — JARVIS_DISABLE_AUTH=1 — so the upstream
+  // claude.ai flow is dead). See commands/login + commands/logout.
+  login(),
+  logout,
   passes,
   ...(peersCmd ? [peersCmd] : []),
   tasks,

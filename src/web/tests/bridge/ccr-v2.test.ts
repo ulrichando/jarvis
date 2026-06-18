@@ -418,6 +418,67 @@ describe('messages route (composer → CLI)', () => {
     expect(resp.response.updatedInput).toEqual({ command: 'ls' })
   })
 
+  test('container session auto-approves can_use_tool; non-container does not', async () => {
+    const { getStore } = await import('@/lib/bridge/db')
+    const { setSessionContainer, listInboundSince } = await import('@/lib/bridge/store')
+    const ev = await import(
+      '@/app/api/bridge/v1/code/sessions/[sessionId]/worker/events/route'
+    )
+    const canUseTool = {
+      worker_epoch: 0,
+      events: [
+        {
+          payload: {
+            type: 'control_request',
+            request_id: 'perm-req-1',
+            request: {
+              subtype: 'can_use_tool',
+              tool_name: 'Write',
+              input: { file_path: '/workspace/Lab/hello.py', content: 'print("hi")\n' },
+              tool_use_id: 'call_abc',
+            },
+          },
+        },
+      ],
+    }
+
+    // Container session (container_json set): the server auto-answers the
+    // permission request so the autonomous worker doesn't block forever.
+    const container = await makeSession()
+    setSessionContainer(getStore(), container.session_id, {
+      container: `jarvis-code-${container.session_id}`,
+      repo: 'ulrichando/Lab',
+    })
+    let r = await ev.POST(authed(container.token, canUseTool), ctx(container.session_id))
+    expect(r.status).toBe(200)
+    const cInbound = listInboundSince(getStore(), container.session_id, 0).map(
+      (row) => JSON.parse(row.payload_json) as Record<string, unknown>,
+    )
+    const verdict = cInbound.find((m) => m.type === 'control_response')
+    expect(verdict).toBeDefined()
+    const resp = verdict!.response as {
+      subtype: string
+      request_id: string
+      response: { behavior: string; updatedInput: Record<string, unknown> }
+    }
+    expect(resp.request_id).toBe('perm-req-1')
+    expect(resp.response.behavior).toBe('allow')
+    expect(resp.response.updatedInput).toEqual({
+      file_path: '/workspace/Lab/hello.py',
+      content: 'print("hi")\n',
+    })
+
+    // Non-container session (no container_json): NOT auto-answered — those
+    // sessions surface the prompt to the browser permission UI instead.
+    const local = await makeSession()
+    r = await ev.POST(authed(local.token, canUseTool), ctx(local.session_id))
+    expect(r.status).toBe(200)
+    const lInbound = listInboundSince(getStore(), local.session_id, 0).map(
+      (row) => JSON.parse(row.payload_json) as Record<string, unknown>,
+    )
+    expect(lInbound.some((m) => m.type === 'control_response')).toBe(false)
+  })
+
   test('worker echo of a web-sent user message is deduped by uuid', async () => {
     const { session_id, token } = await makeSession()
     const reg = await import(

@@ -7,6 +7,7 @@ import {
   findSession,
   listSessionEvents,
 } from '@/lib/bridge/store'
+import { maybeResumeOnAttach } from '@/lib/bridge/resume'
 import { bridgeError } from '@/lib/bridge/errors'
 
 export async function POST(
@@ -55,6 +56,10 @@ export async function GET(
   const { sessionId } = await ctx.params
   const sinceRaw = Number(new URL(req.url).searchParams.get('since') ?? '0')
   const since = Number.isFinite(sinceRaw) && sinceRaw >= 0 ? sinceRaw : 0
+  // Reopen = a chance to reconnect a worker that died while away (e.g. a
+  // web-server restart). Fire-and-forget + internally gated, so the hot poll
+  // path stays fast and a live worker is never disturbed.
+  maybeResumeOnAttach(sessionId)
   try {
     const store = getStore()
     const rows = listSessionEvents(store, sessionId, since)

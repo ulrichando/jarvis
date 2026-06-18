@@ -37,6 +37,8 @@ import asyncio
 import json
 import logging
 import os
+import shutil
+import subprocess
 import time
 from dataclasses import asdict
 from typing import Any, Awaitable, Callable, Optional
@@ -80,12 +82,85 @@ _CORS_HEADERS = {
 _ACTIVE_MODE_FILE = os.path.join(os.path.expanduser("~"), ".jarvis", "active-mode")
 
 
-def _direct_mode_active() -> bool:
+# Direct-mode units. A "direct mode" is only TRULY active when its backend
+# process is alive — a stale active-mode file (the tool was killed/crashed
+# without `jarvis-mode jarvis`) must NOT keep Claude's mic wedged.
+_DIRECT_UNITS = {
+    "gemini": "jarvis-gemini-tools.service",
+    "openai": "jarvis-gpt-tools.service",
+}
+_DIRECT_LIVE_TTL_S = 2.0      # cache the systemctl probe (on the /mute + status paths)
+_DIRECT_LIVE_GRACE_S = 20.0   # ride out a transient restart gap (GoAway → RestartSec=2)
+_direct_live_cache: dict = {"mode": "", "ts": 0.0, "live": False, "last_live": 0.0}
+
+
+def _active_mode() -> str:
+    """Raw active-mode file value ('jarvis'|'gemini'|'openai'|'')."""
     try:
         with open(_ACTIVE_MODE_FILE, encoding="utf-8") as f:
-            return f.read().strip() in ("gemini", "openai")
+            return f.read().strip()
     except Exception:
+        return ""
+
+
+def _write_active_mode(mode: str) -> None:
+    """Atomically set the active-mode file. Used to reconcile a stale direct
+    mode back to jarvis when the backend died without reverting — best-effort
+    (the mic unmute is the part the user actually feels)."""
+    try:
+        path = _ACTIVE_MODE_FILE
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        tmp = f"{path}.tmp.{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(mode + "\n")
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _direct_unit_live(mode: str) -> bool:
+    """True iff the direct-mode backend for `mode` is actually running.
+
+    Cached for a couple seconds (this is on the hot /mute + /status paths) with
+    a short GRACE window so a legitimate backend restart (Gemini/OpenAI send a
+    GoAway every ~10-15min → clean exit → RestartSec=2 ~7s gap) doesn't read as
+    dead and flip the mic mid-switch. Fail SAFE: if systemctl can't be probed,
+    assume LIVE so a probe error never lets a user toggle steal the mic from a
+    live direct voice.
+    """
+    unit = _DIRECT_UNITS.get(mode)
+    if not unit:
         return False
+    now = time.monotonic()
+    c = _direct_live_cache
+    if c["mode"] == mode and (now - c["ts"]) < _DIRECT_LIVE_TTL_S:
+        live = c["live"]
+    else:
+        if shutil.which("systemctl") is None:
+            return True
+        try:
+            rc = subprocess.run(
+                ["systemctl", "--user", "is-active", "--quiet", unit],
+                timeout=2,
+            ).returncode
+            live = rc == 0
+        except Exception:
+            return True
+        c.update(mode=mode, ts=now, live=live)
+        if live:
+            c["last_live"] = now
+    if live:
+        return True
+    return c["mode"] == mode and (now - c["last_live"]) < _DIRECT_LIVE_GRACE_S
+
+
+def _direct_mode_active() -> bool:
+    """A direct voice (Gemini/OpenAI) is the ACTIVE voice right now — the file
+    says so AND its backend is alive (see _direct_unit_live)."""
+    mode = _active_mode()
+    return mode in ("gemini", "openai") and _direct_unit_live(mode)
 
 
 class VoiceClientHttpApi:
@@ -204,6 +279,17 @@ class VoiceClientHttpApi:
             _tracker = {"person_detected": False, "primary_face": None, "fps": 0, "error": None}
         payload = asdict(self.state)
         payload["person_tracker"] = _tracker
+        # Publish mic-drain AGE (seconds since the SFU last consumed a mic
+        # frame) instead of the raw monotonic timestamp, which is meaningless
+        # off-process. None until the first drain. The health backstop
+        # (bin/jarvis-voice-healthcheck) treats a large age while connected +
+        # unmuted as a broken audio path (stale PortAudio after resume / dead
+        # uplink after a net blip), which is idle-safe because silence still
+        # drains.
+        drain_ts = payload.pop("mic_last_drain_ts", 0.0) or 0.0
+        payload["mic_last_drain_age_s"] = (
+            round(time.monotonic() - drain_ts, 1) if drain_ts else None
+        )
         return web.json_response(payload, headers=_CORS_HEADERS)
 
     async def level(self, _: web.Request) -> web.Response:
@@ -279,12 +365,32 @@ class VoiceClientHttpApi:
         # watchdog's mic-mute would also silence the direct voice forever.
         user_toggle = "mute" not in body
         mic_pub = self.get_mic_pub()
-        # Direction of a user toggle is derived from the SILENT flag's own
-        # state — NOT self.state.muted, which the mode watchdog drives to
-        # True every ~10s (deriving from it would make a mute-click compute
-        # "unmute"). The watchdog's explicit calls set the mic directly.
+        # Is a direct voice (Gemini/OpenAI) ACTUALLY live right now? Liveness-
+        # checked, not just the active-mode file — a stale file (backend died
+        # without `jarvis-mode jarvis`) must not wedge the mic.
+        live_direct = _direct_mode_active()
         if user_toggle:
-            target = not SILENT_MODE_FILE.exists()
+            if live_direct:
+                # A live direct voice owns Claude's mic (the watchdog drives
+                # self.state.muted every ~10s, so it is NOT user intent here).
+                # The toggle controls only the silent flag — derive direction
+                # from the flag, as before.
+                target = not SILENT_MODE_FILE.exists()
+            else:
+                # JARVIS mode, or a STALE/dead direct mode. The mic's own state
+                # IS the user's intent now. If JARVIS is quiet by EITHER the mic
+                # OR the silent flag, UNMUTE both; else mute both. This fixes
+                # "mic muted but .silent-mode absent": the desktop overlay mutes
+                # the mic via an explicit {mute:true} that never writes the flag,
+                # so the old `not SILENT_MODE_FILE.exists()` computed the WRONG
+                # direction and the tray toggle could never unmute.
+                target = not (bool(self.state.muted) or SILENT_MODE_FILE.exists())
+                # Stale direct-mode wedge: file says gemini/openai but the
+                # backend is dead. Revert to jarvis so the Claude AGENT
+                # un-silences too — else the mic unmutes but _is_silent() keeps
+                # Claude dormant (the deaf+mute wedge, 2026-06-13).
+                if _active_mode() in ("gemini", "openai"):
+                    _write_active_mode("jarvis")
         else:
             target = bool(body.get("mute"))
         try:
@@ -334,7 +440,10 @@ class VoiceClientHttpApi:
             # direct mode, leave the mic to the watchdog and only drive the
             # silent flag above (which mutes the direct voice + Claude TTS). The
             # watchdog's own explicit calls still flow through to keep it muted.
-            skip_mic = user_toggle and _direct_mode_active()
+            # Skip the mic ONLY when a LIVE direct voice owns it (the watchdog
+            # keeps it muted). A stale/dead direct mode (live_direct False) does
+            # NOT skip — so the toggle can recover a wedged mic.
+            skip_mic = user_toggle and live_direct
             if mic_pub is not None and not skip_mic:
                 if target:
                     mic_pub.track.mute()

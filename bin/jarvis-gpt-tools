@@ -147,7 +147,8 @@ ALLOWED_TOOLS = {
     "read_file", "write_file", "patch", "search_files",
     "code_search", "find_definitions", "execute_code",
     "terminal", "computer_use",
-    "browser_task", "web_search", "web_fetch",
+    # browser_control = live visible browser (keystroke); browser_task = headless.
+    "browser_control", "browser_task", "web_search", "web_fetch",
     "memory", "todo", "schedule",
     "skills_list", "skill_view", "skill_manage",
     "dispatch_agent",

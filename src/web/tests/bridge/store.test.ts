@@ -11,6 +11,7 @@ import {
   stopWork,
   appendSessionEvent,
   archiveSession,
+  unarchiveSession,
   deleteEnvironment,
   validateEnvSecret,
   type Store,
@@ -185,5 +186,83 @@ describe('sessions', () => {
   test('archiveSession returns "archived" first time, "already" after', () => {
     expect(archiveSession(store, 'sess1')).toBe('archived')
     expect(archiveSession(store, 'sess1')).toBe('already')
+  })
+
+  test('routine runs link + automerge listing', async () => {
+    const {
+      createEnvironment,
+      getOrCreateSession,
+      setSessionRoutine,
+      listRoutineRuns,
+      setSessionAutomerge,
+      listAutomergeSessions,
+    } = await import('@/lib/bridge/store')
+    const env = createEnvironment(store, {
+      machine_name: 'c',
+      directory: '/w',
+      git_repo_url: 'https://github.com/o/r',
+      max_sessions: 4,
+      worker_type: 'container',
+      user_id: null,
+    })
+    getOrCreateSession(store, 'run1', env.environment_id)
+    getOrCreateSession(store, 'run2', env.environment_id)
+    setSessionRoutine(store, 'run1', 'rt-1')
+    setSessionRoutine(store, 'run2', 'rt-1')
+    expect(listRoutineRuns(store, 'rt-1').map((s) => s.session_id).sort()).toEqual(['run1', 'run2'])
+    expect(listRoutineRuns(store, 'rt-other')).toEqual([])
+    setSessionAutomerge(store, 'run1', true)
+    expect(listAutomergeSessions(store).map((s) => s.session_id)).toEqual(['run1'])
+  })
+
+  test('idle container reclaim query + clear', async () => {
+    const {
+      createEnvironment,
+      getOrCreateSession,
+      setSessionContainer,
+      listIdleContainerSessions,
+      clearSessionContainer,
+    } = await import('@/lib/bridge/store')
+    const env = createEnvironment(store, {
+      machine_name: 'c',
+      directory: '/w',
+      git_repo_url: 'https://github.com/o/r',
+      max_sessions: 4,
+      worker_type: 'container',
+      user_id: null,
+    })
+    getOrCreateSession(store, 'idle1', env.environment_id)
+    setSessionContainer(store, 'idle1', { container: 'jarvis-code-idle1', repo: 'o/r' })
+    // A future cutoff treats the fresh session as idle; a past one does not.
+    expect(listIdleContainerSessions(store, Date.now() + 1000).map((s) => s.session_id)).toEqual(['idle1'])
+    expect(listIdleContainerSessions(store, Date.now() - 86_400_000)).toEqual([])
+    // After clearing the container record it's no longer reclaimable.
+    clearSessionContainer(store, 'idle1')
+    expect(listIdleContainerSessions(store, Date.now() + 1000)).toEqual([])
+  })
+
+  test('message pins round-trip', async () => {
+    const { setMessagePin, listPinnedMessageUuids } = await import('@/lib/bridge/store')
+    setMessagePin(store, 'sessA', 'm1', true)
+    setMessagePin(store, 'sessA', 'm2', true)
+    setMessagePin(store, 'sessB', 'm3', true)
+    expect(listPinnedMessageUuids(store, 'sessA').sort()).toEqual(['m1', 'm2'])
+    setMessagePin(store, 'sessA', 'm1', false)
+    expect(listPinnedMessageUuids(store, 'sessA')).toEqual(['m2'])
+    // idempotent re-pin
+    setMessagePin(store, 'sessA', 'm2', true)
+    expect(listPinnedMessageUuids(store, 'sessA')).toEqual(['m2'])
+  })
+
+  test('unarchiveSession clears the flag and round-trips with archive', () => {
+    expect(archiveSession(store, 'sess1')).toBe('archived')
+    unarchiveSession(store, 'sess1')
+    const row = store.db
+      .prepare('SELECT archived, archived_at FROM sessions WHERE session_id = ?')
+      .get('sess1') as { archived: number; archived_at: number | null }
+    expect(row.archived).toBe(0)
+    expect(row.archived_at).toBeNull()
+    // After unarchive it can be archived again (not stuck on "already").
+    expect(archiveSession(store, 'sess1')).toBe('archived')
   })
 })

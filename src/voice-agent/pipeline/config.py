@@ -154,8 +154,10 @@ GRAPH_DISABLED: bool = _bool("JARVIS_GRAPH_DISABLED", False)
 DS_FALLBACK_MODEL: str = _str("JARVIS_DS_FALLBACK_MODEL", "deepseek-v4-flash")
 
 # Slow-path classifier LLM (BANTER/TASK/REASONING/EMOTIONAL routing).
+# qwen/qwen3.6-27b since 2026-06-17 (was llama-3.1-8b-instant, discontinued
+# by Groq). Fast on Groq; the 800ms timeout below still bounds it.
 ROUTER_PROVIDER: str   = _str("JARVIS_ROUTER_PROVIDER", "groq")
-ROUTER_MODEL: str      = _str("JARVIS_ROUTER_MODEL", "llama-3.1-8b-instant")
+ROUTER_MODEL: str      = _str("JARVIS_ROUTER_MODEL", "qwen/qwen3.6-27b")
 ROUTER_TIMEOUT_MS: int = _int("JARVIS_ROUTER_TIMEOUT_MS", 800)
 
 # Token-aware pre-flight + hard-prune when chat_ctx exceeds budget.
@@ -170,8 +172,9 @@ LLM_IDLE_TIMEOUT: float = _float("JARVIS_LLM_IDLE_TIMEOUT", 30.0)
 # Bounded CLI-tool delegation timeout (seconds).
 CLI_TIMEOUT_S: float = _float("JARVIS_CLI_TIMEOUT_S", 60.0)
 
-# Validator subagent inner-LLM model id.
-VALIDATOR_MODEL: str = _str("JARVIS_VALIDATOR_MODEL", "llama-3.1-8b-instant")
+# Validator subagent inner-LLM model id. qwen/qwen3.6-27b since 2026-06-17
+# (was llama-3.1-8b-instant, discontinued by Groq).
+VALIDATOR_MODEL: str = _str("JARVIS_VALIDATOR_MODEL", "qwen/qwen3.6-27b")
 
 # Time-to-first-word target for tuning probes (ms).
 TTFW_TARGET_MS: int = _int("JARVIS_TTFW_TARGET_MS", 350)

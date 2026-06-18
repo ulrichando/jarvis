@@ -3,7 +3,7 @@
 import {
   clearAuthRelatedCaches,
   performLogout,
-} from '../../commands/logout/logout.js'
+} from '../../commands/logout/anthropicLogout.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -292,6 +292,11 @@ export async function authStatus(opts: {
         `JARVIS server: ${jarvisBridge.baseUrl} (Remote Control token ${jarvisBridge.tokenConfigured ? 'configured' : 'not set'})\n`,
       )
     }
+    if (jarvisBridge.proxyTokenConfigured) {
+      process.stdout.write(
+        'Proxy auth: on (local proxy requires this JARVIS login token)\n',
+      )
+    }
     if (!loggedIn) {
       process.stdout.write(
         'Not logged in. Run `jarvis auth login` to connect your JARVIS server.\n',
@@ -307,7 +312,10 @@ export async function authStatus(opts: {
           : null
     const output: Record<
       string,
-      string | boolean | null | { baseUrl: string | null; tokenConfigured: boolean }
+      | string
+      | boolean
+      | null
+      | { baseUrl: string | null; tokenConfigured: boolean; proxyTokenConfigured: boolean }
     > = {
       loggedIn,
       authMethod,
@@ -315,6 +323,7 @@ export async function authStatus(opts: {
       jarvisBridge: {
         baseUrl: jarvisBridge.baseUrl ?? null,
         tokenConfigured: jarvisBridge.tokenConfigured,
+        proxyTokenConfigured: jarvisBridge.proxyTokenConfigured,
       },
     }
     if (resolvedApiKeySource) {

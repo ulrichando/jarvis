@@ -22,6 +22,7 @@ import { getExternalClaudeMdIncludes, getMemoryFiles, shouldShowClaudeMdExternal
 import { checkHasTrustDialogAccepted, getCustomApiKeyStatus, getGlobalConfig, saveGlobalConfig } from './utils/config.js';
 import { updateDeepLinkTerminalPreference } from './utils/deepLink/terminalPreference.js';
 import { isEnvTruthy, isRunningOnHomespace } from './utils/envUtils.js';
+import { jarvisLoginRequired } from './utils/requireJarvisLogin.js';
 import { type FpsMetrics, FpsTracker } from './utils/fpsTracker.js';
 import { updateGithubRepoPathMapping } from './utils/githubRepoPathMapping.js';
 import { applyConfigEnvironmentVariables } from './utils/managedEnv.js';
@@ -120,6 +121,23 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
     }} />, {
       onChangeAppState
     });
+  }
+
+  // Require a JARVIS sign-in before the REPL when in proxy mode with no token
+  // configured (Claude-style "you must log in"). Reuses the /login browser
+  // flow. JARVIS_REQUIRE_LOGIN=0 opts out. Cancelling without completing login
+  // exits cleanly rather than dropping into an unauthenticated session.
+  if (jarvisLoginRequired()) {
+    const { JarvisLogin } = await import('./commands/login/login.js');
+    await showSetupDialog(root, done => <JarvisLogin onDone={() => void done()} />, {
+      onChangeAppState
+    });
+    if (jarvisLoginRequired()) {
+      process.stderr.write(
+        'Login required. Run `jarvis auth login`, or set JARVIS_REQUIRE_LOGIN=0 to skip.\n',
+      );
+      await gracefulShutdown(1);
+    }
   }
 
   // Always show the trust dialog in interactive sessions, regardless of permission mode.

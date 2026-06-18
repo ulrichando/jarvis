@@ -690,31 +690,259 @@ EOF
 }
 
 # ── .env template ────────────────────────────────────────────────────────
+# ── First-run config: interactive API keys + persona ─────────────────────
+# Per docs/superpowers/specs/2026-05-31-installer-first-run-config-design.md.
+# These live in install.sh (not a separate lib) and are called from main() via
+# configure(); they degrade safely to a non-interactive template when no
+# terminal is reachable, and stay unit-testable (setup/tests/test_configure.sh
+# sources this file). Secrets go to ~/.jarvis/keys.env (the single store).
+
+# _env_get <file> <VAR> — print VAR's value (empty if unset/missing).
+_env_get() {
+  local file="$1" var="$2"
+  [ -f "$file" ] || return 0
+  grep -E "^${var}=" "$file" 2>/dev/null | tail -1 | sed "s/^${var}=//"
+}
+
+# _env_upsert <file> <VAR> <value> — set VAR=value idempotently (replace ^VAR=
+# or append), preserve other lines, create file+dir if missing, chmod 600.
+_env_upsert() {
+  local file="$1" var="$2" value="$3" tmp
+  mkdir -p "$(dirname "$file")"
+  [ -f "$file" ] || : > "$file"
+  tmp="$(mktemp)"
+  grep -v -E "^${var}=" "$file" > "$tmp" 2>/dev/null || true
+  printf '%s=%s\n' "$var" "$value" >> "$tmp"
+  mv "$tmp" "$file"
+  chmod 600 "$file"
+}
+
+# Tests inject a fixture file via _JARVIS_TTY; real runs use /dev/tty so even
+# `curl | bash` (whose stdin is the script) can still prompt the user.
+_tty_path() { printf '%s' "${_JARVIS_TTY:-/dev/tty}"; }
+
+# True iff a terminal is reachable and the user hasn't opted out.
+_interactive() {
+  [ "${JARVIS_NONINTERACTIVE:-0}" = "1" ] && return 1
+  [ "${JARVIS_DRY_RUN:-0}" = "1" ]        && return 1
+  [ "${JARVIS_SKIP_SETUP:-0}" = "1" ]     && return 1
+  [ -t 0 ] && return 0
+  # /dev/tty exists even when headless (cron/docker/systemd): access() passes
+  # but `exec 3<...` then fails ENXIO. Probe the real open in a disposable
+  # subshell so we take the clean non-interactive branch instead of prompting
+  # into defaults while emitting "No such device" noise.
+  local tty; tty="$(_tty_path)"
+  ( exec 3<"$tty" ) 2>/dev/null || return 1
+}
+
+# Open (once) a persistent read fd so sequential prompts advance through the
+# input. A fresh `read < "$tty"` re-opens at offset 0 each call — fine for a
+# real /dev/tty (non-seekable) but re-reads line 1 of a regular-file fixture.
+# _JARVIS_TTY_FD tracks the bound path so a new fixture re-opens.
+_tty_open_read() {
+  local tty; tty="$(_tty_path)"
+  if [ "${_JARVIS_TTY_FD:-}" != "$tty" ]; then
+    exec 3<"$tty" 2>/dev/null || { _JARVIS_TTY_FD=""; return 1; }
+    _JARVIS_TTY_FD="$tty"
+  fi
+  return 0
+}
+
+# Write the prompt where the user sees it without clobbering the input we read.
+# Real /dev/tty (char device) → write to it; regular-file fixture → stderr (so
+# we don't truncate the queued answers).
+_tty_prompt() {
+  local tty; tty="$(_tty_path)"
+  if [ -c "$tty" ]; then printf '%s' "$1" > "$tty" 2>/dev/null || printf '%s' "$1" >&2
+  else printf '%s' "$1" >&2; fi
+}
+
+# _ask <prompt> <default> — echo the answer, or <default> if blank.
+_ask() {
+  local prompt="$1" default="$2" ans
+  _tty_prompt "$prompt"
+  if _tty_open_read; then IFS= read -r ans <&3 || ans=""; else ans=""; fi
+  printf '%s' "${ans:-$default}"
+}
+
+# _ask_secret <prompt> — echo the typed secret without terminal echo.
+_ask_secret() {
+  local prompt="$1" ans
+  _tty_prompt "$prompt"
+  if _tty_open_read; then IFS= read -rs ans <&3 || ans=""; else ans=""; fi
+  _tty_prompt $'\n'
+  printf '%s' "$ans"
+}
+
+# _confirm <prompt> <default:Y|N> — return 0 for yes, 1 for no.
+_confirm() {
+  local prompt="$1" default="${2:-N}" ans
+  ans="$(_ask "$prompt" "$default")"
+  case "$ans" in [Yy]|[Yy][Ee][Ss]) return 0 ;; *) return 1 ;; esac
+}
+
+# _maybe_set_key <label> <VAR> <file> — prompt for one key, write if non-empty,
+# guarding against silently replacing an existing value.
+_maybe_set_key() {
+  local label="$1" var="$2" file="$3" existing val
+  existing="$(_env_get "$file" "$var")"
+  if [ -n "$existing" ]; then
+    _confirm "  $label ($var) already set — replace? [y/N] " N || return 0
+  fi
+  val="$(_ask_secret "  $label key ($var) [blank=skip]: ")"
+  if [ -n "$val" ]; then
+    _env_upsert "$file" "$var" "$val"
+    ok "$var saved"
+  fi
+}
+
+configure_api_keys() {
+  # Provider keys → the single secret store (~/.jarvis/keys.env). va_env holds
+  # only the voice-only Deepgram STT key. root .env stays non-secret config.
+  local keys_env="$HOME/.jarvis/keys.env"
+  local va_env="$INSTALL_DIR/src/voice-agent/.env"
+  # Open the persistent read fd HERE (the non-substitution parent) so each
+  # per-prompt `val="$(_ask_secret ...)"` subshell inherits fd 3 + its offset.
+  _tty_open_read || true
+  sub "API keys — press Enter to skip any provider."
+
+  _maybe_set_key "Anthropic"      ANTHROPIC_API_KEY "$keys_env"
+  _maybe_set_key "Groq"           GROQ_API_KEY      "$keys_env"
+  _maybe_set_key "Deepgram (STT)" DEEPGRAM_API_KEY  "$va_env"
+
+  if _confirm "  Configure more providers (OpenAI/DeepSeek/Google/Kimi)? [y/N] " N; then
+    _maybe_set_key "OpenAI"   OPENAI_API_KEY   "$keys_env"
+    _maybe_set_key "DeepSeek" DEEPSEEK_API_KEY "$keys_env"
+    _maybe_set_key "Google"   GOOGLE_API_KEY   "$keys_env"
+    _maybe_set_key "Kimi"     KIMI_API_KEY     "$keys_env"
+  fi
+
+  local v has_llm=""
+  for v in ANTHROPIC_API_KEY GROQ_API_KEY OPENAI_API_KEY DEEPSEEK_API_KEY GOOGLE_API_KEY KIMI_API_KEY; do
+    [ -n "$(_env_get "$keys_env" "$v")" ] && has_llm=1
+  done
+  [ -z "$has_llm" ] && warn "No LLM key set — add one to $keys_env before starting the voice agent."
+  return 0
+}
+
+configure_soul() {
+  local soul_src="$INSTALL_DIR/src/voice-agent/prompts/soul.md"
+  local soul_dst="$HOME/.jarvis/SOUL.md"
+  # Persistent read fd (see configure_api_keys) so this function's sequence of
+  # _confirm/_ask prompts advances through the input instead of re-reading line 1.
+  _tty_open_read || true
+  if [ ! -f "$soul_src" ]; then
+    warn "base soul not found at $soul_src — skipping persona setup"; return 0
+  fi
+
+  if [ -f "$soul_dst" ]; then
+    _confirm "  ~/.jarvis/SOUL.md exists — overwrite to re-personalize? [y/N] " N \
+      || { ok "keeping existing $soul_dst"; return 0; }
+  else
+    _confirm "  Personalize the assistant's persona now? [Y/n] " Y \
+      || { sub "skipping persona (JARVIS uses the built-in soul)"; return 0; }
+  fi
+
+  mkdir -p "$HOME/.jarvis"
+  cp "$soul_src" "$soul_dst"
+  chmod 600 "$soul_dst"
+
+  # Optional rename. Only [A-Za-z0-9 _-] accepted (no sed metachar injection).
+  local name; name="$(_ask "  Assistant name [JARVIS]: " "JARVIS")"
+  if [ -n "$name" ] && [ "$name" != "JARVIS" ]; then
+    if printf '%s' "$name" | grep -qE '^[A-Za-z0-9 _-]+$'; then
+      sed -i "s/\\bJARVIS\\b/${name}/g" "$soul_dst"
+      ok "set assistant name to '$name'"
+    else
+      warn "name has unsupported characters — keeping 'JARVIS'"
+    fi
+  fi
+  ok "wrote $soul_dst (chmod 600)"
+
+  # Offer the editor for hand tweaks. EDITOR=true (tests) is a no-op.
+  local editor="${EDITOR:-}"
+  [ -z "$editor" ] && { have nano && editor=nano || editor=vi; }
+  if _confirm "  Open $soul_dst in $editor to fine-tune? [Y/n] " Y; then
+    "$editor" "$soul_dst" < "$(_tty_path)" > "$(_tty_path)" 2>&1 \
+      || warn "editor exited non-zero; $soul_dst left as written"
+  fi
+  return 0
+}
+
+# First-run config entrypoint, called from main(). Interactive → prompt for
+# keys + persona; non-interactive (curl|bash, CI, headless) → just write the
+# templates and tell the user how to fill them.
+configure() {
+  if [ "${JARVIS_SKIP_SETUP:-0}" = "1" ]; then
+    warn "skipping first-run setup (JARVIS_SKIP_SETUP=1)"
+    setup_env_template
+    return 0
+  fi
+  section "First-run configuration"
+  if _interactive; then
+    setup_env_template      # ensure keys.env + root .env templates exist
+    configure_api_keys      # upsert real keys into keys.env + voice-agent/.env
+    configure_soul          # optional persona override at ~/.jarvis/SOUL.md
+  else
+    sub "non-interactive shell — writing the key template; edit it to add keys."
+    setup_env_template
+    sub "Personalize later: copy src/voice-agent/prompts/soul.md to ~/.jarvis/SOUL.md and edit."
+  fi
+  return 0
+}
+
 setup_env_template() {
+  local keys_env="$HOME/.jarvis/keys.env"
   section "API key template"
+
+  # keys.env — the SINGLE secret store. Loaded by the voice agent, the
+  # CLI/proxy, and the web app (src/web/next.config.ts), and it OVERRIDES every
+  # other env file on collision. All API keys / passwords live here (the Tray UI
+  # writes here too). Created with empty placeholders so a fresh install has
+  # something to fill. (Provider keys moved out of root .env 2026-06-15.)
+  if [ -f "$keys_env" ]; then
+    ok "keys.env already exists at $keys_env; not overwriting"
+  else
+    mkdir -p "$(dirname "$keys_env")"
+    cat > "$keys_env" <<'EOF'
+# JARVIS — single secret store. Loaded by the voice agent, the CLI/proxy, and
+# the web app, and it OVERRIDES every other env file on collision. Keep ALL
+# secrets (API keys, passwords) here and nowhere else.
+
+# LLM providers (fill these in with real keys)
+ANTHROPIC_API_KEY=
+GROQ_API_KEY=
+DEEPSEEK_API_KEY=
+OPENAI_API_KEY=
+GOOGLE_API_KEY=
+KIMI_API_KEY=
+
+# Other secrets (uncomment + set if you use these)
+# LANGCHAIN_API_KEY=
+# JARVIS_PG_DSN=postgresql://jarvis:PASSWORD@localhost:5432/jarvis
+EOF
+    # Lock to 0600 so other local users / containers / web pages can't read the
+    # API keys. (Per security review 2026-05-16: previously 0664; keys exposed.)
+    chmod 600 "$keys_env"
+    ok "created $keys_env (chmod 600 — the single secret store; fill in your real keys)"
+  fi
+
+  # root .env — NON-SECRET shared config only (model ids, provider choice,
+  # sandbox knobs), loaded by the CLI/proxy and the web app. Secrets do NOT go
+  # here; keys.env (above) overrides this file on collision.
   if [ -f "$INSTALL_DIR/.env" ]; then
     ok ".env already exists; not overwriting"
     return
   fi
   cat > "$INSTALL_DIR/.env" <<'EOF'
-# JARVIS — centralized API keys.
-# Each subproject's .env.local (or src/voice-agent/.env, etc.) holds
-# subproject-specific vars and overrides these on collision.
-# ~/.jarvis/keys.env overrides everything (Tray UI writes here).
-
-# LLM providers (fill these in with real keys)
-GROQ_API_KEY=
-DEEPSEEK_API_KEY=
-GOOGLE_API_KEY=
-OPENAI_API_KEY=
-ANTHROPIC_API_KEY=
-KIMI_API_KEY=
+# JARVIS — non-secret shared config. Loaded by the CLI/proxy and the web app.
+# DO NOT put secrets here — API keys / passwords go in ~/.jarvis/keys.env,
+# which overrides this file on collision.
 
 # Optional knobs (uncomment + set if you use these)
 # JARVIS_PROVIDER=deepseek
 # OLLAMA_HOST=http://127.0.0.1:11434
 # LANGCHAIN_TRACING_V2=true
-# LANGCHAIN_API_KEY=
 # LANGCHAIN_PROJECT=jarvis
 
 # Sandbox / safety knobs (uncomment to override defaults)
@@ -726,11 +954,8 @@ KIMI_API_KEY=
 #                               # set explicitly if you bypass that script)
 # JARVIS_DAILY_COST_CEILING_USD=5  # canary alert threshold (P1-OBS-1)
 EOF
-  # Lock the file to 0600 so other local users / containers / web pages
-  # can't read the API keys. (Per security review 2026-05-16: previously
-  # 0664; 22 prod API keys exposed.)
   chmod 600 "$INSTALL_DIR/.env"
-  ok "created $INSTALL_DIR/.env (chmod 600 — fill in your real keys before starting the voice agent)"
+  ok "created $INSTALL_DIR/.env (chmod 600 — non-secret config; put keys in keys.env)"
 }
 
 # ── Final summary ────────────────────────────────────────────────────────
@@ -791,9 +1016,15 @@ main() {
   check_computer_use_deps  # optional probes for computer_use subagent
   install_audio_profile
   install_echo_cancel_aec
-  setup_env_template
+  configure                # first-run: interactive API keys + persona, or just the templates when non-interactive
   install_honcho           # optional: self-hosted honcho cross-session memory (JARVIS_INSTALL_HONCHO=1)
   print_summary
 }
 
-main "$@"
+# Only run the installer when executed directly. Sourcing it (e.g. the test
+# suite in setup/tests/, which loads these functions against throwaway temp
+# dirs) must NOT run main() — otherwise sourcing would clone, build, and enable
+# systemd services on a live box.
+if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
+  main "$@"
+fi

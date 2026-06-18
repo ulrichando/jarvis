@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# jarvis-voice-recover — reliable, debounced recovery of the JARVIS voice
+# stack after a state-disrupting event.
+#
+# Why: the LiveKit SFU is local (ws://127.0.0.1:7880), so suspend/resume and
+# wifi changes NEVER drop the loopback room → no `disconnected` event → neither
+# the ReconnectLadder nor the systemd WatchdogSec fires. Yet the PortAudio
+# devices (after resume) or the agent's external STT WebSocket (after a net
+# blip) go stale, and JARVIS sits "connected but deaf/mute" until a manual
+# restart. The proven fix is to restart the two WebRTC+PortAudio-stateful
+# services once their prerequisites are healthy, then verify recovery.
+#
+# Invoked by (all hand-off to this one routine so the logic lives in one place):
+#   - /usr/lib/systemd/system-sleep/jarvis-on-resume          (root, on resume)
+#   - /etc/NetworkManager/dispatcher.d/50-jarvis-voice-recover (root, on net up)
+#   - jarvis-voice-health.timer → jarvis-voice-healthcheck    (user, backstop)
+# Safe to run by hand: `bin/jarvis-voice-recover manual`.
+set -uo pipefail
+
+USER_NAME="${JARVIS_USER:-ulrich}"
+USER_UID="$(id -u "$USER_NAME" 2>/dev/null || echo 1000)"
+RUNTIME_DIR="/run/user/$USER_UID"
+VC_PORT="${JARVIS_VOICE_CLIENT_PORT:-8767}"
+STAMP="/tmp/jarvis-voice-recover.stamp"
+DEBOUNCE_S="${JARVIS_RECOVER_DEBOUNCE_S:-15}"
+REASON="${1:-manual}"
+
+log() { logger -t jarvis-voice-recover "$*" 2>/dev/null || true; echo "[jarvis-voice-recover] $*"; }
+
+# Run `systemctl --user` (and pactl) as the target user whether we were invoked
+# as root (the sleep/NM hooks) or already as the user (the timer). Mirrors the
+# env pattern in scripts/jarvis-on-resume.sh.
+uctl() {
+    if [ "$(id -u)" = "0" ]; then
+        sudo -u "$USER_NAME" \
+            XDG_RUNTIME_DIR="$RUNTIME_DIR" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=$RUNTIME_DIR/bus" \
+            systemctl --user "$@"
+    else
+        systemctl --user "$@"
+    fi
+}
+pa() {
+    # `timeout 3` so a pactl that can't reach PipeWire (e.g. invoked from a
+    # bare shell with no audio-session env) can't stall the readiness gate.
+    if [ "$(id -u)" = "0" ]; then
+        timeout 3 sudo -u "$USER_NAME" XDG_RUNTIME_DIR="$RUNTIME_DIR" pactl "$@" 2>/dev/null
+    else
+        timeout 3 pactl "$@" 2>/dev/null
+    fi
+}
+
+# ── Debounce: collapse the resume-hook + NM-hook + timer all firing on a
+#    single event (and ride out wifi flaps). Best-effort shared stamp. ──────
+now="$(date +%s)"
+if [ -f "$STAMP" ]; then
+    last="$(cat "$STAMP" 2>/dev/null || echo 0)"
+    if [ "$(( now - last ))" -lt "$DEBOUNCE_S" ]; then
+        log "skip ($REASON) — recovered $(( now - last ))s ago (< ${DEBOUNCE_S}s)"
+        exit 0
+    fi
+fi
+( echo "$now" > "$STAMP" ) 2>/dev/null || true
+chmod 0666 "$STAMP" 2>/dev/null || true   # so root + user invocations share it
+
+log "recover triggered ($REASON)"
+
+# ── Readiness gate (fixes the suspend race: never restart onto a half-ready
+#    SFU / audio stack — that rebinds the wrong PipeWire device and comes up
+#    deaf/mute). ─────────────────────────────────────────────────────────────
+# 1. The SFU the agent/client Require= must be up.
+for _ in $(seq 1 20); do
+    uctl is-active --quiet livekit-server.service && break
+    sleep 1
+done
+# 2. Audio settled: wait (HARD-bounded ~8s wall clock) for a real default sink
+#    — not the null/placeholder that appears mid-re-enumeration. Deadline-bounded
+#    + per-call timeout so a slow/unreachable pactl can never stall recovery
+#    (a bare-shell invocation once spent 2.5min here).
+if command -v pactl >/dev/null 2>&1; then
+    _deadline=$(( $(date +%s) + 8 ))
+    while [ "$(date +%s)" -lt "$_deadline" ]; do
+        s="$(pa get-default-sink || echo)"
+        if [ -n "$s" ] && [ "$s" != "auto_null" ] && [ "$s" != "@DEFAULT_SINK@" ]; then
+            break
+        fi
+        sleep 1
+    done
+fi
+sleep 1
+
+# ── Restart in dependency order (client Requires/After agent). ─────────────
+for svc in jarvis-voice-agent.service jarvis-voice-client.service; do
+    uctl restart "$svc" || log "warning: restart $svc returned non-zero"
+done
+log "restart issued (agent + client)"
+
+# ── Verify: poll /status until connected + agent_present (bounded). ─────────
+ready() {
+    local st
+    st="$(curl -s --max-time 2 "http://127.0.0.1:${VC_PORT}/status" 2>/dev/null)" || return 1
+    printf '%s' "$st" | grep -q '"connected": *true' || return 1
+    printf '%s' "$st" | grep -q '"agent_present": *true' || return 1
+    return 0
+}
+ok=0
+for _ in $(seq 1 30); do
+    if ready; then ok=1; break; fi
+    sleep 1
+done
+if [ "$ok" = "1" ]; then
+    log "recovered: connected + agent_present"
+else
+    log "NOT recovered after ~30s — one more restart"
+    for svc in jarvis-voice-agent.service jarvis-voice-client.service; do
+        uctl restart "$svc" || true
+    done
+fi
+exit 0

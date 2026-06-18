@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { X, Loader2, ExternalLink, CircleDot, Check, Plug } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 
 type GithubIssue = {
   number: number;
@@ -134,10 +135,75 @@ export function ConnectorsModal({ onClose }: { onClose: () => void }) {
         </div>
       )}
 
+      <McpConnectors />
+
       <div className="mt-3 flex items-center gap-2 rounded-lg bg-accent/15 px-3 py-2 text-[11.5px] text-muted-foreground/70">
-        <Plug className="size-3.5" /> More connectors coming soon.
+        <Plug className="size-3.5" /> Manage all MCP servers in Settings → Connectors.
       </div>
     </ModalShell>
+  );
+}
+
+type McpServer = { id: string; name: string; enabled: boolean; hasAuth: boolean; transport: string };
+
+// MCP connectors (e.g. chrome-devtools, ourcodingkiddos) as enable/disable
+// toggles — the self-hosted analogue of claude.ai's Figma/Vercel switches.
+// Reads /api/mcp (tokens redacted) and PATCHes the enabled flag.
+function McpConnectors() {
+  const [servers, setServers] = useState<McpServer[] | null>(null);
+  const [pending, setPending] = useState<string | null>(null);
+
+  const load = async () => {
+    try {
+      const r = await fetch("/api/mcp");
+      if (r.ok) setServers(((await r.json()) as { servers: McpServer[] }).servers);
+    } catch {
+      /* ignore */
+    }
+  };
+  useEffect(() => {
+    load();
+  }, []);
+
+  const toggle = async (s: McpServer) => {
+    setPending(s.id);
+    // Optimistic flip; reconcile from the server response.
+    setServers((cur) => cur?.map((x) => (x.id === s.id ? { ...x, enabled: !x.enabled } : x)) ?? cur);
+    try {
+      await fetch("/api/mcp", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: s.id, enabled: !s.enabled }),
+      });
+    } finally {
+      setPending(null);
+      load();
+    }
+  };
+
+  if (!servers || servers.length === 0) return null;
+
+  return (
+    <div className="mt-3 space-y-1.5">
+      <div className="px-1 text-[11px] font-medium text-muted-foreground/60">MCP servers</div>
+      {servers.map((s) => (
+        <div key={s.id} className="flex items-center gap-3 rounded-xl border border-border/60 px-3 py-2">
+          <Plug className="size-4 text-muted-foreground" />
+          <div className="flex-1 min-w-0">
+            <div className="truncate text-[13px] font-medium text-foreground">{s.name}</div>
+            <div className="text-[11px] text-muted-foreground/70">
+              {s.transport.toUpperCase()}{s.hasAuth ? " · authed" : ""}
+            </div>
+          </div>
+          <Switch
+            checked={s.enabled}
+            disabled={pending === s.id}
+            onCheckedChange={() => toggle(s)}
+            aria-label={`${s.enabled ? "Disable" : "Enable"} ${s.name}`}
+          />
+        </div>
+      ))}
+    </div>
   );
 }
 

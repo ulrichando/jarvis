@@ -127,4 +127,4 @@ class TestOpenRouterWithoutKey:
     def test_speech_models_module_loads_clean(self):
         """Importing providers.llm without OPENROUTER_API_KEY must not raise."""
         assert self.llm_mod.SPEECH_MODELS is not None
-        assert self.llm_mod.DEFAULT_SPEECH_MODEL == "llama-3.3-70b-versatile"
+        assert self.llm_mod.DEFAULT_SPEECH_MODEL == "openai/gpt-oss-120b"

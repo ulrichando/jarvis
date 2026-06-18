@@ -29,6 +29,11 @@ const FETCH_TIMEOUT_MS = 10_000
 
 const BASE_URL_KEY = 'JARVIS_BRIDGE_BASE_URL'
 const TOKEN_KEY = 'JARVIS_BRIDGE_TOKEN'
+// Local-proxy credential ("OAuth via login"): a per-user HS256 token the local
+// proxy verifies offline, plus the flag that turns proxy enforcement on. Both
+// are provisioned at login and removed at logout (see persistProxyToken).
+const PROXY_TOKEN_KEY = 'JARVIS_PROXY_TOKEN'
+const PROXY_AUTH_REQUIRED_KEY = 'JARVIS_PROXY_AUTH_REQUIRED'
 
 function fail(message: string): never {
   process.stderr.write(message.endsWith('\n') ? message : message + '\n')
@@ -55,7 +60,7 @@ function normalizeServerUrl(raw: string): string {
  * runtime appends /v1/* to, and what the Settings card shows) and strips the
  * bridge suffix.
  */
-function resolveServerRoot(flagUrl: string | undefined): string {
+export function resolveServerRoot(flagUrl: string | undefined): string {
   const raw =
     flagUrl ??
     process.env[BASE_URL_KEY] ??
@@ -66,7 +71,7 @@ function resolveServerRoot(flagUrl: string | undefined): string {
 
 /** What the bridge runtime expects in JARVIS_BRIDGE_BASE_URL: it appends
  * /v1/environments/… so the value must include the /api/bridge prefix. */
-function bridgeBaseFromRoot(root: string): string {
+export function bridgeBaseFromRoot(root: string): string {
   return `${root}/api/bridge`
 }
 
@@ -160,6 +165,97 @@ function persistCredentials(baseUrl: string, token: string): void {
   process.env[TOKEN_KEY] = token
 }
 
+/**
+ * Mint the local-proxy credential ("OAuth via login") from the web app.
+ * Best-effort: an older web app without /api/bridge/proxy-token, or any
+ * failure, simply leaves proxy auth OFF (the proxy stays open, loopback-only)
+ * — the bridge login itself still succeeds, so this never blocks sign-in. Auth
+ * is the just-established session cookie, or the bridge token as Bearer for the
+ * --token escape hatch.
+ */
+async function mintProxyToken(
+  serverRoot: string,
+  auth: { cookie?: string; bearer?: string },
+  opts?: { quiet?: boolean },
+): Promise<string | undefined> {
+  // `quiet` suppresses the stderr notes — the in-REPL /login renders inside an
+  // Ink TUI, where a stray stderr write corrupts the frame. The slash command
+  // surfaces the same information in-dialog instead.
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (auth.cookie) headers.cookie = auth.cookie
+  if (auth.bearer) headers.authorization = `Bearer ${auth.bearer}`
+  try {
+    const res = await fetchJson(`${serverRoot}/api/bridge/proxy-token`, {
+      method: 'POST',
+      headers,
+      body: '{}',
+    })
+    if (!res.ok) {
+      if (!opts?.quiet) {
+        process.stderr.write(
+          `Note: proxy login token not issued (HTTP ${res.status}); the local ` +
+            'proxy stays open (loopback-only). Update the web app to enable proxy auth.\n',
+        )
+      }
+      return undefined
+    }
+    const parsed = (await res.json()) as { token?: string }
+    return typeof parsed.token === 'string' ? parsed.token : undefined
+  } catch (err) {
+    if (!opts?.quiet) {
+      process.stderr.write(
+        `Note: could not mint the proxy login token (${
+          err instanceof Error ? err.message : String(err)
+        }); proxy auth stays off.\n`,
+      )
+    }
+    return undefined
+  }
+}
+
+/** Persist the proxy credential + enable proxy enforcement. No-op when the
+ * token couldn't be minted, so a mint failure never locks the proxy. */
+function persistProxyToken(proxyToken: string | undefined): void {
+  if (!proxyToken) return
+  upsertKeysEnv({
+    [PROXY_TOKEN_KEY]: proxyToken,
+    [PROXY_AUTH_REQUIRED_KEY]: '1',
+  })
+  process.env[PROXY_TOKEN_KEY] = proxyToken
+  process.env[PROXY_AUTH_REQUIRED_KEY] = '1'
+  // Keep the in-process Anthropic SDK consistent: run-cli.mjs maps
+  // JARVIS_PROXY_TOKEN → ANTHROPIC_AUTH_TOKEN at launch, so a mid-session
+  // re-auth (the /login slash command) must update it too, otherwise
+  // onChangeAPIKey() rebuilds the client with the stale/old token.
+  process.env.ANTHROPIC_AUTH_TOKEN = proxyToken
+}
+
+/**
+ * I/O-free core shared by the `jarvis auth login --token` subcommand and the
+ * in-REPL `/login` slash command: persist the Remote Control bridge token,
+ * mint + persist the local-proxy credential, and update process.env. No
+ * stdout/stderr and no process.exit — each caller owns its own UX (the CLI
+ * prints + exits; the slash command renders a dialog). May throw; callers
+ * catch.
+ */
+export async function applyJarvisToken(opts: {
+  serverRoot: string
+  bridgeToken: string
+}): Promise<{ serverRoot: string; bridgeBase: string; proxyMinted: boolean }> {
+  const serverRoot = resolveServerRoot(opts.serverRoot)
+  const bridgeBase = bridgeBaseFromRoot(serverRoot)
+  const bridgeToken = opts.bridgeToken.trim()
+  if (!bridgeToken) throw new Error('Remote Control token is empty.')
+  persistCredentials(bridgeBase, bridgeToken)
+  const proxyToken = await mintProxyToken(
+    serverRoot,
+    { bearer: bridgeToken },
+    { quiet: true },
+  )
+  persistProxyToken(proxyToken)
+  return { serverRoot, bridgeBase, proxyMinted: !!proxyToken }
+}
+
 function printSuccess(baseUrl: string, who: string, machines?: number): void {
   process.stdout.write(
     `Logged in to ${baseUrl}${who ? ` as ${who}` : ''}.\n` +
@@ -189,9 +285,9 @@ export async function jarvisAuthLogin(opts: {
   }
 
   // Escape hatch: a token pasted from Settings → Connectors skips the
-  // email/password sign-in entirely.
+  // email/password sign-in entirely. Shares applyJarvisToken with /login.
   if (opts.token) {
-    persistCredentials(bridgeBase, opts.token.trim())
+    await applyJarvisToken({ serverRoot, bridgeToken: opts.token })
     printSuccess(serverRoot, '')
     process.exit(0)
   }
@@ -273,6 +369,10 @@ export async function jarvisAuthLogin(opts: {
   } catch {
     /* cosmetic only */
   }
+  // Mint the local-proxy credential ("OAuth via login") while the session
+  // cookie is still valid, then drop the session.
+  const proxyToken = await mintProxyToken(serverRoot, { cookie })
+
   await fetchJson(`${serverRoot}/api/auth/sign-out`, {
     method: 'POST',
     headers: { cookie, 'Content-Type': 'application/json' },
@@ -280,6 +380,7 @@ export async function jarvisAuthLogin(opts: {
   }).catch(() => {})
 
   persistCredentials(bridgeBase, token)
+  persistProxyToken(proxyToken)
   printSuccess(serverRoot, email, machines)
   process.exit(0)
 }
@@ -291,15 +392,34 @@ export async function jarvisAuthLogin(opts: {
  * per-account token shown in Settings → Connectors); this only disconnects
  * this machine.
  */
-export async function jarvisAuthLogout(): Promise<void> {
-  const removed = removeKeysEnvKeys([BASE_URL_KEY, TOKEN_KEY])
+export async function jarvisAuthLogout(opts?: {
+  quiet?: boolean
+}): Promise<boolean> {
+  const removed = removeKeysEnvKeys([
+    BASE_URL_KEY,
+    TOKEN_KEY,
+    PROXY_TOKEN_KEY,
+    PROXY_AUTH_REQUIRED_KEY,
+  ])
   delete process.env[BASE_URL_KEY]
   delete process.env[TOKEN_KEY]
-  process.stdout.write(
-    removed
-      ? `Removed JARVIS Remote Control credentials from ${keysEnvPath()}.\n`
-      : 'No JARVIS Remote Control credentials were stored on this machine.\n',
-  )
+  // Dropping the proxy token + flag returns the local proxy to open
+  // (loopback-only) on its next restart — logout never leaves a locked proxy.
+  delete process.env[PROXY_TOKEN_KEY]
+  delete process.env[PROXY_AUTH_REQUIRED_KEY]
+  // run-cli.mjs maps JARVIS_PROXY_TOKEN → ANTHROPIC_AUTH_TOKEN at launch; drop
+  // it too so a logged-out live session stops sending the old proxy token.
+  delete process.env.ANTHROPIC_AUTH_TOKEN
+  // `quiet` suppresses the stdout line for the in-REPL /logout (Ink TUI); the
+  // slash command renders its own confirmation instead.
+  if (!opts?.quiet) {
+    process.stdout.write(
+      removed
+        ? `Removed JARVIS Remote Control credentials from ${keysEnvPath()}.\n`
+        : 'No JARVIS Remote Control credentials were stored on this machine.\n',
+    )
+  }
+  return removed
 }
 
 /** Status line data for `jarvis auth status`. Env wins (launchers source
@@ -307,8 +427,15 @@ export async function jarvisAuthLogout(): Promise<void> {
 export function getJarvisBridgeStatus(): {
   baseUrl: string | undefined
   tokenConfigured: boolean
+  proxyTokenConfigured: boolean
 } {
   const baseUrl = process.env[BASE_URL_KEY] || readKeysEnvValue(BASE_URL_KEY)
   const token = process.env[TOKEN_KEY] || readKeysEnvValue(TOKEN_KEY)
-  return { baseUrl: baseUrl || undefined, tokenConfigured: !!token }
+  const proxyToken =
+    process.env[PROXY_TOKEN_KEY] || readKeysEnvValue(PROXY_TOKEN_KEY)
+  return {
+    baseUrl: baseUrl || undefined,
+    tokenConfigured: !!token,
+    proxyTokenConfigured: !!proxyToken,
+  }
 }

@@ -2,9 +2,15 @@ import { NextResponse } from 'next/server'
 import { getStore } from '@/lib/bridge/db'
 import {
   archiveSession,
+  unarchiveSession,
   deleteSession,
   findEnvironment,
   findSession,
+  setSessionAutofix,
+  setSessionAutomerge,
+  setSessionGroup,
+  setSessionPinned,
+  setSessionRead,
   setSessionTitle,
 } from '@/lib/bridge/store'
 import { extractBearer } from '@/lib/bridge/auth'
@@ -72,11 +78,35 @@ export async function PATCH(
   const body = (await req.json().catch(() => null)) as {
     title?: string
     archived?: boolean
+    pinned?: boolean
+    read?: boolean
+    group_id?: string | null
+    autofix?: boolean
+    automerge?: boolean
   } | null
   const renaming = typeof body?.title === 'string' && body.title.trim() !== ''
   const archiving = body?.archived === true
-  if (!renaming && !archiving) {
-    return bridgeError(400, 'invalid_request', 'title or archived required')
+  const unarchiving = body?.archived === false
+  const pinning = typeof body?.pinned === 'boolean'
+  const reading = typeof body?.read === 'boolean'
+  const grouping = body !== null && 'group_id' in body
+  const togglingAutofix = typeof body?.autofix === 'boolean'
+  const togglingAutomerge = typeof body?.automerge === 'boolean'
+  if (
+    !renaming &&
+    !archiving &&
+    !unarchiving &&
+    !pinning &&
+    !reading &&
+    !grouping &&
+    !togglingAutofix &&
+    !togglingAutomerge
+  ) {
+    return bridgeError(
+      400,
+      'invalid_request',
+      'title, archived, pinned, read, group_id, autofix, or automerge required',
+    )
   }
   const denied = await authorizeMutation(req, sessionId)
   if (denied) return denied
@@ -85,7 +115,16 @@ export async function PATCH(
     const session = findSession(store, sessionId)
     if (!session) return bridgeError(404, 'not_found', 'Session not found')
     if (renaming) setSessionTitle(store, sessionId, body!.title!.trim())
+    if (pinning) setSessionPinned(store, sessionId, body!.pinned!)
+    if (reading) setSessionRead(store, sessionId, body!.read!)
+    if (grouping) {
+      const g = body!.group_id
+      setSessionGroup(store, sessionId, typeof g === 'string' && g ? g : null)
+    }
     if (archiving) archiveSession(store, sessionId)
+    if (unarchiving) unarchiveSession(store, sessionId)
+    if (togglingAutofix) setSessionAutofix(store, sessionId, body!.autofix!)
+    if (togglingAutomerge) setSessionAutomerge(store, sessionId, body!.automerge!)
     return NextResponse.json({ id: sessionId })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

@@ -71,21 +71,23 @@ printf '\n' > "$TTYF"
 check "_confirm blank honors default Y" '( _JARVIS_TTY="$TTYF" _confirm "p? " Y )'
 
 # ── configure_api_keys ───────────────────────────────────────────────
-T2="$(mktemp -d)"; mkdir -p "$T2/src/voice-agent"
+T2="$(mktemp -d)"; mkdir -p "$T2/src/voice-agent" "$T2/home"
 # answers: anthropic, groq, deepgram, then "n" to extra providers
 printf 'sk-ant-1\nsk-groq-2\ndg-3\nn\n' > "$T2/ans"
-( export INSTALL_DIR="$T2"; _JARVIS_TTY="$T2/ans" configure_api_keys ) >/dev/null 2>&1
-check "anthropic -> root .env"          '[ "$(_env_get "$T2/.env" ANTHROPIC_API_KEY)" = sk-ant-1 ]'
-check "groq -> root .env"               '[ "$(_env_get "$T2/.env" GROQ_API_KEY)" = sk-groq-2 ]'
+# HOME isolated so provider keys land in the test's keys.env, not the real one
+# (provider keys go to keys.env, the single secret store).
+( export INSTALL_DIR="$T2" HOME="$T2/home"; _JARVIS_TTY="$T2/ans" configure_api_keys ) >/dev/null 2>&1
+check "anthropic -> keys.env"           '[ "$(_env_get "$T2/home/.jarvis/keys.env" ANTHROPIC_API_KEY)" = sk-ant-1 ]'
+check "groq -> keys.env"                '[ "$(_env_get "$T2/home/.jarvis/keys.env" GROQ_API_KEY)" = sk-groq-2 ]'
 check "deepgram -> voice-agent/.env"    '[ "$(_env_get "$T2/src/voice-agent/.env" DEEPGRAM_API_KEY)" = dg-3 ]'
-check "root .env chmod 600"             '[ "$(stat -c %a "$T2/.env")" = 600 ]'
-check "untouched provider stays unset"  '[ -z "$(_env_get "$T2/.env" OPENAI_API_KEY)" ]'
+check "keys.env chmod 600"              '[ "$(stat -c %a "$T2/home/.jarvis/keys.env")" = 600 ]'
+check "untouched provider stays unset"  '[ -z "$(_env_get "$T2/home/.jarvis/keys.env" OPENAI_API_KEY)" ]'
 
-# blank answers skip everything (no .env written for keys)
-T2b="$(mktemp -d)"; mkdir -p "$T2b/src/voice-agent"
+# blank answers skip everything (no key written)
+T2b="$(mktemp -d)"; mkdir -p "$T2b/src/voice-agent" "$T2b/home"
 printf '\n\n\nn\n' > "$T2b/ans"
-( export INSTALL_DIR="$T2b"; _JARVIS_TTY="$T2b/ans" configure_api_keys ) >/dev/null 2>&1
-check "blank input sets no anthropic key" '[ -z "$(_env_get "$T2b/.env" ANTHROPIC_API_KEY)" ]'
+( export INSTALL_DIR="$T2b" HOME="$T2b/home"; _JARVIS_TTY="$T2b/ans" configure_api_keys ) >/dev/null 2>&1
+check "blank input sets no anthropic key" '[ -z "$(_env_get "$T2b/home/.jarvis/keys.env" ANTHROPIC_API_KEY)" ]'
 
 # ── configure_soul (Option A: copy base soul -> ~/.jarvis/SOUL.md) ────
 T3="$(mktemp -d)"
@@ -117,7 +119,7 @@ check "blank name = verbatim copy" 'diff -q "$T3c/src/voice-agent/prompts/soul.m
 T5="$(mktemp -d)"; mkdir -p "$T5/src/voice-agent/prompts"
 printf 'You are JARVIS.\n' > "$T5/src/voice-agent/prompts/soul.md"
 ( export INSTALL_DIR="$T5" HOME="$T5/home" JARVIS_NONINTERACTIVE=1; configure ) >/dev/null 2>&1
-check "non-interactive writes .env template" 'grep -q "^ANTHROPIC_API_KEY=" "$T5/.env"'
+check "non-interactive writes keys.env template" 'grep -q "^ANTHROPIC_API_KEY=" "$T5/home/.jarvis/keys.env"'
 check "non-interactive makes no SOUL.md"     '[ ! -f "$T5/home/.jarvis/SOUL.md" ]'
 
 # SKIP_SETUP bypasses prompts but still leaves a usable template.
@@ -134,7 +136,7 @@ printf 'sk-a\nsk-g\ndg\nn\nY\n\nn\n' > "$T5c/ans"
 ( export INSTALL_DIR="$T5c" HOME="$T5c/home" EDITOR=true \
     JARVIS_NONINTERACTIVE=0 JARVIS_DRY_RUN=0 JARVIS_SKIP_SETUP=0; \
   _JARVIS_TTY="$T5c/ans" configure ) >/dev/null 2>&1
-check "interactive writes a key"  '[ "$(_env_get "$T5c/.env" ANTHROPIC_API_KEY)" = sk-a ]'
+check "interactive writes a key"  '[ "$(_env_get "$T5c/home/.jarvis/keys.env" ANTHROPIC_API_KEY)" = sk-a ]'
 check "interactive writes SOUL.md" '[ -f "$T5c/home/.jarvis/SOUL.md" ]'
 
 echo "---"; echo "$FAILS failures"; [ "$FAILS" -eq 0 ]
