@@ -403,7 +403,13 @@ export default function App() {
   useEffect(() => {
     let next = 'idle'
     if (!speech.connected) next = 'offline'
-    else if (voiceMuted)                   next = 'muted'
+    // Honesty fix (2026-06-18): drive 'muted' from the AUTHORITATIVE /status
+    // (real mic-mute + silent_mode), NOT the bridge-fed voiceMuted flag. That
+    // flag only reconciles on a bridge voice_muted event, so it got stuck
+    // black while JARVIS was actually live (mic open, even speaking). /status
+    // self-heals every 100 ms — black now truthfully means "not sending audio
+    // to the cloud / not processing".
+    else if (speech.micMuted)                next = 'muted'
     else if (speech.silentMode)            next = 'muted'
     else if (speech.speaking)             next = 'talking'
     else if (speech.voiceActive)          next = 'listening'
@@ -411,7 +417,7 @@ export default function App() {
     else if (speech.processing)          next = 'thinking'
     else                                  next = 'idle'
     pushTrayState(next, !!speech.sharingScreen)
-  }, [voiceMuted, speech.connected, speech.speaking, speech.voiceActive, speech.silentMode, speech.booting, speech.processing, speech.sharingScreen, pushTrayState])
+  }, [speech.micMuted, speech.connected, speech.speaking, speech.voiceActive, speech.silentMode, speech.booting, speech.processing, speech.sharingScreen, pushTrayState])
 
   // ── Tray menu label sync ────────────────────────────────────────────
   // Pushes the active CLI / speech / TTS model IDs into the three
@@ -463,12 +469,22 @@ export default function App() {
 
   return (
     <div style={{ width:'100vw', height:'100vh', background:'transparent', overflow:'hidden', position:'relative' }}>
-      {/* Mute indicator */}
-      {voiceMuted && (
+      {/* Mute / silent indicator — driven by REAL /status, not the bridge
+          flag. Distinguishes a truly-muted mic ("MUTED", red) from soft
+          silent mode where the mic is STILL LIVE ("SILENT · listening",
+          amber) so the user can tell when JARVIS can still hear them. The
+          amber case is the token/privacy-leak warning. 2026-06-18. */}
+      {(speech.micMuted || speech.silentMode) && (
         <div style={{ position:'fixed', top:'1rem', left:'1rem', zIndex:50, pointerEvents:'none' }}>
-          <div style={{ padding:'0.375rem 0.75rem', borderRadius:'9999px', background:'rgba(255,60,60,0.15)', border:'1px solid rgba(255,60,60,0.5)', color:'#f87171', fontSize:'0.75rem', fontFamily:'monospace' }}>
-            MUTED
-          </div>
+          {speech.micMuted ? (
+            <div style={{ padding:'0.375rem 0.75rem', borderRadius:'9999px', background:'rgba(255,60,60,0.15)', border:'1px solid rgba(255,60,60,0.5)', color:'#f87171', fontSize:'0.75rem', fontFamily:'monospace' }}>
+              MUTED
+            </div>
+          ) : (
+            <div style={{ padding:'0.375rem 0.75rem', borderRadius:'9999px', background:'rgba(250,180,50,0.15)', border:'1px solid rgba(250,180,50,0.5)', color:'#facc15', fontSize:'0.75rem', fontFamily:'monospace' }}>
+              SILENT · listening for “Jarvis”
+            </div>
+          )}
         </div>
       )}
 

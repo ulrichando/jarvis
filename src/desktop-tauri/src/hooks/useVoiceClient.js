@@ -64,6 +64,12 @@ export default function useVoiceClient({ muted = false } = {}) {
   const [booting,      setBooting]      = useState(false)
   const [silentMode,   setSilentMode]   = useState(false)
   const [speaking,     setSpeaking]     = useState(false)
+  // Real mic-mute from /status (authoritative; reconciles every 100 ms).
+  // The tray + pill read THIS, not the bridge-driven voiceMuted flag, so a
+  // stuck bridge toggle can't paint the icon black while the mic is live
+  // (2026-06-18 silent-mode indicator-honesty fix). Named micMuted to avoid
+  // colliding with the `muted` PARAMETER above (the desired-mute input).
+  const [micMuted,     setMicMuted]     = useState(false)
   // Active model IDs surfaced by the voice-client's /status. Used by
   // App.jsx's tray-menu label sync — exposed here so the consolidated
   // poll loop is the single source of truth (the legacy TrayLabelSync
@@ -163,6 +169,7 @@ export default function useVoiceClient({ muted = false } = {}) {
         setRecording(!!s.connected && !s.muted && !s.silent_mode)
         setVoiceActive(!!s.listening)
         setSpeaking(!!s.speaking)
+        setMicMuted(!!s.muted)
         setAgentPresent(!!s.agent_present)
         setCliModel(s.cli_model || null)
         setSpeechModel(s.speech_model || null)
@@ -191,6 +198,7 @@ export default function useVoiceClient({ muted = false } = {}) {
           setConnected(false)
           setListening(false); setRecording(false)
           setVoiceActive(false); setSpeaking(false); setProcessing(false)
+          setMicMuted(false)
           lastActiveRef.current = null
         }
       }
@@ -254,7 +262,7 @@ export default function useVoiceClient({ muted = false } = {}) {
 
   return {
     connected,
-    listening, recording, voiceActive, processing, booting, silentMode, speaking, audioLevel,
+    listening, recording, voiceActive, processing, booting, silentMode, speaking, micMuted, audioLevel,
     cliModel, speechModel, ttsProvider, sharingScreen,
     startRecording: () => {},
     stopRecording:  () => {},
