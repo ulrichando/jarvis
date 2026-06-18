@@ -1,7 +1,9 @@
 # Silent-mode token/privacy leak fix — local-wake mute + honest indicator
 
-Status: design approved 2026-06-18 (Architecture A, Phase 1 → Phase 2).
-Branch: `feat/voice-local-offline-fallback`.
+Status: IMPLEMENTED 2026-06-18 (Architecture A). Phase 1 live (honest indicator
++ honcho gate, committed 1c16e6de). Phase 2 code-complete + suite-green, gated
+behind `JARVIS_SILENT_LOCAL_WAKE=1` (default off).
+Branch: master (feature branch merged in; commits local-only).
 
 ## Why this is a spec, not shipped code
 
