@@ -260,6 +260,23 @@ fn jarvis_home() -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var(var).unwrap_or_else(|_| "/tmp".to_string()))
 }
 
+/// Build a Command that won't flash a console window when spawned from the
+/// desktop (a GUI app with no console of its own). On Windows, launching a
+/// console child (powershell, bun, curl) pops a cmd window unless
+/// CREATE_NO_WINDOW is set — which is why "Open in Browser" (bun run dev) and
+/// the model-switch restart showed a terminal. No-op on Unix. Use this in
+/// place of Command::new for anything the desktop spawns.
+fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 /// Repo checkout root. Derived from the running exe when possible
 /// (`<repo>/src/desktop-tauri/src-tauri/target/release/jarvis-desktop[.exe]`,
 /// 6 ancestors up), else the platform-conventional Documents location (the
@@ -309,12 +326,12 @@ fn restart_voice_agent_cmd() -> Result<(), String> {
             ));
         }
         if stop.exists() {
-            let _ = std::process::Command::new("powershell")
+            let _ = hidden_command("powershell")
                 .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
                 .arg(&stop)
                 .output();
         }
-        let out = std::process::Command::new("powershell")
+        let out = hidden_command("powershell")
             .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
             .arg(&start)
             .output()
@@ -838,7 +855,7 @@ fn speech_model_pretty(id: &str) -> Option<&'static str> {
 /// restarts needed. Spawned via curl to avoid pulling reqwest.
 fn switch_cli_model(app: &tauri::AppHandle, id: &'static str) {
     let body = format!(r#"{{"model":"{id}"}}"#);
-    let _ = std::process::Command::new("curl")
+    let _ = hidden_command("curl")
         .args([
             "-s", "-X", "POST",
             "http://127.0.0.1:8767/cli-model",
@@ -882,7 +899,7 @@ fn tts_provider_pretty(spec: &str) -> Option<&'static str> {
 /// No agent restart needed — order shifts on next utterance.
 fn switch_tts_provider(app: &tauri::AppHandle, spec: &'static str) {
     let body = format!(r#"{{"provider":"{spec}"}}"#);
-    let _ = std::process::Command::new("curl")
+    let _ = hidden_command("curl")
         .args([
             "-s", "-X", "POST",
             "http://127.0.0.1:8767/tts-provider",
@@ -958,7 +975,12 @@ fn switch_speech_model(app: &tauri::AppHandle, id: &'static str) {
     }
     #[cfg(windows)]
     {
-        let _ = restart_voice_agent_cmd();
+        // Run the restart OFF the tray/UI thread — restart_voice_agent_cmd()
+        // blocks ~5 s on the stop+start scripts (.output()), which froze the
+        // whole UI on every model pick. Fire-and-forget, like the Linux spawn.
+        std::thread::spawn(|| {
+            let _ = restart_voice_agent_cmd();
+        });
     }
 
     if let Some(pretty) = speech_model_pretty(id) {
@@ -1397,18 +1419,24 @@ fn find_project_root() -> Option<std::path::PathBuf> {
 /// silently degrades to the diagnostic window. Resolving here lets
 /// `try_spawn_web` find bun regardless of how the tray was started.
 fn find_bun_executable() -> Option<std::path::PathBuf> {
+    // Executable name + PATH separator differ by platform. On Windows the
+    // binary is bun.exe and PATH is ';'-separated (splitting on ':' would
+    // break at the drive letter, e.g. "C:\..."), and $HOME is unset (use
+    // the cross-platform home helper for the ~/.bun/bin fallback).
+    #[cfg(windows)]
+    let (exe_name, sep) = ("bun.exe", ';');
+    #[cfg(not(windows))]
+    let (exe_name, sep) = ("bun", ':');
     let path_var = std::env::var("PATH").unwrap_or_default();
-    for dir in path_var.split(':').filter(|s| !s.is_empty()) {
-        let candidate = std::path::PathBuf::from(dir).join("bun");
+    for dir in path_var.split(sep).filter(|s| !s.is_empty()) {
+        let candidate = std::path::PathBuf::from(dir).join(exe_name);
         if candidate.is_file() {
             return Some(candidate);
         }
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let user_bun = std::path::PathBuf::from(home).join(".bun/bin/bun");
-        if user_bun.is_file() {
-            return Some(user_bun);
-        }
+    let user_bun = jarvis_home().join(".bun").join("bin").join(exe_name);
+    if user_bun.is_file() {
+        return Some(user_bun);
     }
     None
 }
@@ -1432,15 +1460,20 @@ fn try_spawn_web() -> bool {
     // Detect bun by trying to spawn and watching for ENOENT. Spawn
     // happens with stdout/stderr redirected to /tmp/jarvis-web.log
     // (append) so the user can postmortem compile errors.
-    let log_path = "/tmp/jarvis-web.log";
+    // Cross-platform log path — /tmp doesn't exist on Windows, so opening
+    // "/tmp/jarvis-web.log" failed there and "Open in Browser" silently
+    // returned false. Use the same ~/.jarvis/logs dir the voice stack uses.
+    let log_dir = jarvis_home().join(".jarvis").join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_path = log_dir.join("web.log");
     let log = match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(log_path)
+        .open(&log_path)
     {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("[JARVIS] try_spawn_web: open log: {e}");
+            eprintln!("[JARVIS] try_spawn_web: open log {}: {e}", log_path.display());
             return false;
         }
     };
@@ -1454,7 +1487,7 @@ fn try_spawn_web() -> bool {
         );
         return false;
     };
-    let mut cmd = std::process::Command::new(&bun);
+    let mut cmd = hidden_command(&bun);
     cmd.arg("run").arg("dev")
         .current_dir(&web_dir)
         .stdin(std::process::Stdio::null())
@@ -1467,7 +1500,7 @@ fn try_spawn_web() -> bool {
                 bun.display(),
                 child.id(),
                 web_dir.display(),
-                log_path,
+                log_path.display(),
             );
             // Don't wait — Next.js dev compiles for ~5-15 s on first
             // run. The poll loop in handle_open_browser picks up
@@ -1694,6 +1727,15 @@ fn main() {
     let panel_rect_poll  = panel_rect.clone();
 
     tauri::Builder::default()
+        // Single-instance: a second launch focuses the existing window
+        // instead of starting a duplicate app (Windows users were getting
+        // two tray icons + two voice controllers). Must be the FIRST plugin.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -2204,11 +2246,11 @@ fn main() {
                                 mute_args.push(format!("Authorization: Bearer {}", bridge_token));
                             }
                             mute_args.push("http://127.0.0.1:8765/api/mute".into());
-                            let _ = std::process::Command::new("curl").args(&mute_args).spawn();
+                            let _ = hidden_command("curl").args(&mute_args).spawn();
                             // Toggle the voice-client by POSTing with no
                             // body — the Python handler defaults to "flip
                             // current state" when `mute` is absent.
-                            let _ = std::process::Command::new("curl")
+                            let _ = hidden_command("curl")
                                 .args(["-s", "-X", "POST",
                                        "http://127.0.0.1:8767/mute",
                                        "-H", "Content-Type: application/json",
@@ -2225,7 +2267,7 @@ fn main() {
                             // no-op — the agent's _on_data handler
                             // swallows the RuntimeError from interrupting
                             // an idle session.
-                            let _ = std::process::Command::new("curl")
+                            let _ = hidden_command("curl")
                                 .args(["-s", "-X", "POST",
                                        "http://127.0.0.1:8767/stop"])
                                 .spawn();
