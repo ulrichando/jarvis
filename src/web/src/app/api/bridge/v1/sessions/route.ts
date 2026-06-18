@@ -4,6 +4,7 @@ import { getStore } from '@/lib/bridge/db'
 import {
   listSessions,
   listSessionEvents,
+  listGroups,
   findEnvironment,
   getOrCreateSession,
   appendSessionEvent,
@@ -31,6 +32,7 @@ export async function GET(req: Request): Promise<NextResponse> {
   try {
     const store = getStore()
     const userId = await getUserId(req.headers)
+    const groupName = new Map(listGroups(store, userId).map((g) => [g.group_id, g.name]))
     const sessions = listSessions(store, userId)
       .slice(0, 40)
       .map((s) => {
@@ -53,8 +55,11 @@ export async function GET(req: Request): Promise<NextResponse> {
           safe(last?.payload_json, 'status') ||
           safe(last?.payload_json, 'message')
         // Prefer the worker's own reported status (PUT /worker) over the
-        // last-event heuristic — 'idle' after a result means "your turn",
-        // not "working".
+        // last-event heuristic. Parity with claude.ai/code: 'needs_input'
+        // (amber) is reserved for a worker actually BLOCKED on a permission /
+        // question (requires_action). A finished, idle turn is 'done' (neutral)
+        // — "your turn to type", not an alert. Lumping idle into needs_input
+        // made every run-once session sit permanently amber.
         let workerStatus = ''
         try {
           const ws = s.worker_state_json
@@ -68,19 +73,30 @@ export async function GET(req: Request): Promise<NextResponse> {
           ? 'done'
           : workerStatus === 'running'
             ? 'working'
-            : workerStatus === 'idle' || workerStatus === 'requires_action'
+            : workerStatus === 'requires_action'
               ? 'needs_input'
-              : last && last.type !== 'user_prompt'
-                ? 'working'
-                : 'needs_input'
+              : workerStatus === 'idle'
+                ? 'done'
+                : last && last.type !== 'user_prompt'
+                  ? 'working'
+                  : 'needs_input'
         return {
           session_id: s.session_id,
+          // The session's environment id — lets the /code session header
+          // "Edit environment" resolve the right env to configure (the
+          // composer pickers only reflect NEW-session intent, not this one).
+          environment_id: s.environment_id ?? null,
           title: title.slice(0, 90),
           preview: preview.slice(0, 110),
           repo: repoLabel(env),
           machine_name: env?.machine_name ?? null,
           created_at: s.created_at,
           status,
+          pinned: !!s.pinned,
+          read: !!s.read,
+          archived: !!s.archived,
+          group_id: s.group_id,
+          group_name: s.group_id ? (groupName.get(s.group_id) ?? null) : null,
         }
       })
     return NextResponse.json({ sessions })

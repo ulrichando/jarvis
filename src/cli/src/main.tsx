@@ -352,6 +352,7 @@ import {
 } from "src/utils/sessionRestore.js";
 import { parseSettingSourcesFlag } from "src/utils/settings/constants.js";
 import { plural } from "src/utils/stringUtils.js";
+import { jarvisLoginRequired } from "src/utils/requireJarvisLogin.js";
 import {
   type ChannelEntry,
   getInitialMainLoopModel,
@@ -2147,6 +2148,20 @@ async function run(): Promise<CommanderCommand> {
 
       // Get isNonInteractiveSession from state (was set before init())
       const isNonInteractiveSession = getIsNonInteractiveSession();
+
+      // Require a JARVIS sign-in before a non-interactive (--print) model run
+      // when in proxy mode with no token (Claude-style auth requirement). The
+      // interactive REPL enforces this via showSetupScreens, which -p never
+      // reaches. JARVIS_REQUIRE_LOGIN=0 opts out (automation / CI); bridge
+      // children + remote-control workers inherit the token, so aren't gated.
+      if (isNonInteractiveSession && jarvisLoginRequired()) {
+        process.stderr.write(
+          chalk.red(
+            "Authentication required: run `jarvis auth login` (or set JARVIS_REQUIRE_LOGIN=0 to skip).\n",
+          ),
+        );
+        process.exit(1);
+      }
 
       // Validate that fallback model is different from main model
       if (fallbackModel && options.model && fallbackModel === options.model) {
@@ -5830,6 +5845,20 @@ async function run(): Promise<CommanderCommand> {
         },
       );
   }
+
+  // jarvis teleport <sessionId> — pull a cloud /code session to this machine
+  // (self-hosted equivalent of the stubbed upstream teleport): fetch its branch
+  // + transcript from the JARVIS web app and check the branch out locally.
+  // Uses the bridge token from `jarvis auth login`.
+  program
+    .command("teleport <sessionId>")
+    .description(
+      "Pull a cloud /code session to this machine — checkout its branch + load the transcript",
+    )
+    .action(async (sessionId: string) => {
+      const { jarvisTeleport } = await import("./cli/handlers/jarvisTeleport.js");
+      await jarvisTeleport(sessionId);
+    });
 
   // jarvis auth — JARVIS-account login (self-hosted web app) is the default;
   // the Anthropic OAuth path lives behind --claudeai/--console/--sso and is

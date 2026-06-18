@@ -83,6 +83,16 @@ if (!process.env.ANTHROPIC_API_KEY) {
   process.env.ANTHROPIC_API_KEY = 'jarvis-proxy'
 }
 
+// JARVIS proxy credential ("OAuth via login"): when `jarvis auth login` has
+// provisioned a proxy token (written to ~/.jarvis/keys.env, sourced above),
+// hand it to the Anthropic SDK as the auth token. The SDK sends it as
+// `Authorization: Bearer <token>`, which the local proxy verifies — and it
+// makes the /status screen show a real token instead of "none". Inert when
+// unset, so fresh installs and pre-login sessions behave exactly as before.
+if (!process.env.ANTHROPIC_AUTH_TOKEN && process.env.JARVIS_PROXY_TOKEN) {
+  process.env.ANTHROPIC_AUTH_TOKEN = process.env.JARVIS_PROXY_TOKEN
+}
+
 // Disable tool deferral: non-Claude backends (Groq, DeepSeek) don't know the
 // ToolSearch protocol and fail to load deferred tool schemas. Ship every tool
 // schema up front so any model can call any tool first try.

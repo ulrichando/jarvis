@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { GeneralSection } from "@/components/settings/general";
 import { AccountSection } from "@/components/settings/account";
@@ -53,6 +53,13 @@ const NAV: Array<{ id: Section; label: string }> = [
 
 export default function SettingsPage() {
   const [section, setSection] = useState<Section>("general");
+
+  // Honor ?tab=<section> deep links (e.g. /settings?tab=usage from the /code
+  // usage popover). Post-mount to avoid an SSR/client hydration mismatch.
+  useEffect(() => {
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    if (tab && NAV.some((n) => n.id === tab)) setSection(tab as Section);
+  }, []);
 
   return (
     <div className="flex h-full">

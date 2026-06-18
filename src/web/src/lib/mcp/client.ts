@@ -6,12 +6,18 @@ import { tool, jsonSchema, type ToolSet } from "ai";
 import type { McpServer } from "./store";
 
 async function connect(server: McpServer): Promise<Client> {
+  if (!server.url) {
+    throw new Error("stdio servers are managed but not loaded over HTTP");
+  }
   const client = new Client({ name: "jarvis-web", version: "1.0.0" });
   const url = new URL(server.url);
+  // Forward auth headers (e.g. Authorization: Bearer …) so token-protected
+  // servers connect. requestInit is applied to the transport's fetch calls.
+  const opts = server.headers ? { requestInit: { headers: server.headers } } : undefined;
   const transport =
     server.transport === "sse"
-      ? new SSEClientTransport(url)
-      : new StreamableHTTPClientTransport(url);
+      ? new SSEClientTransport(url, opts)
+      : new StreamableHTTPClientTransport(url, opts);
   // Bound the handshake so a slow/hung server can't stall a chat turn.
   await Promise.race([
     client.connect(transport),
@@ -48,7 +54,7 @@ export async function loadMcpTools(
 ): Promise<{ tools: ToolSet; close: () => Promise<void> }> {
   const clients: Client[] = [];
   const tools: ToolSet = {};
-  for (const server of servers.filter((s) => s.enabled)) {
+  for (const server of servers.filter((s) => s.enabled && !!s.url)) {
     try {
       const client = await connect(server);
       clients.push(client);

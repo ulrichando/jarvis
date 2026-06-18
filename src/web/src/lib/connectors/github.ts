@@ -99,6 +99,17 @@ export async function disconnectGithub(): Promise<void> {
   await save(c);
 }
 
+/**
+ * Secret for verifying inbound GitHub webhook deliveries (X-Hub-Signature-256).
+ * From GITHUB_WEBHOOK_SECRET, else the connector file. Null → webhooks are
+ * rejected (no unauthenticated triggers).
+ */
+export async function getGithubWebhookSecret(): Promise<string | null> {
+  if (process.env.GITHUB_WEBHOOK_SECRET) return process.env.GITHUB_WEBHOOK_SECRET;
+  const c = await load();
+  return (c.github as { webhookSecret?: string } | undefined)?.webhookSecret ?? null;
+}
+
 /** Open issues assigned to / created by the authenticated user, across repos. */
 export async function listGithubIssues(): Promise<
   { ok: true; issues: GithubIssue[] } | { ok: false; error: string }
@@ -157,4 +168,106 @@ export async function listGithubRepos(): Promise<
     url: String(x.html_url ?? ""),
   }));
   return { ok: true, repos };
+}
+
+/** A PR's unified diff (capped for the model context). Null on error/empty. */
+export async function getPrDiff(repo: string, number: number, cap = 60000): Promise<string | null> {
+  const c = await load();
+  if (!c.github) return null;
+  try {
+    const r = await fetch(`${GH}/repos/${repo}/pulls/${number}`, {
+      headers: { ...ghHeaders(c.github.token), Accept: "application/vnd.github.v3.diff" },
+    });
+    if (!r.ok) return null;
+    const diff = await r.text();
+    return diff.slice(0, cap);
+  } catch {
+    return null;
+  }
+}
+
+/** Post a comment on a PR/issue. Returns the comment URL on success. */
+export async function postPrComment(
+  repo: string,
+  number: number,
+  body: string,
+): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
+  const c = await load();
+  if (!c.github) return { ok: false, error: "GitHub not connected" };
+  try {
+    const r = await fetch(`${GH}/repos/${repo}/issues/${number}/comments`, {
+      method: "POST",
+      headers: ghHeaders(c.github.token),
+      body: JSON.stringify({ body }),
+    });
+    if (!r.ok) return { ok: false, error: `GitHub error ${r.status}` };
+    const j = (await r.json()) as { html_url?: string };
+    return { ok: true, url: String(j.html_url ?? "") };
+  } catch (e) {
+    return { ok: false, error: `Network error: ${String(e)}` };
+  }
+}
+
+export type PrStatus = {
+  pr: { number: number; url: string; state: string; draft: boolean } | null;
+  checks: { total: number; passed: number; failed: number; pending: number; failing: string[] } | null;
+  /** Head commit SHA — lets the client auto-fix at most once per failing commit. */
+  sha: string | null;
+};
+
+/**
+ * PR + CI status for `<repo>` branch `<branch>` (the /code Diff panel). Finds
+ * the PR opened from the branch, then summarizes its head commit's check runs.
+ * Returns nulls (not an error) when nothing is open yet so the panel can poll.
+ */
+export async function githubPrStatus(
+  repo: string,
+  branch: string,
+): Promise<{ ok: true; status: PrStatus } | { ok: false; error: string }> {
+  const c = await load();
+  if (!c.github) return { ok: false, error: "GitHub not connected" };
+  const owner = repo.split("/")[0];
+  const h = ghHeaders(c.github.token);
+  try {
+    const pr = await fetch(
+      `${GH}/repos/${repo}/pulls?head=${owner}:${branch}&state=all&per_page=1`,
+      { headers: h },
+    );
+    if (!pr.ok) return { ok: false, error: `GitHub error ${pr.status}` };
+    const prs = (await pr.json()) as Array<Record<string, unknown>>;
+    const p = prs[0];
+    if (!p) return { ok: true, status: { pr: null, checks: null, sha: null } };
+    const prInfo = {
+      number: Number(p.number),
+      url: String(p.html_url ?? ""),
+      state: String(p.state ?? "open"),
+      draft: Boolean(p.draft),
+    };
+    const sha = (p.head as { sha?: string } | undefined)?.sha;
+    let checks: PrStatus["checks"] = null;
+    if (sha) {
+      const cr = await fetch(`${GH}/repos/${repo}/commits/${sha}/check-runs`, { headers: h });
+      if (cr.ok) {
+        const runs = ((await cr.json()) as { check_runs?: Array<Record<string, unknown>> }).check_runs ?? [];
+        const failing: string[] = [];
+        let passed = 0;
+        let failed = 0;
+        let pending = 0;
+        for (const r of runs) {
+          const done = r.status === "completed";
+          const ok = r.conclusion === "success" || r.conclusion === "neutral" || r.conclusion === "skipped";
+          if (!done) pending++;
+          else if (ok) passed++;
+          else {
+            failed++;
+            failing.push(String(r.name ?? "check"));
+          }
+        }
+        checks = { total: runs.length, passed, failed, pending, failing };
+      }
+    }
+    return { ok: true, status: { pr: prInfo, checks, sha: sha ?? null } };
+  } catch (e) {
+    return { ok: false, error: `Network error: ${String(e)}` };
+  }
 }

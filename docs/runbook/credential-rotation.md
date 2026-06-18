@@ -74,9 +74,11 @@ NEW_PG_PASSWORD=$(openssl rand -base64 24 | tr -d '=+/' | head -c 24)
 # Update Postgres
 sudo -u postgres psql -c "ALTER USER jarvis WITH PASSWORD '$NEW_PG_PASSWORD';"
 
-# Update .env
-sed -i "s|JARVIS_PG_DSN=.*|JARVIS_PG_DSN=postgresql://jarvis:${NEW_PG_PASSWORD}@localhost:5432/jarvis|" .env
-echo "New password: $NEW_PG_PASSWORD (saved to .env, paste into a password manager too)"
+# Update keys.env (single secret store — JARVIS_PG_DSN moved here 2026-06-15).
+sed -i "s|JARVIS_PG_DSN=.*|JARVIS_PG_DSN=postgresql://jarvis:${NEW_PG_PASSWORD}@localhost:5432/jarvis|" ~/.jarvis/keys.env
+# The ACTUAL Postgres consumer is DATABASE_URL in src/web/.env.local — rotate it too:
+sed -i "s|DATABASE_URL=.*|DATABASE_URL=postgresql://jarvis:${NEW_PG_PASSWORD}@localhost:5432/jarvis|" src/web/.env.local
+echo "New password: $NEW_PG_PASSWORD (saved to ~/.jarvis/keys.env + web/.env.local, paste into a password manager too)"
 ```
 
 ## 7. ElevenLabs

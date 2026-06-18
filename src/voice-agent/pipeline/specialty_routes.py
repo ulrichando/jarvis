@@ -30,7 +30,7 @@ Env overrides (operator tuning without code edits):
 The Kimi K2.6 entry for TASK_BROWSER tier-2 is suppressed unless
 JARVIS_KIMI_VOICE_EXPERIMENTAL=1 (the K2.6 voice supervisor is
 currently broken — 'web_search not in request.tools'). When
-suppressed, the slot falls through to claude-opus-4-7.
+suppressed, the slot falls through to claude-opus-4-8.
 """
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ _DEFAULTS: dict[str, dict[str, Optional[str]]] = {
     "TASK_DESKTOP": {
         TIER_PRIMARY:        "claude-sonnet-4-6",
         TIER_RETRY:          "claude-sonnet-4-6",  # same model + force prompt
-        TIER_ESCALATE:       "claude-opus-4-7",
+        TIER_ESCALATE:       "claude-opus-4-8",
         TIER_CROSS_PROVIDER: "gpt-5.1",
     },
     "TASK_BROWSER": {
@@ -60,7 +60,7 @@ _DEFAULTS: dict[str, dict[str, Optional[str]]] = {
         TIER_RETRY:          "claude-sonnet-4-6",
         # Kimi K2.6 swaps in here when JARVIS_KIMI_VOICE_EXPERIMENTAL=1 —
         # handled via lookup-time env check in get_route_ladder().
-        TIER_ESCALATE:       "claude-opus-4-7",
+        TIER_ESCALATE:       "claude-opus-4-8",
         TIER_CROSS_PROVIDER: "gpt-5.1",
     },
     "TASK_CODE": {
@@ -78,7 +78,7 @@ _DEFAULTS: dict[str, dict[str, Optional[str]]] = {
     "TASK_OTHER": {
         TIER_PRIMARY:        "claude-sonnet-4-6",
         TIER_RETRY:          "claude-sonnet-4-6",
-        TIER_ESCALATE:       "claude-opus-4-7",
+        TIER_ESCALATE:       "claude-opus-4-8",
         TIER_CROSS_PROVIDER: "gpt-5-mini",
     },
     "BANTER": {
@@ -90,7 +90,7 @@ _DEFAULTS: dict[str, dict[str, Optional[str]]] = {
     "REASONING": {
         TIER_PRIMARY:        "claude-sonnet-4-6",
         TIER_RETRY:          "claude-sonnet-4-6",
-        TIER_ESCALATE:       "claude-opus-4-7",
+        TIER_ESCALATE:       "claude-opus-4-8",
         TIER_CROSS_PROVIDER: "gemini-2.5-pro",
     },
     "EMOTIONAL": {

@@ -27,6 +27,10 @@ export async function POST(req: Request): Promise<NextResponse> {
     environment_id?: string
     prompt?: string
     permission_mode?: string
+    model?: string
+    images?: Array<{ media_type?: string; data?: string }>
+    extra_repos?: string[]
+    connectors?: string[]
   } | null
   if (
     !body ||
@@ -78,15 +82,42 @@ export async function POST(req: Request): Promise<NextResponse> {
         request: { subtype: 'set_permission_mode', mode: body.permission_mode },
       })
     }
-    // Seed the prompt as the first inbound client event. The spawned child
-    // replays the stream from seq 0 on connect, so this is how the task
-    // prompt actually reaches the model.
+    // Seed the chosen model BEFORE the prompt too.
+    if (typeof body.model === 'string' && body.model.trim()) {
+      const modelUuid = randomUUID()
+      appendInbound(store, sessionId, {
+        type: 'control_request',
+        uuid: modelUuid,
+        request_id: modelUuid,
+        request: { subtype: 'set_model', model: body.model.trim() },
+      })
+    }
+    // Seed the prompt (+ any image attachments) as the first inbound client
+    // event. The spawned child replays the stream from seq 0 on connect, so
+    // this is how the task prompt actually reaches the model.
+    const images = (Array.isArray(body.images) ? body.images : [])
+      .filter(
+        (im): im is { media_type: string; data: string } =>
+          !!im &&
+          typeof im.media_type === 'string' &&
+          im.media_type.startsWith('image/') &&
+          typeof im.data === 'string' &&
+          im.data.length > 0,
+      )
+      .slice(0, 10)
+    const content: Array<Record<string, unknown>> = [{ type: 'text', text: prompt }]
+    for (const im of images) {
+      content.push({
+        type: 'image',
+        source: { type: 'base64', media_type: im.media_type, data: im.data },
+      })
+    }
     appendInbound(store, sessionId, {
       type: 'user',
       uuid,
       session_id: sessionId,
       parent_tool_use_id: null,
-      message: { role: 'user', content: [{ type: 'text', text: prompt }] },
+      message: { role: 'user', content },
     })
     // Container target (environments/cloud rows): the web is the worker
     // manager — no bridge work queue. Launch async; the init steps stream
@@ -105,6 +136,15 @@ export async function POST(req: Request): Promise<NextResponse> {
         sessionId,
         repoFullName: repo,
         baseUrl: origin,
+        model: typeof body.model === 'string' && body.model.trim() ? body.model.trim() : undefined,
+        extraRepos: Array.isArray(body.extra_repos)
+          ? body.extra_repos.filter((r): r is string => typeof r === 'string')
+          : undefined,
+        // Per-session connector opt-in. The web UI always sends an array (empty
+        // = none); a missing field falls through to undefined = all-enabled.
+        connectors: Array.isArray(body.connectors)
+          ? body.connectors.filter((c): c is string => typeof c === 'string')
+          : undefined,
       }).catch(() => {
         /* failure already emitted as a ✗ status event + container reaped */
       })

@@ -62,7 +62,7 @@ def test_get_ladder_returns_four_tiers():
         # primary, retry, escalate, cross_provider
         assert ladder[0] == "claude-sonnet-4-6"
         assert ladder[1] == "claude-sonnet-4-6"  # retry slot tracks primary
-        assert ladder[2] == "claude-opus-4-7"
+        assert ladder[2] == "claude-opus-4-8"
         assert ladder[3] == "gpt-5.1"
 
 
@@ -95,7 +95,7 @@ def test_kimi_suppressed_without_experimental_flag():
         os.environ.pop("JARVIS_KIMI_VOICE_EXPERIMENTAL", None)
         ladder = get_route_ladder("TASK_BROWSER")
         # tier 2 (escalate) is Opus, NOT Kimi, when flag is off
-        assert ladder[2] == "claude-opus-4-7"
+        assert ladder[2] == "claude-opus-4-8"
 
 
 def test_kimi_activates_with_experimental_flag():

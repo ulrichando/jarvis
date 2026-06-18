@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { shouldSubmitOnEnter, useAutoResize } from "@/lib/chat/enter-submit";
 import { ComposerModelPicker } from "./model-picker";
 import { ComposerWorkspacePicker } from "./workspace-picker";
 import { PlusMenu, SecondaryMenu } from "./plus-menu";
@@ -80,26 +81,22 @@ export function Composer({
   }
   const [toggles, setToggles] = useState(initialToggles);
 
-  const autoSize = useCallback(() => {
-    const el = ref.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 240) + "px";
-  }, []);
-
-  useEffect(autoSize, [value, autoSize]);
+  // Auto-grow the textarea up to 240px, then scroll internally. Shared
+  // with the code composer so the two can't drift (see enter-submit.ts).
+  useAutoResize(ref, value, 240);
 
   const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      // Allow submit when there's text OR an attached image (image-only
-      // prompts like "implement this" + a screenshot are valid).
-      const hasContent = value.trim().length > 0 || images.length > 0;
-      if (!isBusy && hasContent) {
-        const carry = images;
-        setImages([]);
-        onSubmit({ images: carry });
-      }
+    // IME-safe: ignores Enter while composing a CJK candidate / dead-key
+    // accent so a half-written message isn't sent.
+    if (!shouldSubmitOnEnter(e)) return;
+    e.preventDefault();
+    // Allow submit when there's text OR an attached image (image-only
+    // prompts like "implement this" + a screenshot are valid).
+    const hasContent = value.trim().length > 0 || images.length > 0;
+    if (!isBusy && hasContent) {
+      const carry = images;
+      setImages([]);
+      onSubmit({ images: carry });
     }
   };
 
@@ -109,6 +106,10 @@ export function Composer({
     const carry = images;
     setImages([]);
     onSubmit({ images: carry });
+    // Clicking the button moves focus off the textarea — return it so the
+    // user can keep typing the next prompt (claude.ai keeps the caret in
+    // the box).
+    ref.current?.focus();
   };
 
   // Browser dictation (Web Speech API). Real where supported (Chrome/Edge);

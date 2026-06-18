@@ -2,4 +2,6 @@
 
 Modules:
   person_tracker — webcam face detection → avatar gaze direction
+  webcam         — on-demand single-frame capture (tracker frame file or
+                   direct cv2) for the supervisor's `webcam` vision tool
 """

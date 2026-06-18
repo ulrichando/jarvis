@@ -8,6 +8,10 @@ export type ConversationSummary = {
   title: string;
   model: string;
   updatedAt: string;
+  // Optional — only the /chats listing reads these (project tag +
+  // "Filter by project"). Other consumers (sidebar, search) ignore them.
+  projectId?: string | null;
+  projectName?: string | null;
 };
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {

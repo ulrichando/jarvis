@@ -16,7 +16,7 @@ set -u
 : "${JARVIS_DISPATCH_DISABLED:=0}"
 : "${JARVIS_ROUTER_ENABLED:=1}"
 : "${JARVIS_ROUTER_TIMEOUT_MS:=500}"
-: "${JARVIS_ROUTER_MODEL:=llama-3.1-8b-instant}"
+: "${JARVIS_ROUTER_MODEL:=qwen/qwen3.6-27b}"
 : "${JARVIS_VOICE_BANTER:=austin}"
 : "${JARVIS_VOICE_TASK:=troy}"
 : "${JARVIS_VOICE_REASONING:=troy}"

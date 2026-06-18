@@ -15,6 +15,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ripgrep jq nano vim-tiny procps less openssh-client unzip \
     && rm -rf /var/lib/apt/lists/*
 
+# GitHub CLI (gh) — lets a /code session open pull requests (`gh pr create`).
+# In container sessions it is pre-authenticated via the GH_TOKEN env the web
+# app passes to the child, so no `gh auth login` is needed.
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
 # Bun (faster JS runtime, used by lots of bolt-style projects)
 RUN curl -fsSL https://bun.sh/install | bash \
     && mv /root/.bun /usr/local/bun \

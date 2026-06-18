@@ -480,6 +480,14 @@ class ClientState:
     url:           Optional[str] = None
     identity:      Optional[str] = None
     room:          Optional[str] = None
+    # Monotonic timestamp of the last mic frame the SFU actually consumed (set
+    # by the mic pump on each successful capture_frame, and at connect as a
+    # baseline). /status publishes the AGE of this as `mic_last_drain_age_s`: a
+    # large age while connected + unmuted means the uplink/audio path is broken
+    # (stale PortAudio after resume, dead socket after a net blip) — NOT that
+    # the user is idle (silence still produces frames that drain). The health
+    # backstop (bin/jarvis-voice-healthcheck) keys recovery off it.
+    mic_last_drain_ts: float = 0.0
 
 
 state = ClientState()
@@ -591,19 +599,27 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
             except Exception:
                 dac_t = time.monotonic()         # fallback if stream clock unavailable
             try:
-                # process_reverse_stream is an AEC-only APM method — only
-                # valid when echo processing is enabled (T7 review #2).
-                if _apm is not None and _APM_AEC:
-                    _apm.process_reverse_stream(frame)
-                # The estimator + ring buffer stay UNGATED: the ring feeds
-                # L3/DTLN which runs regardless of APM AEC, and the same
-                # dac_t keeps the L3 reference alignment consistent with
-                # the estimator.
-                _reverse_estimator.note_output(dac_t)
-                _reverse_ringbuf.write(
-                    np.frombuffer(frame.data, dtype=np.int16).astype(np.float32) / 32768.0,
-                    dac_ts=dac_t,
-                )
+                # Digital-silence gate (2026-06-11 outage): the remote track
+                # streams zero frames CONTINUOUSLY between TTS utterances,
+                # so this feed otherwise runs APM FFI + a resample 100×/s
+                # forever for a reference that contributes nothing (the ring
+                # reader already returns zeros when no playback → no echo).
+                # Skip the whole feed for all-zero frames; real TTS PCM is
+                # never digitally zero.
+                if pcm.any():
+                    # process_reverse_stream is an AEC-only APM method — only
+                    # valid when echo processing is enabled (T7 review #2).
+                    if _apm is not None and _APM_AEC:
+                        _apm.process_reverse_stream(frame)
+                    # The estimator + ring buffer stay UNGATED: the ring feeds
+                    # L3/DTLN which runs regardless of APM AEC, and the same
+                    # dac_t keeps the L3 reference alignment consistent with
+                    # the estimator.
+                    _reverse_estimator.note_output(dac_t)
+                    _reverse_ringbuf.write(
+                        np.frombuffer(frame.data, dtype=np.int16).astype(np.float32) / 32768.0,
+                        dac_ts=dac_t,
+                    )
             except Exception as e:
                 log.debug(f"[playback] reverse-stream feed failed: {e}")
             # Yield speaking/level/face to an external realtime source while
@@ -612,7 +628,8 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
             # the kiosk face then; this loop driving it too would flicker. A
             # stale feed (the Claude path) → fall through and drive normally.
             if time.monotonic() - state.ext_face_ts < _EXT_FACE_FRESH_S:
-                out.write(pcm)
+                # Off-loop write — see the comment at the main write below.
+                await asyncio.to_thread(out.write, pcm)
                 continue
             # Drive state.speaking from the outgoing TTS PCM (clean,
             # known signal) — not mic-side RMS which can false-positive
@@ -658,11 +675,15 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
                     e, state.speaking, state.output_level,
                 )
                 state.face_weights = {}
-            # write() is non-blocking-ish — it copies into PortAudio's
-            # internal ring, the audio thread drains. If we ever fall
-            # behind, it returns a buffer-underflow warning; harmless
-            # enough for a conversational pace.
-            out.write(pcm)
+            # out.write copies into PortAudio's ring — but in blocking mode
+            # it PARKS when the ring is full (its pacing mechanism), and
+            # this coroutine runs on the event loop: every park froze the
+            # whole loop, starving the mic pump → "SFU backpressure" drops
+            # → JARVIS deaf (py-spy caught MainThread pinned in _raw_write,
+            # 2026-06-11 outages). to_thread keeps the loop free while
+            # parked; awaiting each write before the next keeps frames
+            # ordered (single in-flight write).
+            await asyncio.to_thread(out.write, pcm)
     except Exception as e:
         log.warning(f"[playback] stream error: {e} — triggering reconnect")
         # Signal run_once() to tear down and reconnect via the
@@ -917,6 +938,7 @@ async def run_once(shutdown: asyncio.Event) -> None:
     await room.connect(URL, token, options=rtc.RoomOptions(auto_subscribe=True))
     log.info("[room] connected")
     state.connected = True
+    state.mic_last_drain_ts = time.monotonic()  # baseline so a fresh connect isn't read as a drain stall
     state.url       = URL
     state.identity  = IDENTITY
     state.room      = ROOM_NAME
@@ -1006,6 +1028,10 @@ async def run_once(shutdown: asyncio.Event) -> None:
     _MIC_RING_MAX = 50  # 50 × 10ms ≈ 500ms jitter buffer before dropping oldest
     _mic_ring: "deque[rtc.AudioFrame]" = deque(maxlen=_MIC_RING_MAX)
     _mic_drops = [0]
+    # Drain telemetry: capture_frame only RETURNS when the SFU consumed the
+    # frame, so the age of this timestamp is a direct "is anyone listening"
+    # signal — the drain watchdog below keys off it (deaf-agent self-heal).
+    _mic_last_drain = [time.monotonic()]
 
     async def _mic_pump() -> None:
         # Sole consumer of source.capture_frame. Under backpressure it blocks
@@ -1034,6 +1060,11 @@ async def run_once(shutdown: asyncio.Event) -> None:
                 last_drops = _mic_drops[0]
             try:
                 await source.capture_frame(frame)
+                stalled_s = time.monotonic() - _mic_last_drain[0]
+                if stalled_s > 10.0:
+                    log.info(f"[mic] drain recovered after {stalled_s:.0f}s stall")
+                _mic_last_drain[0] = time.monotonic()
+                state.mic_last_drain_ts = _mic_last_drain[0]  # surfaced on /status for the health backstop
             except Exception as e:
                 log.debug(f"[mic] capture_frame failed (harmless mid-rotation): {e}")
 
@@ -1230,6 +1261,65 @@ async def run_once(shutdown: asyncio.Event) -> None:
                 return
 
     mic_health_task = asyncio.create_task(_mic_health_watcher(), name="mic-health")
+
+    # ── Mic-drain watchdog (deaf-agent self-heal, 2026-06-11) ──────────
+    # The join-time _republish_mic_track can land inside the agent's
+    # signal-connect gap: the agent's join snapshot still lists the OLD
+    # mic sid, the new publish/unpublish events fall into the gap, and
+    # the agent comes up DEAF — it waits 60s on the dead sid ("track
+    # cannot be found" notFoundTimeout server-side), gives up, and never
+    # subscribes to anything. Observed 3/3 agent joins under load
+    # (2026-06-11 08:51→09:33: zero turns; mic ring drops climbing).
+    # The client can SEE deafness — capture_frame stops returning
+    # (_mic_last_drain goes stale) while an agent is present and the mic
+    # is unmuted. When that persists, republish again: the agent is
+    # fully settled by now, so the fresh publication arrives as a normal
+    # track_published event and auto-subscribe latches it. Rate-limited;
+    # also self-heals mid-session drain stalls (the 08:51 episode), not
+    # just join races.
+    _DRAIN_STALL_SEC = 12.0
+    _DRAIN_REPUBLISH_MIN_GAP_SEC = 25.0
+
+    # Trickle threshold: drops accumulated across one 5s poll. A healthy
+    # drain drops ZERO frames; >150 (~30%+ of the ~500 frames per window)
+    # means the consumer is draining far below real-time even though
+    # individual capture_frame calls still return — the "slow trickle" mode
+    # that the stall-age check alone missed (2026-06-11 second outage: mic
+    # drained at ~9% real-time, stall age never exceeded ~0.1s, watchdog
+    # stayed silent for 2+ minutes of deafness).
+    _DRAIN_TRICKLE_DROPS_PER_POLL = 150
+
+    async def _mic_drain_watchdog() -> None:
+        last_republish = 0.0
+        last_drops_seen = _mic_drops[0]
+        while not room_disconnected.is_set():
+            await asyncio.sleep(5.0)
+            drops_delta = _mic_drops[0] - last_drops_seen
+            last_drops_seen = _mic_drops[0]
+            if not state.agent_present or state.muted:
+                continue
+            stalled_s = time.monotonic() - _mic_last_drain[0]
+            stalled = stalled_s >= _DRAIN_STALL_SEC
+            trickling = drops_delta >= _DRAIN_TRICKLE_DROPS_PER_POLL
+            if not (stalled or trickling):
+                continue
+            if time.monotonic() - last_republish < _DRAIN_REPUBLISH_MIN_GAP_SEC:
+                continue
+            log.warning(
+                f"[mic] drain unhealthy with agent present "
+                f"(stalled={stalled_s:.0f}s, dropped {drops_delta} in 5s) — "
+                "republishing mic track (deaf-agent self-heal)"
+            )
+            last_republish = time.monotonic()
+            try:
+                await _republish_mic_track()
+            except Exception as e:
+                log.warning(
+                    f"[mic] drain-watchdog republish failed: "
+                    f"{type(e).__name__}: {e}"
+                )
+
+    mic_drain_task = asyncio.create_task(_mic_drain_watchdog(), name="mic-drain")
     try:
         # Block until the process is shutting down, the SFU dropped us,
         # or the audio output stream crashed (PortAudio/ALSA I/O error).
@@ -1259,6 +1349,7 @@ async def run_once(shutdown: asyncio.Event) -> None:
         _room_ref = None
         _mic_pub_ref = None
         mic_health_task.cancel()
+        mic_drain_task.cancel()
         mic_stream.stop()
         mic_pump_task.cancel()
         # Await the cancellation so no frame is mid-capture_frame when the

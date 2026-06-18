@@ -10,6 +10,8 @@ import {
   searchDuckDuckGo,
   writeSyntheticWebSearchStream,
 } from './webSearch.js'
+import { verifyProxyToken } from './proxyJwt.js'
+import { readKeysEnvValue } from '../utils/jarvisKeysEnv.js'
 
 const PORT = parseInt(process.env.JARVIS_PROXY_PORT ?? '4000')
 
@@ -114,10 +116,12 @@ async function executeWithFallback(
 }
 
 // Safety guard: refuse to bind on a non-loopback interface unless the operator
-// has explicitly opted in. The proxy has NO inbound auth — exposing it to the
-// LAN would create an open key-spending LLM relay accessible to any host on
-// the network. Default (127.0.0.1 / localhost / ::1) is always allowed; set
-// JARVIS_ALLOW_PUBLIC_BIND=1 to override for deliberate public deployments.
+// has explicitly opted in. Inbound auth is OFF by default (see AUTH_REQUIRED
+// below); without it, exposing the proxy to the LAN would create an open
+// key-spending LLM relay accessible to any host on the network. Default
+// (127.0.0.1 / localhost / ::1) is always allowed; set JARVIS_ALLOW_PUBLIC_BIND=1
+// to override for deliberate public deployments — pair that with `jarvis auth
+// login` so AUTH_REQUIRED actually gates inbound requests.
 const PROXY_HOST = process.env.JARVIS_PROXY_HOST ?? '127.0.0.1'
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1'])
 if (!LOOPBACK_HOSTS.has(PROXY_HOST) && process.env.JARVIS_ALLOW_PUBLIC_BIND !== '1') {
@@ -126,6 +130,70 @@ if (!LOOPBACK_HOSTS.has(PROXY_HOST) && process.env.JARVIS_ALLOW_PUBLIC_BIND !== 
     'the proxy has no inbound auth; binding to a public interface would expose an open LLM relay to the network.',
   )
   process.exit(1)
+}
+
+// ── Inbound auth ("OAuth via login") ────────────────────────────────────
+// Optional, OFF by default. `jarvis auth login` provisions a per-user HS256
+// token (JARVIS_PROXY_TOKEN), sets JARVIS_PROXY_AUTH_REQUIRED=1, and writes
+// the shared verify secret (JARVIS_PROXY_JWT_SECRET) into ~/.jarvis/keys.env.
+// When required, every /v1/messages request must carry a valid token, which
+// we verify LOCALLY (no web-app round-trip) so the CLI keeps working when the
+// web app is down. When NOT required, behavior is identical to the pre-auth
+// proxy (loopback bind is still the only gate). The flag is read once at boot;
+// `jarvis auth login` then a proxy restart (the launchers respawn it) flips it.
+function isAuthEnvTruthy(v: string | undefined): boolean {
+  return v === '1' || v === 'true' || v === 'yes'
+}
+
+const AUTH_REQUIRED =
+  isAuthEnvTruthy(process.env.JARVIS_PROXY_AUTH_REQUIRED) ||
+  isAuthEnvTruthy(readKeysEnvValue('JARVIS_PROXY_AUTH_REQUIRED'))
+
+let cachedJwtSecret: string | null | undefined
+function proxyJwtSecret(): string | null {
+  const fromEnv = process.env.JARVIS_PROXY_JWT_SECRET?.trim()
+  if (fromEnv) return fromEnv
+  if (cachedJwtSecret !== undefined) return cachedJwtSecret
+  cachedJwtSecret = readKeysEnvValue('JARVIS_PROXY_JWT_SECRET')?.trim() || null
+  return cachedJwtSecret
+}
+
+function bearerCredential(headers: Headers): string | undefined {
+  const authz = headers.get('authorization')
+  if (authz && /^bearer /i.test(authz)) return authz.slice(7).trim()
+  // x-api-key normally carries the SDK placeholder ('jarvis-proxy'); only
+  // treat it as a credential when it is JWT-shaped (header.payload.sig).
+  const xapi = headers.get('x-api-key')
+  if (xapi && xapi.split('.').length === 3) return xapi.trim()
+  return undefined
+}
+
+/** Rejection {status,message} if the request must be refused, else null. */
+function checkInboundAuth(
+  headers: Headers,
+): { status: number; message: string } | null {
+  if (!AUTH_REQUIRED) return null
+  const secret = proxyJwtSecret()
+  if (!secret) {
+    // Enforcement on but no verify secret present — fail CLOSED. An
+    // unverifiable "required" credential must never silently pass.
+    return {
+      status: 503,
+      message: 'proxy auth required but JARVIS_PROXY_JWT_SECRET is unset',
+    }
+  }
+  const token = bearerCredential(headers)
+  if (!token) {
+    return {
+      status: 401,
+      message: 'missing proxy credential — run `jarvis auth login`',
+    }
+  }
+  const result = verifyProxyToken(token, secret)
+  if (!result.ok) {
+    return { status: 401, message: `invalid proxy credential: ${result.reason}` }
+  }
+  return null
 }
 
 const server = Bun.serve({
@@ -176,6 +244,26 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
   }
   const finish = (entry: Partial<RequestLog>) => {
     logRequest({ ...baseLog, ...entry, latency_ms: Date.now() - tsStart })
+  }
+
+  // Inbound auth gate (see checkInboundAuth). Runs before the body parse so an
+  // unauthorized caller costs nothing. /health is exempt — handled in the
+  // top-level fetch() before reaching here. Reading headers does not consume
+  // the body, so req.json() below still works.
+  const authErr = checkInboundAuth(req.headers)
+  if (authErr) {
+    finish({
+      status: authErr.status,
+      error_type: 'unauthorized',
+      error_message: authErr.message,
+    })
+    return new Response(
+      JSON.stringify({
+        type: 'error',
+        error: { type: 'authentication_error', message: authErr.message },
+      }),
+      { status: authErr.status, headers: { 'Content-Type': 'application/json' } },
+    )
   }
 
   let anthropicReq: any
@@ -437,6 +525,9 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
 try {
   const p = getProvider()
   console.log(`[jarvis-proxy] Ready — provider: ${p.name} (${p.baseUrl})`)
+  console.log(
+    `[jarvis-proxy] inbound auth: ${AUTH_REQUIRED ? 'REQUIRED (login token)' : 'open (loopback only)'}`,
+  )
 } catch (e: any) {
   console.error(`[jarvis-proxy] FATAL: ${e?.message ?? e}`)
   process.exit(1)
