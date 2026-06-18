@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/bridge/db";
-import { findSession, listSessionEvents, resolveBridgeToken } from "@/lib/bridge/store";
+import { findEnvironment, findSession, listSessionEvents, resolveBridgeToken } from "@/lib/bridge/store";
 import { getContainerDiff } from "@/lib/bridge/containers";
 import { extractBearer } from "@/lib/bridge/auth";
 import { bridgeError } from "@/lib/bridge/errors";
@@ -43,12 +43,22 @@ export async function GET(
   const { sessionId } = await ctx.params;
   const store = getStore();
   const token = extractBearer(req.headers.get("authorization"));
-  if (!token || !resolveBridgeToken(store, token)) {
+  const tokenUserId = token ? resolveBridgeToken(store, token) : null;
+  if (!tokenUserId) {
     return bridgeError(401, "unauthorized", "A valid bridge token is required");
   }
   try {
     const session = findSession(store, sessionId);
-    const meta = session?.container_json
+    if (!session) return bridgeError(404, "not_found", "Session not found");
+    // Ownership: a valid bridge token authenticates WHO, but teleport returns a
+    // full transcript — verify the token's user owns the session's environment.
+    const env = session.environment_id
+      ? findEnvironment(store, session.environment_id)
+      : null;
+    if (env?.user_id && env.user_id !== tokenUserId) {
+      return bridgeError(403, "forbidden", "Not your session");
+    }
+    const meta = session.container_json
       ? (JSON.parse(session.container_json) as { repo?: string })
       : null;
     if (!meta?.repo) {

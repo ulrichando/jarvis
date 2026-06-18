@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/bridge/db";
 import { getContainerDiff } from "@/lib/bridge/containers";
+import { authorizeSession } from "@/lib/bridge/authz";
 import { bridgeError } from "@/lib/bridge/errors";
 
 // GET /api/bridge/v1/sessions/{id}/diff — what the agent changed in the
@@ -12,6 +13,8 @@ export async function GET(
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params;
+  const denied = await authorizeSession(req, sessionId);
+  if (denied) return denied;
   const summaryOnly = new URL(req.url).searchParams.get("summary") === "1";
   try {
     const result = await getContainerDiff(getStore(), sessionId, undefined, summaryOnly);
