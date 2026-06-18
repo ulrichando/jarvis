@@ -105,8 +105,19 @@ FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 480
 # voice-client on PipeWire's normal graph, where any number of clients
 # can share the same source. Defaults are env-overridable in case the
 # user has a non-pipewire stack.
-AUDIO_INPUT_DEVICE  = os.environ.get("JARVIS_AUDIO_INPUT_DEVICE",  "pulse")
-AUDIO_OUTPUT_DEVICE = os.environ.get("JARVIS_AUDIO_OUTPUT_DEVICE", "pulse")
+#
+# 'pulse' is a LINUX-only device name (it only exists with ALSA's
+# pipewire-pulse / PulseAudio plug). On Windows + macOS, passing it to
+# sounddevice raises "No input device matching 'pulse'", which crashed the
+# voice-client's run_once loop on every connect (caught on the 2026-06-18
+# Windows deploy). On non-Linux we default to None = PortAudio's system
+# default device (WASAPI default on Windows, CoreAudio default on macOS) —
+# the OS already mixes/shares those so the exclusive-grab concern doesn't
+# apply. Still env-overridable with JARVIS_AUDIO_INPUT_DEVICE / _OUTPUT_DEVICE
+# (a device name or index); an empty/unset value falls back to the default.
+_DEFAULT_AUDIO_DEVICE = "pulse" if sys.platform.startswith("linux") else None
+AUDIO_INPUT_DEVICE  = os.environ.get("JARVIS_AUDIO_INPUT_DEVICE")  or _DEFAULT_AUDIO_DEVICE
+AUDIO_OUTPUT_DEVICE = os.environ.get("JARVIS_AUDIO_OUTPUT_DEVICE") or _DEFAULT_AUDIO_DEVICE
 
 # ── WebRTC APM (noise suppression + AGC + HPF) ───────────────────────
 # Chromium's WebRTC AudioProcessingModule cleans up the mic before it

@@ -247,14 +247,91 @@ fn apply_sharing_ring(rgba: &mut [u8], w: u32, h: u32) {
 // confirmation handled by the UI). src/cli/.env.providers was removed
 // 2026-05-15 (all values were placeholders duplicated from the canonical
 // sources).
+/// Cross-platform home directory. Windows has no $HOME — use %USERPROFILE%;
+/// Unix uses $HOME. Falls back to /tmp only as a last resort. Before this,
+/// every `std::env::var("HOME")` site below silently resolved to `/tmp` on
+/// Windows (caught on the 2026-06-18 Windows deploy: the API-keys panel saved
+/// keys to C:\tmp\.jarvis\keys.env, where the agent/CLI never looked).
+fn jarvis_home() -> std::path::PathBuf {
+    #[cfg(windows)]
+    let var = "USERPROFILE";
+    #[cfg(not(windows))]
+    let var = "HOME";
+    std::path::PathBuf::from(std::env::var(var).unwrap_or_else(|_| "/tmp".to_string()))
+}
+
+/// Repo checkout root. Derived from the running exe when possible
+/// (`<repo>/src/desktop-tauri/src-tauri/target/release/jarvis-desktop[.exe]`,
+/// 6 ancestors up), else the platform-conventional Documents location (the
+/// Linux dev box uses `~/Documents/Projects/jarvis`; the Windows installer
+/// clones to `~/Documents/jarvis`).
+fn repo_root() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(root) = exe.ancestors().nth(6) {
+            if root.join("CLAUDE.md").exists() {
+                return root.to_path_buf();
+            }
+        }
+    }
+    #[cfg(windows)]
+    { jarvis_home().join("Documents").join("jarvis") }
+    #[cfg(not(windows))]
+    { jarvis_home().join("Documents").join("Projects").join("jarvis") }
+}
+
+/// Restart the voice agent, cross-platform. Linux bounces the systemd
+/// --user unit; Windows re-runs the voice launcher the installer drops in
+/// `~/.jarvis` (the Windows voice stack runs in the USER session — not a
+/// service — so the mic/speakers work). Returns a human-readable error
+/// instead of the bare "program not found" the raw `systemctl` call gave on
+/// Windows.
+fn restart_voice_agent_cmd() -> Result<(), String> {
+    #[cfg(not(windows))]
+    {
+        let out = std::process::Command::new("systemctl")
+            .args(["--user", "restart", "jarvis-voice-agent.service"])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).to_string());
+        }
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        let home = jarvis_home();
+        let stop = home.join(".jarvis").join("stop-jarvis-voice.ps1");
+        let start = home.join(".jarvis").join("start-jarvis-voice.ps1");
+        if !start.exists() {
+            return Err(format!(
+                "voice launcher not found at {} — re-run the Windows installer",
+                start.display()
+            ));
+        }
+        if stop.exists() {
+            let _ = std::process::Command::new("powershell")
+                .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+                .arg(&stop)
+                .output();
+        }
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&start)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).to_string());
+        }
+        Ok(())
+    }
+}
+
 fn _keys_file() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    std::path::PathBuf::from(home).join(".jarvis").join("keys.env")
+    jarvis_home().join(".jarvis").join("keys.env")
 }
 
 fn _repo_env_files() -> Vec<std::path::PathBuf> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let base = std::path::PathBuf::from(&home).join("Documents/Projects/jarvis");
+    let base = repo_root();
     vec![
         base.join(".env"),                  // centralized LLM keys (first-wins)
         base.join("src/voice-agent/.env"),
@@ -282,12 +359,8 @@ fn _repo_env_files() -> Vec<std::path::PathBuf> {
 /// option wants the same guard.
 #[allow(dead_code)]
 fn voice_session_within_60s() -> bool {
-    let home = match std::env::var("HOME") {
-        Ok(h) => h,
-        Err(_) => return false,
-    };
-    let db_path = format!("{}/.local/share/jarvis/turn_telemetry.db", home);
-    voice_session_within_60s_at(std::path::Path::new(&db_path))
+    let db_path = jarvis_home().join(".local/share/jarvis/turn_telemetry.db");
+    voice_session_within_60s_at(&db_path)
 }
 
 /// Path-parameterized inner — split out so unit tests can drop a
@@ -478,10 +551,7 @@ fn local_api_token() -> String {
     if !env.is_empty() {
         return env;
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let path = std::path::PathBuf::from(home)
-        .join(".jarvis")
-        .join("local-api-token.env");
+    let path = jarvis_home().join(".jarvis").join("local-api-token.env");
     local_api_token_from_file(&path)
 }
 
@@ -576,6 +646,10 @@ fn keys_read() -> Result<Vec<serde_json::Value>, String> {
         ("MISTRAL_API_KEY",   "Mistral"),
         ("KIMI_API_KEY",      "Kimi (Moonshot)"),
         ("XAI_API_KEY",       "xAI (Grok)"),
+        // STT / voice provider keys (not LLMs) — surfaced here so the panel
+        // can manage them too. Deepgram is the primary streaming-STT path
+        // (fast barge-in); blank = degrade to Groq Whisper / local whisper.
+        ("DEEPGRAM_API_KEY",  "Deepgram (streaming STT)"),
     ];
     let user_keys = _keys_read_map();
     let repo_keys = _repo_keys_read_map();
@@ -663,14 +737,7 @@ fn keys_clear(provider: String, source: String) -> Result<String, String> {
 fn keys_restart_agent() -> Result<(), String> {
     // After saving, the user usually wants to apply changes. Restart
     // the voice-agent service so the new keys are loaded.
-    let out = std::process::Command::new("systemctl")
-        .args(["--user", "restart", "jarvis-voice-agent.service"])
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).to_string());
-    }
-    Ok(())
+    restart_voice_agent_cmd()
 }
 
 #[tauri::command]
@@ -865,34 +932,34 @@ fn switch_tts_provider(app: &tauri::AppHandle, spec: &'static str) {
 /// exists for external callers and as a fallback.
 fn switch_speech_model(app: &tauri::AppHandle, id: &'static str) {
     // 1. Authoritative file write.
-    let home = std::env::var("HOME").unwrap_or_default();
-    if !home.is_empty() {
-        let dir = format!("{home}/.jarvis");
-        let file = format!("{dir}/voice-model");
-        let _ = std::fs::create_dir_all(&dir);
-        match std::fs::write(&file, format!("{id}\n")) {
-            Ok(()) => eprintln!("[tray] wrote voice-model: {id}"),
-            Err(e) => eprintln!("[tray] failed to write voice-model: {e}"),
-        }
-    } else {
-        eprintln!("[tray] HOME unset; skipping voice-model write for {id}");
+    let dir = jarvis_home().join(".jarvis");
+    let file = dir.join("voice-model");
+    let _ = std::fs::create_dir_all(&dir);
+    match std::fs::write(&file, format!("{id}\n")) {
+        Ok(()) => eprintln!("[tray] wrote voice-model: {id}"),
+        Err(e) => eprintln!("[tray] failed to write voice-model: {e}"),
     }
 
-    // 2. Restart the agent so it rebuilds the LLM stack with the new pick.
-    let _ = std::process::Command::new("systemctl")
-        .args(["--user", "restart", "jarvis-voice-agent.service"])
-        .spawn();
-
-    // 3. After ~4 s (agent re-registers as a worker), restart the
-    //    voice-client so the SFU dispatches a fresh job into the new
-    //    agent. Without this the SFU keeps the existing room, no new
-    //    dispatch fires, and JARVIS sits silent with the old LLM.
-    std::thread::spawn(|| {
-        std::thread::sleep(std::time::Duration::from_secs(4));
+    // 2. Restart the voice stack so it rebuilds the LLM with the new pick.
+    //    Linux bounces the agent unit, then the client 4 s later (so the SFU
+    //    dispatches a fresh job into the re-registered agent). Windows
+    //    re-runs the launcher, which restarts agent + client together.
+    #[cfg(not(windows))]
+    {
         let _ = std::process::Command::new("systemctl")
-            .args(["--user", "restart", "jarvis-voice-client.service"])
+            .args(["--user", "restart", "jarvis-voice-agent.service"])
             .spawn();
-    });
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(4));
+            let _ = std::process::Command::new("systemctl")
+                .args(["--user", "restart", "jarvis-voice-client.service"])
+                .spawn();
+        });
+    }
+    #[cfg(windows)]
+    {
+        let _ = restart_voice_agent_cmd();
+    }
 
     if let Some(pretty) = speech_model_pretty(id) {
         let label: State<SpeechLabel> = app.state();
@@ -1014,19 +1081,29 @@ fn set_share_label(active: bool, label: State<ShareLabel>) -> Result<(), String>
 enum ActiveMode { Jarvis, Gemini, Openai }
 
 fn detect_active_mode() -> ActiveMode {
-    let is_active = |unit: &str| -> bool {
-        std::process::Command::new("systemctl")
-            .args(["--user", "is-active", "--quiet", unit])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    };
-    if is_active("jarvis-gemini-tools.service") {
-        ActiveMode::Gemini
-    } else if is_active("jarvis-gpt-tools.service") {
-        ActiveMode::Openai
-    } else {
+    // Windows has no systemd units (and no gemini/openai tools services) — the
+    // desktop only drives JARVIS-Claude mode there. Skip the per-poll
+    // systemctl spawn (which would just fail "program not found" each time).
+    #[cfg(windows)]
+    {
         ActiveMode::Jarvis
+    }
+    #[cfg(not(windows))]
+    {
+        let is_active = |unit: &str| -> bool {
+            std::process::Command::new("systemctl")
+                .args(["--user", "is-active", "--quiet", unit])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        if is_active("jarvis-gemini-tools.service") {
+            ActiveMode::Gemini
+        } else if is_active("jarvis-gpt-tools.service") {
+            ActiveMode::Openai
+        } else {
+            ActiveMode::Jarvis
+        }
     }
 }
 
@@ -1955,9 +2032,9 @@ fn main() {
 
             // Read the current selection from disk so we can pre-mark
             // it with ✓ immediately — no wait for a /status poll.
-            let saved_tts = std::env::var("HOME").ok()
-                .map(|h| std::path::PathBuf::from(h).join(".jarvis/tts-provider"))
-                .and_then(|p| std::fs::read_to_string(p).ok())
+            let saved_tts = std::fs::read_to_string(
+                    jarvis_home().join(".jarvis/tts-provider"))
+                .ok()
                 .map(|s| s.trim().to_string())
                 .unwrap_or_default();
 

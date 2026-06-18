@@ -97,15 +97,25 @@ def _wsl_nvidia_smi() -> str | None:
 
 
 def detect_ram_gb() -> float | None:
-    """Total system RAM in GiB (Linux /proc/meminfo)."""
+    """Total system RAM in GiB. Linux /proc/meminfo first; psutil fallback
+    for Windows / macOS (which have no /proc). Detection must never raise."""
     try:
-        with open("/proc/meminfo") as f:
+        with open("/proc/meminfo", encoding="utf-8") as f:
             for line in f:
                 if line.startswith("MemTotal:"):
                     return round(int(line.split()[1]) / (1024.0 * 1024.0), 1)  # kB → GiB
     except Exception:  # noqa: BLE001
         pass
-    return None
+    # Windows / macOS have no /proc/meminfo. psutil is a core dependency
+    # (requirements.txt) and is cross-platform. Without this fallback the
+    # picker saw RAM=None on Windows and dropped to the 3B CPU floor even on
+    # a 128 GB box (caught on the 2026-06-18 Windows deploy) — so local mode
+    # picked a far weaker model than the hardware supports.
+    try:
+        import psutil  # noqa: PLC0415 — lazy so Linux import stays light
+        return round(psutil.virtual_memory().total / (1024.0 ** 3), 1)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _overhead_gb(ctx_k: int) -> float:

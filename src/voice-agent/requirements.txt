@@ -82,6 +82,19 @@ google-genai>=2.0,<3.0
 onnxruntime~=1.20
 ai-edge-litert~=2.1  # DTLN-aec L3 neural echo cancellation (audio/dtln_aec.py)
 
+# SciPy — MANDATORY top-level import in audio/apm_reverse_stream.py
+# (scipy.signal.firwin / resample_poly: the APM reverse-stream delay
+# estimator + the fixed 48k->16k decimation FIR). That module is imported
+# unconditionally by jarvis_voice_client.py at startup, so a fresh venv
+# crashes the voice client with `ModuleNotFoundError: No module named
+# 'scipy'`. NOT pulled in transitively by any other dep here, and
+# install.sh doesn't add it separately — dev boxes only worked because
+# scipy was present from a manual/system install. Caught on the
+# 2026-06-18 Windows deploy. Self-contained wheels (bundles OpenBLAS) on
+# Linux + Windows + macOS; needs no system libraries. `~=1.14` = accept
+# minors/patches, refuse a major 2.0 (matches the pinning style above).
+scipy~=1.14
+
 # CMU pronouncing dictionary — lipsync/phonemize.py grapheme→phoneme
 # lookup that feeds the viseme engine (kiosk talking face). Runtime dep
 # of the voice-client; was missing from this file until 2026-06-11

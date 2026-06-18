@@ -1671,14 +1671,27 @@ function New-BridgeToken {
     Invoke-Step -Description "generate bridge auth token at $tokenFile" -Action {
         if (-not (Test-Path $ConfigDir)) { New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null }
 
-        # 32 bytes of crypto-random -> base64 -> 43 url-safe chars (no padding).
-        # Matches the Linux installer's `head -c 32 /dev/urandom | base64 | tr -d '+/=' | head -c 43`.
+        # Crypto-random URL-safe token. Mirrors the Linux installer's
+        # `head -c 32 /dev/urandom | base64 | tr -d '+/=' | head -c 43`.
+        # Convert.ToBase64String(32 bytes) yields 44 chars incl. '=' padding;
+        # after stripping +/= the result can dip below 43 chars, so the old
+        # fixed .Substring(0, 43) threw "Index and length must refer to a
+        # location within the string" whenever the random bytes happened to
+        # contain enough +/=. Generate extra entropy and accumulate until we
+        # have at least 43 url-safe chars, then take exactly 43 (Linux's
+        # `head -c 43` likewise never fails on a short stream).
         $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-        $bytes = New-Object byte[] 32
-        $rng.GetBytes($bytes)
-        $rng.Dispose()
-        $b64 = [Convert]::ToBase64String($bytes)
-        $token = ($b64 -replace '[+/=]', '').Substring(0, 43)
+        $clean = ''
+        try {
+            while ($clean.Length -lt 43) {
+                $bytes = New-Object byte[] 48
+                $rng.GetBytes($bytes)
+                $clean += ([Convert]::ToBase64String($bytes) -replace '[+/=]', '')
+            }
+        } finally {
+            $rng.Dispose()
+        }
+        $token = $clean.Substring(0, 43)
 
         Set-Content -Path $tokenFile -Value "JARVIS_LOCAL_API_TOKEN=$token" -Encoding ASCII
         Set-WindowsAclUserOnly -Path $tokenFile
