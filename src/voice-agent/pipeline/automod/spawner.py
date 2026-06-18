@@ -56,7 +56,11 @@ def _global_lock():
     """Exclusive lockfile via fcntl.flock -- at most one spawn at a time."""
     p = lockfile_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    import fcntl
+    try:
+        import fcntl
+    except ImportError:  # Windows: automod is single-process + gated; skip lock
+        yield
+        return
     fd = open(p, "a+", encoding="utf-8")
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)

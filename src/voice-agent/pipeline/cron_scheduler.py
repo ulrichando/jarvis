@@ -131,7 +131,10 @@ async def run_job(job: dict) -> tuple[bool, str]:
         return False, f"Job failed: {e}"
 
 
-import fcntl
+try:
+    import fcntl
+except ImportError:  # Windows has no fcntl — the tick overlap-guard is skipped
+    fcntl = None
 
 TICK_INTERVAL_S = int(os.environ.get("JARVIS_CRON_TICK_S", "60"))
 _LOCK_PATH = cj.CRON_DIR / ".tick.lock"
@@ -157,12 +160,17 @@ async def run_forever() -> None:
     logger.info("[cron] scheduler started (tick=%ss)", TICK_INTERVAL_S)
     while True:
         try:
-            with open(_LOCK_PATH, "w", encoding="utf-8") as lock:
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    await tick()
-                except BlockingIOError:
-                    logger.warning("[cron] previous tick still running; skipping")
+            if fcntl is None:
+                # Windows: single in-process scheduler, no systemd timer to
+                # overlap with, so the cross-process tick lock isn't needed.
+                await tick()
+            else:
+                with open(_LOCK_PATH, "w", encoding="utf-8") as lock:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        await tick()
+                    except BlockingIOError:
+                        logger.warning("[cron] previous tick still running; skipping")
         except Exception as e:
             logger.warning("[cron] tick error: %s", e)
         await asyncio.sleep(TICK_INTERVAL_S)

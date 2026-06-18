@@ -115,9 +115,67 @@ FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 480
 # the OS already mixes/shares those so the exclusive-grab concern doesn't
 # apply. Still env-overridable with JARVIS_AUDIO_INPUT_DEVICE / _OUTPUT_DEVICE
 # (a device name or index); an empty/unset value falls back to the default.
+def _resolve_audio_device(spec, kind):
+    """Resolve a JARVIS_AUDIO_{INPUT,OUTPUT}_DEVICE value to something
+    sounddevice accepts. None/'' -> None (system default). An integer string
+    -> that device index. A name -> the matching device index, DISAMBIGUATED
+    across host APIs: on Windows the same USB/BT device appears under MME /
+    DirectSound / WASAPI / WDM-KS, so a bare name like 'FIFINE' is ambiguous
+    and sounddevice raises. We pick the MME copy (the Windows default host
+    API), then WASAPI, then the first match. Falls back to the raw string."""
+    if spec is None:
+        return None
+    spec = str(spec).strip()
+    if not spec:
+        return None
+    if spec.lstrip("-").isdigit():
+        return int(spec)
+    _log = logging.getLogger("jarvis.voice_client")
+    try:
+        ch = "max_input_channels" if kind == "input" else "max_output_channels"
+        matches = [(i, d) for i, d in enumerate(sd.query_devices())
+                   if spec.lower() in d["name"].lower() and d.get(ch, 0) > 0]
+        if not matches:
+            _log.warning("[audio] no %s device matched %r; using system default", kind, spec)
+            return None
+        for pref in ("MME", "Windows WASAPI", "Windows DirectSound"):
+            for i, d in matches:
+                try:
+                    if sd.query_hostapis(d["hostapi"])["name"] == pref:
+                        _log.info("[audio] %s device %r -> [%d] %r (%s)", kind, spec, i, d["name"], pref)
+                        return i
+                except Exception:
+                    pass
+        return matches[0][0]
+    except Exception as e:
+        _log.warning("[audio] device resolve failed for %r: %s", spec, e)
+        return spec
+
+
+def _device_spec(kind, env_key):
+    """Device selection priority: the tray-persisted choice
+    (~/.jarvis/audio-{kind}-device, written by the desktop's device picker)
+    wins over the JARVIS_AUDIO_*_DEVICE env var. Cross-platform via expanduser.
+    Returns a name/index string, or None (-> system default)."""
+    try:
+        p = os.path.join(os.path.expanduser("~"), ".jarvis", "audio-%s-device" % kind)
+        if os.path.exists(p):
+            with open(p, encoding="utf-8") as f:
+                v = f.read().strip()
+            if v:
+                return v
+    except Exception:
+        pass
+    return os.environ.get(env_key)
+
+
 _DEFAULT_AUDIO_DEVICE = "pulse" if sys.platform.startswith("linux") else None
-AUDIO_INPUT_DEVICE  = os.environ.get("JARVIS_AUDIO_INPUT_DEVICE")  or _DEFAULT_AUDIO_DEVICE
-AUDIO_OUTPUT_DEVICE = os.environ.get("JARVIS_AUDIO_OUTPUT_DEVICE") or _DEFAULT_AUDIO_DEVICE
+AUDIO_INPUT_DEVICE  = _resolve_audio_device(_device_spec("input",  "JARVIS_AUDIO_INPUT_DEVICE"),  "input")
+if AUDIO_INPUT_DEVICE is None:
+    AUDIO_INPUT_DEVICE = _DEFAULT_AUDIO_DEVICE
+AUDIO_OUTPUT_DEVICE = _resolve_audio_device(_device_spec("output", "JARVIS_AUDIO_OUTPUT_DEVICE"), "output")
+if AUDIO_OUTPUT_DEVICE is None:
+    AUDIO_OUTPUT_DEVICE = _DEFAULT_AUDIO_DEVICE
 
 # ── WebRTC APM (noise suppression + AGC + HPF) ───────────────────────
 # Chromium's WebRTC AudioProcessingModule cleans up the mic before it
