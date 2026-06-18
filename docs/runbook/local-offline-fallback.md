@@ -211,7 +211,15 @@ no guessing which model fits. `providers/local_model_picker.py`.
 It models each candidate's footprint (Q4_K_M, Ollama's default) vs VRAM,
 penalises RAM-offload (voice is latency-sensitive), and reports the highest
 quant that still fits in VRAM (pull `tag-q8_0` etc. for more quality).
-Returned tags are always real, pullable Ollama tags. Inspect a box:
+Returned tags are always real, pullable Ollama tags. **One-command setup on a
+new box** (detect hardware → pick → `ollama pull` the recommendation):
+```bash
+bin/jarvis-local-setup            # add --dry-run to preview, -y to skip the prompt,
+                                  # or --model <tag> to pull a specific one
+```
+> Note: the picker SELECTS + detects hardware but does NOT auto-pull on agent
+> startup (a 70B/235B is 40–140 GB — that can't block boot). `jarvis-local-setup`
+> is the explicit pull step. Or just inspect what it would pick:
 ```bash
 .venv/bin/python -c "from providers.local_model_picker import recommend; print(recommend())"
 ```
