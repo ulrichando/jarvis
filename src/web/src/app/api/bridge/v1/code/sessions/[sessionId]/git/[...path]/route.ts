@@ -37,7 +37,14 @@ async function handle(req: Request, ctx: Ctx): Promise<Response> {
   const store = getStore()
   const cap = capTokenFrom(req)
   if (!cap || !validateGitCapToken(store, sessionId, cap)) {
-    return bridgeError(401, 'unauthorized', 'Invalid git credential')
+    // git probes anonymously FIRST and only sends the cap token (from the remote
+    // URL / credential helper) after a Basic challenge — so the WWW-Authenticate
+    // header is REQUIRED here or `git clone/fetch/push` fail "Authentication
+    // failed" even with a valid credential. (curl -u sends it preemptively.)
+    return new Response('Unauthorized', {
+      status: 401,
+      headers: { 'www-authenticate': 'Basic realm="jarvis-git-proxy"' },
+    })
   }
   const target = parseGitRequest(path, new URL(req.url).searchParams)
   if (!target) return bridgeError(400, 'invalid_request', 'Unrecognized git path')

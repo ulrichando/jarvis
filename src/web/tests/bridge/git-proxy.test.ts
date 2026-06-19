@@ -115,12 +115,23 @@ describe('git proxy route', () => {
   })
   afterEach(() => vi.unstubAllGlobals())
 
-  test('401 on bad cap token', async () => {
+  test('401 + WWW-Authenticate on bad cap token', async () => {
     seed()
     const { GET } = await route()
     const req = new Request('http://h/info/refs?service=git-upload-pack', { headers: { authorization: basic('wrong') } })
     const res = await GET(req, ctx(['owner', 'demo.git', 'info', 'refs']))
     expect(res.status).toBe(401)
+    // REQUIRED so real git (which probes anonymously first) resends the cap.
+    expect(res.headers.get('www-authenticate')).toContain('Basic')
+  })
+
+  test("401 + challenge on git's anonymous first probe (no auth header)", async () => {
+    seed()
+    const { GET } = await route()
+    const req = new Request('http://h/info/refs?service=git-upload-pack')
+    const res = await GET(req, ctx(['owner', 'demo.git', 'info', 'refs']))
+    expect(res.status).toBe(401)
+    expect(res.headers.get('www-authenticate')).toContain('Basic')
   })
 
   test('403 + audit event on out-of-scope repo', async () => {
