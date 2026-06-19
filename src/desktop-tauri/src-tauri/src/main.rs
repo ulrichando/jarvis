@@ -75,6 +75,10 @@ struct AudioItemsInner {
 }
 struct AudioItems(Mutex<AudioItemsInner>);
 
+/// The "Voice brain: Local / Cloud" toggle item — retained so its label can be
+/// repainted after a toggle.
+struct VoiceModeLabel(Mutex<Option<MenuItem<Wry>>>);
+
 /// The source tray artwork (icons/tray.png — the concentric-ring /
 /// reactor design). Embedded into the binary at compile time so the
 /// icon can be tinted per-state at runtime without touching disk.
@@ -1351,6 +1355,53 @@ fn audio_device_pick(app: &tauri::AppHandle, id: &str) {
     });
 }
 
+// ── Voice brain Local / Cloud toggle ───────────────────────────────────────
+//
+// Flips ~/.jarvis/voice-mode, which the voice agent reads at startup
+// (_apply_voice_mode) to swap STT + LLM + TTS together: local = faster-whisper
+// + qwen3 (Ollama) + Kokoro (on-device); cloud = Deepgram + Claude + Orpheus.
+
+fn read_voice_mode() -> &'static str {
+    let p = jarvis_home().join(".jarvis").join("voice-mode");
+    match std::fs::read_to_string(&p)
+        .ok()
+        .map(|s| s.trim().to_lowercase())
+        .as_deref()
+    {
+        Some("local") => "local",
+        _ => "cloud",
+    }
+}
+
+fn voice_mode_menu_label(mode: &str) -> String {
+    if mode == "local" {
+        "Voice brain: Local  (on-device)".to_string()
+    } else {
+        "Voice brain: Cloud".to_string()
+    }
+}
+
+/// Toggle ~/.jarvis/voice-mode, repaint the label, and restart the voice stack
+/// so the agent re-reads it.
+fn toggle_voice_mode(app: &tauri::AppHandle) {
+    let next = if read_voice_mode() == "local" { "cloud" } else { "local" };
+    let dir = jarvis_home().join(".jarvis");
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join("voice-mode"), next);
+    eprintln!("[tray] voice-mode -> {next}");
+    if let Some(state) = app.try_state::<VoiceModeLabel>() {
+        if let Ok(guard) = state.0.lock() {
+            if let Some(item) = guard.as_ref() {
+                let _ = item.set_text(voice_mode_menu_label(next));
+            }
+        }
+    }
+    // Restart off the UI thread — restart_voice_agent_cmd() blocks ~5 s.
+    std::thread::spawn(|| {
+        let _ = restart_voice_agent_cmd();
+    });
+}
+
 #[tauri::command]
 fn get_primary_monitor_info(window: WebviewWindow) -> Result<serde_json::Value, String> {
     let monitor = window
@@ -1936,6 +1987,7 @@ fn main() {
         .manage(ModeLabel(Mutex::new(None)))
         .manage(ModeItems(Mutex::new(Vec::new())))
         .manage(AudioItems(Mutex::new(AudioItemsInner::default())))
+        .manage(VoiceModeLabel(Mutex::new(None)))
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
             let window_for_poll = window.clone();
@@ -2104,6 +2156,15 @@ fn main() {
                 "open_chat", "Open Chat Panel",
             ).build(app)?;
             let mute_item    = MenuItemBuilder::with_id("mute",         "Mute / Unmute Voice").build(app)?;
+            // Voice brain Local/Cloud toggle — flips STT+LLM+TTS on-device vs cloud
+            // via ~/.jarvis/voice-mode (read by the agent at startup) + restart.
+            let voice_mode_item = MenuItemBuilder::with_id(
+                "voice_mode_toggle", voice_mode_menu_label(read_voice_mode()),
+            ).build(app)?;
+            {
+                let vml: State<VoiceModeLabel> = app.state();
+                *vml.0.lock().unwrap() = Some(voice_mode_item.clone());
+            }
 
             // ── Conversation mode submenu (2026-05-28) ──
             // Three voice-conversation backends, all carrying the same
@@ -2348,6 +2409,7 @@ fn main() {
             let menu = MenuBuilder::new(app)
                 .item(&voice_chat_item)
                 .item(&mute_item)
+                .item(&voice_mode_item)
                 .item(&mode_submenu)
                 .item(&mic_submenu)
                 .item(&spk_submenu)
@@ -2406,6 +2468,9 @@ fn main() {
                                 let _ = w.emit("tray-toggle-voice-chat", ());
                                 println!("[JARVIS] voice-chat toggle requested via tray");
                             }
+                        }
+                        "voice_mode_toggle" => {
+                            toggle_voice_mode(app);
                         }
                         "mute" => {
                             // Two voice paths exist in parallel: the legacy
