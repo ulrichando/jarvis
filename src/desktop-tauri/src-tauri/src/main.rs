@@ -79,6 +79,36 @@ struct AudioItems(Mutex<AudioItemsInner>);
 /// repainted after a toggle.
 struct VoiceModeLabel(Mutex<Option<MenuItem<Wry>>>);
 
+/// Local STT-model + Kokoro-voice picker items, retained for ✓ repaint.
+#[derive(Default)]
+struct LocalVoiceItemsInner {
+    stt:   Vec<(String, MenuItem<Wry>)>,
+    voice: Vec<(String, MenuItem<Wry>)>,
+}
+struct LocalVoiceItems(Mutex<LocalVoiceItemsInner>);
+
+/// (value, label) options for the local STT-model picker (faster-whisper sizes).
+const STT_MODEL_CHOICES: &[(&str, &str)] = &[
+    ("tiny",     "Tiny  (fastest, least accurate)"),
+    ("base",     "Base"),
+    ("small",    "Small  (default)"),
+    ("medium",   "Medium"),
+    ("large-v3", "Large v3  (most accurate, slowest)"),
+];
+/// (value, label) for the local Kokoro voice picker (curated subset of 54).
+const KOKORO_VOICE_CHOICES: &[(&str, &str)] = &[
+    ("af_heart",    "Heart  (US female, default)"),
+    ("af_bella",    "Bella  (US female)"),
+    ("af_nicole",   "Nicole  (US female)"),
+    ("am_michael",  "Michael  (US male)"),
+    ("am_onyx",     "Onyx  (US male, deep)"),
+    ("am_puck",     "Puck  (US male)"),
+    ("bf_emma",     "Emma  (UK female)"),
+    ("bf_isabella", "Isabella  (UK female)"),
+    ("bm_george",   "George  (UK male)"),
+    ("bm_daniel",   "Daniel  (UK male)"),
+];
+
 /// The source tray artwork (icons/tray.png — the concentric-ring /
 /// reactor design). Embedded into the binary at compile time so the
 /// icon can be tinted per-state at runtime without touching disk.
@@ -1402,6 +1432,72 @@ fn toggle_voice_mode(app: &tauri::AppHandle) {
     });
 }
 
+/// Read a single-line ~/.jarvis/<name> config, or `default`.
+fn read_jarvis_cfg(name: &str, default: &str) -> String {
+    let p = jarvis_home().join(".jarvis").join(name);
+    std::fs::read_to_string(&p)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
+/// Build a "pick one" submenu from a static (value, label) list, ✓ on `current`.
+/// Item IDs are "<prefix><value>". Returns the submenu + items (for ✓ repaint).
+fn build_choice_submenu(
+    app: &tauri::AppHandle,
+    title: &str,
+    prefix: &str,
+    options: &[(&str, &str)],
+    current: &str,
+) -> tauri::Result<(Submenu<Wry>, Vec<(String, MenuItem<Wry>)>)> {
+    let mut builder = SubmenuBuilder::new(app, title);
+    let mut stored: Vec<(String, MenuItem<Wry>)> = Vec::new();
+    for (val, label) in options {
+        let text = if *val == current { format!("✓  {label}") } else { label.to_string() };
+        let item = MenuItemBuilder::with_id(format!("{prefix}{val}"), text).build(app)?;
+        builder = builder.item(&item);
+        stored.push(((*val).to_string(), item));
+    }
+    Ok((builder.build()?, stored))
+}
+
+fn refresh_choice_menu(items: &[(String, MenuItem<Wry>)], options: &[(&str, &str)], picked: &str) {
+    for (val, item) in items {
+        let label = options.iter().find(|(v, _)| v == val).map(|(_, l)| *l).unwrap_or(val.as_str());
+        let text = if val == picked { format!("✓  {label}") } else { label.to_string() };
+        let _ = item.set_text(text);
+    }
+}
+
+/// Handle a "sttmodel::<v>" / "kvoice::<v>" pick: write the config file the agent
+/// reads (~/.jarvis/voice-stt-model | voice-tts-voice), repaint, restart the stack.
+fn local_choice_pick(app: &tauri::AppHandle, id: &str) {
+    let (file, value, is_stt) = if let Some(v) = id.strip_prefix("sttmodel::") {
+        ("voice-stt-model", v, true)
+    } else if let Some(v) = id.strip_prefix("kvoice::") {
+        ("voice-tts-voice", v, false)
+    } else {
+        return;
+    };
+    let dir = jarvis_home().join(".jarvis");
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join(file), value);
+    eprintln!("[tray] {file} -> {value}");
+    if let Some(state) = app.try_state::<LocalVoiceItems>() {
+        if let Ok(g) = state.0.lock() {
+            if is_stt {
+                refresh_choice_menu(&g.stt, STT_MODEL_CHOICES, value);
+            } else {
+                refresh_choice_menu(&g.voice, KOKORO_VOICE_CHOICES, value);
+            }
+        }
+    }
+    std::thread::spawn(|| {
+        let _ = restart_voice_agent_cmd();
+    });
+}
+
 #[tauri::command]
 fn get_primary_monitor_info(window: WebviewWindow) -> Result<serde_json::Value, String> {
     let monitor = window
@@ -1988,6 +2084,7 @@ fn main() {
         .manage(ModeItems(Mutex::new(Vec::new())))
         .manage(AudioItems(Mutex::new(AudioItemsInner::default())))
         .manage(VoiceModeLabel(Mutex::new(None)))
+        .manage(LocalVoiceItems(Mutex::new(LocalVoiceItemsInner::default())))
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
             let window_for_poll = window.clone();
@@ -2406,6 +2503,22 @@ fn main() {
             let mic_submenu = build_audio_submenu(&app.handle(), "input",  "Microphone ▸", &mic_devs, &cur_in)?;
             let spk_submenu = build_audio_submenu(&app.handle(), "output", "Speaker ▸",    &spk_devs, &cur_out)?;
 
+            // Local-voice pickers — STT model (faster-whisper size) + Kokoro voice.
+            // Write ~/.jarvis/voice-{stt-model,tts-voice}; the agent reads them in
+            // local mode. Effective only when Voice brain = Local.
+            let (stt_submenu, stt_items) = build_choice_submenu(
+                &app.handle(), "Local STT model ▸", "sttmodel::",
+                STT_MODEL_CHOICES, &read_jarvis_cfg("voice-stt-model", "small"),
+            )?;
+            let (kvoice_submenu, kvoice_items) = build_choice_submenu(
+                &app.handle(), "Local voice (Kokoro) ▸", "kvoice::",
+                KOKORO_VOICE_CHOICES, &read_jarvis_cfg("voice-tts-voice", "af_heart"),
+            )?;
+            {
+                let lvi: State<LocalVoiceItems> = app.state();
+                *lvi.0.lock().unwrap() = LocalVoiceItemsInner { stt: stt_items, voice: kvoice_items };
+            }
+
             let menu = MenuBuilder::new(app)
                 .item(&voice_chat_item)
                 .item(&mute_item)
@@ -2413,6 +2526,8 @@ fn main() {
                 .item(&mode_submenu)
                 .item(&mic_submenu)
                 .item(&spk_submenu)
+                .item(&stt_submenu)
+                .item(&kvoice_submenu)
                 .item(&focus_mode_submenu)
                 .item(&sep1)
                 .item(&browser_item)
@@ -2724,6 +2839,10 @@ fn main() {
                         // can't be string-literal arms.
                         id if id.starts_with("audioin::") || id.starts_with("audioout::") => {
                             audio_device_pick(app, id);
+                        }
+                        // Local STT-model + Kokoro-voice pickers (dynamic IDs).
+                        id if id.starts_with("sttmodel::") || id.starts_with("kvoice::") => {
+                            local_choice_pick(app, id);
                         }
                         _ => {}
                     }

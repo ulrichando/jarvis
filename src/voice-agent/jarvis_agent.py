@@ -127,14 +127,23 @@ def _apply_voice_mode() -> None:
         return
     if mode != "local":
         return
+
+    def _cfg(_name: str, _default: str) -> str:
+        """Read a single-line ~/.jarvis/<name> override (tray-written), else default."""
+        try:
+            _val = (Path.home() / ".jarvis" / _name).read_text(encoding="utf-8").strip()
+            return _val or _default
+        except Exception:
+            return _default
+
     for _k, _v in {
         "JARVIS_LOCAL_STT_ENABLED": "1",
         "JARVIS_LOCAL_STT_PRIMARY": "1",
-        "JARVIS_LOCAL_STT_MODEL":   "small",
+        "JARVIS_LOCAL_STT_MODEL":   _cfg("voice-stt-model", "small"),
         "JARVIS_LOCAL_TTS_ENABLED": "1",
         "JARVIS_LOCAL_TTS_ENGINE":  "kokoro",
         "JARVIS_LOCAL_TTS_URL":     "http://127.0.0.1:8880/v1",
-        "JARVIS_LOCAL_TTS_VOICE":   "af_heart",
+        "JARVIS_LOCAL_TTS_VOICE":   _cfg("voice-tts-voice", "af_heart"),
         "JARVIS_LOCAL_TTS_PRIMARY": "1",
         "JARVIS_LOCAL_LLM_ENABLED": "1",
         "JARVIS_LOCAL_LLM_URL":     "http://127.0.0.1:11434/v1",
