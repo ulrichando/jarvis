@@ -66,6 +66,7 @@ type Machine = {
   git_repo_url: string | null;
   worker_type: string;
   last_seen_at: number;
+  online: boolean;
 };
 
 /** A pending image attachment (base64, no data: prefix) for the next send. */
@@ -459,7 +460,14 @@ export function CodeComposer({
               ) : (
                 machines.map((m) => (
                   <button key={m.environment_id} type="button" onClick={() => { onPickMachine(m); onPickRepo?.(null); setRepoOverride(null); setOpen(null); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent/40">
-                    {m.worker_type === "container" ? <Cloud className="size-3.5 text-blue-400" /> : <Monitor className="size-3.5 text-foreground/60" />}
+                    {m.worker_type === "container" ? (
+                      <Cloud className="size-3.5 text-blue-400" />
+                    ) : (
+                      <span className="relative flex size-3.5 shrink-0 items-center justify-center" title={m.online ? "online" : "offline"}>
+                        <Monitor className="size-3.5 text-foreground/60" />
+                        <span className={`absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full ring-1 ring-background ${m.online ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
+                      </span>
+                    )}
                     <span className="flex-1 truncate text-[13px] text-foreground">{m.machine_name}</span>
                     {m.worker_type === "claude_code_repl" && (
                       <span className="shrink-0 rounded bg-accent/60 px-1 text-[10px] text-muted-foreground" title="An attached REPL session — can't run new tasks">attach-only</span>
