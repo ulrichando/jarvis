@@ -19,7 +19,7 @@ import {
   setWorkerSpec,
   type Store,
 } from "./store";
-import { getGithubToken, githubStatus } from "../connectors/github";
+import { githubStatus } from "../connectors/github";
 import { MODELS_META } from "../ai/models-meta";
 import { listMcpServers } from "../mcp/store";
 
@@ -48,10 +48,10 @@ const IMAGE = process.env.JARVIS_WORKBENCH_IMAGE || "jarvis-workbench:latest";
 const CONTAINER_LABEL = "com.jarvis.code-session";
 /** Egress allowlist proxy image (squid). Pinnable via env. */
 const EGRESS_PROXY_IMAGE = process.env.JARVIS_EGRESS_PROXY_IMAGE || "ubuntu/squid:latest";
-/** Domains a `trusted`/`custom` egress level always allows (package registries
- *  + GitHub), mirroring claude.ai/code's default-allowed list. */
+/** Domains a `trusted`/`custom` egress level always allows (package registries).
+ *  GitHub git is reached ONLY through the host-side scoped-credential proxy
+ *  (host.docker.internal, in NO_PROXY), so github.com is intentionally absent. */
 const DEFAULT_ALLOW = [
-  ".github.com",
   ".githubusercontent.com",
   ".npmjs.org",
   "registry.npmjs.org",
@@ -219,6 +219,10 @@ export async function launchContainerSession(
     setSessionToken(store, sessionId, token);
   }
   const epoch = bumpWorkerEpoch(store, sessionId);
+  // Per-session git capability token — the ONLY git credential the container
+  // holds. The real PAT is injected host-side by the git proxy route.
+  const { randomBytes: gitRand } = await import("node:crypto");
+  const gitCapToken = `git_${gitRand(24).toString("base64url")}`;
 
   const anthropicKey =
     (await keysEnvValue("ANTHROPIC_API_KEY")) ||
@@ -335,26 +339,37 @@ export async function launchContainerSession(
     setSessionContainer(store, sessionId, {
       container: name,
       repo: repoFullName,
+      extraRepos,
+      gitCapToken,
     });
     if (cacheHit) emit(store, sessionId, "◌ Restored cached environment (setup skipped)");
   });
 
-  // 2. Cloned repository — and make git fully push-capable, so the agent can
-  // commit/branch/push/PR on its own without ever asking the user for a name,
-  // email, or credentials.
-  const ghToken = await getGithubToken();
+  // 2. Cloned repository — git is push-capable WITHOUT the real token ever
+  // entering the container: it talks to the host-side scoped-credential git
+  // proxy (this app) with a per-session cap token; the proxy injects the real
+  // PAT. See app/api/bridge/v1/code/sessions/[sessionId]/git/[...path] + the
+  // design spec (2026-06-19-scoped-credential-git-proxy-design.md).
   const gh = await githubStatus();
 
-  // Committer identity + a store-backed push credential so `git commit`/`push`
-  // work non-interactively. Runs on EVERY launch — cache restores scrub the
-  // baked-in token (below) and tokens rotate. login/token are shq()-quoted so
-  // they can't break out of the sh -c. Non-fatal: a hiccup warns (the session
-  // can still read/edit) rather than aborting the launch.
-  const configureGitCreds = async (): Promise<void> => {
-    if (!(ghToken && gh.connected && gh.login)) return;
-    const login = gh.login;
+  // The proxy base the in-container git talks to (same host:port the child uses
+  // for callbacks); owner/repo is appended per-remote.
+  const proxyOrigin = childBaseUrl.replace(/\/+$/, "");
+  const proxyRemote = (full: string): string =>
+    `${proxyOrigin}/api/bridge/v1/code/sessions/${sessionId}/git/${full}.git`;
+  const proxyHostUrl = new URL(proxyOrigin);
+  // Credential-helper line: the CAP token as the password for the PROXY host.
+  // The real PAT is never written into the container.
+  const credLine = `${proxyHostUrl.protocol}//x-access-token:${gitCapToken}@${proxyHostUrl.host}`;
+
+  // Committer identity + the cap credential so `git commit`/`push` work
+  // non-interactively through the proxy. Runs on EVERY launch (cache restores
+  // scrub creds; cap tokens are per-session). Must run BEFORE clone/fetch so the
+  // credential helper can authorize them. Non-fatal: a hiccup warns rather than
+  // aborting the launch.
+  const configureGitProxy = async (): Promise<void> => {
+    const login = gh.login || "jarvis";
     const email = `${login}@users.noreply.github.com`;
-    const credLine = `https://x-access-token:${ghToken}@github.com`;
     const cmd = [
       `git config --global user.name ${shq(login)}`,
       `git config --global user.email ${shq(email)}`,
@@ -367,15 +382,21 @@ export async function launchContainerSession(
       await exec(["exec", name, "sh", "-c", cmd]);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      emit(store, sessionId, `⚠ git push credentials not configured — ${msg.slice(0, 200)}`);
+      emit(store, sessionId, `⚠ git proxy credentials not configured — ${msg.slice(0, 200)}`);
     }
   };
 
   // 2. Cloned repository (or, on a cache hit, freshen the baked-in checkout).
+  // All git goes through the per-session proxy URL — no token in any argv.
   await step(cacheHit ? "Restored repository" : "Cloned repository", async () => {
+    // Write the cap credential FIRST so clone/fetch through the proxy can auth.
+    await configureGitProxy();
     if (cacheHit) {
-      // Repo + deps are baked into the cache image — bring the checkout up to
-      // the latest default branch rather than re-cloning.
+      // The baked-in remote points at a PREVIOUS session's proxy path — reset it
+      // to THIS session's proxy URL before fetching, then freshen the checkout.
+      await exec([
+        "exec", "-w", workdir, name, "git", "remote", "set-url", "origin", proxyRemote(repoFullName),
+      ]).catch(() => {});
       await exec([
         "exec",
         "-w",
@@ -386,44 +407,15 @@ export async function launchContainerSession(
         `base=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##'); [ -z "$base" ] && base=main; git fetch origin >/dev/null 2>&1; git checkout "$base" >/dev/null 2>&1; git reset --hard "origin/$base" >/dev/null 2>&1; git clean -fd >/dev/null 2>&1`,
       ]).catch(() => {});
     } else {
-      const cloneUrl = ghToken
-        ? `https://x-access-token:${ghToken}@github.com/${repoFullName}.git`
-        : `https://github.com/${repoFullName}.git`;
-      await exec(["exec", name, "git", "clone", cloneUrl, workdir]);
-      // Keep the remote URL clean (no embedded token — it would leak into
-      // .git/config). Auth comes from the credential helper instead.
-      await exec([
-        "exec",
-        "-w",
-        workdir,
-        name,
-        "git",
-        "remote",
-        "set-url",
-        "origin",
-        `https://github.com/${repoFullName}.git`,
-      ]);
+      // Clone via the proxy URL; the remote stays the proxy URL (auth via the
+      // credential helper). No token is embedded, so no set-url scrub is needed.
+      await exec(["exec", name, "git", "clone", proxyRemote(repoFullName), workdir]);
     }
-    await configureGitCreds();
-    // Multi-repo: clone each additional repo into /workspace/<name>. Global git
-    // creds (above) cover pushes for all of them; the primary stays the workdir.
+    // Multi-repo: clone each additional repo via the proxy too. The session's
+    // git scope (set at container setup) must include these for pushes to pass.
     for (const extra of extraRepos) {
       const edir = `/workspace/${repoDirName(extra)}`;
-      const eurl = ghToken
-        ? `https://x-access-token:${ghToken}@github.com/${extra}.git`
-        : `https://github.com/${extra}.git`;
-      await exec(["exec", name, "git", "clone", eurl, edir]).catch(() => {});
-      await exec([
-        "exec",
-        "-w",
-        edir,
-        name,
-        "git",
-        "remote",
-        "set-url",
-        "origin",
-        `https://github.com/${extra}.git`,
-      ]).catch(() => {});
+      await exec(["exec", name, "git", "clone", proxyRemote(extra), edir]).catch(() => {});
     }
     if (extraRepos.length) {
       emit(store, sessionId, `◌ Also cloned: ${extraRepos.join(", ")}`);
@@ -474,7 +466,7 @@ export async function launchContainerSession(
       try {
         await exec(["exec", name, "sh", "-c", `rm -f "$HOME/.git-credentials"`]).catch(() => {});
         await exec(["commit", name, cacheTag]);
-        await configureGitCreds();
+        await configureGitProxy();
         emit(store, sessionId, "◌ Cached environment snapshot for faster next launch");
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -622,10 +614,9 @@ export async function launchContainerSession(
         NO_PROXY: "host.docker.internal,localhost,127.0.0.1",
         no_proxy: "host.docker.internal,localhost,127.0.0.1",
       }),
-      // Authenticate the gh CLI (PR creation) the same token git pushes with.
-      // git itself auths via the credential helper configured at clone time;
-      // gh reads GH_TOKEN/GITHUB_TOKEN, so no `gh auth login` is needed.
-      ...(ghToken && { GH_TOKEN: ghToken, GITHUB_TOKEN: ghToken }),
+      // NO GH_TOKEN/GITHUB_TOKEN: the real GitHub credential never enters the
+      // container. git auths to the host-side proxy via the cap-token credential
+      // helper; PR open/merge are host-side REST actions (createContainerPR).
     };
     const envArgs = Object.entries(childEnv).flatMap(([k, v]) => [
       "-e",
@@ -644,8 +635,7 @@ export async function launchContainerSession(
       "This workspace is a clone of the selected GitHub repository and git is fully configured here: user.name and user.email are already set, and a credential helper supplies the GitHub push token, so git commit and git push both work without any prompting. " +
       "Never ask for a git name, email, or credentials, and never claim you are unable to commit or push. " +
       "When you make code changes worth keeping, save them with git proactively: create a branch named jarvis/<short-topic>, stage the changes, commit with a clear concise message, and run git push -u origin <branch>. " +
-      "For substantial work also open a pull request: the gh CLI is authenticated, so run gh pr create with a title and body; if gh is unavailable, push the branch and share the pull-request URL for it instead. " +
-      "When you open a pull request, include the session link from the JARVIS_SESSION_URL environment variable at the bottom of the PR body for traceability. " +
+      "Git here is wired through a secure proxy that authorizes pushes to this session repository, so git push works without prompting. Do not run the gh CLI or call the GitHub API directly: opening the pull request is a host action available from the session panel. After you push a branch, tell the user it is pushed and that the pull request can be opened from the panel. " +
       "Do all of this automatically whenever you finish a unit of work or the user asks you to save, commit, merge, push, or open a PR; never reply that you were not asked to. " +
       "You are running inside an isolated container that is yours to use fully, so act autonomously like a senior engineer rather than hand-holding. " +
       "Run every command yourself with the Bash tool — install dependencies, run scripts, execute tests — and never tell the user to run a command or to install something; if a package is missing, install it and continue. " +
