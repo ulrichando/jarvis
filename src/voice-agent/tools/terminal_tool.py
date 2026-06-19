@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -50,6 +51,40 @@ _DEFAULT_TIMEOUT = _parse_int_env("TERMINAL_TIMEOUT", 180)
 
 # Output truncation limit (chars). Keeps context window safe.
 _MAX_OUTPUT_CHARS = _parse_int_env("TERMINAL_MAX_OUTPUT_CHARS", 100_000)
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform shell selection
+# ---------------------------------------------------------------------------
+#
+# Linux/macOS: bash -c "<command>" (was hardcoded executable="/bin/bash"; the
+# explicit argv form is behaviorally identical — subprocess(shell=True,
+# executable="/bin/bash") already runs ["/bin/bash","-c",command]).
+# Windows: PowerShell 7 (pwsh) preferred, else Windows PowerShell 5.1, else
+# cmd.exe — the same precedence ladder Claude Code uses. We do NOT translate
+# Unix→PowerShell; instead the tool description tells the model which shell it's
+# in and it emits native syntax (also Claude Code's approach). Override the
+# chosen interpreter with JARVIS_TERMINAL_SHELL=<abs path>.
+
+def _detect_shell() -> tuple[list[str], str]:
+    """Return (argv_prefix, shell_name); the command string is appended as the
+    final argv element."""
+    override = os.environ.get("JARVIS_TERMINAL_SHELL", "").strip()
+    if os.name == "nt":
+        pwsh = override or shutil.which("pwsh") or shutil.which("powershell")
+        if pwsh:
+            return ([pwsh, "-NoProfile", "-NonInteractive", "-Command"], "powershell")
+        comspec = os.environ.get("COMSPEC", "cmd.exe")
+        return ([comspec, "/c"], "cmd")
+    bash = override or shutil.which("bash") or "/bin/bash"
+    return ([bash, "-c"], "bash")
+
+
+_SHELL_PREFIX, _SHELL_NAME = _detect_shell()
+
+# CREATE_NO_WINDOW on Windows so spawning powershell/cmd from a GUI-launched
+# voice agent doesn't pop a console window. No-op flag elsewhere.
+_NO_WINDOW_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
 
 
 # ---------------------------------------------------------------------------
@@ -231,15 +266,14 @@ def _run_local(
     env = os.environ.copy()
     try:
         proc = subprocess.Popen(
-            command,
-            shell=True,
-            executable="/bin/bash",
+            _SHELL_PREFIX + [command],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             cwd=cwd,
             env=env,
             text=True,
             errors="replace",
+            creationflags=_NO_WINDOW_FLAGS,
         )
         try:
             output, _ = proc.communicate(timeout=timeout)
@@ -340,13 +374,12 @@ def terminal_tool(
             try:
                 env = os.environ.copy()
                 proc = subprocess.Popen(
-                    command,
-                    shell=True,
-                    executable="/bin/bash",
+                    _SHELL_PREFIX + [command],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     cwd=cwd,
                     env=env,
+                    creationflags=_NO_WINDOW_FLAGS,
                 )
                 with _bg_lock:
                     _bg_processes[session_id] = {
@@ -429,21 +462,39 @@ def terminal_tool(
 # Schema + registration
 # ---------------------------------------------------------------------------
 
-_TOOL_DESCRIPTION = """\
-Execute shell commands on the local Linux environment. Filesystem persists between calls.
+# Platform-aware framing: tell the model which shell it's in and let it emit
+# native syntax — no Unix→PowerShell translation layer (the approach both
+# Claude Code and Codex CLI take).
+if _SHELL_NAME == "powershell":
+    _ENV_LINE = "Execute shell commands in the local Windows PowerShell environment. Filesystem persists between calls."
+    _LAUNCH_HINT = "launching apps (`Start-Process <app>`)"
+    _SHELL_NOTE = (
+        "\nSHELL = Windows PowerShell. Use cmdlets (Get-ChildItem, Select-String, Get-Content, "
+        "Remove-Item, Stop-Process); Unix tools (ls/grep/cat/rm/kill) are NOT available. "
+        "Chain with `;` or `&&`; env vars are `$env:VAR`.\n"
+    )
+elif _SHELL_NAME == "cmd":
+    _ENV_LINE = "Execute shell commands in the local Windows cmd.exe environment. Filesystem persists between calls."
+    _LAUNCH_HINT = "launching apps (`start \"\" <app>`)"
+    _SHELL_NOTE = "\nSHELL = Windows cmd.exe. Use Windows commands (dir, type, del), not Unix tools.\n"
+else:
+    _ENV_LINE = "Execute shell commands on the local Linux environment. Filesystem persists between calls."
+    _LAUNCH_HINT = "launching apps (`setsid <app> &`)"
+    _SHELL_NOTE = ""
+
+_TOOL_DESCRIPTION = f"""\
+{_ENV_LINE}
 
 WHEN TO USE: builds, installs, git, processes, scripts, network checks, package managers,
-launching apps (`setsid <app> &`), and any one-shot command the user asks for by name
+{_LAUNCH_HINT}, and any one-shot command the user asks for by name
 ("run pytest", "git status", "kill chrome", "open Discord").
-
+{_SHELL_NOTE}
 DO NOT reply with phrases like "Done", "Running it now", "I've executed that" UNLESS you
 have already issued the corresponding terminal call this turn AND seen the result.
 Tool first, words after — narrating success without a tool call is confab.
 
-Do NOT use cat/head/tail to read files — use read_file instead.
-Do NOT use grep/rg/find to search — use search_files instead.
-Do NOT use sed/awk to edit files — use patch instead.
-Do NOT use echo/cat heredoc to create files — use write_file instead.
+To read files use read_file (not cat/Get-Content); to search use search_files
+(not grep/Select-String); to edit use patch (not sed); to create use write_file.
 
 Foreground (default): commands return when done. Set timeout=300 for long builds.
 Background: set background=true to return immediately with a session_id.
