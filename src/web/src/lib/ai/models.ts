@@ -10,7 +10,11 @@ import type { LanguageModel } from "ai";
 import {
   DEFAULT_MODEL,
   MODELS_META,
+  buildOllamaMeta,
+  isOllamaId,
+  ollamaIdToTag,
   type ModelId,
+  type ModelMeta,
   type Provider,
 } from "./models-meta";
 import { loadSettings } from "@/lib/settings/store";
@@ -152,9 +156,23 @@ export async function resolveApiKey(provider: Provider): Promise<{
 }
 
 export async function getModel(id: string): Promise<{
-  meta: (typeof MODELS_META)[ModelId];
+  meta: ModelMeta;
   model: LanguageModel;
 }> {
+  // Discovered (non-static) Ollama model: the id carries the tag, so route it
+  // to the local ollama daemon without needing a static MODEL_IDS entry.
+  if (!MODELS_META[id] && isOllamaId(id)) {
+    const tag = ollamaIdToTag(id);
+    if (tag) {
+      const { apiKey, baseURL } = await resolveApiKey("ollama");
+      const clientFactory = buildProvider("ollama", apiKey ?? "ollama", baseURL);
+      return {
+        meta: buildOllamaMeta(tag),
+        model: clientFactory(tag) as LanguageModel,
+      };
+    }
+  }
+
   const resolvedId = MODELS_META[id] ? id : DEFAULT_MODEL;
   const entry = MODEL_IDS[resolvedId];
   const { apiKey, baseURL } = await resolveApiKey(entry.provider);

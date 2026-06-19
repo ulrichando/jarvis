@@ -17,8 +17,13 @@ import {
 import {
   DEFAULT_MODEL,
   MODELS_META,
+  OLLAMA_STATIC_TAGS,
+  buildOllamaMeta,
+  isOllamaId,
   modelsByProvider,
+  ollamaIdToTag,
   type ModelId,
+  type ModelMeta,
   type Provider,
 } from "@/lib/ai/models-meta";
 import { getProviderUX } from "@/lib/ai/provider-ux";
@@ -38,6 +43,24 @@ function useAvailableProviders() {
       const r = await fetch("/api/providers/available");
       if (!r.ok) throw new Error("provider availability fetch failed");
       return r.json();
+    },
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+// Reads /api/providers/ollama-models — the server enumerates the local Ollama
+// daemon so every pulled model is selectable, not just the two static entries.
+// Returns [] when the daemon is offline, so the picker degrades to statics.
+type DiscoveredOllama = { id: string; tag: string };
+function useDiscoveredOllamaModels() {
+  return useQuery<DiscoveredOllama[]>({
+    queryKey: ["providers", "ollama-models"],
+    queryFn: async () => {
+      const r = await fetch("/api/providers/ollama-models");
+      if (!r.ok) throw new Error("ollama models fetch failed");
+      const data = (await r.json()) as { models?: DiscoveredOllama[] };
+      return data.models ?? [];
     },
     staleTime: 60_000,
     refetchOnWindowFocus: false,
@@ -73,15 +96,36 @@ function subLabel(id: string, providerLabel: string): string {
 export function ComposerModelPicker() {
   const model = useChatStore((s) => s.model);
   const setModel = useChatStore((s) => s.setModel);
-  const active = MODELS_META[model] ?? MODELS_META[DEFAULT_MODEL];
-  const groups = modelsByProvider();
+  const { data: available } = useAvailableProviders();
+  const { data: discovered } = useDiscoveredOllamaModels();
+
+  // Discovered ollama models not already covered by a curated static entry.
+  const staticOllamaTags = new Set(Object.values(OLLAMA_STATIC_TAGS));
+  const dynamicOllama: ModelMeta[] = (discovered ?? [])
+    .filter((d) => !staticOllamaTags.has(d.tag))
+    .map((d) => buildOllamaMeta(d.tag));
+
+  // Static groups, with discovered ollama models appended to the ollama group.
+  const groups = modelsByProvider().map((g) =>
+    g.provider === "ollama" && dynamicOllama.length > 0
+      ? { ...g, models: [...g.models, ...dynamicOllama] }
+      : g,
+  );
+
+  // Resolve the active model — including a discovered id not in MODELS_META.
+  const active =
+    MODELS_META[model] ??
+    (isOllamaId(model)
+      ? buildOllamaMeta(ollamaIdToTag(model) ?? model)
+      : undefined) ??
+    MODELS_META[DEFAULT_MODEL];
+
   const providerLabel =
     groups.find((g) => g.provider === active.provider)?.label ?? "";
   const ux = getProviderUX(active.provider);
   const primaryLabel =
     ux.modelShortLabel?.(active.label, active.id) ?? shortLabel(active.label);
   const showSub = !ux.modelShortLabel?.(active.label, active.id);
-  const { data: available } = useAvailableProviders();
 
   const isProviderAvailable = (p: Provider): boolean => {
     // Until the availability map loads, optimistically allow everything
