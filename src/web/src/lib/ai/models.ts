@@ -18,30 +18,7 @@ import {
   type Provider,
 } from "./models-meta";
 import { loadSettings } from "@/lib/settings/store";
-
-function envFallback(provider: Provider): string | undefined {
-  switch (provider) {
-    case "anthropic":
-      return process.env.ANTHROPIC_API_KEY;
-    case "openai":
-      return process.env.OPENAI_API_KEY;
-    case "google":
-      return (
-        process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? process.env.GOOGLE_API_KEY
-      );
-    case "deepseek":
-      return process.env.DEEPSEEK_API_KEY;
-    case "groq":
-      return process.env.GROQ_API_KEY;
-    case "kimi":
-      return process.env.KIMI_API_KEY;
-    case "ollama":
-      // Local daemon needs no real key; the OpenAI-compat client still sends
-      // an Authorization header, so hand it a harmless placeholder (ollama
-      // ignores it). This keeps ollama always "available" — no key gate.
-      return process.env.OLLAMA_API_KEY ?? "ollama";
-  }
-}
+import { providerEnvKey } from "./provider-keys";
 
 export class MissingApiKeyError extends Error {
   constructor(public provider: Provider) {
@@ -99,9 +76,6 @@ const MODEL_IDS: Record<string, { provider: Provider; modelId: string }> = {
   "qwen3.6-27b": { provider: "groq", modelId: "qwen/qwen3.6-27b" },
   "llama-4-scout-17b": { provider: "groq", modelId: "meta-llama/llama-4-scout-17b-16e-instruct" },
   "llama-3.1-8b-instant": { provider: "groq", modelId: "llama-3.1-8b-instant" },
-  "kimi-k2-groq": { provider: "groq", modelId: "moonshotai/kimi-k2-instruct-0905" },
-  "qwen-qwq-32b": { provider: "groq", modelId: "qwen-qwq-32b" },
-
   // Local Ollama — upstream model is the exact ollama tag, routed to :11434/v1.
   "ollama-qwen3-30b-a3b": { provider: "ollama", modelId: "qwen3:30b-a3b" },
   "ollama-gpt-oss-120b": { provider: "ollama", modelId: "gpt-oss:120b" },
@@ -150,7 +124,7 @@ export async function resolveApiKey(provider: Provider): Promise<{
     Record<Provider, { apiKey?: string; baseURL?: string }>
   >)[provider];
   return {
-    apiKey: p?.apiKey ?? envFallback(provider),
+    apiKey: p?.apiKey ?? providerEnvKey(provider),
     baseURL: p?.baseURL,
   };
 }
