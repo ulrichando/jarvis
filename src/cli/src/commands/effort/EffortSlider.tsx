@@ -44,6 +44,15 @@ export function EffortSlider({
   const [index, setIndex] = React.useState(() =>
     Math.max(0, EFFORT_LEVELS.indexOf(startLevel)),
   )
+  // Enter (below) reads the selected level from useInput's handler closure,
+  // which useEventCallback only refreshes via a useLayoutEffect — i.e. after
+  // commit. Under Ink's event dispatch that closure can trail the visually
+  // selected index by a step, so the applied level (also sent to the API and
+  // shown in the status bar) lagged the marker by one, needing 2-3 changes to
+  // catch up. A ref assigned during render always mirrors what the slider
+  // shows, so the apply matches the marker on the first confirm.
+  const indexRef = React.useRef(index)
+  indexRef.current = index
 
   // Models that don't support effort at all: fall back to the text status
   // (which renders the "not supported / use X" message) instead of a slider.
@@ -58,7 +67,7 @@ export function EffortSlider({
     } else if (key.rightArrow) {
       setIndex((i: number) => Math.min(EFFORT_LEVELS.length - 1, i + 1))
     } else if (key.return) {
-      const result = executeEffort(EFFORT_LEVELS[index])
+      const result = executeEffort(EFFORT_LEVELS[indexRef.current])
       if (result.effortUpdate) {
         const value = result.effortUpdate.value
         setAppState((prev) => ({ ...prev, effortValue: value }))
