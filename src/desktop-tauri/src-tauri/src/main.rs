@@ -855,6 +855,8 @@ fn speech_model_pretty(id: &str) -> Option<&'static str> {
         "gpt-5-mini"                                     => Some("OpenAI · GPT-5 mini"),
         "gpt-5.1"                                        => Some("OpenAI · GPT-5.1"),
         "qwen/qwen3-32b"                                 => Some("Groq · qwen3-32b"),
+        "ollama/qwen3:30b-a3b"                           => Some("Local · Qwen3 30B-A3B"),
+        "ollama/gpt-oss:120b"                            => Some("Local · gpt-oss 120B"),
         _ => None,
     }
 }
@@ -2220,6 +2222,12 @@ fn main() {
             let v_gpt_5_mini    = MenuItemBuilder::with_id("speech_gpt-5-mini",        "Use OpenAI · GPT-5 mini (alternative)").build(app)?;
             let v_gpt_5_1       = MenuItemBuilder::with_id("speech_gpt-5.1",           "Use OpenAI · GPT-5.1 (best OpenAI tools)").build(app)?;
             let v_qwen          = MenuItemBuilder::with_id("speech_qwen/qwen3-32b",    "Use Groq · qwen3-32b (no-API-quota option)").build(app)?;
+            // Local (Ollama) — runs the voice brain fully on-device. qwen3-30b-a3b
+            // is the CPU sweet spot (MoE, ~3B active, tool-calling verified);
+            // gpt-oss-120b is heavier + slower on CPU. Both are in SPEECH_MODELS.
+            let v_local_qwen3   = MenuItemBuilder::with_id("speech_ollama/qwen3:30b-a3b", "Use Local · Qwen3 30B-A3B (Ollama, on-device, fast)").build(app)?;
+            let v_local_gptoss  = MenuItemBuilder::with_id("speech_ollama/gpt-oss:120b",  "Use Local · gpt-oss 120B (Ollama, heavy, slow on CPU)").build(app)?;
+            let speech_sep_local = PredefinedMenuItem::separator(app)?;
             let speech_submenu = SubmenuBuilder::new(app, "Speech model ▸")
                 .item(&v_claude_haiku)
                 .item(&v_claude_sonnet)
@@ -2227,6 +2235,9 @@ fn main() {
                 .item(&v_gpt_5_mini)
                 .item(&v_gpt_5_1)
                 .item(&v_qwen)
+                .item(&speech_sep_local)
+                .item(&v_local_qwen3)
+                .item(&v_local_gptoss)
                 .build()?;
 
             // ── TTS VOICE submenu (nested under Models) ──
@@ -2571,6 +2582,8 @@ fn main() {
                         "speech_gpt-5-mini"                                => switch_speech_model(app, "gpt-5-mini"),
                         "speech_gpt-5.1"                                   => switch_speech_model(app, "gpt-5.1"),
                         "speech_qwen/qwen3-32b"                            => switch_speech_model(app, "qwen/qwen3-32b"),
+                        "speech_ollama/qwen3:30b-a3b"                      => switch_speech_model(app, "ollama/qwen3:30b-a3b"),
+                        "speech_ollama/gpt-oss:120b"                       => switch_speech_model(app, "ollama/gpt-oss:120b"),
                         // TTS-voice picks (no agent restart — file written, read on next utterance)
                         "tts_gr_troy"   => switch_tts_provider(app, "groq:troy"),
                         "tts_gr_austin" => switch_tts_provider(app, "groq:austin"),
