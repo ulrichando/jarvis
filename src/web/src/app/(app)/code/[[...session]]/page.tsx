@@ -24,6 +24,7 @@ type Machine = {
   git_repo_url: string | null;
   worker_type: string;
   last_seen_at: number;
+  online: boolean;
 };
 
 type SessionSummary = {
