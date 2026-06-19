@@ -7,6 +7,8 @@ import {
   settingsSchema,
   type Settings,
 } from "./schema";
+import { providerEnvKey } from "@/lib/ai/provider-keys";
+import type { Provider } from "@/lib/ai/models-meta";
 
 const SETTINGS_DIR = path.join(process.cwd(), ".jarvis");
 const SETTINGS_FILE = path.join(SETTINGS_DIR, "settings.json");
@@ -48,7 +50,12 @@ export function invalidateSettingsCache() {
 export function redactForClient(settings: Settings): Settings & {
   providers: Record<
     keyof Settings["providers"],
-    { hasKey: boolean; keyPreview?: string; baseURL?: string }
+    {
+      hasKey: boolean;
+      keyPreview?: string;
+      keySource?: "settings" | "env";
+      baseURL?: string;
+    }
   >;
   integrations: {
     github: { hasToken: boolean; tokenPreview?: string; defaultOwner?: string };
@@ -56,12 +63,18 @@ export function redactForClient(settings: Settings): Settings & {
 } {
   const redactedProviders = Object.fromEntries(
     Object.entries(settings.providers).map(([k, v]) => {
-      const key = v.apiKey ?? "";
+      // A key stored in the web's settings.json wins; otherwise fall back to the
+      // SAME env var the actual AI call uses (loaded from ~/.jarvis/keys.env via
+      // next.config.ts), so a key entered on the desktop shows as configured here.
+      const settingsKey = v.apiKey ?? "";
+      const envKey = settingsKey ? "" : providerEnvKey(k as Provider) ?? "";
+      const effective = settingsKey || envKey;
       return [
         k,
         {
-          hasKey: key.length > 0,
-          keyPreview: key ? `••••${key.slice(-4)}` : undefined,
+          hasKey: effective.length > 0,
+          keyPreview: effective ? `••••${effective.slice(-4)}` : undefined,
+          keySource: settingsKey ? "settings" : envKey ? "env" : undefined,
           baseURL: v.baseURL,
         },
       ];
