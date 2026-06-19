@@ -53,6 +53,7 @@ export type SettingsPatch = {
   providers?: Partial<
     Record<Provider, { apiKey?: string | null; baseURL?: string | null }>
   >;
+  connections?: { ollama?: { baseURL?: string | null } };
   appearance?: {
     fontSize?: "sm" | "md" | "lg";
     density?: "compact" | "cozy";
