@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{
     AppHandle, Manager, State, WebviewWindow, PhysicalSize, PhysicalPosition,
     image::Image,
-    menu::{MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder},
+    menu::{MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem, Submenu, SubmenuBuilder},
     tray::{TrayIcon, TrayIconBuilder},
     Emitter, Wry,
 };
@@ -64,6 +64,16 @@ struct ModeLabel(Mutex<Option<MenuItem<Wry>>>);
 /// so the refresh task can add/remove the "✓ " prefix on whichever
 /// mode is currently active. Ordered: [jarvis, gemini, openai].
 struct ModeItems(Mutex<Vec<MenuItem<Wry>>>);
+
+/// Microphone + Speaker device-picker items, retained so the ✓ can be
+/// repainted onto the just-selected device after a pick. Each entry is
+/// (device-name or the sentinel "__default__", item).
+#[derive(Default)]
+struct AudioItemsInner {
+    input:  Vec<(String, MenuItem<Wry>)>,
+    output: Vec<(String, MenuItem<Wry>)>,
+}
+struct AudioItems(Mutex<AudioItemsInner>);
 
 /// The source tray artwork (icons/tray.png — the concentric-ring /
 /// reactor design). Embedded into the binary at compile time so the
@@ -1194,6 +1204,151 @@ fn refresh_mode_menu(app: &tauri::AppHandle) {
     }
 }
 
+// ── Audio device picker (Microphone ▸ / Speaker ▸) ──────────────────────────
+//
+// The voice-client (:8767) enumerates mic/speaker devices via sounddevice
+// (PortAudio) — wired + Bluetooth, on Windows and Linux — at GET /audio-devices.
+// The tray lists them; picking one writes ~/.jarvis/audio-<kind>-device (the
+// same file the client's _resolve_audio_device reads) and restarts the voice
+// stack so it re-opens on the new device. We talk to :8767 with a tiny
+// blocking GET rather than pulling in an async HTTP crate.
+
+/// Minimal blocking HTTP/1.1 GET to a localhost port → response body, or None.
+fn http_get_local(port: u16, path: &str) -> Option<String> {
+    use std::io::{Read, Write};
+    use std::time::Duration;
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
+    let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).ok()?;
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    // Body is a JSON object; find it directly so we don't have to parse the
+    // chunked-vs-Content-Length framing.
+    let start = text.find('{')?;
+    Some(text[start..].to_string())
+}
+
+/// (input names, output names, current input, current output) from the
+/// voice-client /audio-devices endpoint. Empty/blank on failure.
+fn fetch_audio_devices() -> (Vec<String>, Vec<String>, String, String) {
+    let empty = (Vec::new(), Vec::new(), String::new(), String::new());
+    let Some(body) = http_get_local(8767, "/audio-devices") else { return empty; };
+    let val: serde_json::Value = match serde_json::Deserializer::from_str(&body)
+        .into_iter::<serde_json::Value>()
+        .next()
+    {
+        Some(Ok(v)) => v,
+        _ => return empty,
+    };
+    let arr = |k: &str| -> Vec<String> {
+        val.get(k)
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    };
+    let cur = |k: &str| -> String {
+        val.get("current")
+            .and_then(|c| c.get(k))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    (arr("input"), arr("output"), cur("input"), cur("output"))
+}
+
+/// Build a "Microphone ▸" / "Speaker ▸" submenu: a "System default" entry plus
+/// one item per device, ✓ on the current pick. IDs are "audioin::<name>" /
+/// "audioout::<name>" ("__default__" = system default). Items are stashed in
+/// AudioItems so the ✓ can be repainted after a pick.
+fn build_audio_submenu(
+    app: &tauri::AppHandle,
+    kind: &str,
+    title: &str,
+    devices: &[String],
+    current: &str,
+) -> tauri::Result<Submenu<Wry>> {
+    let prefix = if kind == "input" { "audioin::" } else { "audioout::" };
+    let mark = |sel: bool, label: &str| if sel { format!("✓  {label}") } else { label.to_string() };
+
+    let mut builder = SubmenuBuilder::new(app, title);
+    let mut stored: Vec<(String, MenuItem<Wry>)> = Vec::new();
+
+    let def_item = MenuItemBuilder::with_id(
+        format!("{prefix}__default__"),
+        mark(current.is_empty(), "System default"),
+    ).build(app)?;
+    builder = builder.item(&def_item);
+    stored.push(("__default__".to_string(), def_item));
+
+    if devices.is_empty() {
+        let none = MenuItemBuilder::with_id(format!("{prefix}__none__"), "(no devices detected)")
+            .enabled(false)
+            .build(app)?;
+        builder = builder.item(&none);
+    } else {
+        builder = builder.item(&PredefinedMenuItem::separator(app)?);
+        for d in devices {
+            let sel = !current.is_empty() && d == current;
+            let item = MenuItemBuilder::with_id(format!("{prefix}{d}"), mark(sel, d)).build(app)?;
+            builder = builder.item(&item);
+            stored.push((d.clone(), item));
+        }
+    }
+
+    if let Some(state) = app.try_state::<AudioItems>() {
+        if let Ok(mut g) = state.0.lock() {
+            if kind == "input" { g.input = stored; } else { g.output = stored; }
+        }
+    }
+    builder.build()
+}
+
+/// Move the ✓ to `picked` in the input/output submenu (instant feedback before
+/// the stack restart settles).
+fn refresh_audio_menu(app: &tauri::AppHandle, kind: &str, picked: &str) {
+    if let Some(state) = app.try_state::<AudioItems>() {
+        if let Ok(g) = state.0.lock() {
+            let items = if kind == "input" { &g.input } else { &g.output };
+            for (name, item) in items.iter() {
+                let label = if name == "__default__" { "System default" } else { name.as_str() };
+                let text = if name == picked { format!("✓  {label}") } else { label.to_string() };
+                let _ = item.set_text(text);
+            }
+        }
+    }
+}
+
+/// Handle an "audioin::<name>" / "audioout::<name>" tray click: persist the
+/// pick to ~/.jarvis/audio-<kind>-device (remove → system default), repaint the
+/// ✓, and restart the voice stack so the client re-opens on the new device.
+fn audio_device_pick(app: &tauri::AppHandle, id: &str) {
+    let (kind, name) = if let Some(n) = id.strip_prefix("audioin::") {
+        ("input", n)
+    } else if let Some(n) = id.strip_prefix("audioout::") {
+        ("output", n)
+    } else {
+        return;
+    };
+    if name == "__none__" { return; }
+    let dir = jarvis_home().join(".jarvis");
+    let _ = std::fs::create_dir_all(&dir);
+    let file = dir.join(format!("audio-{kind}-device"));
+    if name == "__default__" {
+        let _ = std::fs::remove_file(&file);
+    } else {
+        let _ = std::fs::write(&file, format!("{name}\n"));
+    }
+    eprintln!("[tray] audio {kind} device -> {name}");
+    refresh_audio_menu(app, kind, name);
+    // Restart off the UI thread — restart_voice_agent_cmd() blocks ~5 s.
+    std::thread::spawn(|| {
+        let _ = restart_voice_agent_cmd();
+    });
+}
+
 #[tauri::command]
 fn get_primary_monitor_info(window: WebviewWindow) -> Result<serde_json::Value, String> {
     let monitor = window
@@ -1778,6 +1933,7 @@ fn main() {
         .manage(ShareLabel(Mutex::new(None)))
         .manage(ModeLabel(Mutex::new(None)))
         .manage(ModeItems(Mutex::new(Vec::new())))
+        .manage(AudioItems(Mutex::new(AudioItemsInner::default())))
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
             let window_for_poll = window.clone();
@@ -2171,10 +2327,19 @@ fn main() {
             // CheckMenuItems in AppState so set_checked() works later).
             let focus_mode_submenu = crate::tray_kiosk::build_kiosk_submenu(&app.handle())?;
 
+            // Audio device picker — enumerated from the voice-client (:8767).
+            // Built once at startup; the device list refreshes on the next
+            // launch (a hot-plugged Bluetooth device needs a relaunch to appear).
+            let (mic_devs, spk_devs, cur_in, cur_out) = fetch_audio_devices();
+            let mic_submenu = build_audio_submenu(&app.handle(), "input",  "Microphone ▸", &mic_devs, &cur_in)?;
+            let spk_submenu = build_audio_submenu(&app.handle(), "output", "Speaker ▸",    &spk_devs, &cur_out)?;
+
             let menu = MenuBuilder::new(app)
                 .item(&voice_chat_item)
                 .item(&mute_item)
                 .item(&mode_submenu)
+                .item(&mic_submenu)
+                .item(&spk_submenu)
                 .item(&focus_mode_submenu)
                 .item(&sep1)
                 .item(&browser_item)
@@ -2475,6 +2640,12 @@ fn main() {
                             // that block re-dispatch on next launch.
                             std::thread::sleep(std::time::Duration::from_millis(500));
                             app.exit(0);
+                        }
+                        // Audio device picker — dynamic IDs ("audioin::<name>" /
+                        // "audioout::<name>") carry the device name, so they
+                        // can't be string-literal arms.
+                        id if id.starts_with("audioin::") || id.starts_with("audioout::") => {
+                            audio_device_pick(app, id);
                         }
                         _ => {}
                     }
