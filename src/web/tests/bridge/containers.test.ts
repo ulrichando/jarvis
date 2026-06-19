@@ -100,21 +100,21 @@ describe('launchContainerSession', () => {
       exec,
     })
 
-    // Step order on the docker side: rm (idempotent) → run → clone →
-    // remote scrub → setup probe → config write → detached CLI exec.
+    // Step order on the docker side: rm (idempotent) → run → git config (cap
+    // credential) → clone via the proxy URL → setup probe → detached CLI exec.
     const flat = calls.map((c) => c.join(' '))
     const runIdx = flat.findIndex((c) => c.startsWith('run -d'))
+    const cfgIdx = flat.findIndex((c) => c.includes('git config --global user.name'))
     const cloneIdx = flat.findIndex((c) => c.includes('git clone'))
-    const scrubIdx = flat.findIndex((c) => c.includes('remote set-url'))
     const cliIdx = flat.findIndex((c) => c.includes('cli.tsx'))
     expect(runIdx).toBeGreaterThanOrEqual(0)
-    expect(cloneIdx).toBeGreaterThan(runIdx)
-    expect(scrubIdx).toBeGreaterThan(cloneIdx)
-    expect(cliIdx).toBeGreaterThan(scrubIdx)
+    expect(cfgIdx).toBeGreaterThan(runIdx)
+    expect(cloneIdx).toBeGreaterThan(cfgIdx) // creds written before clone auths
+    expect(cliIdx).toBeGreaterThan(cloneIdx)
 
-    // The clone uses the connector token; the scrub removes it.
-    expect(flat[cloneIdx]).toContain('x-access-token:ghp_test_token@github.com/owner/demo')
-    expect(flat[scrubIdx]).toContain('https://github.com/owner/demo.git')
+    // The clone targets the per-session git proxy, never github.com directly.
+    expect(flat[cloneIdx]).toContain(`/api/bridge/v1/code/sessions/${sessionId}/git/owner/demo.git`)
+    expect(flat[cloneIdx]).not.toContain('github.com')
 
     // The CLI exec carries the worker handshake env (epoch from the web —
     // the spawner role — and the session ingress token), CCR v2 mode, and
@@ -128,10 +128,13 @@ describe('launchContainerSession', () => {
     const session = findSession(store, sessionId)
     expect(cli).toContain(`CLAUDE_CODE_SESSION_ACCESS_TOKEN=${session!.session_token}`)
     expect(session!.worker_epoch).toBe(1)
-    expect(JSON.parse(session!.container_json!)).toEqual({
+    const meta = JSON.parse(session!.container_json!)
+    expect(meta).toMatchObject({
       container: containerNameFor(sessionId),
       repo: 'owner/demo',
+      extraRepos: [],
     })
+    expect(meta.gitCapToken).toMatch(/^git_/)
 
     // Status events mirror the claude.ai init block, setup skipped.
     const statuses = listSessionEvents(store, sessionId, 0)
@@ -145,7 +148,7 @@ describe('launchContainerSession', () => {
     ])
   })
 
-  test('configures a push-capable git identity + GH_TOKEN so the agent commits/pushes/PRs on its own', async () => {
+  test('configures a push-capable git identity via the proxy cap token (no real PAT, no GH_TOKEN)', async () => {
     const sessionId = makeSession()
     const store = getStore()
     const { calls, exec } = fakeDocker()
@@ -164,18 +167,23 @@ describe('launchContainerSession', () => {
     expect(gitcfg).toBeTruthy()
     expect(gitcfg).toContain("user.name 'tester'")
     expect(gitcfg).toContain("user.email 'tester@users.noreply.github.com'")
-    // A store-backed credential supplies the push token to ~/.git-credentials,
-    // so `git push` works without prompting; the remote URL stays clean.
+    // The credential helper stores the per-session CAP token for the PROXY host
+    // — never the real PAT, never github.com. The proxy injects the real token.
     expect(gitcfg).toContain('credential.helper store')
-    expect(gitcfg).toContain('x-access-token:ghp_test_token@github.com')
+    expect(gitcfg).not.toContain('ghp_test_token')
+    expect(gitcfg).toContain('x-access-token:git_')
+    expect(gitcfg).toContain('@127.0.0.1:3000')
+    expect(gitcfg).not.toContain('@github.com') // no real github credential
     expect(gitcfg).toContain('.git-credentials')
 
-    // The CLI child gets GH_TOKEN (so `gh pr create` is pre-authenticated) and
-    // an appended prompt instructing it to commit/push/PR proactively.
+    // The CLI child gets NO GitHub token; the appended prompt tells it to push
+    // (via the proxy) and that PRs open from the host panel, not gh.
     const cli = flat.find((c) => c.includes('cli.tsx'))!
-    expect(cli).toContain('GH_TOKEN=ghp_test_token')
+    expect(cli).not.toContain('GH_TOKEN')
+    expect(cli).not.toContain('GITHUB_TOKEN')
     expect(cli).toContain('git push')
-    expect(cli).toContain('gh pr create')
+    expect(cli).toContain('secure proxy')
+    expect(cli).not.toContain('gh pr create')
     expect(cli).toContain('never reply that you were not asked')
   })
 
