@@ -44,3 +44,34 @@ export async function GET() {
     return Response.json({ ok: false, baseURL: base, error: msg }, { status: 502 });
   }
 }
+
+/**
+ * DELETE /api/ollama/models?name=<model> — remove an installed model.
+ * Proxies Ollama's DELETE /api/delete (destructive — re-pull to get it back).
+ */
+export async function DELETE(req: Request) {
+  const name = (new URL(req.url).searchParams.get("name") ?? "").trim();
+  if (!name) {
+    return Response.json({ error: "model name required" }, { status: 400 });
+  }
+  if (!/^[A-Za-z0-9._:/-]+$/.test(name)) {
+    return Response.json({ error: "invalid model name" }, { status: 400 });
+  }
+  const base = await resolveOllamaBaseURL();
+  const res = await fetch(`${base}/api/delete`, {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: name }),
+  }).catch(() => null);
+  if (!res) {
+    return Response.json({ error: "no connection to Ollama" }, { status: 502 });
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return Response.json(
+      { error: `delete failed (${res.status})${text ? `: ${text.slice(0, 120)}` : ""}` },
+      { status: res.status === 404 ? 404 : 502 },
+    );
+  }
+  return Response.json({ ok: true });
+}
