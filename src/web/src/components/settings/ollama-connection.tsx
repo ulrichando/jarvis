@@ -9,6 +9,7 @@ import {
   Loader2,
   RefreshCw,
   Server,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -56,6 +57,7 @@ export function OllamaConnection() {
   const [pullStatus, setPullStatus] = useState<string | null>(null);
   const [pullPct, setPullPct] = useState<number | null>(null);
   const [pulling, setPulling] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setDetecting(true);
@@ -139,6 +141,32 @@ export function OllamaConnection() {
     }
   }, [pullName, refresh]);
 
+  const del = useCallback(
+    async (name: string) => {
+      if (!window.confirm(`Delete ${name}? You'd have to re-pull it to get it back.`)) {
+        return;
+      }
+      setDeleting(name);
+      try {
+        const res = await fetch(
+          `/api/ollama/models?name=${encodeURIComponent(name)}`,
+          { method: "DELETE" },
+        );
+        if (!res.ok) {
+          const err = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(err.error ?? `delete failed (${res.status})`);
+        }
+        toast.success(`Deleted ${name}`);
+        refresh();
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "delete failed");
+      } finally {
+        setDeleting(null);
+      }
+    },
+    [refresh],
+  );
+
   const models = detect?.models ?? [];
 
   return (
@@ -199,9 +227,25 @@ export function OllamaConnection() {
                 className="flex items-center justify-between px-3 py-2 text-sm"
               >
                 <span className="font-medium">{m.name}</span>
-                <span className="text-xs text-muted-foreground">
-                  {[m.parameterSize, fmtSize(m.size)].filter(Boolean).join(" · ")}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">
+                    {[m.parameterSize, fmtSize(m.size)].filter(Boolean).join(" · ")}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => del(m.name)}
+                    disabled={deleting === m.name}
+                    aria-label={`Delete ${m.name}`}
+                    className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+                  >
+                    {deleting === m.name ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-3.5 w-3.5" />
+                    )}
+                  </Button>
+                </div>
               </div>
             ))
           )}
