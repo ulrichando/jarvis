@@ -72,8 +72,6 @@ const MODEL_IDS: Record<string, { provider: Provider; modelId: string }> = {
   "qwen3.6-27b": { provider: "groq", modelId: "qwen/qwen3.6-27b" },
   "llama-4-scout-17b": { provider: "groq", modelId: "meta-llama/llama-4-scout-17b-16e-instruct" },
   "llama-3.1-8b-instant": { provider: "groq", modelId: "llama-3.1-8b-instant" },
-  "kimi-k2-groq": { provider: "groq", modelId: "moonshotai/kimi-k2-instruct-0905" },
-  "qwen-qwq-32b": { provider: "groq", modelId: "qwen-qwq-32b" },
 };
 
 function buildProvider(

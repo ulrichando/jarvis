@@ -247,20 +247,6 @@ export const MODELS_META: Record<string, ModelMeta> = {
     provider: "groq",
     contextWindow: 128_000,
   },
-  "kimi-k2-groq": {
-    id: "kimi-k2-groq",
-    label: "Kimi K2 (Groq)",
-    description: "Kimi hosted on Groq. Fast + free tier.",
-    provider: "groq",
-    contextWindow: 256_000,
-  },
-  "qwen-qwq-32b": {
-    id: "qwen-qwq-32b",
-    label: "Qwen QwQ 32B (Groq)",
-    description: "Reasoning model on Groq. Free tier.",
-    provider: "groq",
-    contextWindow: 128_000,
-  },
 };
 
 export type ModelId = keyof typeof MODELS_META;
