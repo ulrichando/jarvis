@@ -338,12 +338,7 @@ export function createEnvironment(
   // duplicate "Moon" entries. Reuse by explicit id first, then by identity.
   const existing =
     (input.reuse_id ? findEnvironment(store, input.reuse_id) : null) ??
-    findEnvironmentByIdentity(
-      store,
-      input.user_id ?? null,
-      input.machine_name,
-      input.directory,
-    )
+    findEnvironmentByIdentity(store, input.user_id ?? null, input.machine_name)
   if (existing) {
     const now = Date.now()
     // Refresh the mutable facets that can change between attaches.
@@ -448,16 +443,20 @@ export function findEnvironmentByIdentity(
   store: Store,
   userId: string | null,
   machineName: string,
-  directory: string,
 ): EnvironmentRow | null {
+  // A machine = (owner, machine_name). Directory is a mutable facet, not
+  // identity, so the same box attaching from a different folder reuses its
+  // row. Scoped to non-container so cloud sandboxes (which all share
+  // machine_name='Cloud container') never collapse into each other or the
+  // machine — they keep their own per-repo dedup in environments/cloud.
   const row = store.db
     .prepare(
       `SELECT * FROM environments
-       WHERE machine_name = ? AND directory = ?
+       WHERE machine_name = ? AND worker_type != 'container'
          AND (user_id IS ? OR user_id = ?)
        ORDER BY last_seen_at DESC LIMIT 1`,
     )
-    .get(machineName, directory, userId, userId) as EnvironmentRow | undefined
+    .get(machineName, userId, userId) as EnvironmentRow | undefined
   return row ?? null
 }
 
