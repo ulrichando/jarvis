@@ -66,7 +66,12 @@ function buildProvider(
     apiKey: resolveApiKey(name, config.apiKeyEnvVar),
     model:
       name === 'ollama' && upstreamModel === 'ollama'
-        ? (process.env.OLLAMA_MODEL ?? 'llama3')
+        // Bare 'ollama' placeholder (the provider default when no model is
+        // pinned). OLLAMA_MODEL wins if set; otherwise fall back to a model
+        // that's actually a sane default — 'llama3' was a tag most boxes don't
+        // have pulled (→ 404 on first message). qwen3:30b-a3b is the CPU sweet
+        // spot and is the curated default pull.
+        ? (process.env.OLLAMA_MODEL ?? 'qwen3:30b-a3b')
         : upstreamModel,
     supportsToolChoice: config.supportsToolChoice,
     maxTools: config.maxTools,
