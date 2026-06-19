@@ -476,6 +476,49 @@ export function deleteEnvironment(store: Store, envId: string): void {
     .run(envId)
 }
 
+/** A local machine is "online" if its heartbeat landed within this window. */
+export const ONLINE_TTL_MS = 2 * 60 * 1000
+/** A container sandbox idle past this long (no active session) is reaped. */
+export const SANDBOX_TTL_MS = 24 * 60 * 60 * 1000
+
+export function isEnvironmentOnline(
+  row: EnvironmentRow,
+  now: number = Date.now(),
+): boolean {
+  return now - row.last_seen_at < ONLINE_TTL_MS
+}
+
+/**
+ * Delete container (cloud sandbox) rows idle past SANDBOX_TTL_MS with no active
+ * session. Best-effort GC run lazily on GET /environments — the container
+ * itself was already reaped on archive; this clears the dangling row. Machine
+ * rows (non-container) are never deleted here. Returns the count reaped.
+ */
+export function reapStaleSandboxes(
+  store: Store,
+  now: number = Date.now(),
+): number {
+  const cutoff = now - SANDBOX_TTL_MS
+  const stale = store.db
+    .prepare(
+      `SELECT environment_id FROM environments
+       WHERE worker_type = 'container' AND last_seen_at < ?`,
+    )
+    .all(cutoff) as Array<{ environment_id: string }>
+  let reaped = 0
+  for (const { environment_id } of stale) {
+    const active = store.db
+      .prepare(
+        `SELECT 1 FROM sessions WHERE environment_id = ? AND archived = 0 LIMIT 1`,
+      )
+      .get(environment_id)
+    if (active) continue
+    deleteEnvironment(store, environment_id)
+    reaped++
+  }
+  return reaped
+}
+
 export function enqueueWork(
   store: Store,
   envId: string,
