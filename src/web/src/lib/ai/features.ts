@@ -282,6 +282,9 @@ export const PROVIDER_FEATURES: Record<Provider, Feature[]> = {
         "Agentic browser automation. Kimi drives a tab to complete a job for you.",
     },
   ],
+  // Local (Ollama) — no provider landing-page features; it's a model option
+  // in the picker only.
+  ollama: [],
 };
 
 export function getFeature(

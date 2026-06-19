@@ -31,6 +31,11 @@ function envFallback(provider: Provider): string | undefined {
       return process.env.GROQ_API_KEY;
     case "kimi":
       return process.env.KIMI_API_KEY;
+    case "ollama":
+      // Local daemon needs no real key; the OpenAI-compat client still sends
+      // an Authorization header, so hand it a harmless placeholder (ollama
+      // ignores it). This keeps ollama always "available" — no key gate.
+      return process.env.OLLAMA_API_KEY ?? "ollama";
   }
 }
 
@@ -92,6 +97,10 @@ const MODEL_IDS: Record<string, { provider: Provider; modelId: string }> = {
   "llama-3.1-8b-instant": { provider: "groq", modelId: "llama-3.1-8b-instant" },
   "kimi-k2-groq": { provider: "groq", modelId: "moonshotai/kimi-k2-instruct-0905" },
   "qwen-qwq-32b": { provider: "groq", modelId: "qwen-qwq-32b" },
+
+  // Local Ollama — upstream model is the exact ollama tag, routed to :11434/v1.
+  "ollama-qwen3-30b-a3b": { provider: "ollama", modelId: "qwen3:30b-a3b" },
+  "ollama-gpt-oss-120b": { provider: "ollama", modelId: "gpt-oss:120b" },
 };
 
 function buildProvider(
@@ -116,6 +125,12 @@ function buildProvider(
         apiKey,
         baseURL: baseURL ?? "https://api.moonshot.ai/v1",
       });
+    case "ollama":
+      return createOpenAICompatible({
+        name: "ollama",
+        apiKey,
+        baseURL: baseURL ?? "http://localhost:11434/v1",
+      });
   }
 }
 
@@ -124,7 +139,12 @@ export async function resolveApiKey(provider: Provider): Promise<{
   baseURL?: string;
 }> {
   const settings = await loadSettings();
-  const p = settings.providers[provider];
+  // ollama isn't a key-configurable provider in settings, so index defensively
+  // (returns undefined → falls back to envFallback, which hands ollama a
+  // placeholder key + the local baseURL).
+  const p = (settings.providers as Partial<
+    Record<Provider, { apiKey?: string; baseURL?: string }>
+  >)[provider];
   return {
     apiKey: p?.apiKey ?? envFallback(provider),
     baseURL: p?.baseURL,

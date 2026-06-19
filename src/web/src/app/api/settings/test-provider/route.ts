@@ -13,6 +13,7 @@ const PROBE: Record<Provider, string> = {
   deepseek: "deepseek-chat",
   groq: "llama-3.3-70b",
   kimi: "moonshot-v1-128k",
+  ollama: "ollama-qwen3-30b-a3b",
 };
 
 const bodySchema = z.object({
