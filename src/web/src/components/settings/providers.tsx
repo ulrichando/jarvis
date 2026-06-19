@@ -62,7 +62,7 @@ export function ProvidersSection() {
   return (
     <>
       <SettingsSection
-        description="Keys are stored locally in .jarvis/settings.json. Empty = falls back to process env."
+        description="Keys are stored locally in .jarvis/settings.json. Empty = falls back to the shared ~/.jarvis/keys.env (set on the desktop, used by the voice agent)."
       >
         <div className="space-y-3">
           {PROVIDERS.map((p) => (
@@ -89,7 +89,8 @@ function ProviderRow({
   const [baseURL, setBaseURL] = useState(stored?.baseURL ?? "");
   const [show, setShow] = useState(false);
 
-  const hasStoredKey = stored?.hasKey;
+  const hasKey = stored?.hasKey;
+  const isEnvKey = stored?.keySource === "env";
 
   const save = async () => {
     if (!key.trim() && !provider.supportsBaseURL) return;
@@ -142,10 +143,22 @@ function ProviderRow({
           <span className="text-sm font-medium">
             {PROVIDER_LABEL[provider.id]}
           </span>
-          {hasStoredKey ? (
-            <span className="flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 font-mono text-[10px] text-primary">
+          {hasKey ? (
+            <span
+              className={
+                isEnvKey
+                  ? "flex items-center gap-1 rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 font-mono text-[10px] text-muted-foreground"
+                  : "flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 font-mono text-[10px] text-primary"
+              }
+              title={
+                isEnvKey
+                  ? "Shared from ~/.jarvis/keys.env"
+                  : "Stored in this web app"
+              }
+            >
               <Check className="size-2.5" />
               {stored.keyPreview}
+              {isEnvKey && <span className="opacity-70">· keys.env</span>}
             </span>
           ) : (
             <span className="rounded-full border border-border/60 px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
@@ -169,7 +182,13 @@ function ProviderRow({
             type={show ? "text" : "password"}
             value={key}
             onChange={(e) => setKey(e.target.value)}
-            placeholder={hasStoredKey ? "replace key…" : provider.help}
+            placeholder={
+              isEnvKey
+                ? "override for web only…"
+                : hasKey
+                  ? "replace key…"
+                  : provider.help
+            }
             className="pr-9 font-mono text-xs"
           />
           <button
@@ -188,32 +207,32 @@ function ProviderRow({
         >
           Save
         </Button>
-        {hasStoredKey && (
-          <>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={runTest}
-              disabled={test.isPending}
-            >
-              {test.isPending ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <Zap className="size-3.5" />
-              )}
-              Test
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={clear}
-              disabled={update.isPending}
-              aria-label="Remove key"
-              className="text-muted-foreground hover:text-destructive"
-            >
-              <Trash2 className="size-3.5" />
-            </Button>
-          </>
+        {hasKey && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={runTest}
+            disabled={test.isPending}
+          >
+            {test.isPending ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Zap className="size-3.5" />
+            )}
+            Test
+          </Button>
+        )}
+        {hasKey && !isEnvKey && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={clear}
+            disabled={update.isPending}
+            aria-label="Remove key"
+            className="text-muted-foreground hover:text-destructive"
+          >
+            <Trash2 className="size-3.5" />
+          </Button>
         )}
       </div>
 
@@ -226,6 +245,14 @@ function ProviderRow({
             className="font-mono text-xs"
           />
         </div>
+      )}
+
+      {isEnvKey && (
+        <p className="mt-2 text-[11px] text-muted-foreground">
+          Shared from{" "}
+          <code className="font-mono">~/.jarvis/keys.env</code> (set on the
+          desktop). Saving a key here overrides it for the web only.
+        </p>
       )}
     </div>
   );

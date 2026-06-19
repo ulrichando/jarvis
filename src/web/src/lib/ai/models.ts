@@ -14,25 +14,7 @@ import {
   type Provider,
 } from "./models-meta";
 import { loadSettings } from "@/lib/settings/store";
-
-function envFallback(provider: Provider): string | undefined {
-  switch (provider) {
-    case "anthropic":
-      return process.env.ANTHROPIC_API_KEY;
-    case "openai":
-      return process.env.OPENAI_API_KEY;
-    case "google":
-      return (
-        process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? process.env.GOOGLE_API_KEY
-      );
-    case "deepseek":
-      return process.env.DEEPSEEK_API_KEY;
-    case "groq":
-      return process.env.GROQ_API_KEY;
-    case "kimi":
-      return process.env.KIMI_API_KEY;
-  }
-}
+import { providerEnvKey } from "./provider-keys";
 
 export class MissingApiKeyError extends Error {
   constructor(public provider: Provider) {
@@ -126,7 +108,7 @@ export async function resolveApiKey(provider: Provider): Promise<{
   const settings = await loadSettings();
   const p = settings.providers[provider];
   return {
-    apiKey: p?.apiKey ?? envFallback(provider),
+    apiKey: p?.apiKey ?? providerEnvKey(provider),
     baseURL: p?.baseURL,
   };
 }

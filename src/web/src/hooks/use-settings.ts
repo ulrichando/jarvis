@@ -7,7 +7,12 @@ import type { Settings } from "@/lib/settings/schema";
 export type RedactedSettings = Omit<Settings, "providers" | "integrations"> & {
   providers: Record<
     Provider,
-    { hasKey: boolean; keyPreview?: string; baseURL?: string }
+    {
+      hasKey: boolean;
+      keyPreview?: string;
+      keySource?: "settings" | "env";
+      baseURL?: string;
+    }
   >;
   integrations: {
     github: {
