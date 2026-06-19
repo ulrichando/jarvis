@@ -411,7 +411,17 @@ def build_dispatching_tts() -> DispatchingTTS:
     # route keep a voice when both Orpheus AND Edge-TTS (network) are down.
     _local_fallback = build_local_tts()
     if _local_fallback is not None:
-        _local_fallback.voice_id = "piper:local"
+        _engine = os.environ.get("JARVIS_LOCAL_TTS_ENGINE", "piper").strip() or "piper"
+        _local_fallback.voice_id = f"{_engine}:local"
+    # Local-first: JARVIS_LOCAL_TTS_PRIMARY=1 promotes the local TTS (Kokoro/Piper)
+    # to PRIMARY on every route so the voice path runs on-device; Orpheus + Edge
+    # become fallbacks. No-op unless the local rung is built.
+    _local_primary = (
+        os.environ.get("JARVIS_LOCAL_TTS_PRIMARY", "0") == "1"
+        and _local_fallback is not None
+    )
+    if _local_primary:
+        logger.info("[dispatch] JARVIS_LOCAL_TTS_PRIMARY=1 — local TTS promoted to primary on all routes")
 
     inners: dict[str, object] = {}
     fallback = None
@@ -427,11 +437,17 @@ def build_dispatching_tts() -> DispatchingTTS:
             rungs.append(_edge_fallback)
         if _local_fallback is not None:
             rungs.append(_local_fallback)
+        # Local-first promotion: move the local TTS to the front so it's the
+        # route primary (Orpheus + Edge demoted to fallbacks). The FallbackAdapter
+        # auto-wraps the non-streaming local TTS in StreamAdapter for per-sentence
+        # synthesis; Orpheus stays in the chain so its upstream-cancel stays live.
+        if _local_primary:
+            rungs = [_local_fallback] + [r for r in rungs if r is not _local_fallback]
         if len(rungs) == 1:
             return primary
         try:
             wrapped = tts.FallbackAdapter(rungs)
-            wrapped.voice_id = getattr(primary, "voice_id", "?")
+            wrapped.voice_id = getattr(rungs[0], "voice_id", getattr(primary, "voice_id", "?"))
             return wrapped
         except Exception as e:
             logger.warning(f"[dispatch] FallbackAdapter wrap failed ({e}); using primary alone")
