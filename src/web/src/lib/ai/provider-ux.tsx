@@ -564,6 +564,7 @@ export const PROVIDER_UX: Record<Provider, ProviderUX> = {
   kimi: KIMI_UX,
   deepseek: DEEPSEEK_UX,
   groq: GROQ_UX,
+  ollama: DEFAULT_UX,
 };
 
 export function getProviderUX(provider: Provider): ProviderUX {

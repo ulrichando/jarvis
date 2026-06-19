@@ -8,6 +8,7 @@ const COLORS: Record<Provider, string> = {
   deepseek: "bg-indigo-400",
   kimi: "bg-fuchsia-400",
   groq: "bg-amber-400",
+  ollama: "bg-teal-400",
 };
 
 export function ProviderDot({

@@ -9,7 +9,8 @@ export type Provider =
   | "google"
   | "deepseek"
   | "kimi"
-  | "groq";
+  | "groq"
+  | "ollama";
 
 export type ModelMeta = {
   id: string;
@@ -37,6 +38,7 @@ export const PROVIDER_LABEL: Record<Provider, string> = {
   deepseek: "DeepSeek",
   kimi: "Kimi",
   groq: "Groq",
+  ollama: "Local (Ollama)",
 };
 
 export const MODELS_META: Record<string, ModelMeta> = {
@@ -261,6 +263,24 @@ export const MODELS_META: Record<string, ModelMeta> = {
     provider: "groq",
     contextWindow: 128_000,
   },
+
+  // Local (Ollama) — on-device, no API key. Served from the local ollama
+  // daemon at :11434. qwen3-30b-a3b is the CPU sweet spot (MoE, ~3B active);
+  // gpt-oss-120b is heavier + slower on CPU.
+  "ollama-qwen3-30b-a3b": {
+    id: "ollama-qwen3-30b-a3b",
+    label: "Qwen3 30B-A3B (Local)",
+    description: "On-device via Ollama. MoE, fast on CPU.",
+    provider: "ollama",
+    contextWindow: 40_000,
+  },
+  "ollama-gpt-oss-120b": {
+    id: "ollama-gpt-oss-120b",
+    label: "gpt-oss 120B (Local)",
+    description: "On-device via Ollama. Heavy, slow on CPU.",
+    provider: "ollama",
+    contextWindow: 128_000,
+  },
 };
 
 export type ModelId = keyof typeof MODELS_META;
@@ -281,6 +301,7 @@ export function modelsByProvider(): Array<{
     "groq",
     "deepseek",
     "kimi",
+    "ollama",
   ];
   return order.map((p) => ({
     provider: p,
