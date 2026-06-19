@@ -2263,9 +2263,9 @@ fn main() {
                 *vml.0.lock().unwrap() = Some(voice_mode_item.clone());
             }
 
-            // Local-voice pickers — built here so they can nest inside the
-            // Conversation mode submenu below (STT-model size + Kokoro voice;
-            // effective only when Voice brain = Local).
+            // Local-voice model pickers — built here so they can nest inside the
+            // "Models" submenu below, alongside Speech model / TTS voice (STT-model
+            // size + Kokoro voice; effective only when Voice brain = Local).
             let (stt_submenu, stt_items) = build_choice_submenu(
                 &app.handle(), "Local STT model ▸", "sttmodel::",
                 STT_MODEL_CHOICES, &read_jarvis_cfg("voice-stt-model", "small"),
@@ -2316,8 +2316,6 @@ fn main() {
                 .item(&mode_openai_item)
                 .item(&mode_local_sep)
                 .item(&voice_mode_item)
-                .item(&stt_submenu)
-                .item(&kvoice_submenu)
                 .item(&mode_sep)
                 .item(&mode_status_item)
                 .build()?;
@@ -2485,9 +2483,11 @@ fn main() {
                 .item(&tts_current)
                 .item(&header_sep)
                 .item(&speech_submenu)
+                .item(&stt_submenu)
                 .item(&tool_submenu)
                 .item(&tts_sep)
                 .item(&tts_submenu)
+                .item(&kvoice_submenu)
                 .build()?;
 
             // Hand dynamic header items to managed state so the label
