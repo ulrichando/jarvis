@@ -1103,12 +1103,21 @@ fn set_share_label(active: bool, label: State<ShareLabel>) -> Result<(), String>
 enum ActiveMode { Jarvis, Gemini, Openai }
 
 fn detect_active_mode() -> ActiveMode {
-    // Windows has no systemd units (and no gemini/openai tools services) — the
-    // desktop only drives JARVIS-Claude mode there. Skip the per-poll
-    // systemctl spawn (which would just fail "program not found" each time).
+    // Windows has no systemd units — the active mode is tracked in
+    // ~/.jarvis/active-mode (written by bin/jarvis-mode.ps1, which supervises
+    // the Gemini Live / OpenAI Realtime tools as sounddevice processes).
     #[cfg(windows)]
     {
-        ActiveMode::Jarvis
+        let p = jarvis_home().join(".jarvis").join("active-mode");
+        match std::fs::read_to_string(&p)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .as_deref()
+        {
+            Some("gemini") => ActiveMode::Gemini,
+            Some("openai") => ActiveMode::Openai,
+            _ => ActiveMode::Jarvis,
+        }
     }
     #[cfg(not(windows))]
     {
@@ -1149,8 +1158,7 @@ fn get_active_mode() -> &'static str {
 /// active mode: rewrites the disabled header line ("Active: …") and
 /// adds/removes a "✓ " prefix on the three mode items.
 fn refresh_mode_menu(app: &tauri::AppHandle) {
-    let mode = detect_active_mode();
-    let (header_text, jarvis_label, gemini_label, openai_label) = match mode {
+    let (header_text, jarvis_label, gemini_label, openai_label) = match detect_active_mode() {
         ActiveMode::Jarvis => (
             "Active: JARVIS",
             "✓  JARVIS (audio + vision + tools)",
@@ -2290,19 +2298,40 @@ fn main() {
                                 eprintln!("[JARVIS] mode switch: project root not found");
                                 return;
                             };
-                            let script = root.join("bin").join("jarvis-mode");
-                            if !script.is_file() {
-                                eprintln!("[JARVIS] mode switch: {} missing", script.display());
-                                return;
+                            // Linux: bin/jarvis-mode (bash + systemd transient
+                            // units). Windows: bin/jarvis-mode.ps1 (sounddevice
+                            // audio + a restart-loop supervisor), launched
+                            // detached + hidden via powershell so the supervisor
+                            // loop never blocks the tray thread.
+                            #[cfg(windows)]
+                            {
+                                let script = root.join("bin").join("jarvis-mode.ps1");
+                                if !script.is_file() {
+                                    eprintln!("[JARVIS] mode switch: {} missing", script.display());
+                                    return;
+                                }
+                                let mut cmd = hidden_command("powershell.exe");
+                                cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+                                    .arg(&script)
+                                    .arg(arg);
+                                let _ = cmd.spawn();
+                                println!("[JARVIS] tray → jarvis-mode.ps1 {arg}");
                             }
-                            let _ = std::process::Command::new(&script)
-                                .arg(arg)
-                                .spawn();
-                            println!("[JARVIS] tray → jarvis-mode {arg}");
-                            // Repaint the submenu shortly after the
-                            // command settles (start_direct sleeps 0.6s
-                            // for unit registration; we wait a bit more
-                            // before re-polling so the new state shows).
+                            #[cfg(not(windows))]
+                            {
+                                let script = root.join("bin").join("jarvis-mode");
+                                if !script.is_file() {
+                                    eprintln!("[JARVIS] mode switch: {} missing", script.display());
+                                    return;
+                                }
+                                let _ = std::process::Command::new(&script)
+                                    .arg(arg)
+                                    .spawn();
+                                println!("[JARVIS] tray → jarvis-mode {arg}");
+                            }
+                            // Repaint the submenu shortly after the command
+                            // settles (the direct-mode launch takes ~1 s to
+                            // register before the new state shows).
                             let app_handle = app.clone();
                             std::thread::spawn(move || {
                                 std::thread::sleep(std::time::Duration::from_millis(1200));
