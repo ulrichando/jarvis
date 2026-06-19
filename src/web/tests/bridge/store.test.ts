@@ -14,6 +14,10 @@ import {
   unarchiveSession,
   deleteEnvironment,
   validateEnvSecret,
+  setSessionContainer,
+  getSessionGitScope,
+  validateGitCapToken,
+  findSession,
   type Store,
 } from '@/lib/bridge/store'
 
@@ -264,5 +268,27 @@ describe('sessions', () => {
     expect(row.archived_at).toBeNull()
     // After unarchive it can be archived again (not stuck on "already").
     expect(archiveSession(store, 'sess1')).toBe('archived')
+  })
+})
+
+describe('git scope + cap token', () => {
+  function seed(id: string) {
+    store.db
+      .prepare('INSERT INTO sessions (session_id, environment_id, archived, created_at, worker_epoch) VALUES (?, NULL, 0, ?, 0)')
+      .run(id, Date.now())
+  }
+  test('persists scope + cap token in container_json; validates', () => {
+    seed('s1')
+    setSessionContainer(store, 's1', { container: 'c', repo: 'Owner/Demo', extraRepos: ['o2/lib'], gitCapToken: 'git_abc' })
+    const s = findSession(store, 's1')!
+    expect(getSessionGitScope(s)).toEqual(['Owner/Demo', 'o2/lib'])
+    expect(validateGitCapToken(store, 's1', 'git_abc')).toBe(true)
+    expect(validateGitCapToken(store, 's1', 'nope')).toBe(false)
+  })
+  test('legacy container_json (no scope) → just primary, no token', () => {
+    seed('s2')
+    setSessionContainer(store, 's2', { container: 'c', repo: 'o/legacy' })
+    expect(getSessionGitScope(findSession(store, 's2')!)).toEqual(['o/legacy'])
+    expect(validateGitCapToken(store, 's2', 'anything')).toBe(false)
   })
 })
