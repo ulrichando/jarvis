@@ -76,6 +76,20 @@ class KokoroEndpointTTS(tts.TTS):
     def provider(self) -> str:
         return "kokoro-local"
 
+    def _current_voice(self) -> str:
+        """Voice for THIS utterance — read fresh from ~/.jarvis/voice-tts-voice
+        so a tray voice-pick hot-swaps with NO restart. Falls back to the
+        construction-time voice when the file is absent/empty."""
+        try:
+            v = open(
+                os.path.expanduser("~/.jarvis/voice-tts-voice"), encoding="utf-8"
+            ).read().strip()
+            if v:
+                return v
+        except Exception:
+            pass
+        return self._voice
+
     def synthesize(
         self,
         text: str,
@@ -111,7 +125,7 @@ class _KokoroChunkedStream(tts.ChunkedStream):
         payload = {
             "model": k._model,
             "input": text,
-            "voice": k._voice,
+            "voice": k._current_voice(),  # read fresh → hot-swaps with no restart
             "response_format": "mp3",
             "speed": k._speed,
         }

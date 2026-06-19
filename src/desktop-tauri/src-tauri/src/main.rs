@@ -1471,9 +1471,14 @@ fn local_choice_pick(app: &tauri::AppHandle, id: &str) {
             }
         }
     }
-    std::thread::spawn(|| {
-        let _ = restart_voice_agent_cmd();
-    });
+    // STT model is loaded at agent startup → restart to apply. The Kokoro voice
+    // is read fresh per-utterance by the adapter (providers/kokoro_tts.py), so it
+    // hot-swaps on the NEXT spoken line with no restart.
+    if is_stt {
+        std::thread::spawn(|| {
+            let _ = restart_voice_agent_cmd();
+        });
+    }
 }
 
 #[tauri::command]
