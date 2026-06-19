@@ -767,15 +767,48 @@ export interface SessionRow {
   inbound_floor_seq: number
 }
 
-/** Record the docker container backing a session ({container, repo}). */
+/** Persisted container meta — the git proxy scope + cap token live here, so no
+ *  schema change is needed (container_json is a JSON blob we own). */
+interface ContainerMeta {
+  container?: string
+  repo?: string
+  extraRepos?: string[]
+  gitCapToken?: string
+}
+
+function parseContainerMeta(session: SessionRow | null): ContainerMeta {
+  if (!session?.container_json) return {}
+  try {
+    return JSON.parse(session.container_json) as ContainerMeta
+  } catch {
+    return {}
+  }
+}
+
+/** Record the docker container backing a session, plus its git proxy scope. */
 export function setSessionContainer(
   store: Store,
   sessionId: string,
-  meta: { container: string; repo: string },
+  meta: { container: string; repo: string; extraRepos?: string[]; gitCapToken?: string },
 ): void {
   store.db
     .prepare('UPDATE sessions SET container_json = ? WHERE session_id = ?')
     .run(JSON.stringify(meta), sessionId)
+}
+
+/** Repos a session's git proxy may touch: primary + extras (verbatim casing). */
+export function getSessionGitScope(session: SessionRow): string[] {
+  const m = parseContainerMeta(session)
+  const out: string[] = []
+  if (m.repo) out.push(m.repo)
+  for (const r of m.extraRepos ?? []) if (r) out.push(r)
+  return out
+}
+
+/** True when `token` matches the session's stored git capability token. */
+export function validateGitCapToken(store: Store, sessionId: string, token: string): boolean {
+  const m = parseContainerMeta(findSession(store, sessionId))
+  return !!m.gitCapToken && m.gitCapToken === token
 }
 
 /** The persisted CLI worker launch spec — enough to re-exec the worker into an
