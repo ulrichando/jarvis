@@ -309,3 +309,47 @@ export function modelsByProvider(): Array<{
     models: Object.values(MODELS_META).filter((m) => m.provider === p),
   }));
 }
+
+// ── Dynamic Ollama models ──────────────────────────────────────────────────
+// The two MODELS_META entries above are static. Models the user `ollama pull`s
+// beyond those are discovered at runtime (see ollama-discovery.ts) and given
+// ids of the form "ollama:<tag>", which encode the tag so the server can route
+// them with no static registry entry (see models.ts::getModel).
+
+/** Static ollama entry id → its exact ollama tag. Lets the picker dedupe
+ *  discovered models against the curated ones (whose labels are nicer). */
+export const OLLAMA_STATIC_TAGS: Record<string, string> = {
+  "ollama-qwen3-30b-a3b": "qwen3:30b-a3b",
+  "ollama-gpt-oss-120b": "gpt-oss:120b",
+};
+
+const OLLAMA_DYNAMIC_ID_PREFIX = "ollama:";
+
+/** True for both static ("ollama-*") and discovered ("ollama:*") ids. */
+export function isOllamaId(id: string): boolean {
+  return (
+    id.startsWith(OLLAMA_DYNAMIC_ID_PREFIX) ||
+    MODELS_META[id]?.provider === "ollama"
+  );
+}
+
+/** Resolve any ollama model id (static or discovered) to its ollama tag. */
+export function ollamaIdToTag(id: string): string | null {
+  if (id.startsWith(OLLAMA_DYNAMIC_ID_PREFIX)) {
+    const tag = id.slice(OLLAMA_DYNAMIC_ID_PREFIX.length);
+    return tag || null;
+  }
+  return OLLAMA_STATIC_TAGS[id] ?? null;
+}
+
+/** Synthesize client-safe metadata for a discovered (non-static) ollama tag. */
+export function buildOllamaMeta(tag: string): ModelMeta {
+  return {
+    id: `${OLLAMA_DYNAMIC_ID_PREFIX}${tag}`,
+    label: `${tag} (Local)`,
+    description: `On-device via Ollama: ${tag}.`,
+    provider: "ollama",
+    // Unknown without an /api/show round-trip; a neutral display-only default.
+    contextWindow: 32_000,
+  };
+}
