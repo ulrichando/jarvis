@@ -75,10 +75,6 @@ struct AudioItemsInner {
 }
 struct AudioItems(Mutex<AudioItemsInner>);
 
-/// The "Voice brain: Local / Cloud" toggle item — retained so its label can be
-/// repainted after a toggle.
-struct VoiceModeLabel(Mutex<Option<MenuItem<Wry>>>);
-
 /// Local STT-model + Kokoro-voice picker items, retained for ✓ repaint.
 #[derive(Default)]
 struct LocalVoiceItemsInner {
@@ -1146,23 +1142,20 @@ fn set_share_label(active: bool, label: State<ShareLabel>) -> Result<(), String>
 /// --user transient unit is active. Mirrors the bash logic in
 /// bin/jarvis-mode::current_mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ActiveMode { Jarvis, Gemini, Openai }
+enum ActiveMode { Jarvis, Local, Gemini, Openai }
 
 fn detect_active_mode() -> ActiveMode {
-    // Windows has no systemd units — the active mode is tracked in
-    // ~/.jarvis/active-mode (written by bin/jarvis-mode.ps1, which supervises
-    // the Gemini Live / OpenAI Realtime tools as sounddevice processes).
+    // Gemini/OpenAI are separate direct-mode processes (tracked in
+    // ~/.jarvis/active-mode on Windows, systemd units on Linux). The
+    // JARVIS-Claude pipeline runs in two flavours selected by
+    // ~/.jarvis/voice-mode: cloud (Jarvis) or on-device (Local).
     #[cfg(windows)]
     {
         let p = jarvis_home().join(".jarvis").join("active-mode");
-        match std::fs::read_to_string(&p)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .as_deref()
-        {
-            Some("gemini") => ActiveMode::Gemini,
-            Some("openai") => ActiveMode::Openai,
-            _ => ActiveMode::Jarvis,
+        match std::fs::read_to_string(&p).ok().map(|s| s.trim().to_string()).as_deref() {
+            Some("gemini") => return ActiveMode::Gemini,
+            Some("openai") => return ActiveMode::Openai,
+            _ => {}
         }
     }
     #[cfg(not(windows))]
@@ -1175,13 +1168,13 @@ fn detect_active_mode() -> ActiveMode {
                 .unwrap_or(false)
         };
         if is_active("jarvis-gemini-tools.service") {
-            ActiveMode::Gemini
-        } else if is_active("jarvis-gpt-tools.service") {
-            ActiveMode::Openai
-        } else {
-            ActiveMode::Jarvis
+            return ActiveMode::Gemini;
+        }
+        if is_active("jarvis-gpt-tools.service") {
+            return ActiveMode::Openai;
         }
     }
+    if read_voice_mode() == "local" { ActiveMode::Local } else { ActiveMode::Jarvis }
 }
 
 /// Exposed to the React webview so the tray-icon poller can pick the
@@ -1194,7 +1187,8 @@ fn detect_active_mode() -> ActiveMode {
 #[tauri::command]
 fn get_active_mode() -> &'static str {
     match detect_active_mode() {
-        ActiveMode::Jarvis => "jarvis",
+        // Local is the JARVIS-Claude pipeline on-device — same :8767 status URL.
+        ActiveMode::Jarvis | ActiveMode::Local => "jarvis",
         ActiveMode::Gemini => "gemini",
         ActiveMode::Openai => "openai",
     }
@@ -1204,22 +1198,32 @@ fn get_active_mode() -> &'static str {
 /// active mode: rewrites the disabled header line ("Active: …") and
 /// adds/removes a "✓ " prefix on the three mode items.
 fn refresh_mode_menu(app: &tauri::AppHandle) {
-    let (header_text, jarvis_label, gemini_label, openai_label) = match detect_active_mode() {
+    let (header_text, jarvis_label, local_label, gemini_label, openai_label) = match detect_active_mode() {
         ActiveMode::Jarvis => (
-            "Active: JARVIS",
+            "Active: JARVIS (cloud)",
             "✓  JARVIS (audio + vision + tools)",
+            "Local (audio + vision + tools)",
+            "Gemini Live (audio + vision + tools)",
+            "OpenAI Realtime (audio + vision + tools)",
+        ),
+        ActiveMode::Local => (
+            "Active: Local (on-device)",
+            "JARVIS (audio + vision + tools)",
+            "✓  Local (audio + vision + tools)",
             "Gemini Live (audio + vision + tools)",
             "OpenAI Realtime (audio + vision + tools)",
         ),
         ActiveMode::Gemini => (
             "Active: Gemini Live",
             "JARVIS (audio + vision + tools)",
+            "Local (audio + vision + tools)",
             "✓  Gemini Live (audio + vision + tools)",
             "OpenAI Realtime (audio + vision + tools)",
         ),
         ActiveMode::Openai => (
             "Active: OpenAI Realtime",
             "JARVIS (audio + vision + tools)",
+            "Local (audio + vision + tools)",
             "Gemini Live (audio + vision + tools)",
             "✓  OpenAI Realtime (audio + vision + tools)",
         ),
@@ -1233,9 +1237,11 @@ fn refresh_mode_menu(app: &tauri::AppHandle) {
     }
     if let Some(items_state) = app.try_state::<ModeItems>() {
         if let Ok(guard) = items_state.0.lock() {
+            // Order: [jarvis, local, gemini, openai]
             if let Some(it) = guard.get(0) { let _ = it.set_text(jarvis_label); }
-            if let Some(it) = guard.get(1) { let _ = it.set_text(gemini_label); }
-            if let Some(it) = guard.get(2) { let _ = it.set_text(openai_label); }
+            if let Some(it) = guard.get(1) { let _ = it.set_text(local_label); }
+            if let Some(it) = guard.get(2) { let _ = it.set_text(gemini_label); }
+            if let Some(it) = guard.get(3) { let _ = it.set_text(openai_label); }
         }
     }
 }
@@ -1385,11 +1391,12 @@ fn audio_device_pick(app: &tauri::AppHandle, id: &str) {
     });
 }
 
-// ── Voice brain Local / Cloud toggle ───────────────────────────────────────
+// ── Voice-mode (Local / Cloud) state ───────────────────────────────────────
 //
-// Flips ~/.jarvis/voice-mode, which the voice agent reads at startup
-// (_apply_voice_mode) to swap STT + LLM + TTS together: local = faster-whisper
-// + qwen3 (Ollama) + Kokoro (on-device); cloud = Deepgram + Claude + Orpheus.
+// ~/.jarvis/voice-mode selects the JARVIS-Claude pipeline flavour, read by the
+// agent at startup (_apply_voice_mode): local = faster-whisper + qwen3 + Kokoro
+// (on-device); cloud = Deepgram + Claude + Orpheus. It's written by the
+// Conversation-mode "JARVIS" / "Local" items and read here for the active-mode ✓.
 
 fn read_voice_mode() -> &'static str {
     let p = jarvis_home().join(".jarvis").join("voice-mode");
@@ -1401,35 +1408,6 @@ fn read_voice_mode() -> &'static str {
         Some("local") => "local",
         _ => "cloud",
     }
-}
-
-fn voice_mode_menu_label(mode: &str) -> String {
-    if mode == "local" {
-        "Voice brain: Local  (on-device)".to_string()
-    } else {
-        "Voice brain: Cloud".to_string()
-    }
-}
-
-/// Toggle ~/.jarvis/voice-mode, repaint the label, and restart the voice stack
-/// so the agent re-reads it.
-fn toggle_voice_mode(app: &tauri::AppHandle) {
-    let next = if read_voice_mode() == "local" { "cloud" } else { "local" };
-    let dir = jarvis_home().join(".jarvis");
-    let _ = std::fs::create_dir_all(&dir);
-    let _ = std::fs::write(dir.join("voice-mode"), next);
-    eprintln!("[tray] voice-mode -> {next}");
-    if let Some(state) = app.try_state::<VoiceModeLabel>() {
-        if let Ok(guard) = state.0.lock() {
-            if let Some(item) = guard.as_ref() {
-                let _ = item.set_text(voice_mode_menu_label(next));
-            }
-        }
-    }
-    // Restart off the UI thread — restart_voice_agent_cmd() blocks ~5 s.
-    std::thread::spawn(|| {
-        let _ = restart_voice_agent_cmd();
-    });
 }
 
 /// Read a single-line ~/.jarvis/<name> config, or `default`.
@@ -2083,7 +2061,6 @@ fn main() {
         .manage(ModeLabel(Mutex::new(None)))
         .manage(ModeItems(Mutex::new(Vec::new())))
         .manage(AudioItems(Mutex::new(AudioItemsInner::default())))
-        .manage(VoiceModeLabel(Mutex::new(None)))
         .manage(LocalVoiceItems(Mutex::new(LocalVoiceItemsInner::default())))
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
@@ -2253,15 +2230,6 @@ fn main() {
                 "open_chat", "Open Chat Panel",
             ).build(app)?;
             let mute_item    = MenuItemBuilder::with_id("mute",         "Mute / Unmute Voice").build(app)?;
-            // Voice brain Local/Cloud toggle — flips STT+LLM+TTS on-device vs cloud
-            // via ~/.jarvis/voice-mode (read by the agent at startup) + restart.
-            let voice_mode_item = MenuItemBuilder::with_id(
-                "voice_mode_toggle", voice_mode_menu_label(read_voice_mode()),
-            ).build(app)?;
-            {
-                let vml: State<VoiceModeLabel> = app.state();
-                *vml.0.lock().unwrap() = Some(voice_mode_item.clone());
-            }
 
             // Local-voice model pickers — built here so they can nest inside the
             // "Models" submenu below, alongside Speech model / TTS voice (STT-model
@@ -2278,7 +2246,6 @@ fn main() {
                 let lvi: State<LocalVoiceItems> = app.state();
                 *lvi.0.lock().unwrap() = LocalVoiceItemsInner { stt: stt_items, voice: kvoice_items };
             }
-            let mode_local_sep = PredefinedMenuItem::separator(app)?;
 
             // ── Conversation mode submenu (2026-05-28) ──
             // Three voice-conversation backends, all carrying the same
@@ -2298,6 +2265,11 @@ fn main() {
             let mode_jarvis_item = MenuItemBuilder::with_id(
                 "mode_jarvis", "JARVIS (audio + vision + tools)",
             ).build(app)?;
+            // Local = the same JARVIS-Claude pipeline (tools + vision), but with
+            // on-device STT (faster-whisper) + LLM (qwen3) + TTS (Kokoro).
+            let mode_local_item = MenuItemBuilder::with_id(
+                "mode_local", "Local (audio + vision + tools)",
+            ).build(app)?;
             let mode_gemini_item = MenuItemBuilder::with_id(
                 "mode_gemini", "Gemini Live (audio + vision + tools)",
             ).build(app)?;
@@ -2312,10 +2284,9 @@ fn main() {
                 .item(&mode_current_item)
                 .item(&mode_header_sep)
                 .item(&mode_jarvis_item)
+                .item(&mode_local_item)
                 .item(&mode_gemini_item)
                 .item(&mode_openai_item)
-                .item(&mode_local_sep)
-                .item(&voice_mode_item)
                 .item(&mode_sep)
                 .item(&mode_status_item)
                 .build()?;
@@ -2327,6 +2298,7 @@ fn main() {
                 let mi: State<ModeItems> = app.state();
                 *mi.0.lock().unwrap() = vec![
                     mode_jarvis_item.clone(),
+                    mode_local_item.clone(),
                     mode_gemini_item.clone(),
                     mode_openai_item.clone(),
                 ];
@@ -2589,9 +2561,6 @@ fn main() {
                                 println!("[JARVIS] voice-chat toggle requested via tray");
                             }
                         }
-                        "voice_mode_toggle" => {
-                            toggle_voice_mode(app);
-                        }
                         "mute" => {
                             // Two voice paths exist in parallel: the legacy
                             // sidecar on :8765/api/mute (toggles useSpeech)
@@ -2648,9 +2617,21 @@ fn main() {
                         // Shell out to bin/jarvis-mode <arg>; the script
                         // handles the systemd-scope + JARVIS-mic-mute
                         // dance idempotently.
-                        id @ ("mode_jarvis" | "mode_gemini" | "mode_openai" | "mode_status") => {
+                        id @ ("mode_jarvis" | "mode_local" | "mode_gemini" | "mode_openai" | "mode_status") => {
+                            // mode_jarvis + mode_local are BOTH the JARVIS-Claude
+                            // pipeline; they differ only in ~/.jarvis/voice-mode
+                            // (cloud vs on-device), read by the agent at startup.
+                            // Write it first; both route through "jarvis" (which
+                            // also stops any Gemini/OpenAI direct mode).
+                            let is_jarvis_pipeline = id == "mode_jarvis" || id == "mode_local";
+                            if is_jarvis_pipeline {
+                                let dir = jarvis_home().join(".jarvis");
+                                let _ = std::fs::create_dir_all(&dir);
+                                let vmode = if id == "mode_local" { "local" } else { "cloud" };
+                                let _ = std::fs::write(dir.join("voice-mode"), vmode);
+                            }
                             let arg = match id {
-                                "mode_jarvis" => "jarvis",
+                                "mode_jarvis" | "mode_local" => "jarvis",
                                 "mode_gemini" => "gemini",
                                 "mode_openai" => "openai",
                                 _             => "status",
@@ -2689,6 +2670,16 @@ fn main() {
                                     .arg(arg)
                                     .spawn();
                                 println!("[JARVIS] tray → jarvis-mode {arg}");
+                            }
+                            // JARVIS-Claude pipeline (jarvis/local): restart the
+                            // voice stack so the new voice-mode (cloud/on-device)
+                            // takes effect — jarvis-mode only stops direct modes,
+                            // it doesn't re-read voice-mode.
+                            if is_jarvis_pipeline {
+                                std::thread::spawn(|| {
+                                    std::thread::sleep(std::time::Duration::from_millis(900));
+                                    let _ = restart_voice_agent_cmd();
+                                });
                             }
                             // Repaint the submenu shortly after the command
                             // settles (the direct-mode launch takes ~1 s to
