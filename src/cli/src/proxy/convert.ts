@@ -395,14 +395,17 @@ export function convertTools(anthropicTools: any[], provider: Provider): OpenAIT
   return tools
 }
 
-function resolveGroqReasoningEffort(req: any): 'low' | 'medium' | 'high' | undefined {
+// gpt-oss `reasoning_effort` (Groq AND local Ollama) accepts only
+// low/medium/high. Anthropic's 'xhigh'/'max' are super-set tiers — map them to
+// the strongest supported tier so cross-provider fallback + the local Ollama
+// path preserve user intent. Returns undefined when no concrete effort was
+// chosen, so callers can OMIT the field (Ollama validates it and 400s on a
+// bad/empty value — see applyProviderSpecificParams).
+function resolveReasoningEffort(req: any): 'low' | 'medium' | 'high' | undefined {
   const effort = req?.output_config?.effort
   if (effort === 'low' || effort === 'medium' || effort === 'high') {
     return effort
   }
-  // Groq's reasoning_effort only accepts low/medium/high. Anthropic's
-  // 'xhigh' and 'max' are super-set tiers — map them to the strongest
-  // Groq tier so cross-provider fallback preserves user intent.
   if (effort === 'xhigh' || effort === 'max') {
     return 'high'
   }
@@ -495,10 +498,23 @@ function applyProviderSpecificParams(out: any, req: any, provider: Provider): vo
       // aligned with the Anthropic-shaped UI expectations.
       out.include_reasoning = false
 
-      const reasoningEffort = resolveGroqReasoningEffort(req)
+      const reasoningEffort = resolveReasoningEffort(req)
       if (reasoningEffort) {
         out.reasoning_effort = reasoningEffort
       }
+    }
+  }
+
+  if (provider.name === 'ollama' && provider.model.includes('gpt-oss')) {
+    // Local gpt-oss on Ollama accepts the SAME top-level `reasoning_effort`
+    // (low/medium/high) over the OpenAI-compat endpoint, mapped to its native
+    // `think` level (default 'medium'). Ollama VALIDATES this field — a bad,
+    // boolean, or absent-as-false value 400s — so emit it ONLY when /effort
+    // resolved a concrete tier, and ONLY for gpt-oss (other Ollama models 400
+    // on the field). Omitting it falls back to gpt-oss's default reasoning.
+    const reasoningEffort = resolveReasoningEffort(req)
+    if (reasoningEffort) {
+      out.reasoning_effort = reasoningEffort
     }
   }
 }

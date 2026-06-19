@@ -126,7 +126,15 @@ const JARVIS_PROVIDER_DEFINITIONS: Record<
     baseUrl: (process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434') + '/v1',
     defaultModel: 'ollama',
     supportsToolChoice: false,
-    maxOutputTokens: 4096,
+    // 32768 — the proxy FLOORS hidden-reasoning models (gpt-oss-*) to exactly
+    // this value (convert.ts::convertRequest, ignoring the client's request),
+    // so reasoning + visible answer share it. 4096 was far too low: gpt-oss:120b
+    // burned the whole budget on chain-of-thought and truncated before any
+    // reply → "exceeded the N output token maximum". 32768 is well within both
+    // gpt-oss:120b (131K ctx) and qwen3:30b-a3b (131K YaRN ctx; Qwen's own
+    // recommended output length is 32768) — verified against the OpenAI/Qwen/
+    // Ollama docs 2026-06-19. Ollama maps max_tokens → num_predict.
+    maxOutputTokens: 32768,
   },
   kimi: {
     // Moonshot Kimi (K2.6 + vision). OpenAI-compatible endpoint.
@@ -438,7 +446,12 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     provider: 'ollama',
     upstreamModel: 'gpt-oss:120b',
     tiers: ['reasoning'],
-    capabilities: [],
+    // gpt-oss supports graded reasoning effort (low/medium/high) — the proxy
+    // forwards it as Ollama's OpenAI-compat `reasoning_effort` (convert.ts).
+    // Declaring 'effort' both enables /effort AND makes the client put
+    // output_config.effort on the wire (claude.ts::configureEffortParams).
+    // NOT 'max_effort': gpt-oss tops out at 'high' (xhigh/max map to high).
+    capabilities: ['effort'],
     visibleInPicker: true,
   },
   // Kimi K2.6 family — all four UI modes hit the same upstream API
@@ -557,6 +570,106 @@ export function isJarvisModelRegistryEnabled(): boolean {
   return process.env.JARVIS_MODEL_REGISTRY_ENABLED === '1'
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Dynamic Ollama discovery
+//
+// The static defs above hardcode two pulled models (qwen3-30b-a3b,
+// gpt-oss-120b). Anything else the user `ollama pull`s wouldn't appear. We
+// query the local Ollama daemon's /api/tags and surface every installed
+// model the static list doesn't already cover.
+//
+// Two halves, deliberately decoupled so they work across the CLI's two
+// processes (interactive picker + proxy):
+//   1. DISCOVERY (the cache below) runs in whatever process imports this
+//      module and lists models for the /model picker.
+//   2. RESOLUTION is STATELESS: a discovered model carries its ollama tag
+//      inside its id ("ollama:<tag>"), so getJarvisModel() can synthesize a
+//      full, routable definition with NO shared cache — the proxy (a
+//      separate process that never runs discovery) still resolves + routes a
+//      discovered model selected in the picker.
+const OLLAMA_DYNAMIC_ID_PREFIX = 'ollama:'
+
+function makeOllamaModelDefinition(tag: string): JarvisModelDefinition {
+  // gpt-oss tags (any size) support graded reasoning effort over Ollama's
+  // OpenAI-compat `reasoning_effort` field — surface /effort for them too, so
+  // a freshly-pulled gpt-oss model gets the same control as the curated entry.
+  const capabilities: readonly JarvisModelCapability[] = tag.includes('gpt-oss')
+    ? ['effort']
+    : []
+  return {
+    id: `${OLLAMA_DYNAMIC_ID_PREFIX}${tag}`,
+    label: `Ollama ${tag}`,
+    description: `Local · ${tag} (on-device via Ollama)`,
+    provider: 'ollama',
+    upstreamModel: tag,
+    tiers: ['balanced'] as const,
+    capabilities,
+    visibleInPicker: true,
+  }
+}
+
+// Tags already covered by a static def — discovered duplicates are dropped so
+// the curated entries (nicer labels) win.
+function staticOllamaTags(): Set<string> {
+  return new Set(
+    JARVIS_MODEL_DEFINITIONS.filter(m => m.provider === 'ollama').map(
+      m => m.upstreamModel,
+    ),
+  )
+}
+
+let dynamicOllamaModels: readonly JarvisModelDefinition[] = []
+let ollamaDiscoveryPromise: Promise<void> | null = null
+
+function ollamaApiBase(): string {
+  // The provider def appends '/v1' for the chat endpoint; /api/tags lives at
+  // the daemon root, so strip any trailing slash and target the bare host.
+  return (process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434').replace(
+    /\/+$/,
+    '',
+  )
+}
+
+/**
+ * Enumerate models installed in the local Ollama daemon and cache any the
+ * static registry doesn't already list. Memoized for the process lifetime,
+ * best-effort, and never throws — a missing/offline daemon simply leaves the
+ * static list untouched.
+ */
+export function refreshInstalledOllamaModels(): Promise<void> {
+  if (ollamaDiscoveryPromise) return ollamaDiscoveryPromise
+  ollamaDiscoveryPromise = (async () => {
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 1500)
+      try {
+        const res = await fetch(`${ollamaApiBase()}/api/tags`, {
+          signal: controller.signal,
+        })
+        if (!res.ok) return
+        const data = (await res.json()) as {
+          models?: Array<{ name?: string; model?: string }>
+        }
+        const covered = staticOllamaTags()
+        const seen = new Set<string>()
+        const discovered: JarvisModelDefinition[] = []
+        for (const m of data.models ?? []) {
+          const tag = (m.model ?? m.name ?? '').trim()
+          if (!tag || covered.has(tag) || seen.has(tag)) continue
+          seen.add(tag)
+          discovered.push(makeOllamaModelDefinition(tag))
+        }
+        dynamicOllamaModels = discovered
+      } finally {
+        clearTimeout(timeout)
+      }
+    } catch {
+      // Daemon offline / unreachable / malformed response — keep static list.
+    }
+  })()
+  return ollamaDiscoveryPromise
+}
+
 export function getDefaultJarvisProvider(): JarvisProviderName {
   const provider = process.env.JARVIS_PROVIDER
   if (provider && provider in JARVIS_PROVIDER_DEFINITIONS) {
@@ -576,7 +689,11 @@ export function getJarvisModels(): readonly JarvisModelDefinition[] {
 }
 
 export function getJarvisPickerModels(): readonly JarvisModelDefinition[] {
-  return JARVIS_MODEL_DEFINITIONS.filter(model => model.visibleInPicker !== false)
+  const staticVisible = JARVIS_MODEL_DEFINITIONS.filter(
+    model => model.visibleInPicker !== false,
+  )
+  if (dynamicOllamaModels.length === 0) return staticVisible
+  return [...staticVisible, ...dynamicOllamaModels]
 }
 
 export function getJarvisModel(
@@ -585,10 +702,24 @@ export function getJarvisModel(
   if (!modelId) {
     return undefined
   }
-  const normalized = modelId.trim().toLowerCase()
-  return JARVIS_MODEL_DEFINITIONS.find(
+  const trimmed = modelId.trim()
+  const normalized = trimmed.toLowerCase()
+  const staticMatch = JARVIS_MODEL_DEFINITIONS.find(
     model => model.id.toLowerCase() === normalized,
   )
+  if (staticMatch) return staticMatch
+  // Discovered-and-cached match (same process that ran discovery).
+  const dynamicMatch = dynamicOllamaModels.find(
+    model => model.id.toLowerCase() === normalized,
+  )
+  if (dynamicMatch) return dynamicMatch
+  // Stateless synthesis: any "ollama:<tag>" id resolves to a routable def
+  // even when discovery never ran in this process (e.g. the proxy).
+  if (normalized.startsWith(OLLAMA_DYNAMIC_ID_PREFIX)) {
+    const tag = trimmed.slice(OLLAMA_DYNAMIC_ID_PREFIX.length)
+    if (tag) return makeOllamaModelDefinition(tag)
+  }
+  return undefined
 }
 
 export function isJarvisModelId(modelId: string): boolean {
@@ -655,4 +786,11 @@ export function getJarvisDefaultModel(): JarvisModelDefinition {
     return providerDefault
   }
   return getPreferredJarvisModelForTier('default') ?? JARVIS_MODEL_DEFINITIONS[0]
+}
+
+// Kick off Ollama discovery at import so the /model picker reflects pulled
+// models without a manual refresh. Registry-gated so a non-registry CLI run
+// never makes a stray localhost request; best-effort and self-contained.
+if (isJarvisModelRegistryEnabled()) {
+  void refreshInstalledOllamaModels()
 }
