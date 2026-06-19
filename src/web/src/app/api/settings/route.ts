@@ -62,6 +62,15 @@ const patchSchema = z.object({
     })
     .partial()
     .optional(),
+  connections: z
+    .object({
+      ollama: z
+        .object({ baseURL: z.string().or(z.null()).optional() })
+        .partial()
+        .optional(),
+    })
+    .partial()
+    .optional(),
   appearance: z
     .object({
       fontSize: z.enum(["sm", "md", "lg"]).optional(),
@@ -131,6 +140,19 @@ export async function PATCH(req: Request) {
     nextIntegrations.github = nextGh;
   }
 
+  // Connections: ollama base URL (no key). Same null/empty-clears pattern.
+  const nextConnections = { ...current.connections };
+  if (patch.connections?.ollama) {
+    const prev = nextConnections.ollama ?? {};
+    const oPatch = patch.connections.ollama;
+    const nextOllama = { ...prev };
+    if (oPatch.baseURL !== undefined) {
+      nextOllama.baseURL =
+        oPatch.baseURL === null || oPatch.baseURL === "" ? undefined : oPatch.baseURL;
+    }
+    nextConnections.ollama = nextOllama;
+  }
+
   const next = settingsSchema.parse({
     ...current,
     user: { ...current.user, ...(patch.user ?? {}) },
@@ -138,6 +160,7 @@ export async function PATCH(req: Request) {
     capabilities: { ...current.capabilities, ...(patch.capabilities ?? {}) },
     defaults: { ...current.defaults, ...(patch.defaults ?? {}) },
     providers: nextProviders,
+    connections: nextConnections,
     appearance: { ...current.appearance, ...(patch.appearance ?? {}) },
     integrations: nextIntegrations,
   });

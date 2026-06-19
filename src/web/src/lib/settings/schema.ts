@@ -67,6 +67,23 @@ export const settingsSchema = z.object({
       groq: {},
       kimi: {},
     }),
+  // Local model backends reachable by base URL (no API key). Ollama is the
+  // OpenAI/Ollama-compatible local server the voice-agent's local LLM also
+  // uses (JARVIS_LOCAL_LLM_URL), so detecting/pulling here lands models in the
+  // SAME server the agent runs against.
+  connections: z
+    .object({
+      ollama: z
+        .object({
+          baseURL: z
+            .string()
+            .url()
+            .optional()
+            .or(z.literal("").transform(() => undefined)),
+        })
+        .default({}),
+    })
+    .default({ ollama: {} }),
   appearance: z
     .object({
       fontSize: z.enum(["sm", "md", "lg"]).default("md"),

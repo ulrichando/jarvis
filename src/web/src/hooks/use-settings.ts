@@ -7,7 +7,12 @@ import type { Settings } from "@/lib/settings/schema";
 export type RedactedSettings = Omit<Settings, "providers" | "integrations"> & {
   providers: Record<
     Provider,
-    { hasKey: boolean; keyPreview?: string; baseURL?: string }
+    {
+      hasKey: boolean;
+      keyPreview?: string;
+      keySource?: "settings" | "env";
+      baseURL?: string;
+    }
   >;
   integrations: {
     github: {
@@ -53,6 +58,7 @@ export type SettingsPatch = {
   providers?: Partial<
     Record<Provider, { apiKey?: string | null; baseURL?: string | null }>
   >;
+  connections?: { ollama?: { baseURL?: string | null } };
   appearance?: {
     fontSize?: "sm" | "md" | "lg";
     density?: "compact" | "cozy";
