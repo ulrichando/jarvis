@@ -126,6 +126,12 @@ CLAUDE.local.md
 # Source-only reference; not part of any JARVIS subtree.
 hermes/
 
+# Vendored Cookbook (Odysseus carve-out + its clone + the deps venv), 2026-06-19.
+# vendor/odysseus = upstream clone (source), vendor/cookbook = the minimal
+# carve-out the JARVIS Cookbook sidecar runs. AGPL-3.0; never committed into
+# JARVIS — reproducible from the clone + the file list in vendor/cookbook/VENDOR_NOTES.md.
+vendor/
+
 # livekit-server binary — fetched at install time via ensure_livekit_binary() in install.sh.
 # Pinned SHA-256 lives in setup/livekit-server.bin.sha256.
 /src/voice-agent/livekit-server.bin
