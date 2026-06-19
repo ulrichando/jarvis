@@ -109,6 +109,45 @@ def _load_user_keys_env() -> None:
             )
 
 _load_user_keys_env()
+
+
+def _apply_voice_mode() -> None:
+    """Read ~/.jarvis/voice-mode and, when 'local', flip STT + LLM + TTS to
+    on-device (faster-whisper + qwen3 + Kokoro) by setting the JARVIS_LOCAL_*
+    env BEFORE the stacks are built. The desktop tray's Local/Cloud toggle
+    writes this file; 'cloud' / absent = the normal cloud stack. Values are
+    FORCED (not setdefault) so local mode is the known-good validated stack and
+    overrides any global default (e.g. .env's JARVIS_LOCAL_LLM_MODEL=auto, which
+    resolves to a weaker model than the qwen3 voice pick)."""
+    try:
+        mode = (Path.home() / ".jarvis" / "voice-mode").read_text(
+            encoding="utf-8"
+        ).strip().lower()
+    except Exception:
+        return
+    if mode != "local":
+        return
+    for _k, _v in {
+        "JARVIS_LOCAL_STT_ENABLED": "1",
+        "JARVIS_LOCAL_STT_PRIMARY": "1",
+        "JARVIS_LOCAL_STT_MODEL":   "small",
+        "JARVIS_LOCAL_TTS_ENABLED": "1",
+        "JARVIS_LOCAL_TTS_ENGINE":  "kokoro",
+        "JARVIS_LOCAL_TTS_URL":     "http://127.0.0.1:8880/v1",
+        "JARVIS_LOCAL_TTS_VOICE":   "af_heart",
+        "JARVIS_LOCAL_TTS_PRIMARY": "1",
+        "JARVIS_LOCAL_LLM_ENABLED": "1",
+        "JARVIS_LOCAL_LLM_URL":     "http://127.0.0.1:11434/v1",
+        "JARVIS_LOCAL_LLM_MODEL":   "qwen3:30b-a3b",
+    }.items():
+        os.environ[_k] = _v
+    logging.getLogger("jarvis.config").info(
+        "[voice-mode] LOCAL - STT=faster-whisper, LLM=qwen3:30b-a3b, TTS=kokoro"
+    )
+
+
+_apply_voice_mode()
+
 from livekit.plugins import groq, openai as lk_openai, silero
 # ElevenLabs removed 2026-05-01 — see _build_dispatching_tts comment.
 
