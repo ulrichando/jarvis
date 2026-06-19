@@ -256,6 +256,22 @@ class VoiceClientHttpApi:
             self.state.tts_provider = TTS_PROVIDER_FILE.read_text(encoding="utf-8").strip()
         except FileNotFoundError:
             self.state.tts_provider = ""
+        # In local voice mode the agent FORCES the on-device stack (qwen3 + Kokoro)
+        # regardless of the cloud selections, so report THOSE — otherwise the
+        # tray's Speech/TTS headers keep showing the cloud picks (e.g. Orpheus)
+        # while Kokoro is actually speaking.
+        _cfgdir = os.path.join(os.path.expanduser("~"), ".jarvis")
+        try:
+            _vm = open(os.path.join(_cfgdir, "voice-mode"), encoding="utf-8").read().strip().lower()
+        except Exception:
+            _vm = ""
+        if _vm == "local":
+            self.state.speech_model = "ollama/qwen3:30b-a3b"
+            try:
+                _kv = open(os.path.join(_cfgdir, "voice-tts-voice"), encoding="utf-8").read().strip()
+            except Exception:
+                _kv = ""
+            self.state.tts_provider = "kokoro:" + (_kv or "af_heart")
         # Cheap stat call — flag file is touched/removed by the agent's
         # tool wrappers around every run_jarvis_cli call.
         self.state.tool_running  = TOOL_BUSY_FILE.exists()

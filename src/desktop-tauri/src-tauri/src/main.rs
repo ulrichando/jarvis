@@ -75,22 +75,13 @@ struct AudioItemsInner {
 }
 struct AudioItems(Mutex<AudioItemsInner>);
 
-/// Local STT-model + Kokoro-voice picker items, retained for ✓ repaint.
+/// Kokoro-voice picker items, retained for ✓ repaint.
 #[derive(Default)]
 struct LocalVoiceItemsInner {
-    stt:   Vec<(String, MenuItem<Wry>)>,
     voice: Vec<(String, MenuItem<Wry>)>,
 }
 struct LocalVoiceItems(Mutex<LocalVoiceItemsInner>);
 
-/// (value, label) options for the local STT-model picker (faster-whisper sizes).
-const STT_MODEL_CHOICES: &[(&str, &str)] = &[
-    ("tiny",     "Tiny  (fastest, least accurate)"),
-    ("base",     "Base"),
-    ("small",    "Small  (default)"),
-    ("medium",   "Medium"),
-    ("large-v3", "Large v3  (most accurate, slowest)"),
-];
 /// (value, label) for the local Kokoro voice picker (curated subset of 54).
 const KOKORO_VOICE_CHOICES: &[(&str, &str)] = &[
     ("af_heart",    "Heart  (US female, default)"),
@@ -932,6 +923,11 @@ const TTS_VOICES: &[(&str, &str)] = &[
 /// Map a TTS provider:voice spec to a short pretty label for the tray.
 /// Mirrors TTS_PROVIDERS_AVAILABLE in jarvis_voice_client.py.
 fn tts_provider_pretty(spec: &str) -> Option<&'static str> {
+    // Local mode reports "kokoro:<voice>"; show the on-device engine (the
+    // specific voice is reflected by the ✓ in the TTS-voice list).
+    if spec.starts_with("kokoro:") {
+        return Some("Kokoro (local)");
+    }
     TTS_VOICES.iter().find(|(s, _)| *s == spec).map(|(_, l)| *l)
 }
 
@@ -1420,11 +1416,8 @@ fn read_jarvis_cfg(name: &str, default: &str) -> String {
         .unwrap_or_else(|| default.to_string())
 }
 
-/// Build a "pick one" submenu from a static (value, label) list, ✓ on `current`.
-/// Item IDs are "<prefix><value>". Returns the submenu + items (for ✓ repaint).
-/// Build just the items for a "pick one" list (✓ on `current`). Used standalone
-/// (to merge into another submenu, e.g. Kokoro voices into "TTS voice") or via
-/// build_choice_submenu. IDs are "<prefix><value>".
+/// Build the items for a "pick one" list (✓ on `current`) to merge into a
+/// submenu (e.g. the Kokoro voices into "TTS voice"). IDs are "<prefix><value>".
 fn build_choice_items(
     app: &tauri::AppHandle,
     prefix: &str,
@@ -1440,21 +1433,6 @@ fn build_choice_items(
     Ok(stored)
 }
 
-fn build_choice_submenu(
-    app: &tauri::AppHandle,
-    title: &str,
-    prefix: &str,
-    options: &[(&str, &str)],
-    current: &str,
-) -> tauri::Result<(Submenu<Wry>, Vec<(String, MenuItem<Wry>)>)> {
-    let items = build_choice_items(app, prefix, options, current)?;
-    let mut builder = SubmenuBuilder::new(app, title);
-    for (_, item) in &items {
-        builder = builder.item(item);
-    }
-    Ok((builder.build()?, items))
-}
-
 fn refresh_choice_menu(items: &[(String, MenuItem<Wry>)], options: &[(&str, &str)], picked: &str) {
     for (val, item) in items {
         let label = options.iter().find(|(v, _)| v == val).map(|(_, l)| *l).unwrap_or(val.as_str());
@@ -1463,36 +1441,19 @@ fn refresh_choice_menu(items: &[(String, MenuItem<Wry>)], options: &[(&str, &str
     }
 }
 
-/// Handle a "sttmodel::<v>" / "kvoice::<v>" pick: write the config file the agent
-/// reads (~/.jarvis/voice-stt-model | voice-tts-voice), repaint, restart the stack.
+/// Handle a "kvoice::<voice>" pick: write ~/.jarvis/voice-tts-voice + repaint the
+/// ✓. NO restart — the Kokoro adapter reads the voice fresh per-utterance
+/// (providers/kokoro_tts.py), so it hot-swaps on the next spoken line.
 fn local_choice_pick(app: &tauri::AppHandle, id: &str) {
-    let (file, value, is_stt) = if let Some(v) = id.strip_prefix("sttmodel::") {
-        ("voice-stt-model", v, true)
-    } else if let Some(v) = id.strip_prefix("kvoice::") {
-        ("voice-tts-voice", v, false)
-    } else {
-        return;
-    };
+    let Some(value) = id.strip_prefix("kvoice::") else { return; };
     let dir = jarvis_home().join(".jarvis");
     let _ = std::fs::create_dir_all(&dir);
-    let _ = std::fs::write(dir.join(file), value);
-    eprintln!("[tray] {file} -> {value}");
+    let _ = std::fs::write(dir.join("voice-tts-voice"), value);
+    eprintln!("[tray] voice-tts-voice -> {value}");
     if let Some(state) = app.try_state::<LocalVoiceItems>() {
         if let Ok(g) = state.0.lock() {
-            if is_stt {
-                refresh_choice_menu(&g.stt, STT_MODEL_CHOICES, value);
-            } else {
-                refresh_choice_menu(&g.voice, KOKORO_VOICE_CHOICES, value);
-            }
+            refresh_choice_menu(&g.voice, KOKORO_VOICE_CHOICES, value);
         }
-    }
-    // STT model is loaded at agent startup → restart to apply. The Kokoro voice
-    // is read fresh per-utterance by the adapter (providers/kokoro_tts.py), so it
-    // hot-swaps on the NEXT spoken line with no restart.
-    if is_stt {
-        std::thread::spawn(|| {
-            let _ = restart_voice_agent_cmd();
-        });
     }
 }
 
@@ -2251,23 +2212,23 @@ fn main() {
             ).build(app)?;
             let mute_item    = MenuItemBuilder::with_id("mute",         "Mute / Unmute Voice").build(app)?;
 
-            // Local STT-model picker → its own "Local STT model ▸" submenu under
-            // Models. The Kokoro voices are built as ITEMS here and merged into
-            // the existing "TTS voice ▸" submenu below (one unified voice list).
-            // Both are effective only when Voice brain = Local.
-            let (stt_submenu, stt_items) = build_choice_submenu(
-                &app.handle(), "Local STT model ▸", "sttmodel::",
-                STT_MODEL_CHOICES, &read_jarvis_cfg("voice-stt-model", "small"),
-            )?;
+            // The Kokoro voices are built as ITEMS here and merged into the
+            // existing "TTS voice ▸" submenu below (one unified voice list).
+            // (No STT-model picker — faster-whisper "small" is the default.)
+            // ✓ on the active Kokoro voice only in local mode (cloud → no ✓).
+            let kvoice_current = if read_voice_mode() == "local" {
+                read_jarvis_cfg("voice-tts-voice", "af_heart")
+            } else {
+                String::new()
+            };
             let kvoice_items = build_choice_items(
-                &app.handle(), "kvoice::",
-                KOKORO_VOICE_CHOICES, &read_jarvis_cfg("voice-tts-voice", "af_heart"),
+                &app.handle(), "kvoice::", KOKORO_VOICE_CHOICES, &kvoice_current,
             )?;
             {
                 // Clones share the underlying menu items, so ✓-repaint via the
                 // state still updates what's shown in the TTS-voice submenu.
                 let lvi: State<LocalVoiceItems> = app.state();
-                *lvi.0.lock().unwrap() = LocalVoiceItemsInner { stt: stt_items, voice: kvoice_items.clone() };
+                *lvi.0.lock().unwrap() = LocalVoiceItemsInner { voice: kvoice_items.clone() };
             }
 
             // ── Conversation mode submenu (2026-05-28) ──
@@ -2427,8 +2388,11 @@ fn main() {
                 .map(|s| s.trim().to_string())
                 .unwrap_or_default();
 
+            // ✓ on a cloud Orpheus voice only in cloud mode — in local mode the
+            // active TTS is Kokoro, so the ✓ belongs on a Kokoro voice below.
+            let tts_cloud_mode = read_voice_mode() != "local";
             let tts_item_label = |spec: &str, label: &str| -> String {
-                if spec == saved_tts.as_str() { format!("✓  {label}") } else { label.to_string() }
+                if tts_cloud_mode && spec == saved_tts.as_str() { format!("✓  {label}") } else { label.to_string() }
             };
             let init_tts_header = tts_provider_pretty(&saved_tts)
                 .map(|p| format!("TTS: {p}"))
@@ -2490,7 +2454,6 @@ fn main() {
                 .item(&tts_current)
                 .item(&header_sep)
                 .item(&speech_submenu)
-                .item(&stt_submenu)
                 .item(&tool_submenu)
                 .item(&tts_sep)
                 .item(&tts_submenu)
@@ -2870,8 +2833,8 @@ fn main() {
                         id if id.starts_with("audioin::") || id.starts_with("audioout::") => {
                             audio_device_pick(app, id);
                         }
-                        // Local STT-model + Kokoro-voice pickers (dynamic IDs).
-                        id if id.starts_with("sttmodel::") || id.starts_with("kvoice::") => {
+                        // Local Kokoro-voice picker (dynamic IDs).
+                        id if id.starts_with("kvoice::") => {
                             local_choice_pick(app, id);
                         }
                         _ => {}
