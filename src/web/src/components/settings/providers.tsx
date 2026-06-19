@@ -157,7 +157,7 @@ function ProviderRow({
               }
             >
               <Check className="size-2.5" />
-              {stored.keyPreview}
+              {isEnvKey ? "set" : stored.keyPreview}
               {isEnvKey && <span className="opacity-70">· keys.env</span>}
             </span>
           ) : (
