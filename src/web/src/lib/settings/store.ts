@@ -73,7 +73,9 @@ export function redactForClient(settings: Settings): Settings & {
         k,
         {
           hasKey: effective.length > 0,
-          keyPreview: effective ? `••••${effective.slice(-4)}` : undefined,
+          // Don't ship last-4 of a keys.env secret the web app doesn't own —
+          // hasKey + keySource drive the UI; only preview web-stored keys.
+          keyPreview: settingsKey ? `••••${settingsKey.slice(-4)}` : undefined,
           keySource: settingsKey ? "settings" : envKey ? "env" : undefined,
           baseURL: v.baseURL,
         },
