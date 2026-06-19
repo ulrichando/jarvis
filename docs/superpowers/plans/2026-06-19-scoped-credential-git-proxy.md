@@ -32,7 +32,7 @@
 - Create: `src/lib/bridge/git-proxy.ts`
 - Test: `tests/bridge/git-proxy.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // tests/bridge/git-proxy.test.ts
@@ -71,12 +71,12 @@ describe('assertRepoAllowed', () => {
 })
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run tests/bridge/git-proxy.test.ts`
 Expected: FAIL — `Cannot find module '@/lib/bridge/git-proxy'`.
 
-- [ ] **Step 3: Implement the policy functions**
+- [x] **Step 3: Implement the policy functions**
 
 ```ts
 // src/lib/bridge/git-proxy.ts
@@ -128,12 +128,12 @@ export function assertRepoAllowed(allowedRepos: string[], owner: string, repo: s
 }
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `npx vitest run tests/bridge/git-proxy.test.ts`
 Expected: PASS (6 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/bridge/git-proxy.ts tests/bridge/git-proxy.test.ts
@@ -148,7 +148,7 @@ git commit -m "feat(code): git-proxy policy — parse smart-HTTP path + repo all
 - Modify: `src/lib/bridge/git-proxy.ts`
 - Test: `tests/bridge/git-proxy.test.ts`
 
-- [ ] **Step 1: Write the failing test** (append to the file)
+- [x] **Step 1: Write the failing test** (append to the file)
 
 ```ts
 import { afterEach, beforeEach, vi } from 'vitest'
@@ -192,12 +192,12 @@ describe('forwardToGithub', () => {
 })
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run tests/bridge/git-proxy.test.ts -t forwardToGithub`
 Expected: FAIL — `forwardToGithub is not a function`.
 
-- [ ] **Step 3: Implement `forwardToGithub`** (append to `git-proxy.ts`)
+- [x] **Step 3: Implement `forwardToGithub`** (append to `git-proxy.ts`)
 
 ```ts
 /**
@@ -237,12 +237,12 @@ export async function forwardToGithub(req: Request, target: GitRequest, pat: str
 }
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `npx vitest run tests/bridge/git-proxy.test.ts`
 Expected: PASS (8 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/bridge/git-proxy.ts tests/bridge/git-proxy.test.ts
@@ -257,7 +257,7 @@ git commit -m "feat(code): git-proxy forwarder — inject real PAT host-side, st
 - Modify: `src/lib/bridge/store.ts` (widen `setSessionContainer` ~`:771`; add helpers after it)
 - Test: `tests/bridge/store.test.ts`
 
-- [ ] **Step 1: Write the failing test** (append to `tests/bridge/store.test.ts`)
+- [x] **Step 1: Write the failing test** (append to `tests/bridge/store.test.ts`)
 
 ```ts
 import { setSessionContainer, getSessionGitScope, validateGitCapToken, findSession } from '@/lib/bridge/store'
@@ -285,12 +285,12 @@ describe('git scope + cap token', () => {
 
 > Note: `tests/bridge/store.test.ts` already imports `getStore` + calls `_resetForTests()` in `beforeEach`. If those imports are absent, add `import { _resetForTests, getStore } from '@/lib/bridge/db'` and a `beforeEach(() => _resetForTests())`.
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run tests/bridge/store.test.ts -t "git scope"`
 Expected: FAIL — `getSessionGitScope is not exported`.
 
-- [ ] **Step 3: Widen `setSessionContainer` + add helpers**
+- [x] **Step 3: Widen `setSessionContainer` + add helpers**
 
 Replace the existing `setSessionContainer` (around `:771`) with the widened signature and add the two helpers + the private parser directly below it:
 
@@ -339,12 +339,12 @@ export function validateGitCapToken(store: Store, sessionId: string, token: stri
 }
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `npx vitest run tests/bridge/store.test.ts -t "git scope"`
 Expected: PASS (2 tests). Then `npx vitest run tests/bridge/store.test.ts` — all green (widening is back-compat).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/bridge/store.ts tests/bridge/store.test.ts
@@ -359,7 +359,7 @@ git commit -m "feat(code): persist per-session git scope + cap token in containe
 - Create: `src/app/api/bridge/v1/code/sessions/[sessionId]/git/[...path]/route.ts`
 - Test: `tests/bridge/git-proxy.test.ts` (append a `describe('route')`)
 
-- [ ] **Step 1: Write the failing test** (append)
+- [x] **Step 1: Write the failing test** (append)
 
 ```ts
 import { _resetForTests, getStore } from '@/lib/bridge/db'
@@ -433,12 +433,12 @@ describe('git proxy route', () => {
 
 > `listSessionEvents(store, sessionId, sinceRowid)` already exists (`store.ts:1463`). If its signature differs, read it and adjust the call.
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run tests/bridge/git-proxy.test.ts -t "git proxy route"`
 Expected: FAIL — cannot import the route module.
 
-- [ ] **Step 3: Implement the route**
+- [x] **Step 3: Implement the route**
 
 ```ts
 // src/app/api/bridge/v1/code/sessions/[sessionId]/git/[...path]/route.ts
@@ -498,12 +498,12 @@ export async function POST(req: Request, ctx: Ctx): Promise<Response> {
 }
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `npx vitest run tests/bridge/git-proxy.test.ts`
 Expected: PASS (all, incl. the 4 route tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add "src/app/api/bridge/v1/code/sessions/[sessionId]/git/[...path]/route.ts" tests/bridge/git-proxy.test.ts
@@ -518,7 +518,7 @@ git commit -m "feat(code): git proxy route — cap-token auth, repo-scope gate, 
 - Modify: `src/lib/bridge/containers.ts` (`DEFAULT_ALLOW` `:53`; `configureGitCreds`→`configureGitProxy` `:353`; clone `:374-431`; `setSessionContainer` `:335`; `childEnv` `:628`)
 - Test: `tests/bridge/containers-git-proxy.test.ts` (new)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // tests/bridge/containers-git-proxy.test.ts
@@ -577,12 +577,12 @@ describe('launch keeps the real PAT out of the container', () => {
 })
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run tests/bridge/containers-git-proxy.test.ts`
 Expected: FAIL — clone still uses `https://x-access-token:ghp_REAL_SECRET@github.com...`, and `GH_TOKEN` present.
 
-- [ ] **Step 3a: Drop `github.com` from the squid allowlist**
+- [x] **Step 3a: Drop `github.com` from the squid allowlist**
 
 In `containers.ts`, edit `DEFAULT_ALLOW` (`:53`): remove the `".github.com"` entry (keep `.githubusercontent.com`). Update the comment to:
 
@@ -605,7 +605,7 @@ const DEFAULT_ALLOW = [
 ]
 ```
 
-- [ ] **Step 3b: Generate the cap token + persist scope at container setup**
+- [x] **Step 3b: Generate the cap token + persist scope at container setup**
 
 In `launchContainerSession`, find the `setSessionContainer(store, sessionId, { container: name, repo: repoFullName })` call (`:335`). Replace with a cap token + scope. Add just above the `await step('Set up a cloud container', …)` block (after `epoch` is computed, ~`:221`):
 
@@ -625,7 +625,7 @@ Then change the `setSessionContainer` call inside step 1 to:
     })
 ```
 
-- [ ] **Step 3c: Replace `configureGitCreds` with `configureGitProxy`**
+- [x] **Step 3c: Replace `configureGitCreds` with `configureGitProxy`**
 
 Replace the whole `configureGitCreds` function (`:353-372`) with a proxy-credential writer. It no longer embeds the real token; it writes the cap token for the proxy host only:
 
@@ -661,7 +661,7 @@ Replace the whole `configureGitCreds` function (`:353-372`) with a proxy-credent
 
 Then replace every remaining `configureGitCreds()` call site (the clone step `:407`, and the cache-snapshot re-write `:477`) with `configureGitProxy()`.
 
-- [ ] **Step 3d: Clone through the proxy (primary + extras + cache-hit remote reset)**
+- [x] **Step 3d: Clone through the proxy (primary + extras + cache-hit remote reset)**
 
 In the `step(cacheHit ? 'Restored repository' : 'Cloned repository', …)` block:
 
@@ -694,7 +694,7 @@ Extra repos (`:410-427`) — clone each via the proxy URL; drop the github.com `
     }
 ```
 
-- [ ] **Step 3e: Drop `GH_TOKEN`/`GITHUB_TOKEN` from the child env**
+- [x] **Step 3e: Drop `GH_TOKEN`/`GITHUB_TOKEN` from the child env**
 
 In the `childEnv` object (`:628`), delete the line:
 
@@ -704,7 +704,7 @@ In the `childEnv` object (`:628`), delete the line:
 
 `ghToken` is still fetched at `:345` (host-side, used by the PR path in Task 6); just stop injecting it into the container. If `ghToken` becomes unused after Task 6, the compiler/lint will flag it — keep it; Task 6 uses it host-side.
 
-- [ ] **Step 3f: Update the identity prompt (drop in-container `gh pr create`)**
+- [x] **Step 3f: Update the identity prompt (drop in-container `gh pr create`)**
 
 In the `identityPrompt` string (`:642-653`), replace the two PR sentences ("For substantial work also open a pull request: the gh CLI is authenticated…") with:
 
@@ -715,12 +715,12 @@ In the `identityPrompt` string (`:642-653`), replace the two PR sentences ("For 
 
 (Leave the rest of the prompt unchanged.)
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `npx vitest run tests/bridge/containers-git-proxy.test.ts`
 Expected: PASS. Then `npx vitest run tests/bridge/containers.test.ts` — fix any test that asserted the OLD token-in-clone / `set-url github.com` behavior (update those expectations to the proxy URL; the PR tests are handled in Task 6).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/bridge/containers.ts tests/bridge/containers-git-proxy.test.ts tests/bridge/containers.test.ts
@@ -736,7 +736,7 @@ git commit -m "feat(code): clone/push via git proxy; remove real PAT + GH_TOKEN 
 - Modify: `src/lib/bridge/containers.ts` (`createContainerPR` `:832`, `mergeContainerPR` `:890`)
 - Test: `tests/bridge/containers.test.ts` (update the existing PR/merge tests)
 
-- [ ] **Step 1: Write failing tests for the REST helpers** (append to `tests/bridge/github.test.ts`; create the file if absent)
+- [x] **Step 1: Write failing tests for the REST helpers** (append to `tests/bridge/github.test.ts`; create the file if absent)
 
 ```ts
 import { describe, expect, test, beforeEach, afterEach, vi } from 'vitest'
@@ -781,12 +781,12 @@ describe('mergePullRequest', () => {
 })
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run tests/bridge/github.test.ts`
 Expected: FAIL — `openPullRequest is not exported`.
 
-- [ ] **Step 3: Add the REST helpers to `github.ts`**
+- [x] **Step 3: Add the REST helpers to `github.ts`**
 
 Append to `src/lib/connectors/github.ts`:
 
@@ -847,12 +847,12 @@ export async function mergePullRequest(
 }
 ```
 
-- [ ] **Step 4: Run to verify the helpers pass**
+- [x] **Step 4: Run to verify the helpers pass**
 
 Run: `npx vitest run tests/bridge/github.test.ts`
 Expected: PASS (4 tests).
 
-- [ ] **Step 5: Refactor `createContainerPR` — push in-container, open PR host-side**
+- [x] **Step 5: Refactor `createContainerPR` — push in-container, open PR host-side**
 
 In `containers.ts`, change `createContainerPR` so the in-container script ONLY pushes + reports branch/base/repo (drop the in-container `gh pr create` / `gh pr view` lines), then call `openPullRequest` host-side. Replace the body from the `prLines` definition through the end of the function with:
 
@@ -890,7 +890,7 @@ In `containers.ts`, change `createContainerPR` so the in-container script ONLY p
   return { url: pr.url, branch: cur }
 ```
 
-- [ ] **Step 6: Refactor `mergeContainerPR` — read branch in-container, merge host-side**
+- [x] **Step 6: Refactor `mergeContainerPR` — read branch in-container, merge host-side**
 
 Replace `mergeContainerPR`'s body (`:890-915`) with:
 
@@ -915,14 +915,14 @@ Replace `mergeContainerPR`'s body (`:890-915`) with:
   return merged.ok ? { merged: true } : { error: merged.error }
 ```
 
-- [ ] **Step 7: Update the existing PR/merge tests + run**
+- [x] **Step 7: Update the existing PR/merge tests + run**
 
 In `tests/bridge/containers.test.ts`, the `createContainerPR`/`mergeContainerPR` tests currently assert the in-container `gh` output (`@@PRURL@@`). Update them: mock `@/lib/connectors/github` to also export `openPullRequest`/`mergePullRequest`/`githubPrStatus` (e.g. `openPullRequest: async () => ({ ok: true, url: 'https://gh/pr/1', number: 1 })`), and assert the returned `url` comes from that. The docker mock now only needs to answer the push script with `@@BASE@@main` / `@@BRANCH@@jarvis/...` on stdout.
 
 Run: `npx vitest run tests/bridge/containers.test.ts tests/bridge/github.test.ts`
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/lib/connectors/github.ts src/lib/bridge/containers.ts tests/bridge/github.test.ts tests/bridge/containers.test.ts
@@ -935,17 +935,17 @@ git commit -m "feat(code): open/merge PRs host-side via REST (no GitHub token in
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: Typecheck**
+- [x] **Step 1: Typecheck**
 
 Run: `npx tsc --noEmit`
 Expected: no errors. (If `ghToken` is reported unused in `containers.ts`, confirm it is still referenced by the clone-fallback/host path; if genuinely unused, remove its now-dead uses — but the PR path keeps `getGithubToken` host-side.)
 
-- [ ] **Step 2: Full web test suite**
+- [x] **Step 2: Full web test suite**
 
 Run: `npm test`
 Expected: all pass (new `git-proxy`, `containers-git-proxy`, `github`, updated `containers`, `store`).
 
-- [ ] **Step 3: Commit (if any test fixups were needed)**
+- [x] **Step 3: Commit (if any test fixups were needed)**
 
 ```bash
 git add -A
