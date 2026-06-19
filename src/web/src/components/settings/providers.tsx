@@ -6,6 +6,7 @@ import { Check, Eye, EyeOff, Loader2, Trash2, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SettingsSection } from "./field";
+import { OllamaConnection } from "./ollama-connection";
 import { ProviderDot } from "@/components/layout/provider-dot";
 import {
   useSettings,
@@ -69,6 +70,7 @@ export function ProvidersSection() {
           ))}
         </div>
       </SettingsSection>
+      <OllamaConnection />
     </>
   );
 }
