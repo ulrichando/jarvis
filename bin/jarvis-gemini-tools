@@ -47,7 +47,13 @@ from typing import Any, Optional
 # the voice-agent dir to sys.path so `import sanitizers` / `from tools
 # import registry` resolve.
 
-VOICE_AGENT_DIR = "/home/ulrich/Documents/Projects/jarvis/src/voice-agent"
+# Locate the voice-agent dir relative to this script (repo-root/bin/<this>),
+# so the import resolves regardless of platform or checkout path. (Was a
+# hardcoded Linux absolute path, which broke every non-Linux import.)
+VOICE_AGENT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "src", "voice-agent",
+)
 if VOICE_AGENT_DIR not in sys.path:
     sys.path.insert(0, VOICE_AGENT_DIR)
 
@@ -245,31 +251,22 @@ log = logging.getLogger("jarvis.gemini-tools")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
-# ── Audio I/O (parec / paplay) ─────────────────────────────────────────
-
-async def open_mic_stream() -> asyncio.subprocess.Process:
-    return await asyncio.create_subprocess_exec(
-        "parec",
-        "--format=s16le",
-        "--channels=1",
-        f"--rate={MIC_SAMPLE_RATE}",
-        "--latency-msec=80",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+# ── Audio I/O — cross-platform (Linux: parec/paplay, else: sounddevice) ──
+# The PulseAudio path lives in providers.direct_audio now, alongside a
+# sounddevice (PortAudio) backend for Windows/macOS that honours the same
+# FIFINE-in / Echo-Studio-out selection the voice client uses. Same interface
+# (mic.stdout.readexactly / spk.stdin.write+drain), so the loops below don't
+# change. Rates are passed explicitly (Gemini: mic 16k / spk 24k).
+from providers.direct_audio import open_mic_stream as _open_mic_stream
+from providers.direct_audio import open_speaker_stream as _open_speaker_stream
 
 
-async def open_speaker_stream() -> asyncio.subprocess.Process:
-    return await asyncio.create_subprocess_exec(
-        "paplay",
-        "--format=s16le",
-        "--channels=1",
-        f"--rate={SPK_SAMPLE_RATE}",
-        "--latency-msec=80",
-        "--raw",
-        stdin=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+async def open_mic_stream():
+    return await _open_mic_stream(MIC_SAMPLE_RATE)
+
+
+async def open_speaker_stream():
+    return await _open_speaker_stream(SPK_SAMPLE_RATE)
 
 
 # ── Screen capture ──────────────────────────────────────────────────
@@ -558,7 +555,16 @@ async def main() -> int:
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _stop, sig)
+        try:
+            loop.add_signal_handler(sig, _stop, sig)
+        except NotImplementedError:
+            # Windows asyncio has no add_signal_handler — fall back to the
+            # synchronous signal.signal (SIGINT works; SIGTERM best-effort;
+            # the supervisor force-kills via taskkill anyway).
+            try:
+                signal.signal(sig, _stop)
+            except (ValueError, OSError):
+                pass
 
     status = StatusServer(
         port=STATUS_PORT,
