@@ -1422,6 +1422,24 @@ fn read_jarvis_cfg(name: &str, default: &str) -> String {
 
 /// Build a "pick one" submenu from a static (value, label) list, ✓ on `current`.
 /// Item IDs are "<prefix><value>". Returns the submenu + items (for ✓ repaint).
+/// Build just the items for a "pick one" list (✓ on `current`). Used standalone
+/// (to merge into another submenu, e.g. Kokoro voices into "TTS voice") or via
+/// build_choice_submenu. IDs are "<prefix><value>".
+fn build_choice_items(
+    app: &tauri::AppHandle,
+    prefix: &str,
+    options: &[(&str, &str)],
+    current: &str,
+) -> tauri::Result<Vec<(String, MenuItem<Wry>)>> {
+    let mut stored: Vec<(String, MenuItem<Wry>)> = Vec::new();
+    for (val, label) in options {
+        let text = if *val == current { format!("✓  {label}") } else { label.to_string() };
+        let item = MenuItemBuilder::with_id(format!("{prefix}{val}"), text).build(app)?;
+        stored.push(((*val).to_string(), item));
+    }
+    Ok(stored)
+}
+
 fn build_choice_submenu(
     app: &tauri::AppHandle,
     title: &str,
@@ -1429,15 +1447,12 @@ fn build_choice_submenu(
     options: &[(&str, &str)],
     current: &str,
 ) -> tauri::Result<(Submenu<Wry>, Vec<(String, MenuItem<Wry>)>)> {
+    let items = build_choice_items(app, prefix, options, current)?;
     let mut builder = SubmenuBuilder::new(app, title);
-    let mut stored: Vec<(String, MenuItem<Wry>)> = Vec::new();
-    for (val, label) in options {
-        let text = if *val == current { format!("✓  {label}") } else { label.to_string() };
-        let item = MenuItemBuilder::with_id(format!("{prefix}{val}"), text).build(app)?;
-        builder = builder.item(&item);
-        stored.push(((*val).to_string(), item));
+    for (_, item) in &items {
+        builder = builder.item(item);
     }
-    Ok((builder.build()?, stored))
+    Ok((builder.build()?, items))
 }
 
 fn refresh_choice_menu(items: &[(String, MenuItem<Wry>)], options: &[(&str, &str)], picked: &str) {
@@ -2236,20 +2251,23 @@ fn main() {
             ).build(app)?;
             let mute_item    = MenuItemBuilder::with_id("mute",         "Mute / Unmute Voice").build(app)?;
 
-            // Local-voice model pickers — built here so they can nest inside the
-            // "Models" submenu below, alongside Speech model / TTS voice (STT-model
-            // size + Kokoro voice; effective only when Voice brain = Local).
+            // Local STT-model picker → its own "Local STT model ▸" submenu under
+            // Models. The Kokoro voices are built as ITEMS here and merged into
+            // the existing "TTS voice ▸" submenu below (one unified voice list).
+            // Both are effective only when Voice brain = Local.
             let (stt_submenu, stt_items) = build_choice_submenu(
                 &app.handle(), "Local STT model ▸", "sttmodel::",
                 STT_MODEL_CHOICES, &read_jarvis_cfg("voice-stt-model", "small"),
             )?;
-            let (kvoice_submenu, kvoice_items) = build_choice_submenu(
-                &app.handle(), "Local voice (Kokoro) ▸", "kvoice::",
+            let kvoice_items = build_choice_items(
+                &app.handle(), "kvoice::",
                 KOKORO_VOICE_CHOICES, &read_jarvis_cfg("voice-tts-voice", "af_heart"),
             )?;
             {
+                // Clones share the underlying menu items, so ✓-repaint via the
+                // state still updates what's shown in the TTS-voice submenu.
                 let lvi: State<LocalVoiceItems> = app.state();
-                *lvi.0.lock().unwrap() = LocalVoiceItemsInner { stt: stt_items, voice: kvoice_items };
+                *lvi.0.lock().unwrap() = LocalVoiceItemsInner { stt: stt_items, voice: kvoice_items.clone() };
             }
 
             // ── Conversation mode submenu (2026-05-28) ──
@@ -2419,12 +2437,24 @@ fn main() {
             let tts_current = MenuItemBuilder::with_id("tts_current", &init_tts_header)
                 .enabled(false)
                 .build(app)?;
-            let tts_gr_troy   = MenuItemBuilder::with_id("tts_gr_troy",   &tts_item_label("groq:troy",   "Groq Orpheus · Troy")).build(app)?;
-            let tts_gr_austin = MenuItemBuilder::with_id("tts_gr_austin", &tts_item_label("groq:austin", "Groq Orpheus · Austin")).build(app)?;
-            let tts_submenu = SubmenuBuilder::new(app, "TTS voice ▸")
+            let tts_gr_troy   = MenuItemBuilder::with_id("tts_gr_troy",   &tts_item_label("groq:troy",   "Groq Orpheus · Troy  (cloud)")).build(app)?;
+            let tts_gr_austin = MenuItemBuilder::with_id("tts_gr_austin", &tts_item_label("groq:austin", "Groq Orpheus · Austin  (cloud)")).build(app)?;
+            // Unified voice list: cloud Orpheus voices + the on-device Kokoro
+            // voices merged in below (the Kokoro ones take effect only when
+            // Voice brain = Local; they hot-swap with no restart).
+            let tts_kokoro_sep = PredefinedMenuItem::separator(app)?;
+            let tts_local_hdr = MenuItemBuilder::with_id("tts_local_hdr", "On-device (Kokoro):")
+                .enabled(false)
+                .build(app)?;
+            let mut tts_builder = SubmenuBuilder::new(app, "TTS voice ▸")
                 .item(&tts_gr_troy)
                 .item(&tts_gr_austin)
-                .build()?;
+                .item(&tts_kokoro_sep)
+                .item(&tts_local_hdr);
+            for (_, item) in &kvoice_items {
+                tts_builder = tts_builder.item(item);
+            }
+            let tts_submenu = tts_builder.build()?;
 
             // ── TOOL submenu (nested under Models) ──
             // No restart needed — every run_jarvis_cli call re-reads
@@ -2464,7 +2494,6 @@ fn main() {
                 .item(&tool_submenu)
                 .item(&tts_sep)
                 .item(&tts_submenu)
-                .item(&kvoice_submenu)
                 .build()?;
 
             // Hand dynamic header items to managed state so the label
