@@ -139,7 +139,9 @@ def _apply_voice_mode() -> None:
     for _k, _v in {
         "JARVIS_LOCAL_STT_ENABLED": "1",
         "JARVIS_LOCAL_STT_PRIMARY": "1",
-        "JARVIS_LOCAL_STT_MODEL":   _cfg("voice-stt-model", "small"),
+        # Fixed to faster-whisper large-v3 (the user's pick — most accurate).
+        # No size option anymore; the tray STT-model picker was removed.
+        "JARVIS_LOCAL_STT_MODEL":   "large-v3",
         "JARVIS_LOCAL_TTS_ENABLED": "1",
         "JARVIS_LOCAL_TTS_ENGINE":  "kokoro",
         "JARVIS_LOCAL_TTS_URL":     "http://127.0.0.1:8880/v1",
