@@ -2263,6 +2263,23 @@ fn main() {
                 *vml.0.lock().unwrap() = Some(voice_mode_item.clone());
             }
 
+            // Local-voice pickers — built here so they can nest inside the
+            // Conversation mode submenu below (STT-model size + Kokoro voice;
+            // effective only when Voice brain = Local).
+            let (stt_submenu, stt_items) = build_choice_submenu(
+                &app.handle(), "Local STT model ▸", "sttmodel::",
+                STT_MODEL_CHOICES, &read_jarvis_cfg("voice-stt-model", "small"),
+            )?;
+            let (kvoice_submenu, kvoice_items) = build_choice_submenu(
+                &app.handle(), "Local voice (Kokoro) ▸", "kvoice::",
+                KOKORO_VOICE_CHOICES, &read_jarvis_cfg("voice-tts-voice", "af_heart"),
+            )?;
+            {
+                let lvi: State<LocalVoiceItems> = app.state();
+                *lvi.0.lock().unwrap() = LocalVoiceItemsInner { stt: stt_items, voice: kvoice_items };
+            }
+            let mode_local_sep = PredefinedMenuItem::separator(app)?;
+
             // ── Conversation mode submenu (2026-05-28) ──
             // Three voice-conversation backends, all carrying the same
             // audio + screen vision + tool surface:
@@ -2297,6 +2314,10 @@ fn main() {
                 .item(&mode_jarvis_item)
                 .item(&mode_gemini_item)
                 .item(&mode_openai_item)
+                .item(&mode_local_sep)
+                .item(&voice_mode_item)
+                .item(&stt_submenu)
+                .item(&kvoice_submenu)
                 .item(&mode_sep)
                 .item(&mode_status_item)
                 .build()?;
@@ -2503,31 +2524,15 @@ fn main() {
             let mic_submenu = build_audio_submenu(&app.handle(), "input",  "Microphone ▸", &mic_devs, &cur_in)?;
             let spk_submenu = build_audio_submenu(&app.handle(), "output", "Speaker ▸",    &spk_devs, &cur_out)?;
 
-            // Local-voice pickers — STT model (faster-whisper size) + Kokoro voice.
-            // Write ~/.jarvis/voice-{stt-model,tts-voice}; the agent reads them in
-            // local mode. Effective only when Voice brain = Local.
-            let (stt_submenu, stt_items) = build_choice_submenu(
-                &app.handle(), "Local STT model ▸", "sttmodel::",
-                STT_MODEL_CHOICES, &read_jarvis_cfg("voice-stt-model", "small"),
-            )?;
-            let (kvoice_submenu, kvoice_items) = build_choice_submenu(
-                &app.handle(), "Local voice (Kokoro) ▸", "kvoice::",
-                KOKORO_VOICE_CHOICES, &read_jarvis_cfg("voice-tts-voice", "af_heart"),
-            )?;
-            {
-                let lvi: State<LocalVoiceItems> = app.state();
-                *lvi.0.lock().unwrap() = LocalVoiceItemsInner { stt: stt_items, voice: kvoice_items };
-            }
-
+            // The Voice-brain toggle + Local STT-model/voice pickers now live
+            // INSIDE the Conversation mode submenu (built above), so they're not
+            // added to the top level here.
             let menu = MenuBuilder::new(app)
                 .item(&voice_chat_item)
                 .item(&mute_item)
-                .item(&voice_mode_item)
                 .item(&mode_submenu)
                 .item(&mic_submenu)
                 .item(&spk_submenu)
-                .item(&stt_submenu)
-                .item(&kvoice_submenu)
                 .item(&focus_mode_submenu)
                 .item(&sep1)
                 .item(&browser_item)
