@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getStore } from '@/lib/bridge/db'
-import { listEnvironments } from '@/lib/bridge/store'
+import { listEnvironments, reapStaleSandboxes, isEnvironmentOnline } from '@/lib/bridge/store'
 import { getUserId } from '@/lib/auth-helpers'
 import { bridgeError } from '@/lib/bridge/errors'
 
@@ -12,6 +12,8 @@ export async function GET(req: Request): Promise<NextResponse> {
   try {
     const store = getStore()
     const userId = await getUserId(req.headers)
+    reapStaleSandboxes(store) // lazy GC of stale cloud sandboxes
+    const now = Date.now()
     const environments = listEnvironments(store, userId).map((e) => ({
       environment_id: e.environment_id,
       machine_name: e.machine_name,
@@ -22,6 +24,7 @@ export async function GET(req: Request): Promise<NextResponse> {
       worker_type: e.worker_type,
       created_at: e.created_at,
       last_seen_at: e.last_seen_at,
+      online: isEnvironmentOnline(e, now),
     }))
     return NextResponse.json({ environments })
   } catch (err) {

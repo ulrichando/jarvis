@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach } from 'vitest'
+import { describe, expect, test, beforeEach, vi } from 'vitest'
 import { _resetForTests, getStore } from '@/lib/bridge/db'
 import {
   createEnvironment,
@@ -8,6 +8,12 @@ import {
   SANDBOX_TTL_MS,
   ONLINE_TTL_MS,
 } from '@/lib/bridge/store'
+
+// The route resolves the caller via better-auth; tests have no cookie → pin to
+// LOCAL_USER_ID (the same getUserId fallback + the owner the test envs use).
+vi.mock('@/lib/auth-helpers', () => ({
+  getUserId: async () => '00000000-0000-0000-0000-000000000001',
+}))
 
 const USER = '00000000-0000-0000-0000-000000000001'
 
@@ -93,5 +99,27 @@ describe('reaper + online', () => {
     }
     expect(isEnvironmentOnline({ ...base, last_seen_at: now - 1000 }, now)).toBe(true)
     expect(isEnvironmentOnline({ ...base, last_seen_at: now - ONLINE_TTL_MS - 1000 }, now)).toBe(false)
+  })
+})
+
+describe('GET /environments', () => {
+  test('reaps stale sandbox + returns online flag', async () => {
+    const store = getStore()
+    const now = Date.now()
+    const stale = createEnvironment(store, { machine_name: 'Cloud container', directory: '/workspace', max_sessions: 4, worker_type: 'container', user_id: USER })
+    createEnvironment(store, { machine_name: 'Moon', directory: '/repo', max_sessions: 4, worker_type: 'claude_code_repl', user_id: USER })
+    store.db
+      .prepare('UPDATE environments SET last_seen_at = ? WHERE environment_id = ?')
+      .run(now - SANDBOX_TTL_MS - 1000, stale.environment_id)
+
+    const { GET } = await import('@/app/api/bridge/v1/environments/route')
+    const res = await GET(new Request('http://127.0.0.1:3000/api/bridge/v1/environments'))
+    const body = (await res.json()) as {
+      environments: Array<{ machine_name: string; online: boolean; worker_type: string }>
+    }
+
+    expect(body.environments).toHaveLength(1) // stale sandbox reaped
+    expect(body.environments[0].machine_name).toBe('Moon')
+    expect(body.environments[0].online).toBe(true)
   })
 })
