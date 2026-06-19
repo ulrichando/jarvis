@@ -5,6 +5,12 @@ import {
   forwardToGithub,
   type GitRequest,
 } from '@/lib/bridge/git-proxy'
+import { _resetForTests, getStore } from '@/lib/bridge/db'
+import { setSessionContainer } from '@/lib/bridge/store'
+import { getGithubToken } from '@/lib/connectors/github'
+
+// getGithubToken is host-side; per-test we set its return. (Hoisted by vitest.)
+vi.mock('@/lib/connectors/github', () => ({ getGithubToken: vi.fn() }))
 
 describe('parseGitRequest', () => {
   test('info/refs fetch (v1+v2 share the path)', () => {
@@ -75,5 +81,78 @@ describe('forwardToGithub', () => {
     expect(String(url)).toBe('https://github.com/o/r.git/git-receive-pack')
     expect(init.method).toBe('POST')
     expect(init.duplex).toBe('half')
+  })
+})
+
+describe('git proxy route', () => {
+  function seed(scopeRepo = 'owner/demo', cap = 'git_cap') {
+    const store = getStore()
+    store.db
+      .prepare('INSERT INTO sessions (session_id, environment_id, archived, created_at, worker_epoch) VALUES (?, NULL, 0, ?, 0)')
+      .run('sess1', Date.now())
+    setSessionContainer(store, 'sess1', { container: 'c', repo: scopeRepo, gitCapToken: cap })
+  }
+  function basic(cap: string) {
+    return 'Basic ' + Buffer.from(`x-access-token:${cap}`).toString('base64')
+  }
+  function ctx(path: string[]) {
+    return { params: Promise.resolve({ sessionId: 'sess1', path }) }
+  }
+  async function route() {
+    // A variable specifier so vite doesn't glob-scan the literal [...path]
+    // catch-all brackets (a static string here fails module resolution).
+    const mod = '@/app/api/bridge/v1/code/sessions/[sessionId]/git/[...path]/route'
+    return import(/* @vite-ignore */ mod)
+  }
+
+  beforeEach(() => {
+    _resetForTests()
+    vi.mocked(getGithubToken).mockResolvedValue('PAT')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('OK', { status: 200, headers: { 'content-type': 'application/x-git-upload-pack-advertisement' } })),
+    )
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  test('401 on bad cap token', async () => {
+    seed()
+    const { GET } = await route()
+    const req = new Request('http://h/info/refs?service=git-upload-pack', { headers: { authorization: basic('wrong') } })
+    const res = await GET(req, ctx(['owner', 'demo.git', 'info', 'refs']))
+    expect(res.status).toBe(401)
+  })
+
+  test('403 + audit event on out-of-scope repo', async () => {
+    seed('owner/demo', 'git_cap')
+    const { GET } = await route()
+    const req = new Request('http://h/info/refs?service=git-upload-pack', { headers: { authorization: basic('git_cap') } })
+    const res = await GET(req, ctx(['evil', 'other.git', 'info', 'refs']))
+    expect(res.status).toBe(403)
+    const rows = getStore().db
+      .prepare('SELECT payload_json FROM session_events WHERE session_id = ?')
+      .all('sess1') as Array<{ payload_json: string }>
+    expect(rows.some((r) => /blocked out-of-scope/.test(r.payload_json))).toBe(true)
+  })
+
+  test('happy path forwards + streams 200', async () => {
+    seed('owner/demo', 'git_cap')
+    const { GET } = await route()
+    const req = new Request('http://h/info/refs?service=git-upload-pack', { headers: { authorization: basic('git_cap') } })
+    const res = await GET(req, ctx(['owner', 'demo.git', 'info', 'refs']))
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('x-git-upload-pack-advertisement')
+    const [url, init] = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(String(url)).toContain('github.com/owner/demo.git/info/refs')
+    expect((init.headers as Headers).get('authorization')).toContain('Basic ')
+  })
+
+  test('503 when no PAT host-side', async () => {
+    seed('owner/demo', 'git_cap')
+    vi.mocked(getGithubToken).mockResolvedValue(null)
+    const { GET } = await route()
+    const req = new Request('http://h/info/refs?service=git-upload-pack', { headers: { authorization: basic('git_cap') } })
+    const res = await GET(req, ctx(['owner', 'demo.git', 'info', 'refs']))
+    expect(res.status).toBe(503)
   })
 })
