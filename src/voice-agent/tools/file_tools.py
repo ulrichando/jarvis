@@ -102,29 +102,54 @@ def _is_blocked_device(filepath: str) -> bool:
 # Sensitive-path write guard — refuse writes to system/credential files
 # ---------------------------------------------------------------------------
 
+# Unix system prefixes (lowercase, forward-slash). Matched against the RAW
+# path too, so a Unix path emitted on Windows ('/etc/passwd' → C:\etc\passwd
+# after resolve()) is still refused.
 _SENSITIVE_PATH_PREFIXES = (
     "/etc/", "/boot/", "/usr/lib/systemd/",
     "/private/etc/", "/private/var/",
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
+# Windows + cross-platform credential/system locations (substring, lowercase,
+# forward-slash). Covers System32/SysWOW64 (registry hives, drivers\etc\hosts)
+# and per-user secret stores on every OS.
+_SENSITIVE_SUBSTRINGS = (
+    "/windows/system32/", "/windows/syswow64/",
+    "/.ssh/", "/.aws/", "/.gnupg/",
+    "/microsoft/credentials/", "/microsoft/crypto/", "/microsoft/vault/",
+)
 
 
 def _check_sensitive_path(filepath: str) -> Optional[str]:
-    """Return an error string if the path targets a sensitive system location."""
-    try:
-        resolved = str(Path(filepath).expanduser().resolve())
-    except (OSError, ValueError):
-        resolved = filepath
-    normalized = os.path.normpath(os.path.expanduser(filepath))
+    """Return an error string if the path targets a sensitive system location.
+
+    Cross-platform: Unix prefixes match the raw path (so a Unix-style path is
+    refused on Windows where resolve() would rewrite '/etc/passwd' to
+    C:\\etc\\passwd), and Windows system/credential locations match the resolved
+    path. All comparisons are forward-slashed + lowercased."""
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
-        "Use the terminal tool with sudo if you need to modify system files."
+        "Use the terminal tool (with elevation) if you genuinely need to modify system files."
     )
+
+    def _norm(s: str) -> str:
+        return s.replace("\\", "/").lower()
+
+    raw = _norm(filepath)
+    try:
+        resolved = _norm(str(Path(filepath).expanduser().resolve()))
+    except (OSError, ValueError):
+        resolved = raw
+
     for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
+        if raw.startswith(prefix) or resolved.startswith(prefix):
             return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
-        return _err
+    for exact in _SENSITIVE_EXACT_PATHS:
+        if raw == exact or resolved == exact:
+            return _err
+    for sub in _SENSITIVE_SUBSTRINGS:
+        if sub in raw or sub in resolved:
+            return _err
     return None
 
 
@@ -869,6 +894,70 @@ def _search_by_name(pattern: str, root: Path, limit: int, offset: int) -> str:
         return tool_error(str(exc))
 
 
+_SEARCH_SKIP_DIRS = {
+    ".git", "node_modules", "__pycache__", ".venv", "venv", "env",
+    "target", "dist", ".next", ".mypy_cache", ".pytest_cache", "build",
+}
+
+
+def _match_path(line: str) -> str:
+    """Extract the file path from an rg/grep 'path:lineno:text' line.
+    Handles Windows drive prefixes ('C:\\...') that a naive split(':')[0]
+    would truncate to just the drive letter."""
+    m = re.match(r"^(.*?):\d+[:\-]", line)
+    return m.group(1) if m else line.split(":")[0]
+
+
+def _python_content_search(
+    pattern: str, root: str, file_glob: Optional[str], context: int,
+) -> list:
+    """Cross-platform pure-Python content search — the fallback used when
+    ripgrep isn't installed. Returns rg-style 'path:lineno:text' lines
+    (matches + any -C context lines).
+
+    We deliberately do NOT shell out to grep here: MSYS/Git-Bash grep on
+    Windows glob-expands the ``--include`` argument before grep sees it, which
+    shifts the positional args and silently turns the search pattern into a
+    (missing) filename — returning zero matches with no error. grep is also not
+    guaranteed present cross-platform. Pure Python always works."""
+    import fnmatch
+    try:
+        rx = re.compile(pattern)
+    except re.error:
+        rx = re.compile(re.escape(pattern))
+
+    rp = Path(root)
+    if rp.is_file():
+        files = [rp]
+    else:
+        files = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in _SEARCH_SKIP_DIRS]
+            for fn in filenames:
+                if file_glob and not fnmatch.fnmatch(fn, file_glob):
+                    continue
+                files.append(Path(dirpath) / fn)
+
+    out: list = []
+    for fp in files:
+        try:
+            data = fp.read_bytes()
+        except OSError:
+            continue
+        if b"\x00" in data[:8192]:  # binary file — skip, like rg/grep
+            continue
+        lines = data.decode("utf-8", errors="replace").splitlines()
+        emit: set = set()
+        for i, line in enumerate(lines):
+            if rx.search(line):
+                lo = max(0, i - context)
+                hi = min(len(lines), i + context + 1)
+                emit.update(range(lo, hi))
+        for j in sorted(emit):
+            out.append(f"{fp}:{j + 1}:{lines[j]}")
+    return out
+
+
 def _search_content(
     pattern: str,
     root: Path,
@@ -879,7 +968,7 @@ def _search_content(
     context: int,
     loop_count: int,
 ) -> str:
-    """Search file contents using ripgrep (or grep fallback)."""
+    """Search file contents using ripgrep (pure-Python fallback when absent)."""
     try:
         cmd = ["rg", "--line-number", "--no-heading"]
         if context > 0:
@@ -898,16 +987,13 @@ def _search_content(
                 raise FileNotFoundError(proc.stderr.strip()[:200] or "rg failed")
             raw_lines = proc.stdout.splitlines()
         except FileNotFoundError:
-            # Fallback to grep
-            grep_cmd = ["grep", "-rn", "--include", file_glob or "*"]
-            if context > 0:
-                grep_cmd += ["-C", str(context)]
-            grep_cmd += ["-I", pattern, str(root)]  # -I = skip binary
+            # ripgrep not installed → pure-Python fallback (NOT grep — MSYS grep
+            # on Windows glob-expands --include and returns zero matches; grep
+            # also isn't guaranteed cross-platform).
             try:
-                proc2 = subprocess.run(grep_cmd, capture_output=True, text=True, timeout=30, errors="replace")
-                raw_lines = proc2.stdout.splitlines()
+                raw_lines = _python_content_search(pattern, str(root), file_glob, context)
             except Exception as exc2:
-                return tool_error(f"search_files: ripgrep not found and grep fallback failed: {exc2}")
+                return tool_error(f"search_files: ripgrep unavailable and Python fallback failed: {exc2}")
         except subprocess.TimeoutExpired:
             return tool_error("search_files: search timed out after 30 seconds")
 
@@ -920,7 +1006,7 @@ def _search_content(
             seen: set = set()
             files: list = []
             for line in page_lines:
-                fp = line.split(":")[0]
+                fp = _match_path(line)
                 if fp not in seen:
                     seen.add(fp)
                     files.append(fp)
@@ -935,7 +1021,7 @@ def _search_content(
             # Count matches per file.
             counts: dict = {}
             for line in raw_lines:
-                fp = line.split(":")[0]
+                fp = _match_path(line)
                 counts[fp] = counts.get(fp, 0) + 1
             result_dict = {
                 "counts": counts,
