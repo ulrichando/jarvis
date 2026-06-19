@@ -33,6 +33,13 @@ vi.mock('@/lib/auth-helpers', () => ({
 vi.mock('@/lib/connectors/github', () => ({
   getGithubToken: async () => 'ghp_test_token',
   githubStatus: async () => ({ connected: true, login: 'tester' }),
+  // PR open/merge are host-side now — default to success; tests override.
+  openPullRequest: vi.fn(async () => ({ ok: true, url: 'https://github.com/owner/demo/pull/7', number: 7 })),
+  mergePullRequest: vi.fn(async () => ({ ok: true })),
+  githubPrStatus: vi.fn(async () => ({
+    ok: true,
+    status: { pr: { number: 7, url: 'https://github.com/owner/demo/pull/7', state: 'open', draft: false }, checks: null, sha: null },
+  })),
 }))
 // Hermetic MCP: no connectors injected by default (the real ~/.jarvis/mcp.json
 // would otherwise leak a Connectors status into these tests). The injection
@@ -364,7 +371,7 @@ describe('launchContainerSession', () => {
     expect('error' in result).toBe(true)
   })
 
-  test('createContainerPR commits/pushes and returns the PR url from the container', async () => {
+  test('createContainerPR pushes in-container and opens the PR host-side', async () => {
     const sessionId = makeSession()
     const store = getStore()
     await launchContainerSession(store, {
@@ -375,11 +382,11 @@ describe('launchContainerSession', () => {
       exec: fakeDocker().exec,
     })
 
-    const prOut = '@@PRURL@@https://github.com/owner/demo/pull/7\n@@BRANCH@@jarvis/session-c0ffee00\n'
+    // The in-container push script reports base + branch; the PR url comes from
+    // the host-side openPullRequest mock (pull/7).
+    const prOut = '@@BASE@@main\n@@BRANCH@@jarvis/session-c0ffee00\n'
     const prExec: DockerExec = async (args) =>
-      args[0] === 'exec' && args.some((a) => a.includes('gh pr create'))
-        ? { stdout: prOut, stderr: '' }
-        : { stdout: '', stderr: '' }
+      args.some((a) => a.includes('@@BRANCH@@')) ? { stdout: prOut, stderr: '' } : { stdout: '', stderr: '' }
 
     const result = await createContainerPR(store, sessionId, prExec)
     expect('error' in result).toBe(false)
@@ -554,7 +561,7 @@ describe('launchContainerSession', () => {
     expect(flat.find((c) => c.includes('cli.tsx'))!).toContain('127.0.0.1:3000')
   })
 
-  test('createContainerPR draft mode passes --draft to gh', async () => {
+  test('createContainerPR draft mode opens a draft PR host-side', async () => {
     const sessionId = makeSession()
     const store = getStore()
     await launchContainerSession(store, {
@@ -564,20 +571,17 @@ describe('launchContainerSession', () => {
       proxyHealthy: async () => false,
       exec: fakeDocker().exec,
     })
-    let script = ''
-    const exec: DockerExec = async (args) => {
-      if (args[0] === 'exec' && args[2] === 'sh' && args[3] === '-c') script = args[4]
-      return {
-        stdout: '@@PRURL@@https://github.com/owner/demo/pull/9\n@@BRANCH@@jarvis/session-x\n',
-        stderr: '',
-      }
-    }
+    const exec: DockerExec = async () => ({ stdout: '@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' })
+    const { openPullRequest } = await import('@/lib/connectors/github')
     const r = await createContainerPR(store, sessionId, exec, 'draft')
     expect('error' in r).toBe(false)
-    expect(script).toContain('gh pr create --fill --draft')
+    // draft=true is the 6th argument to the host-side opener.
+    expect(vi.mocked(openPullRequest)).toHaveBeenCalledWith(
+      'owner/demo', 'jarvis/session-x', 'main', expect.any(String), expect.any(String), true,
+    )
   })
 
-  test('createContainerPR compose mode skips gh pr create + yields a compare URL', async () => {
+  test('createContainerPR compose mode skips opening a PR + yields a compare URL', async () => {
     const sessionId = makeSession()
     const store = getStore()
     await launchContainerSession(store, {
@@ -587,21 +591,15 @@ describe('launchContainerSession', () => {
       proxyHealthy: async () => false,
       exec: fakeDocker().exec,
     })
-    let script = ''
-    const exec: DockerExec = async (args) => {
-      if (args[0] === 'exec' && args[2] === 'sh' && args[3] === '-c') script = args[4]
-      return {
-        stdout:
-          '@@PRURL@@https://github.com/owner/demo/compare/main...jarvis/session-x?expand=1\n@@BRANCH@@jarvis/session-x\n',
-        stderr: '',
-      }
-    }
+    const exec: DockerExec = async () => ({ stdout: '@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' })
+    const { openPullRequest } = await import('@/lib/connectors/github')
+    vi.mocked(openPullRequest).mockClear()
     const r = await createContainerPR(store, sessionId, exec, 'compose')
     expect('error' in r).toBe(false)
     if ('error' in r) return
     expect(r.url).toContain('/compare/')
-    expect(script).not.toContain('gh pr create')
-    expect(script).toContain('/compare/')
+    expect(r.url).toContain('main...jarvis/session-x')
+    expect(vi.mocked(openPullRequest)).not.toHaveBeenCalled()
   })
 
   test('injects enabled MCP connectors via --mcp-config', async () => {
@@ -686,7 +684,7 @@ describe('launchContainerSession', () => {
     expect(flat.some((c) => c.includes('git clone') && c.includes('owner/shared'))).toBe(true)
   })
 
-  test('mergeContainerPR squash-merges via gh', async () => {
+  test('mergeContainerPR resolves the branch then merges host-side', async () => {
     const sessionId = makeSession()
     const store = getStore()
     await launchContainerSession(store, {
@@ -696,14 +694,13 @@ describe('launchContainerSession', () => {
       proxyHealthy: async () => false,
       exec: fakeDocker().exec,
     })
-    let script = ''
-    const exec: DockerExec = async (args) => {
-      if (args[0] === 'exec' && args[2] === 'sh' && args[3] === '-c') script = args[4]
-      return { stdout: '@@MERGED@@1\n', stderr: '' }
-    }
+    const exec: DockerExec = async (args) =>
+      args.some((a) => a.includes('rev-parse')) ? { stdout: 'jarvis/session-x\n', stderr: '' } : { stdout: '', stderr: '' }
+    const { mergePullRequest } = await import('@/lib/connectors/github')
     const r = await mergeContainerPR(store, sessionId, exec)
     expect('merged' in r).toBe(true)
-    expect(script).toContain('gh pr merge')
+    // PR number 7 comes from the githubPrStatus mock.
+    expect(vi.mocked(mergePullRequest)).toHaveBeenCalledWith('owner/demo', 7)
   })
 
   test('stopContainerSession removes the recorded container', async () => {

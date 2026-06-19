@@ -814,10 +814,10 @@ export async function getContainerDiff(
  * Open (or find) a pull request for the session's work — the claude.ai/code
  * "Create PR" action. Idempotent + tolerant of however far the agent already
  * got: moves off the default branch if needed, commits any pending changes,
- * pushes, then (mode `full`/`draft`) reuses an existing PR or creates one with
- * `gh pr create --fill [--draft]`, or (mode `compose`) returns GitHub's new-PR
- * compose URL for the pushed branch without opening a PR. Falls back to the
- * compare URL if `gh` is unavailable (e.g. the image predates the gh install).
+ * pushes (through the git proxy), then opens or reuses the PR HOST-SIDE via the
+ * GitHub REST API (the real token never enters the container), or (mode
+ * `compose`) returns GitHub's new-PR compose URL without opening a PR. Falls
+ * back to the compare URL if the REST call fails.
  */
 export async function createContainerPR(
   store: Store,
@@ -833,20 +833,9 @@ export async function createContainerPR(
   const workdir = `/workspace/${repoDirName(meta.repo)}`;
   const branch = `jarvis/session-${sessionId.slice(0, 8)}`;
   const msg = "Changes from a Jarvis /code session";
-  // PR step, by mode. `compose` skips gh and just hands back the new-PR URL.
-  const prLines =
-    mode === "compose"
-      ? [
-          `repo=$(git config --get remote.origin.url | sed -E 's#.*github.com[:/]##; s#\\.git$##')`,
-          `url="https://github.com/$repo/compare/$base...$cur?expand=1"`,
-        ]
-      : [
-          // Reuse an existing PR for this branch, else create one (draft if asked).
-          `url=$(gh pr view "$cur" --json url -q .url 2>/dev/null)`,
-          `if [ -z "$url" ]; then url=$(gh pr create --fill ${mode === "draft" ? "--draft " : ""}--base "$base" 2>/dev/null | grep -oE 'https://[^[:space:]]+' | head -1); fi`,
-          // Fallback when gh is missing: a compare/new-PR URL the user can click.
-          `if [ -z "$url" ]; then repo=$(git config --get remote.origin.url | sed -E 's#.*github.com[:/]##; s#\\.git$##'); url="https://github.com/$repo/compare/$base...$cur?expand=1"; fi`,
-        ];
+  // In-container: cut a session branch if needed, commit pending work, push
+  // (through the git proxy). Report base + branch back; the PR is opened
+  // host-side so the container never needs a GitHub token.
   const script = [
     `cd ${workdir} || exit 1`,
     `base=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##'); [ -z "$base" ] && base=main`,
@@ -856,8 +845,7 @@ export async function createContainerPR(
     // Commit anything pending so the branch reflects all the work.
     `if [ -n "$(git status --porcelain)" ]; then git add -A && git commit -m ${shq(msg)} >/dev/null 2>&1; fi`,
     `git push -u origin "$cur" >/dev/null 2>&1`,
-    ...prLines,
-    `printf '@@PRURL@@%s\\n' "$url"`,
+    `printf '@@BASE@@%s\\n' "$base"`,
     `printf '@@BRANCH@@%s\\n' "$cur"`,
   ].join("\n");
   let out: string;
@@ -866,16 +854,32 @@ export async function createContainerPR(
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
-  const url = /@@PRURL@@(.*)/.exec(out)?.[1]?.trim() ?? "";
-  const br = /@@BRANCH@@(.*)/.exec(out)?.[1]?.trim() || branch;
-  if (!url) return { error: "Could not create or find a pull request." };
-  return { url, branch: br };
+  const base = /@@BASE@@(.*)/.exec(out)?.[1]?.trim() || "main";
+  const cur = /@@BRANCH@@(.*)/.exec(out)?.[1]?.trim() || branch;
+  const compareUrl = `https://github.com/${meta.repo}/compare/${base}...${cur}?expand=1`;
+
+  // `compose` just hands back GitHub's new-PR URL (no PR opened).
+  if (mode === "compose") return { url: compareUrl, branch: cur };
+
+  const { openPullRequest } = await import("../connectors/github");
+  const pr = await openPullRequest(
+    meta.repo,
+    cur,
+    base,
+    "Changes from a Jarvis /code session",
+    "From a Jarvis /code session.",
+    mode === "draft",
+  );
+  // On any REST failure, fall back to a clickable compare URL.
+  if (!pr.ok) return { url: compareUrl, branch: cur };
+  return { url: pr.url, branch: cur };
 }
 
 /**
- * Merge the session's PR (claude.ai/code Auto-merge). Squash-merges the PR for
- * the container's current branch via `gh pr merge`. Fails (non-fatal) when the
- * PR is missing, checks are pending, or branch protection blocks it.
+ * Merge the session's PR (claude.ai/code Auto-merge). Reads the container's
+ * current branch, then resolves + squash-merges its PR HOST-SIDE via REST (no
+ * GitHub token in the container). Fails (non-fatal) when the PR is missing,
+ * checks are pending, or branch protection blocks it.
  */
 export async function mergeContainerPR(
   store: Store,
@@ -888,20 +892,20 @@ export async function mergeContainerPR(
     : null;
   if (!meta?.container || !meta.repo) return { error: "This session has no container." };
   const workdir = `/workspace/${repoDirName(meta.repo)}`;
-  const script = [
-    `cd ${workdir} || exit 1`,
-    `cur=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)`,
-    `if gh pr merge "$cur" --squash >/dev/null 2>&1; then echo @@MERGED@@1; else echo @@MERGED@@0; fi`,
-  ].join("\n");
-  let out: string;
+  let cur: string;
   try {
-    out = (await exec(["exec", meta.container, "sh", "-c", script])).stdout;
+    cur = (
+      await exec(["exec", meta.container, "sh", "-c", `cd ${workdir} && git rev-parse --abbrev-ref HEAD 2>/dev/null`])
+    ).stdout.trim();
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
-  return /@@MERGED@@1/.test(out)
-    ? { merged: true }
-    : { error: "Merge not allowed (checks pending or branch protected)." };
+  if (!cur || cur === "HEAD") return { error: "No branch to merge." };
+  const { githubPrStatus, mergePullRequest } = await import("../connectors/github");
+  const status = await githubPrStatus(meta.repo, cur);
+  if (!status.ok || !status.status.pr) return { error: "No open pull request for this branch." };
+  const merged = await mergePullRequest(meta.repo, status.status.pr.number);
+  return merged.ok ? { merged: true } : { error: merged.error };
 }
 
 /** Stop + remove a session's container (archive path). Best-effort. */

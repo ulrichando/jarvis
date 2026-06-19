@@ -271,3 +271,65 @@ export async function githubPrStatus(
     return { ok: false, error: `Network error: ${String(e)}` };
   }
 }
+
+/**
+ * Open a PR head→base (host-side, with the real PAT — so the container never
+ * needs a GitHub token). On 422 (a PR already exists for head→base) returns the
+ * existing open PR instead of erroring.
+ */
+export async function openPullRequest(
+  repo: string,
+  head: string,
+  base: string,
+  title: string,
+  body: string,
+  draft = false,
+): Promise<{ ok: true; url: string; number: number } | { ok: false; error: string }> {
+  const c = await load();
+  if (!c.github) return { ok: false, error: "GitHub not connected" };
+  try {
+    const r = await fetch(`${GH}/repos/${repo}/pulls`, {
+      method: "POST",
+      headers: ghHeaders(c.github.token),
+      body: JSON.stringify({ title, head, base, body, draft }),
+    });
+    if (r.status === 422) {
+      const owner = repo.split("/")[0];
+      const ex = await fetch(
+        `${GH}/repos/${repo}/pulls?head=${owner}:${head}&state=open&per_page=1`,
+        { headers: ghHeaders(c.github.token) },
+      );
+      if (ex.ok) {
+        const a = (await ex.json()) as Array<{ html_url?: string; number?: number }>;
+        if (a[0]) return { ok: true, url: String(a[0].html_url ?? ""), number: Number(a[0].number) };
+      }
+      return { ok: false, error: "A pull request already exists for this branch." };
+    }
+    if (!r.ok) return { ok: false, error: `GitHub error ${r.status}` };
+    const j = (await r.json()) as { html_url?: string; number?: number };
+    return { ok: true, url: String(j.html_url ?? ""), number: Number(j.number) };
+  } catch (e) {
+    return { ok: false, error: `Network error: ${String(e)}` };
+  }
+}
+
+/** Merge a PR by number (host-side, with the real PAT). Squash by default. */
+export async function mergePullRequest(
+  repo: string,
+  number: number,
+  method: "squash" | "merge" | "rebase" = "squash",
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const c = await load();
+  if (!c.github) return { ok: false, error: "GitHub not connected" };
+  try {
+    const r = await fetch(`${GH}/repos/${repo}/pulls/${number}/merge`, {
+      method: "PUT",
+      headers: ghHeaders(c.github.token),
+      body: JSON.stringify({ merge_method: method }),
+    });
+    if (!r.ok) return { ok: false, error: `Merge not allowed (${r.status}) — checks pending or branch protected.` };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: `Network error: ${String(e)}` };
+  }
+}
