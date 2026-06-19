@@ -276,6 +276,15 @@ def build_stt_chain(vad=None):
     # Ordered rungs: Deepgram (primary, streaming) → Groq Whisper Turbo →
     # local faster-whisper (offline last resort). Drop any unavailable.
     rungs = [s for s in (deepgram_stt, whisper_stt, local_stt) if s is not None]
+    # Local-first override: JARVIS_LOCAL_STT_PRIMARY=1 promotes the local
+    # faster-whisper rung to PRIMARY so the voice path runs on-device, with the
+    # cloud STTs demoted to fallback (FallbackAdapter only cascades on failure,
+    # so cloud is a safety net, not normally hit). No-op unless local_stt built.
+    # NOTE: faster-whisper is finals-only (no interim transcripts) — STT-confirmed
+    # barge-in is unavailable on this path; the VAD-direct interrupt still fires.
+    if os.environ.get("JARVIS_LOCAL_STT_PRIMARY", "0") == "1" and local_stt is not None:
+        rungs = [local_stt] + [s for s in rungs if s is not local_stt]
+        logger.info("[stt] JARVIS_LOCAL_STT_PRIMARY=1 — local faster-whisper promoted to primary")
     if not rungs:  # whisper is always built — defensive
         return whisper_stt
     if len(rungs) == 1:
