@@ -417,6 +417,30 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     capabilities: [],
     visibleInPicker: false,
   },
+  // Local Ollama models the user has pulled (on-device, no API key). The
+  // `ollama` provider routes to http://localhost:11434/v1. qwen3-30b-a3b is the
+  // MoE CPU sweet spot (~3B active, tool-calling verified); gpt-oss-120b is the
+  // heavy/slow-on-CPU option. visibleInPicker:true so /model lists them.
+  {
+    id: 'ollama-qwen3-30b-a3b',
+    label: 'Ollama Qwen3 30B-A3B',
+    description: 'Local · Qwen3 30B MoE (on-device, fast)',
+    provider: 'ollama',
+    upstreamModel: 'qwen3:30b-a3b',
+    tiers: ['balanced'],
+    capabilities: [],
+    visibleInPicker: true,
+  },
+  {
+    id: 'ollama-gpt-oss-120b',
+    label: 'Ollama gpt-oss 120B',
+    description: 'Local · gpt-oss 120B (on-device, heavy/slow on CPU)',
+    provider: 'ollama',
+    upstreamModel: 'gpt-oss:120b',
+    tiers: ['reasoning'],
+    capabilities: [],
+    visibleInPicker: true,
+  },
   // Kimi K2.6 family — all four UI modes hit the same upstream API
   // model `kimi-k2.6`. The Instant/Thinking/Agent/Swarm split is a
   // CLIENT-side preset (different system prompt + tools), not a
