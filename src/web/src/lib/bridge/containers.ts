@@ -51,28 +51,40 @@ const EGRESS_PROXY_IMAGE = process.env.JARVIS_EGRESS_PROXY_IMAGE || "ubuntu/squi
 /** Domains a `trusted`/`custom` egress level always allows (package registries).
  *  GitHub git is reached ONLY through the host-side scoped-credential proxy
  *  (host.docker.internal, in NO_PROXY), so github.com is intentionally absent. */
-const DEFAULT_ALLOW = [
+export const DEFAULT_ALLOW = [
   ".githubusercontent.com",
   ".npmjs.org",
-  "registry.npmjs.org",
   "pypi.org",
   "files.pythonhosted.org",
-  "crates.io",
-  "static.crates.io",
+  ".crates.io",
   ".rubygems.org",
   ".debian.org",
   ".ubuntu.com",
   "host.docker.internal",
 ];
 
+/** Drop any domain already covered by a `.wildcard` in the same list. squid
+ *  FATALs ("Bungled squid.conf … is a subdomain of …") and REFUSES TO START if
+ *  a dstdomain ACL contains both `.npmjs.org` and a subdomain like
+ *  `registry.npmjs.org` — which silently kills the whole isolated egress level.
+ *  Defends DEFAULT_ALLOW + any user customAllowlist against that class. */
+export function dedupeSquidDomains(domains: string[]): string[] {
+  const wildcards = domains.filter((d) => d.startsWith("."));
+  return domains.filter((d) => {
+    const bare = d.startsWith(".") ? d.slice(1) : d;
+    return !wildcards.some((w) => w !== d && (bare === w.slice(1) || bare.endsWith(w)));
+  });
+}
+
 /** Generate a squid forward-proxy config that allows CONNECT/HTTP only to the
  *  given domains and denies everything else (empty list = deny all). */
-function buildSquidConf(domains: string[]): string {
-  const acls = domains.map((d) => `acl allowed dstdomain ${d}`).join("\n");
+export function buildSquidConf(domains: string[]): string {
+  const safe = dedupeSquidDomains(domains);
+  const acls = safe.map((d) => `acl allowed dstdomain ${d}`).join("\n");
   return [
     "http_port 3128",
     acls,
-    domains.length ? "http_access allow allowed" : "",
+    safe.length ? "http_access allow allowed" : "",
     "http_access deny all",
   ]
     .filter(Boolean)

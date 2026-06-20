@@ -24,6 +24,9 @@ import {
   createContainerPR,
   mergeContainerPR,
   runOrphanContainerSweep,
+  buildSquidConf,
+  dedupeSquidDomains,
+  DEFAULT_ALLOW,
   type DockerExec,
 } from '@/lib/bridge/containers'
 
@@ -1000,5 +1003,32 @@ describe('runOrphanContainerSweep', () => {
     const { calls, exec } = sweepDocker(['some-other-container', 'jarvis-ws-abc'])
     expect(await runOrphanContainerSweep(getStore(), exec)).toBe(0)
     expect(removed(calls)).toHaveLength(0)
+  })
+})
+
+describe('squid egress allowlist (isolated network level)', () => {
+  test('DEFAULT_ALLOW has no parent/subdomain collision (squid would FATAL)', () => {
+    // squid refuses to start if an ACL lists `.npmjs.org` + a subdomain of it —
+    // which would silently kill the whole isolated egress level.
+    expect(dedupeSquidDomains(DEFAULT_ALLOW)).toEqual(DEFAULT_ALLOW)
+    // and github.com is intentionally NOT allowed (git goes via the proxy).
+    expect(DEFAULT_ALLOW).not.toContain('.github.com')
+    expect(DEFAULT_ALLOW).not.toContain('github.com')
+  })
+
+  test('dedupeSquidDomains drops a subdomain already covered by a wildcard', () => {
+    expect(dedupeSquidDomains(['.npmjs.org', 'registry.npmjs.org', 'pypi.org'])).toEqual([
+      '.npmjs.org',
+      'pypi.org',
+    ])
+    // also collapses a narrower wildcard under a broader one.
+    expect(dedupeSquidDomains(['.foo.com', '.a.foo.com'])).toEqual(['.foo.com'])
+  })
+
+  test('buildSquidConf never emits both a wildcard and its subdomain', () => {
+    const conf = buildSquidConf(['.npmjs.org', 'registry.npmjs.org'])
+    expect(conf).toContain('acl allowed dstdomain .npmjs.org')
+    expect(conf).not.toContain('dstdomain registry.npmjs.org')
+    expect(conf).toContain('http_access deny all')
   })
 })
