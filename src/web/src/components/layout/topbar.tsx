@@ -11,7 +11,9 @@ export function TopBar() {
   if (
     pathname.startsWith("/workbench") ||
     pathname.startsWith("/code") ||
-    pathname.startsWith("/design")
+    pathname.startsWith("/design") ||
+    pathname.startsWith("/computer-use") ||
+    pathname.startsWith("/chat")
   )
     return null;
   return (

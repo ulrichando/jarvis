@@ -61,6 +61,7 @@ export const PROVIDER_FEATURES: Record<Provider, Feature[]> = {
       slug: "artifacts",
       label: "Artifacts",
       icon: Package,
+      href: "/artifacts",
       description:
         "Versioned, sandboxed code and document blocks. React components, HTML, SVG, and markdown — rendered live in the preview pane.",
     },
@@ -72,6 +73,7 @@ export const PROVIDER_FEATURES: Record<Provider, Feature[]> = {
       slug: "customize",
       label: "Customize",
       icon: Wand2,
+      href: "/customize",
       description:
         "Named tones and instructions — formal, concise, teacher, reviewer. Swap personality without editing the system prompt.",
     },
@@ -87,9 +89,10 @@ export const PROVIDER_FEATURES: Record<Provider, Feature[]> = {
       slug: "computer-use",
       label: "Computer use",
       icon: Monitor,
-      overflow: true,
+      href: "/computer-use",
+      badge: "Beta",
       description:
-        "Let Claude drive a sandboxed browser or desktop. Watch it click, type, and report back.",
+        "Let Jarvis see and drive your desktop — watch it click and type, approve actions, and take control anytime.",
     },
   ],
 

@@ -1,13 +1,12 @@
 "use client";
 
-import { ArrowUp, AudioLines, Paperclip, Square, X } from "lucide-react";
+import { ArrowUp, AudioLines, Mic, Paperclip, Square, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { shouldSubmitOnEnter, useAutoResize } from "@/lib/chat/enter-submit";
 import { ComposerModelPicker } from "./model-picker";
-import { ComposerWorkspacePicker } from "./workspace-picker";
 import { PlusMenu, SecondaryMenu } from "./plus-menu";
 import type { Provider } from "@/lib/ai/models-meta";
 import { getProviderUX } from "@/lib/ai/provider-ux";
@@ -63,7 +62,6 @@ export function Composer({
   onStop,
   status,
   provider,
-  hideWorkspacePicker = false,
   placeholder,
   unifiedUX = false,
 }: ComposerProps) {
@@ -353,11 +351,6 @@ export function Composer({
             <div className="min-w-0 shrink">
               <ComposerModelPicker />
             </div>
-            {!hideWorkspacePicker && (
-              <div className="min-w-0 shrink">
-                <ComposerWorkspacePicker />
-              </div>
-            )}
             {listening ? (
               <Button
                 type="button"
@@ -380,7 +373,7 @@ export function Composer({
                 aria-label="Voice input"
                 title="Voice input (dictate)"
               >
-                <AudioLines className="size-4" />
+                <Mic className="size-4" />
               </Button>
             ) : isBusy ? (
               // Bright cyan stop button with a soft ping ring so it's

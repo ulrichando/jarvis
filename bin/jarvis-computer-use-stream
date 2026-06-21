@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# jarvis-computer-use-stream — stream the real X11 :0 desktop to the browser for
+# the web /computer-use feature.
+#
+#   x11vnc  (serves :0, localhost-only, VNC-password)  →  websockify (WS bridge)
+#
+# The web @novnc/novnc client connects to the WS; the VNC password is handed to
+# the browser ONLY by the AUTHENTICATED /api/computer-use route (never public).
+#
+# SECURITY: VNC's password is an 8-char second layer only. The real guards are
+# (1) -localhost binding, (2) the web login gate, and (3) — when remote — a
+# Cloudflare/Tailscale tunnel. NEVER expose the VNC/WS ports to the internet
+# directly; route them through the tunnel.
+set -u
+
+DISPLAY_TGT="${DISPLAY:-:0}"
+VNC_PORT="${JARVIS_CU_VNC_PORT:-5900}"
+WS_PORT="${JARVIS_CU_WS_PORT:-6080}"
+JDIR="$HOME/.jarvis"
+PASSFILE="$JDIR/computer-use-vnc.rfbauth"   # x11vnc -rfbauth binary file
+PLAINFILE="$JDIR/computer-use-vnc.pass"     # plaintext (0600) — read by the web mint route
+mkdir -p "$JDIR"
+
+mint_password() {
+  local pass
+  pass="$(openssl rand -base64 12 | tr -dc 'A-Za-z0-9' | cut -c1-8)"
+  x11vnc -storepasswd "$pass" "$PASSFILE" >/dev/null 2>&1
+  printf '%s' "$pass" > "$PLAINFILE"
+  chmod 600 "$PASSFILE" "$PLAINFILE"
+}
+
+stop_stream() {
+  # Bracket the first char so pkill -f never matches its own command line.
+  pkill -f "[x]11vnc .*-rfbport ${VNC_PORT}" 2>/dev/null || true
+  pkill -f "[w]ebsockify .*:${WS_PORT}" 2>/dev/null || true
+}
+
+case "${1:-start}" in
+  stop)
+    stop_stream
+    echo "computer-use stream stopped"
+    ;;
+  status)
+    pgrep -f "[x]11vnc .*-rfbport ${VNC_PORT}" >/dev/null && echo "x11vnc: up" || echo "x11vnc: down"
+    pgrep -f "[w]ebsockify .*:${WS_PORT}" >/dev/null && echo "websockify: up" || echo "websockify: down"
+    ;;
+  start)
+    [ -f "$PASSFILE" ] && [ -f "$PLAINFILE" ] || mint_password
+    stop_stream
+    x11vnc -display "$DISPLAY_TGT" -rfbport "$VNC_PORT" -rfbauth "$PASSFILE" \
+      -localhost -forever -shared -noxdamage -ncache 0 -quiet -bg >/dev/null 2>&1
+    websockify --daemon "127.0.0.1:${WS_PORT}" "127.0.0.1:${VNC_PORT}" >/dev/null 2>&1
+    echo "computer-use stream up — x11vnc ${DISPLAY_TGT} :${VNC_PORT}, ws 127.0.0.1:${WS_PORT}"
+    ;;
+  *)
+    echo "usage: $0 [start|stop|status]" >&2
+    exit 1
+    ;;
+esac
