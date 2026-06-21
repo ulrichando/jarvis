@@ -5,6 +5,7 @@ tests don't need any LLM or audio backend. The router has an async
 overload that calls Groq; the sync `route_turn_from_classification`
 factor lets tests exercise the LLM-output → route logic without network.
 """
+# Classifies each turn (BANTER / TASK / REASONING / EMOTIONAL) to pick the LLM, TTS, and interrupt tuning.
 from __future__ import annotations
 
 import re
