@@ -74,12 +74,30 @@ def run() -> Dict[str, Any]:
         summary["detect_error"] = str(e)
 
     # 2. Spawn proposals (no-op unless JARVIS_AUTOMOD_SPAWN_LIVE=1).
+    #    SAFETY: the coding-agent wrapper (bin/jarvis-automod-impl) does
+    #    `git checkout master` + branches to automod/<id> and does NOT restore
+    #    the branch. The live agent runs from this working tree, so leaving it on
+    #    a proposal branch (built off origin/master) would make the NEXT restart
+    #    load stale code + lose unpushed work. We snapshot the branch and restore
+    #    it after spawning, so the live tree always returns to where it was.
+    orig_branch = _deploy._git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     try:
         from pipeline.automod.spawner import drain_queue
         summary["spawned"] = asyncio.run(drain_queue())
     except Exception as e:  # noqa: BLE001
         logger.warning("[nightly] spawn failed: %s", e)
         summary["spawn_error"] = str(e)
+    finally:
+        if orig_branch and orig_branch != "HEAD":
+            cur = _deploy._git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+            if cur != orig_branch:
+                r = _deploy._git("checkout", orig_branch)
+                if r.returncode == 0:
+                    logger.info("[nightly] restored working tree: %s → %s", cur, orig_branch)
+                else:
+                    logger.error("[nightly] FAILED to restore branch %s (on %s): %s",
+                                 orig_branch, cur, r.stderr.strip())
+                    summary["branch_restore_error"] = r.stderr.strip()
 
     # 3. Publish freshly-spawned, not-yet-published proposals (gated).
     if summary["spawned"] and _autopublish():
