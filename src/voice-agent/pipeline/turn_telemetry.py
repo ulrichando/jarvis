@@ -517,6 +517,8 @@ def log_turn(
     cost_usd: Optional[float] = None,
     context_pressure: Optional[str] = None,
     memory_auto_extracted: bool = False,
+    save_trigger_fired: bool = False,
+    recall_trigger_fired: bool = False,
     prompt_cached_tokens: int = 0,
     browser_backend: Optional[str] = None,
     computer_use_steps: Optional[int] = None,
@@ -583,6 +585,7 @@ def log_turn(
                     route_fallback, notes, subagent, interrupted,
                     input_tokens, output_tokens, cost_usd, context_pressure,
                     memory_auto_extracted, prompt_cached_tokens,
+                    save_trigger_fired, recall_trigger_fired,
                     browser_backend,
                     computer_use_steps, computer_use_cost_usd,
                     confab_check_state,
@@ -591,7 +594,7 @@ def log_turn(
                     output_profile, apm_delay_ms_p50, dtln_latency_ms_p95,
                     subagent_type, subagent_ms, subagent_status,
                     user_lang, rss_mb)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     ts_utc or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     user_text, jarvis_text, emotion, route, llm_used,
@@ -600,6 +603,7 @@ def log_turn(
                     subagent, int(interrupted),
                     input_tokens, output_tokens, cost_usd, context_pressure,
                     int(memory_auto_extracted), int(prompt_cached_tokens),
+                    int(save_trigger_fired), int(recall_trigger_fired),
                     browser_backend,
                     computer_use_steps, computer_use_cost_usd,
                     confab_check_state,

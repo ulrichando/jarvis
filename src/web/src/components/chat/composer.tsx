@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { shouldSubmitOnEnter, useAutoResize } from "@/lib/chat/enter-submit";
+import type { VoicePhase } from "@/lib/chat/use-voice-mode";
 import { ComposerModelPicker } from "./model-picker";
 import { PlusMenu, SecondaryMenu } from "./plus-menu";
 import type { Provider } from "@/lib/ai/models-meta";
@@ -36,7 +37,7 @@ export type AttachedImage = {
 type ComposerProps = {
   value: string;
   onChange: (v: string) => void;
-  onSubmit: (opts?: { images?: AttachedImage[] }) => void;
+  onSubmit: (opts?: { images?: AttachedImage[]; toggles?: Record<string, boolean> }) => void;
   onStop?: () => void;
   status: "ready" | "submitted" | "streaming" | "error";
   provider: Provider;
@@ -48,6 +49,10 @@ type ComposerProps = {
   // Override the textarea placeholder for context-specific surfaces
   // (e.g. /design uses "Describe what you want to create…").
   placeholder?: string;
+  // Voice mode (the waveform button beside the mic). When wired, the composer
+  // shows the live-conversation toggle + reflects the phase in its placeholder.
+  voicePhase?: VoicePhase;
+  onToggleVoice?: () => void;
   // Force a model-agnostic composer: same shell, no provider pre-block, no
   // provider inline toggles, regardless of which model is selected. Used in
   // surfaces like /design where the composer is a means to an end and should
@@ -63,10 +68,16 @@ export function Composer({
   status,
   provider,
   placeholder,
+  voicePhase,
+  onToggleVoice,
   unifiedUX = false,
 }: ComposerProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const isBusy = status === "streaming" || status === "submitted";
+  // While live voice mode runs, the only stop control is the "••• Stop" pill;
+  // the mic/send/cyan-stop cluster is suppressed so a streaming reply can't
+  // surface a second (cyan square) stop button beside it.
+  const voiceActive = !!voicePhase && voicePhase !== "idle";
   // Layout and common features are locked to anthropic style — stable across all models.
   const ux = getProviderUX("anthropic");
   // Extras (toggles, pre-composer) come from the real provider and render
@@ -94,7 +105,7 @@ export function Composer({
     if (!isBusy && hasContent) {
       const carry = images;
       setImages([]);
-      onSubmit({ images: carry });
+      onSubmit({ images: carry, toggles });
     }
   };
 
@@ -272,6 +283,12 @@ export function Composer({
           dragOver && "border-primary/60 bg-primary/5",
         )}
       >
+        {voiceActive && (
+          <div
+            aria-hidden
+            className="pointer-events-none fixed inset-x-0 bottom-0 z-0 h-44 animate-pulse bg-gradient-to-t from-primary/25 via-primary/5 to-transparent blur-xl"
+          />
+        )}
         {images.length > 0 && (
           <div className="flex flex-wrap gap-2 px-3 pt-3">
             {images.map((img) => (
@@ -306,7 +323,15 @@ export function Composer({
           onKeyDown={handleKey}
           onPaste={onPaste}
           rows={1}
-          placeholder={placeholder ?? ux.placeholder}
+          placeholder={
+            voiceActive
+              ? voicePhase === "speaking"
+                ? "Speaking…"
+                : voicePhase === "connecting"
+                  ? "Connecting…"
+                  : "Listening…"
+              : (placeholder ?? ux.placeholder)
+          }
           // 16px base prevents iOS Safari from auto-zooming the page
           // when the textarea takes focus — anything under 16px triggers
           // it. Visual cost vs 15px is negligible; UX win is large.
@@ -351,7 +376,8 @@ export function Composer({
             <div className="min-w-0 shrink">
               <ComposerModelPicker />
             </div>
-            {listening ? (
+            {!voiceActive &&
+              (listening ? (
               <Button
                 type="button"
                 onClick={startDictation}
@@ -402,7 +428,47 @@ export function Composer({
               >
                 <ArrowUp className="size-4" />
               </Button>
-            )}
+              ))}
+            {onToggleVoice &&
+              (voiceActive ? (
+                // Active voice mode — "••• Stop" pill, matching claude.ai.
+                <button
+                  type="button"
+                  onClick={onToggleVoice}
+                  aria-label="Stop voice mode"
+                  title={
+                    voicePhase === "speaking"
+                      ? "Speaking…"
+                      : voicePhase === "connecting"
+                        ? "Connecting…"
+                        : "Listening — click to stop"
+                  }
+                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 text-[12px] font-medium text-primary-foreground transition-opacity hover:opacity-90"
+                >
+                  <span className="flex items-center gap-0.5" aria-hidden>
+                    {[0, 1, 2].map((i) => (
+                      <span
+                        key={i}
+                        className="size-1 rounded-full bg-current animate-bounce"
+                        style={{ animationDelay: `${i * 0.15}s`, animationDuration: "1s" }}
+                      />
+                    ))}
+                  </span>
+                  Stop
+                </button>
+              ) : (
+                <Button
+                  type="button"
+                  onClick={onToggleVoice}
+                  size="icon"
+                  variant="ghost"
+                  className="size-8 shrink-0 rounded-lg text-muted-foreground hover:text-foreground"
+                  aria-label="Voice mode"
+                  title="Voice mode (live conversation)"
+                >
+                  <AudioLines className="size-4" />
+                </Button>
+              ))}
           </div>
         </div>
       </div>

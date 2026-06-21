@@ -15,8 +15,10 @@ barge-in-interrupt-fix-design.md):
   Groq Whisper stays in the chain as the failover — if Deepgram's WS
   drops, runs out of credit, or errors, the FallbackAdapter cascades
   to Whisper and the conversation continues (slower barge-in, but
-  alive). If `DEEPGRAM_API_KEY` is unset entirely, the chain degrades
-  gracefully to Whisper-only (current pre-2026-05-18 behaviour).
+  alive). If `DEEPGRAM_API_KEY` is unset entirely — or `JARVIS_DEEPGRAM_DISABLED`
+  is set to deliberately stop spending Deepgram credit — the chain degrades
+  gracefully to Groq Whisper Large v3 Turbo as the primary STT (the
+  pre-2026-05-18 behaviour; barge-in stays alive via the VAD-direct path).
 
 Breaker behaviour on the STT path:
   * `_recognize_impl` is the only override — it routes the upstream
@@ -188,9 +190,10 @@ def _stt_keyterms() -> list[str]:
 
 
 def _build_deepgram_stt():
-    """Build a Deepgram Nova-3 streaming STT. Returns None if no API
-    key is set or if the import fails (so the caller can fall through
-    to Groq Whisper alone — graceful degradation).
+    """Build a Deepgram Nova-3 streaming STT. Returns None if Deepgram is
+    disabled via JARVIS_DEEPGRAM_DISABLED, if no API key is set, or if the
+    import fails (so the caller can fall through to Groq Whisper alone —
+    graceful degradation).
 
     Configuration tuned for barge-in responsiveness:
       - model="nova-3-general" — latest model as of 2026-05-18.
@@ -205,6 +208,23 @@ def _build_deepgram_stt():
       - keyterm=_stt_keyterms() — Nova-3 keyterm prompting; boosts
         "Jarvis" (+ operator vocab) so accent mishears resolve at STT.
     """
+    # Kill-switch: skip Deepgram even when a key is present, so the chain
+    # falls through to Groq Whisper Large v3 Turbo as the primary STT. Set
+    # JARVIS_DEEPGRAM_DISABLED=1 to stop spending Deepgram credit while keeping
+    # the key in .env for later. Default off → unchanged behaviour. Barge-in is
+    # unaffected (VAD-direct since 2026-05-18); only the now-dormant
+    # STT-confirmed barge-in path relied on Deepgram's streaming partials.
+    if os.environ.get("JARVIS_DEEPGRAM_DISABLED", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        logger.info(
+            "[stt] JARVIS_DEEPGRAM_DISABLED set — skipping Deepgram; "
+            "Groq Whisper Large v3 Turbo is the primary STT."
+        )
+        return None
     api_key = os.environ.get("DEEPGRAM_API_KEY")
     if not api_key:
         logger.info(

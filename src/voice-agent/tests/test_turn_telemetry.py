@@ -70,6 +70,36 @@ def test_log_turn_silently_swallows_disk_error(monkeypatch, tmp_path):
     )
 
 
+def test_log_turn_writes_save_recall_triggers(tmp_path):
+    """save_trigger_fired / recall_trigger_fired were dead schema columns —
+    declared but never written (the bug that made the memory learning loop
+    unobservable). They must now round-trip, and default to 0 (not NULL)."""
+    db_path = tmp_path / "telemetry.db"
+    init_db(db_path)
+    log_turn(
+        db_path=db_path, user_text="remember my dog is Lily",
+        jarvis_text="Saved.", emotion="neutral", route="TASK",
+        llm_used="x", voice_used="x", ttfw_ms=0, total_audio_ms=0,
+        save_trigger_fired=True, recall_trigger_fired=False,
+    )
+    log_turn(
+        db_path=db_path, user_text="what's my dog's name",
+        jarvis_text="Lily.", emotion="neutral", route="TASK",
+        llm_used="x", voice_used="x", ttfw_ms=0, total_audio_ms=0,
+        save_trigger_fired=False, recall_trigger_fired=True,
+    )
+    # Omitting both → defaults to 0, never NULL.
+    log_turn(
+        db_path=db_path, user_text="hi", jarvis_text="Yes?",
+        emotion="neutral", route="BANTER", llm_used="x", voice_used="x",
+        ttfw_ms=0, total_audio_ms=0,
+    )
+    rows = sqlite3.connect(db_path).execute(
+        "SELECT save_trigger_fired, recall_trigger_fired FROM turns ORDER BY id"
+    ).fetchall()
+    assert rows == [(1, 0), (0, 1), (0, 0)]
+
+
 # ── report() tests ─────────────────────────────────────────────────────
 
 

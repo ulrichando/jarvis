@@ -77,6 +77,7 @@ export function CodeSidebar({
   routinesActive = false,
   onOpenRoutines,
   width = 260,
+  onCollapse,
 }: {
   onNewSession: () => void;
   sessions?: SessionSummary[];
@@ -88,6 +89,8 @@ export function CodeSidebar({
   onOpenRoutines?: () => void;
   /** Sidebar width in px (drag-resizable from the page). */
   width?: number;
+  /** Collapse the sidebar (hide it; a floating button on the page reopens it). */
+  onCollapse?: () => void;
 }) {
   // The menu is positioned fixed (computed from the kebab's rect) so it
   // escapes the Recents list's overflow-y-auto clip — left-full inside that
@@ -260,7 +263,7 @@ export function CodeSidebar({
           </span>
         </div>
         <div className="flex items-center gap-0.5">
-          <button type="button" aria-label="Toggle sidebar" className="flex size-6 items-center justify-center rounded text-sidebar-foreground/50 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground">
+          <button type="button" aria-label="Collapse sidebar" title="Collapse sidebar" onClick={onCollapse} className="flex size-6 items-center justify-center rounded text-sidebar-foreground/50 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground">
             <PanelLeft className="size-4" />
           </button>
           <button type="button" aria-label="Search" className="flex size-6 items-center justify-center rounded text-sidebar-foreground/50 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground">

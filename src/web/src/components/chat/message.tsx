@@ -15,6 +15,9 @@ import {
   Undo2,
   Loader2,
   Hammer,
+  Download,
+  AlertTriangle,
+  Image as ImageIcon,
   type LucideIcon,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -26,6 +29,7 @@ import { KimiToolTrace, type ToolTraceEntry } from "./kimi-tool-trace";
 import { KimiSwarmProgress } from "./kimi-swarm-progress";
 import { cn } from "@/lib/utils";
 import { MODELS_META } from "@/lib/ai/models-meta";
+import { useVoiceRead } from "@/stores/voice-read";
 
 // Synthetic-prompt patterns the chat layer's plumbing emits but the
 // user shouldn't see. Stripped at the SOURCE (textFromParts) so every
@@ -104,6 +108,129 @@ function imagePartsFromMessage(
     }
   }
   return out;
+}
+
+type GenImageRender =
+  | { key: string; status: "loading"; prompt?: string }
+  | { key: string; status: "ready"; url: string; prompt?: string }
+  | { key: string; status: "error"; error: string };
+
+// Generated-image tool parts (`tool-generateImage`) → render state. The LIVE
+// chat renders these cards from the streamed tool part. On RELOAD the image
+// instead arrives as persisted markdown in the assistant text (chat/route.ts
+// appends it in onFinish — tool parts aren't persisted), so there's never a
+// double render: a live message has the tool part + no markdown; a reloaded
+// one has the markdown + no tool part.
+function generatedImagesFromMessage(
+  parts: UIMessage["parts"],
+): GenImageRender[] {
+  const out: GenImageRender[] = [];
+  for (const p of parts) {
+    if (typeof p !== "object" || p === null) continue;
+    const obj = p as Record<string, unknown>;
+    if (obj.type !== "tool-generateImage") continue;
+    const key = (obj.toolCallId as string) ?? `genimg-${out.length}`;
+    const state = obj.state as string | undefined;
+    const input = (obj.input ?? {}) as Record<string, unknown>;
+    const inPrompt =
+      typeof input.prompt === "string" ? input.prompt : undefined;
+    if (state === "output-available") {
+      const output = (obj.output ?? {}) as Record<string, unknown>;
+      if (output.status === "ok" && typeof output.url === "string") {
+        out.push({
+          key,
+          status: "ready",
+          url: output.url,
+          prompt: (output.prompt as string) ?? inPrompt,
+        });
+      } else {
+        out.push({
+          key,
+          status: "error",
+          error: (output.error as string) ?? "Image generation failed.",
+        });
+      }
+    } else if (state === "output-error") {
+      out.push({
+        key,
+        status: "error",
+        error: (obj.errorText as string) ?? "Image generation failed.",
+      });
+    } else {
+      // input-streaming | input-available → still generating.
+      out.push({ key, status: "loading", prompt: inPrompt });
+    }
+  }
+  return out;
+}
+
+// Inline image cards for the in-chat generateImage tool. Styled to match the
+// existing attachment-image render + chat design tokens (rounded-2xl, bg-card,
+// border-border) — refined minimalism within the existing system.
+function GeneratedImageCards({ items }: { items: GenImageRender[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="mt-3 flex flex-col gap-3">
+      {items.map((it) => {
+        if (it.status === "loading") {
+          return (
+            <div
+              key={it.key}
+              className="flex aspect-square w-full max-w-sm items-center justify-center rounded-2xl border border-border/60 bg-muted/40"
+            >
+              <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                <ImageIcon className="size-6 animate-pulse" />
+                <span className="text-xs">Generating image…</span>
+              </div>
+            </div>
+          );
+        }
+        if (it.status === "error") {
+          return (
+            <div
+              key={it.key}
+              className="flex w-full max-w-sm items-start gap-2 rounded-2xl border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive"
+            >
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+              <span>{it.error}</span>
+            </div>
+          );
+        }
+        return (
+          <figure
+            key={it.key}
+            className="w-full max-w-sm overflow-hidden rounded-2xl border border-border/60 bg-card"
+          >
+            <a href={it.url} target="_blank" rel="noreferrer" className="block">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={it.url}
+                alt={it.prompt ?? "Generated image"}
+                className="block w-full object-contain"
+              />
+            </a>
+            <figcaption className="flex items-center justify-between gap-2 px-3 py-2">
+              <span
+                className="truncate text-xs text-muted-foreground"
+                title={it.prompt}
+              >
+                {it.prompt ?? "Generated image"}
+              </span>
+              <a
+                href={it.url}
+                download
+                className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                aria-label="Download image"
+                title="Download"
+              >
+                <Download className="size-3.5" />
+              </a>
+            </figcaption>
+          </figure>
+        );
+      })}
+    </div>
+  );
 }
 
 // K2.6 Thinking mode emits reasoning via either:
@@ -264,9 +391,14 @@ export function Message({
 }) {
   const isUser = message.role === "user";
   const text = textFromParts(message.parts);
+  // Voice mode read-aloud: >= 0 means this message is being spoken; text up to
+  // this char index is "read" (white), the rest stays gray. Per-message selector
+  // so only the message being read re-renders on each word boundary.
+  const voiceReadChar = useVoiceRead((s) => (s.readingId === message.id ? s.readChar : -1));
   const kimiReasoning = kimiReasoningFromMessage(message.parts);
   const toolTrace = toolTraceFromMessage(message.parts);
   const swarmStatus = swarmStatusFromMessage(message.parts);
+  const genImages = generatedImagesFromMessage(message.parts);
 
   // Skip rendering the chat layer's synthetic auto-continue prompt
   // when it leaks into history. New turns no longer persist this
@@ -382,16 +514,25 @@ export function Message({
             />
           ) : null}
           {text ? (
-            <Markdown
-              content={linkifyCitations(
-                text,
-                extractSources(message).map((s) => s.url),
-              )}
-              isStreaming={isStreaming}
-            />
-          ) : isStreaming && !reasoning && !plan ? (
+            voiceReadChar >= 0 ? (
+              // Voice mode: plain text, revealed gray→white as it's read aloud.
+              <p className="whitespace-pre-wrap text-[15px] leading-7">
+                <span className="text-foreground">{text.slice(0, voiceReadChar)}</span>
+                <span className="text-muted-foreground">{text.slice(voiceReadChar)}</span>
+              </p>
+            ) : (
+              <Markdown
+                content={linkifyCitations(
+                  text,
+                  extractSources(message).map((s) => s.url),
+                )}
+                isStreaming={isStreaming}
+              />
+            )
+          ) : isStreaming && !reasoning && !plan && genImages.length === 0 ? (
             <ThinkingIndicator />
           ) : null}
+          <GeneratedImageCards items={genImages} />
           {/* Polite live region — announces the final answer once the
               stream completes. We deliberately mount the text only when
               !isStreaming so SR doesn't read every token (which would

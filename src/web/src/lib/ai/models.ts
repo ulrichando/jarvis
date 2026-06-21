@@ -81,7 +81,7 @@ const MODEL_IDS: Record<string, { provider: Provider; modelId: string }> = {
   "ollama-gpt-oss-120b": { provider: "ollama", modelId: "gpt-oss:120b" },
 };
 
-function buildProvider(
+export function buildProvider(
   provider: Provider,
   apiKey: string,
   baseURL?: string,

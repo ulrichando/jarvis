@@ -41,6 +41,7 @@ import { useRouter } from "next/navigation";
 import { FunctionGrid } from "./function-grid";
 import { TaskPanel } from "./task-panel";
 import { useChatStore } from "@/stores/chat";
+import { useVoiceMode } from "@/lib/chat/use-voice-mode";
 import { useEditedFiles } from "@/stores/edited-files";
 import { useSettings } from "@/hooks/use-settings";
 import { useUI } from "@/stores/ui";
@@ -538,6 +539,10 @@ export function Chat({
     onToggleHelp: () => setShortcutsOpen((v) => !v),
   });
 
+  // Per-turn DeepSeek toggle state (DeepThink → reasoner model; Search → gate
+  // the web-search tool), read in the /api/chat request body below.
+  const turnTogglesRef = useRef<{ deepthink?: boolean; search?: boolean }>({});
+
   const submit = async (
     text?: string,
     opts: {
@@ -546,8 +551,14 @@ export function Chat({
       // file parts in the user message so multimodal models receive
       // them inline. Non-multimodal models will silently ignore.
       images?: { id: string; dataUrl: string; name: string }[];
+      // DeepSeek composer toggles for this turn (DeepThink / Search).
+      toggles?: Record<string, boolean>;
     } = {},
   ) => {
+    turnTogglesRef.current = {
+      deepthink: opts.toggles?.deepthink,
+      search: opts.toggles?.search,
+    };
     const content = (text ?? input).trim();
     const hasImages = (opts.images?.length ?? 0) > 0;
     if (
@@ -899,11 +910,17 @@ export function Chat({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           id: chatId,
-          model,
+          // DeepThink → DeepSeek's reasoning model (the exa-deepseek-chat pattern).
+          model:
+            turnTogglesRef.current.deepthink && model.startsWith("deepseek")
+              ? "deepseek-reasoner"
+              : model,
           messages: messagesForRequest,
           workspaceId: targetWorkspaceId ?? undefined,
           mode,
           format,
+          // Search → gate the existing webSearchTool in the route.
+          search: turnTogglesRef.current.search,
         }),
         signal: ctrl.signal,
       }).finally(() => clearTimeout(stuck));
@@ -1643,6 +1660,65 @@ export function Chat({
   // When embedded in the workbench we always want the composer pinned
   // to the bottom (like a real chat) regardless of whether there are
   // messages yet. The standalone /chat empty state still uses the
+  // Voice mode (live conversation): listen → submit each utterance → read the
+  // reply aloud → resume. Isolated in useVoiceMode; here we just submit
+  // transcripts and speak the assistant reply when a turn finishes.
+  const voice = useVoiceMode({
+    onUtterance: (t) => {
+      void submit(t);
+    },
+  });
+  const voiceActive = voice.active;
+  const voiceSpeak = voice.speak;
+  // Read the latest assistant reply aloud exactly once per turn. LEVEL-triggered
+  // (status==="ready" + a per-message-id dedupe) rather than edge-detecting the
+  // streaming→ready transition: this is a custom chat loop where the final text
+  // chunk (setMessages) and the setStatus("ready") flip land in separate renders,
+  // and the old effect didn't depend on `messages` — so whenever the edge wasn't
+  // cleanly observed the reply was never spoken ("reads some replies, not others").
+  // Depending on `messages` means a reply that finalizes a tick after the status
+  // flip is still caught; the id guard prevents re-reads.
+  const lastSpokenIdRef = useRef<string | null>(null);
+  const voiceWasActiveRef = useRef(false);
+  const voiceMessagesRef = useRef(messages);
+  voiceMessagesRef.current = messages;
+  useEffect(() => {
+    // Enabling voice mode marks the current last reply as already-handled so
+    // turning it on mid-conversation doesn't re-read history; disabling resets.
+    if (voiceActive && !voiceWasActiveRef.current) {
+      const msgs = voiceMessagesRef.current;
+      let lastId: string | null = null;
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role === "assistant") {
+          lastId = msgs[i].id;
+          break;
+        }
+      }
+      lastSpokenIdRef.current = lastId;
+    } else if (!voiceActive && voiceWasActiveRef.current) {
+      lastSpokenIdRef.current = null;
+    }
+    voiceWasActiveRef.current = voiceActive;
+  }, [voiceActive]);
+  useEffect(() => {
+    if (!voiceActive || status !== "ready") return;
+    let last: UIMessage | undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant") {
+        last = messages[i];
+        break;
+      }
+    }
+    if (!last || last.id === lastSpokenIdRef.current) return;
+    const text = last.parts
+      .map((p) => (p.type === "text" ? p.text : ""))
+      .join("")
+      .trim();
+    if (!text) return;
+    lastSpokenIdRef.current = last.id;
+    voiceSpeak(text, last.id);
+  }, [status, voiceActive, voiceSpeak, messages]);
+
   // centered hero treatment.
   if (isEmpty && !embedded) {
     return (
@@ -1655,6 +1731,8 @@ export function Chat({
               onChange={setInput}
               onSubmit={(o) => submit(undefined, o)}
               onStop={stop}
+              voicePhase={voice.phase}
+              onToggleVoice={voice.toggle}
               status={status}
               provider={provider}
               hideWorkspacePicker={embedded}
@@ -1817,6 +1895,8 @@ export function Chat({
         onChange={setInput}
         onSubmit={(o) => submit(undefined, o)}
         onStop={stop}
+        voicePhase={voice.phase}
+        onToggleVoice={voice.toggle}
         status={status}
         provider={provider}
         hideWorkspacePicker={embedded}

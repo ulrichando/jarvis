@@ -52,6 +52,7 @@ export type SettingsPatch = {
   };
   defaults?: {
     model?: string;
+    imageModel?: string;
     systemPrompt?: string;
     temperature?: number;
   };

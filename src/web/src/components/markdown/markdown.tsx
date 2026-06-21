@@ -155,6 +155,21 @@ const components: Components = {
     return <CodeBlock code={content} language={match?.[1] ?? "text"} />;
   },
   pre: ({ children }) => <>{children}</>,
+  // Generated images persist into assistant text as markdown `![alt](url)`
+  // (chat/route.ts onFinish). rehype-sanitize's defaultSchema allows <img>
+  // with relative src, so /api/media/<id> survives; constrain the size here to
+  // match the live GeneratedImageCards render.
+  img: ({ className, alt, ...props }) => (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      alt={alt ?? ""}
+      className={cn(
+        "my-3 block w-full max-w-sm rounded-2xl border border-border/60 object-contain",
+        className,
+      )}
+      {...stripKey(props)}
+    />
+  ),
 };
 
 // Sanitize schema extending defaultSchema so that:

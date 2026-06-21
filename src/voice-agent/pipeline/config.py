@@ -304,6 +304,30 @@ LOCAL_TTS_SPEED: float    = _float("JARVIS_LOCAL_TTS_SPEED", 1.0)       # kokoro
 LOCAL_VISION_ENABLED: bool = _bool("JARVIS_LOCAL_VISION_ENABLED", False)
 
 
+# ── Worker per-job memory cap ────────────────────────────────────────
+def job_memory_limit_mb() -> float:
+    """Per-job RSS cap (MB) for the LiveKit worker — resolved LIVE (a
+    function, not an import-time constant) so it sees env that
+    ``_apply_voice_mode()`` sets at startup for the tray's Local mode.
+
+    An explicit ``JARVIS_JOB_MEMORY_LIMIT_MB`` always wins (``0`` disables —
+    the framework's "no cap" sentinel). Otherwise the default is **5000**
+    when faster-whisper runs IN-PROCESS (``JARVIS_LOCAL_STT_ENABLED=1``) and
+    **1500** for the cloud-STT footprint.
+
+    Why the split: local STT loads the ~1.6 GB ``large-v3-turbo`` model into
+    EACH per-job process. The historical 1500 MB cap (added 2026-06-11 to
+    recycle a slow ~14 MB/hr leak, sized when STT was cloud-only) is smaller
+    than base-job (~635 MB) + model, so livekit-agents killed every job
+    mid-transcription (``exit -10``) and respawned — an OOM crash loop that
+    left JARVIS **silent** (live 2026-06-21: 24 kills in ~50 min, no turn
+    ever completed). 5000 clears base + model + inference with leak headroom
+    on this 62 GB box; cloud-STT machines keep the protective 1500.
+    """
+    default = 5000.0 if _bool("JARVIS_LOCAL_STT_ENABLED", False) else 1500.0
+    return _float("JARVIS_JOB_MEMORY_LIMIT_MB", default)
+
+
 # ── Bundled namespace ────────────────────────────────────────────────
 # Equivalent to the module constants above, just accessible as
 # `config.dispatch_disabled` etc. Same values; pick whichever style

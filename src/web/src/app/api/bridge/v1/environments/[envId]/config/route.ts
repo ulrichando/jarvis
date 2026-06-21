@@ -4,6 +4,7 @@ import {
   findEnvironment,
   parseEnvironmentConfig,
   setEnvironmentConfig,
+  renameEnvironment,
 } from "@/lib/bridge/store";
 import { getUserId } from "@/lib/auth-helpers";
 import { bridgeError } from "@/lib/bridge/errors";
@@ -88,12 +89,16 @@ export async function PATCH(
   const auth = await authorizeWrite(req, envId);
   if ("res" in auth) return auth.res;
   const body = (await req.json().catch(() => null)) as {
+    name?: string;
     envText?: string;
     setupScript?: string;
     networkLevel?: string;
     customAllowlist?: string;
   } | null;
   if (!body) return bridgeError(400, "invalid_request", "JSON body required");
+  if (typeof body.name === "string" && body.name.trim()) {
+    renameEnvironment(getStore(), envId, body.name.trim());
+  }
   const lvl = body.networkLevel;
   setEnvironmentConfig(getStore(), envId, {
     envVars: parseEnvText(typeof body.envText === "string" ? body.envText : ""),

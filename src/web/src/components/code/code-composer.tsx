@@ -16,7 +16,7 @@ import {
   Loader2,
   Check,
   ExternalLink,
-  RefreshCw,
+  Settings,
   Search,
   Paperclip,
   CircleDot,
@@ -85,7 +85,7 @@ export type Attachment = {
 
 const MAX_ATTACH_BYTES = 5 * 1024 * 1024; // 5MB/image — keep request bodies sane
 
-type Popover = null | "env" | "repo" | "plus" | "plus2" | "model" | "effort" | "mode" | "mic" | "usage" | "conn";
+type Popover = null | "env" | "repo" | "addrepo" | "plus" | "plus2" | "model" | "effort" | "mode" | "mic" | "usage" | "conn";
 
 // Slash-command palette (claude.ai/code parity). "web" commands are handled by
 // the page (onCommand) or open a composer popover (/model); "send" commands are
@@ -160,11 +160,15 @@ export function CodeComposer({
   selected,
   onPickMachine,
   onRefreshMachines,
+  onConfigureEnvironment,
+  onAddCloudEnvironment,
   placeholder = "Describe a task or ask a question",
   showPills = true,
   mode = "acceptEdits",
   onModeChange,
   onPickRepo,
+  extraRepos = [],
+  onExtraReposChange,
   attachments = [],
   onAttachmentsChange,
   model = "claude-sonnet-4-6",
@@ -185,12 +189,21 @@ export function CodeComposer({
   selected: Machine | null;
   onPickMachine: (m: Machine) => void;
   onRefreshMachines: () => void;
+  /** Open the "Update cloud environment" config for a cloud env (the gear next
+   *  to its checkmark in the env picker). */
+  onConfigureEnvironment?: (envId: string) => void;
+  /** "Add cloud environment…" — open the "New cloud environment" create modal. */
+  onAddCloudEnvironment?: () => void;
   placeholder?: string;
   showPills?: boolean;
   mode?: string;
   onModeChange?: (mode: string) => void;
   /** Picking a GitHub repo targets a cloud container for the next task. */
   onPickRepo?: (fullName: string | null) => void;
+  /** Additional repos (multi-repo session) shown as pills with a remove ×; the
+   *  "+" in the pill row adds one via the repo picker (claude.ai/code parity). */
+  extraRepos?: string[];
+  onExtraReposChange?: (repos: string[]) => void;
   /** Pending image attachments for the next send (owned by the page). */
   attachments?: Attachment[];
   onAttachmentsChange?: (a: Attachment[]) => void;
@@ -333,6 +346,11 @@ export function CodeComposer({
   const [holdToRecord, setHoldToRecord] = useState(true);
   const [recording, setRecording] = useState(false);
   const recRef = useRef<SpeechRecognition | null>(null);
+  // First mic use requests permission via getUserMedia (Chrome's device-aware
+  // prompt — claude.ai parity). micReadyRef avoids re-requesting; stopRequestedRef
+  // guards a hold-to-record release that lands while the prompt is still open.
+  const micReadyRef = useRef(false);
+  const stopRequestedRef = useRef(false);
   const valueRef = useRef(value);
   useEffect(() => {
     valueRef.current = value;
@@ -345,10 +363,29 @@ export function CodeComposer({
     setSpeechSupported(!!(window.SpeechRecognition || window.webkitSpeechRecognition));
   }, []);
 
-  const startRec = () => {
+  const startRec = async () => {
     if (!speechSupported || recording) return;
+    stopRequestedRef.current = false;
+    setRecording(true); // reflect intent immediately (the prompt may take a beat)
+    // Request the mic via getUserMedia FIRST so Chrome shows its full
+    // device-aware permission prompt (parity with claude.ai's "Use available
+    // microphones") and grants a persistent permission, then release the stream
+    // — SpeechRecognition handles the actual audio. The Web Speech API can't
+    // target a specific input device, so true per-device selection still needs a
+    // server-STT switch (docs/decisions-pending.md #17).
+    if (!micReadyRef.current && navigator.mediaDevices?.getUserMedia) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((t) => t.stop());
+        micReadyRef.current = true;
+      } catch {
+        setRecording(false);
+        return;
+      }
+    }
+    if (stopRequestedRef.current) { setRecording(false); return; } // released during prompt
     const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!Ctor) return;
+    if (!Ctor) { setRecording(false); return; }
     const rec = new Ctor();
     rec.lang = navigator.language || "en-US";
     rec.interimResults = false;
@@ -368,12 +405,14 @@ export function CodeComposer({
     recRef.current = rec;
     try {
       rec.start();
-      setRecording(true);
     } catch {
       setRecording(false);
     }
   };
-  const stopRec = () => recRef.current?.stop();
+  const stopRec = () => {
+    stopRequestedRef.current = true;
+    recRef.current?.stop();
+  };
   const toggleRec = () => (recording ? stopRec() : startRec());
   useEffect(() => () => recRef.current?.abort(), []);
 
@@ -441,47 +480,53 @@ export function CodeComposer({
         <div className="relative flex items-center gap-1.5 px-3 py-2 border-b border-border/40">
           {/* environment */}
           <button type="button" onClick={() => toggle("env")} className={pill}>
-            {selected ? <Monitor className="size-3 text-foreground/60" /> : <Cloud className="size-3 text-foreground/60" />}
+            {selected && selected.worker_type !== "container" ? <Monitor className="size-3 text-foreground/60" /> : <Cloud className="size-3 text-foreground/60" />}
             {selected?.machine_name ?? "Default"}
             <ChevronDown className="size-3 opacity-50" />
           </button>
           {open === "env" && (
             <div className="absolute bottom-full left-0 mb-2 w-[320px] rounded-xl border border-border bg-card p-1.5 shadow-xl z-50">
-              <div className="flex items-center justify-between px-2 py-1">
-                <span className="text-[11px] font-medium text-foreground/60">Connected machines</span>
-                <button type="button" aria-label="Refresh machines" onClick={onRefreshMachines} className="flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-accent/50 hover:text-foreground">
-                  <RefreshCw className="size-3" />
-                </button>
+              {/* Local — desktop-only placeholder. The web can't run the local
+                  env directly; use Cloud or a Remote-Control machine. */}
+              <div className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5" title="The local environment is only available in the desktop app">
+                <Monitor className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="text-[13px] text-muted-foreground">Local</span>
+                <span className="text-[11px] text-muted-foreground/60">Desktop only</span>
               </div>
+
+              {/* Cloud — configurable container environments (gear → Update). */}
+              <div className="mt-1 border-t border-border/40 px-2 pb-1 pt-2 text-[11px] font-medium text-foreground/60">Cloud</div>
               {machines === null ? (
-                <div className="flex items-center gap-2 px-2 py-2 text-[12px] text-muted-foreground"><Loader2 className="size-3.5 animate-spin" /> Loading…</div>
-              ) : machines.length === 0 ? (
-                <div className="px-2 py-1.5 text-[12px] text-muted-foreground">No machines connected.</div>
+                <div className="flex items-center gap-2 px-2 py-1.5 text-[12px] text-muted-foreground"><Loader2 className="size-3.5 animate-spin" /> Loading…</div>
               ) : (
-                machines.map((m) => (
-                  <button key={m.environment_id} type="button" onClick={() => { onPickMachine(m); onPickRepo?.(null); setRepoOverride(null); setOpen(null); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent/40">
-                    {m.worker_type === "container" ? (
-                      <Cloud className="size-3.5 text-blue-400" />
-                    ) : (
-                      <span className="relative flex size-3.5 shrink-0 items-center justify-center" title={m.online ? "online" : "offline"}>
-                        <Monitor className="size-3.5 text-foreground/60" />
-                        <span className={`absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full ring-1 ring-background ${m.online ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
-                      </span>
-                    )}
-                    <span className="flex-1 truncate text-[13px] text-foreground">{m.machine_name}</span>
-                    {m.worker_type === "claude_code_repl" && (
-                      <span className="shrink-0 rounded bg-accent/60 px-1 text-[10px] text-muted-foreground" title="An attached REPL session — can't run new tasks">attach-only</span>
-                    )}
-                    <span className="truncate text-[11px] text-muted-foreground">{repoLabel(m)}</span>
-                    {selected?.environment_id === m.environment_id && <Check className="size-3.5 text-primary" />}
-                  </button>
-                ))
+                machines
+                  .filter((m) => m.worker_type === "container")
+                  .map((m) => (
+                    <MachineRow
+                      key={m.environment_id}
+                      m={m}
+                      selected={selected}
+                      onPick={() => { onPickMachine(m); onPickRepo?.(null); setRepoOverride(null); setOpen(null); }}
+                      onConfigure={onConfigureEnvironment ? (id) => { onConfigureEnvironment(id); setOpen(null); } : undefined}
+                    />
+                  ))
               )}
+              <button
+                type="button"
+                onClick={() => { onAddCloudEnvironment?.(); setOpen(null); }}
+                className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] text-foreground/80 hover:bg-accent/40"
+              >
+                <Plus className="size-3.5 text-muted-foreground" /> Add cloud environment…
+              </button>
+
+              {/* Remote Control — claude.ai shows only the setup prompt here (no
+                  inline machine list). Connected machines' sessions live in the
+                  left sidebar, so the picker stays a clean match. */}
               <div className="mt-1 border-t border-border/40 px-2 pb-1 pt-2 text-[11px] font-medium text-foreground/60">Remote Control</div>
-              <div className="flex items-start gap-2 rounded-lg px-2 py-1.5 text-foreground/80">
-                <ExternalLink className="mt-0.5 size-3.5 text-muted-foreground" />
-                <div>
-                  <div className="text-[13px]">Set up Remote Control</div>
+              <div className="px-2 py-1.5">
+                <div className="pl-[22px] text-[13px] text-foreground/90">Set up Remote Control</div>
+                <div className="mt-0.5 flex items-start gap-2">
+                  <ExternalLink className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
                   <div className="text-[11px] text-muted-foreground">Run <code className="text-[10.5px]">/remote-control</code> on your machine to code from here.</div>
                 </div>
               </div>
@@ -529,13 +574,57 @@ export function CodeComposer({
             {selected?.branch ?? "main"}
           </button>
 
-          {/* + menu */}
-          <button type="button" aria-label="Add" onClick={() => toggle("plus")} className={`${pill} px-1.5`}>
+          {/* extra repos (multi-repo) — each a pill with its branch + remove × */}
+          {extraRepos.map((r) => (
+            <span key={r} className={pill}>
+              <Code2 className="size-3 text-foreground/60" />
+              {r.split("/").pop()}
+              <GitBranch className="ml-1 size-3 text-foreground/60" />
+              main
+              <button
+                type="button"
+                aria-label={`Remove ${r}`}
+                onClick={() => onExtraReposChange?.(extraRepos.filter((x) => x !== r))}
+                className="ml-0.5 -mr-0.5 text-muted-foreground hover:text-foreground"
+              >
+                <X className="size-3" />
+              </button>
+            </span>
+          ))}
+
+          {/* + → add another repo via the repo picker (claude.ai/code parity) */}
+          <button type="button" aria-label="Add repository" onClick={() => toggle("addrepo")} className={`${pill} px-1.5`}>
             <Plus className="size-3" />
           </button>
-          {open === "plus" && (
-            <div className="absolute bottom-full left-32 mb-2 w-[240px] rounded-xl border border-border bg-card p-1 shadow-xl z-50">
-              {plusItems}
+          {open === "addrepo" && (
+            <div className="absolute bottom-full left-32 mb-2 w-[320px] rounded-xl border border-border bg-card p-1.5 shadow-xl z-50">
+              <div className="max-h-[300px] overflow-y-auto">
+                {ghRepos === null ? (
+                  <div className="px-2 py-2 text-[12px] text-muted-foreground">Connect GitHub (＋ → Connectors) to pick a repository.</div>
+                ) : ghFiltered.length === 0 ? (
+                  <div className="px-2 py-1.5 text-[12px] text-muted-foreground">{repoQuery ? "No matching repositories." : "No repositories found."}</div>
+                ) : (
+                  ghFiltered.slice(0, 60).map((r) => {
+                    const added = extraRepos.includes(r.full_name) || repoOverride === r.full_name;
+                    return (
+                      <button
+                        key={r.full_name}
+                        type="button"
+                        onClick={() => { if (!added) onExtraReposChange?.([...extraRepos, r.full_name]); setOpen(null); }}
+                        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] hover:bg-accent/40"
+                      >
+                        <Code2 className="size-3.5 shrink-0 text-muted-foreground" />
+                        <span className="flex-1 truncate text-foreground/90">{r.full_name}</span>
+                        {added && <Check className="size-3.5 text-primary" />}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+              <div className="mt-1 flex items-center gap-1.5 rounded-lg border border-border/50 bg-accent/20 px-2 py-1.5">
+                <Search className="size-3.5 text-muted-foreground" />
+                <input value={repoQuery} onChange={(e) => setRepoQuery(e.target.value)} placeholder="Search repos…" className="flex-1 bg-transparent text-[12.5px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none" />
+              </div>
             </div>
           )}
         </div>
@@ -634,16 +723,6 @@ export function CodeComposer({
           >
             {MODE_OPTIONS.find((m) => m.value === mode)?.label ?? "Accept edits"}
           </button>
-          {connectorsEditable && availableConnectors.length > 0 && (
-            <button
-              type="button"
-              onClick={() => toggle("conn")}
-              className="rounded bg-accent/40 px-2 py-1 text-[12px] text-foreground/80 hover:bg-accent/60 hover:text-foreground"
-              title="Choose which connectors this session can use"
-            >
-              {connectors.length ? `Connectors · ${connectors.length}` : "Connectors"}
-            </button>
-          )}
           <button type="button" aria-label="Attach" onClick={() => toggle("plus2")} className={`${TOOLBAR_ICON_BTN} ${open === "plus2" ? "bg-accent/40 text-foreground" : ""}`}><Plus className="size-3.5" /></button>
           {open === "plus2" && (
             <div className="absolute bottom-full left-2 mb-2 w-[240px] rounded-xl border border-border bg-card p-1 shadow-xl z-50">
@@ -725,35 +804,6 @@ export function CodeComposer({
           </div>
         )}
 
-        {open === "conn" && (
-          <div className="absolute bottom-full left-2 mb-2 max-h-[360px] w-[250px] overflow-y-auto rounded-xl border border-border bg-card p-1 shadow-xl z-50">
-            <div className="px-2.5 pb-1 pt-2 text-[11px] font-medium text-muted-foreground/60">
-              Connectors for this session
-            </div>
-            {availableConnectors.map((c) => {
-              const on = connectors.includes(c.id);
-              return (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() =>
-                    onConnectorsChange?.(
-                      on ? connectors.filter((x) => x !== c.id) : [...connectors, c.id],
-                    )
-                  }
-                  className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-[13px] hover:bg-accent/50"
-                >
-                  <Check className={`size-3.5 shrink-0 ${on ? "text-primary" : "opacity-0"}`} />
-                  <span className="min-w-0 flex-1 truncate text-foreground/90">{c.name}</span>
-                </button>
-              );
-            })}
-            <p className="px-2.5 pb-1.5 pt-1 text-[11px] leading-snug text-muted-foreground/50">
-              Off by default — pick only what this task needs.
-            </p>
-          </div>
-        )}
-
         {open === "model" && (
           <div className="absolute bottom-full right-2 mb-2 max-h-[400px] w-[280px] overflow-y-auto rounded-xl border border-border bg-card p-1 shadow-xl z-50">
             {MODEL_GROUPS.map((g) => (
@@ -810,6 +860,52 @@ export function CodeComposer({
 
       {modal === "connectors" && <ConnectorsModal onClose={() => setModal(null)} />}
       {modal === "import" && <ImportIssueModal onClose={() => setModal(null)} onPick={(t) => onChange(t)} />}
+    </div>
+  );
+}
+
+/** One row in the machine/environment picker. Local machines show an online
+ *  dot; cloud (container) environments show a config gear (→ Update cloud
+ *  environment) next to the checkmark, matching claude.ai/code. */
+function MachineRow({
+  m,
+  selected,
+  onPick,
+  onConfigure,
+}: {
+  m: Machine;
+  selected: Machine | null;
+  onPick: () => void;
+  onConfigure?: (envId: string) => void;
+}) {
+  return (
+    <div className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-accent/40">
+      <button type="button" onClick={onPick} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+        {m.worker_type === "container" ? (
+          <Cloud className="size-3.5 shrink-0 text-blue-400" />
+        ) : (
+          <span className="relative flex size-3.5 shrink-0 items-center justify-center" title={m.online ? "online" : "offline"}>
+            <Monitor className="size-3.5 text-foreground/60" />
+            <span className={`absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full ring-1 ring-background ${m.online ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
+          </span>
+        )}
+        <span className="flex-1 truncate text-[13px] text-foreground">{m.machine_name}</span>
+        {m.worker_type === "claude_code_repl" && (
+          <span className="shrink-0 rounded bg-accent/60 px-1 text-[10px] text-muted-foreground" title="An attached REPL session — can't run new tasks">attach-only</span>
+        )}
+      </button>
+      {selected?.environment_id === m.environment_id && <Check className="size-3.5 shrink-0 text-primary" />}
+      {m.worker_type === "container" && onConfigure && (
+        <button
+          type="button"
+          aria-label="Configure environment"
+          title="Configure environment"
+          onClick={(e) => { e.stopPropagation(); onConfigure(m.environment_id); }}
+          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <Settings className="size-3.5" />
+        </button>
+      )}
     </div>
   );
 }

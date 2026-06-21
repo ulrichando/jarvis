@@ -437,6 +437,13 @@ export function setEnvironmentConfig(
     .run(JSON.stringify(config), envId)
 }
 
+/** Rename an environment (its display name in the /code picker). */
+export function renameEnvironment(store: Store, envId: string, name: string): void {
+  store.db
+    .prepare('UPDATE environments SET machine_name = ? WHERE environment_id = ?')
+    .run(name, envId)
+}
+
 /** Find a machine's environment by its natural identity (owner + machine +
  * directory), newest first. Used to dedup re-registration. */
 export function findEnvironmentByIdentity(
@@ -499,10 +506,13 @@ export function reapStaleSandboxes(
   now: number = Date.now(),
 ): number {
   const cutoff = now - SANDBOX_TTL_MS
+  // Only reap per-repo ephemeral sandboxes (git_repo_url set). Repo-less
+  // container rows are persistent, configurable "cloud environments" (the picker's
+  // Default + named envs) — never GC them.
   const stale = store.db
     .prepare(
       `SELECT environment_id FROM environments
-       WHERE worker_type = 'container' AND last_seen_at < ?`,
+       WHERE worker_type = 'container' AND git_repo_url IS NOT NULL AND last_seen_at < ?`,
     )
     .all(cutoff) as Array<{ environment_id: string }>
   let reaped = 0
@@ -517,6 +527,26 @@ export function reapStaleSandboxes(
     reaped++
   }
   return reaped
+}
+
+/** Ensure the user always has a persistent "Default" cloud environment (the
+ *  picker's Cloud → Default, like claude.ai/code). Repo-less container row, so
+ *  the reaper leaves it alone; the repo is picked per session. Idempotent. */
+export function ensureDefaultCloudEnv(store: Store, userId: string): void {
+  const has = store.db
+    .prepare(
+      `SELECT 1 FROM environments
+       WHERE worker_type = 'container' AND git_repo_url IS NULL AND user_id = ? LIMIT 1`,
+    )
+    .get(userId)
+  if (has) return
+  createEnvironment(store, {
+    machine_name: 'Default',
+    directory: '/workspace',
+    max_sessions: 4,
+    worker_type: 'container',
+    user_id: userId,
+  })
 }
 
 export function enqueueWork(
