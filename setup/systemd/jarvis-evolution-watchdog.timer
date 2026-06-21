@@ -1,0 +1,15 @@
+[Unit]
+Description=JARVIS self-evolution deploy watchdog — verifies each deploy + auto-rolls-back
+
+[Timer]
+# Start ~2 min after boot (let the stack settle), then run ~20s after each
+# previous run COMPLETES (OnUnitActiveSec avoids overlap with a slow smoke-turn).
+# Idle 99% of the time — it only does real work while an active-deploy marker
+# exists, which is the few minutes after an approved deploy.
+OnBootSec=120
+OnUnitActiveSec=20
+AccuracySec=5
+Unit=jarvis-evolution-watchdog.service
+
+[Install]
+WantedBy=timers.target

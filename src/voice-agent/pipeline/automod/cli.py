@@ -277,7 +277,7 @@ def main(argv: list[str]) -> int:
     """
     if len(argv) < 2:
         print(
-            "usage: jarvis-automod <list|show|merge|reject|revert> [args]",
+            "usage: jarvis-automod <list|show|merge|deploy|reject|revert> [args]",
             file=sys.stderr,
         )
         return 2
@@ -311,6 +311,26 @@ def main(argv: list[str]) -> int:
             print(_RESTART_GUIDANCE)
             return 0
         print(f"Merge failed: {info}", file=sys.stderr)
+        return 1
+
+    if cmd == "deploy":
+        # The APPROVED-evolution path: ff-merge + arm the deploy watchdog +
+        # restart. Unlike bare `merge` (which only stages + tells you to restart),
+        # `deploy` records a rollback point and hands off to
+        # jarvis-evolution-watchdog, which auto-rolls-back if the new code is
+        # unhealthy. Refuses on a dirty tree (so rollback can't lose data).
+        if len(argv) < 3:
+            print("usage: jarvis-automod deploy <id>", file=sys.stderr)
+            return 2
+        from pipeline.automod.deploy import deploy as _do_deploy
+        ok, info = _do_deploy(argv[2])
+        if ok:
+            print(
+                f"Deployed {argv[2]} (merge {info[:8]}). The watchdog is now "
+                "verifying health and will auto-roll-back if it's unhealthy."
+            )
+            return 0
+        print(f"Deploy refused/failed: {info}", file=sys.stderr)
         return 1
 
     if cmd == "reject":

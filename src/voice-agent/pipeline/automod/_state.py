@@ -70,6 +70,12 @@ HARD_BLOCKLIST_PATHS = (
     # explicitly here makes the intent legible to the next reader.
     "bin/jarvis-automod-impl",
     "bin/jarvis-automod",
+    # 2026-06-21: the self-evolution SAFETY NET — the deploy watchdog, its
+    # rollback, and the nightly trigger. Auto-mod must NEVER be able to edit or
+    # disable the thing that rolls back a bad self-deploy. (deploy.py / watchdog.py
+    # / selftest.py live under pipeline/automod/, already blocked above.)
+    "bin/jarvis-evolution-watchdog",
+    "bin/jarvis-evolution-nightly",
 )
 
 # Allowed prefix — diffs may touch only files under this prefix.

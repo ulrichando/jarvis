@@ -1,0 +1,25 @@
+[Unit]
+Description=JARVIS self-evolution deploy watchdog (auto-rolls-back a bad self-deploy)
+Documentation=file:%h/Documents/Projects/jarvis/bin/jarvis-evolution-watchdog
+# Don't race the agent's own restart during a deploy.
+After=jarvis-voice-agent.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/mkdir -p %h/.local/share/jarvis/logs
+ExecStart=%h/Documents/Projects/jarvis/bin/jarvis-evolution-watchdog
+# One tick can run a ~45s smoke-turn subprocess + (rarely) a git reset + restart.
+TimeoutStartSec=120
+StandardOutput=append:%h/.local/share/jarvis/logs/evolution-watchdog.log
+StandardError=append:%h/.local/share/jarvis/logs/evolution-watchdog.log
+
+# Minimal hardening only: this unit must reach the systemd --user manager to
+# restart the agent on rollback, so the heavier Protect*/PrivateTmp sandbox used
+# elsewhere (which can block systemctl) is deliberately omitted. Mirrors
+# jarvis-voice-health.service.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+# No [Install]: triggered by jarvis-evolution-watchdog.timer, never at boot directly.
