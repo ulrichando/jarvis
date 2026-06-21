@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# jarvis-evolution-watchdog — let JARVIS SURVIVE a bad self-deploy.
+#
+# Driven by jarvis-evolution-watchdog.timer. Runs in a process SEPARATE from the
+# agent, so it still fires even when the agent is dead (the whole point — the
+# agent can't be its own deploy safety net). One tick: if a deploy is being
+# verified (an active-deploy marker exists), run the health gate
+# (liveness + one successful turn) and auto-roll-back to the last-good SHA if the
+# new code is unhealthy past its deadline. No marker → no-op.
+#
+# Safe to run by hand. Logic lives in pipeline/automod/watchdog.py (testable).
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+VA="$REPO_ROOT/src/voice-agent"
+
+cd "$VA" || exit 1
+exec "$VA/.venv/bin/python" -m pipeline.automod.watchdog
