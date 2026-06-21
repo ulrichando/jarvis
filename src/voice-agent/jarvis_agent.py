@@ -6825,6 +6825,46 @@ async def entrypoint(ctx: JobContext) -> None:
                         _aec = read_aec_state(max_age_s=60)
                     except Exception:
                         _aec = {}
+                    # Memory learning-loop telemetry (2026-06-21): the
+                    # save_trigger_fired / recall_trigger_fired columns existed
+                    # in the schema but NOTHING ever wrote them (same dead-column
+                    # bug class as total_audio_ms=0). Derive them from this turn's
+                    # tool calls so we can finally SEE whether capture/recall is
+                    # firing — the prerequisite for knowing if JARVIS is learning.
+                    _save_fired = False
+                    _recall_fired = False
+                    try:
+                        import json as _json_mem
+                        for _tc in (
+                            getattr(session, "_jarvis_tool_calls_this_turn", None) or []
+                        ):
+                            _tname = (
+                                getattr(_tc, "name", None)
+                                or (_tc.get("name") if isinstance(_tc, dict) else "")
+                                or ""
+                            )
+                            if _tname in ("recall", "recall_conversation"):
+                                _recall_fired = True
+                            elif _tname == "memory":
+                                _raw = getattr(_tc, "arguments", None)
+                                if isinstance(_tc, dict):
+                                    _raw = _tc.get("arguments", _raw)
+                                try:
+                                    _parsed = (
+                                        _json_mem.loads(_raw)
+                                        if isinstance(_raw, str)
+                                        else (_raw or {})
+                                    )
+                                    _action = str(_parsed.get("action", "")).lower()
+                                except Exception:
+                                    _action = ""
+                                # add/replace = a save; read/remove ≠ capture.
+                                # Unknown action (parse failed) counts as a save —
+                                # better to over- than under-report the loop firing.
+                                if _action in ("add", "replace", ""):
+                                    _save_fired = True
+                    except Exception:
+                        pass
                     log_turn(
                         user_text=getattr(session, "_jarvis_turn_user_text", "") or "",
                         jarvis_text=text or "",
@@ -6843,6 +6883,8 @@ async def entrypoint(ctx: JobContext) -> None:
                         cost_usd=cost,
                         context_pressure=pressure,
                         memory_auto_extracted=mem_extracted,
+                        save_trigger_fired=_save_fired,
+                        recall_trigger_fired=_recall_fired,
                         prompt_cached_tokens=cache_read,
                         browser_backend=browser_backend_used,
                         computer_use_steps=cua_steps,
@@ -7608,6 +7650,10 @@ if __name__ == "__main__":
         daemon=True,
     ).start()
 
+    # Per-job memory cap, resolved live so the default rises to 5000 when
+    # in-process local STT is on (the 1.6 GB whisper model). See the kwarg below.
+    from pipeline.config import job_memory_limit_mb as _job_memory_limit_mb
+
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
@@ -7629,20 +7675,18 @@ if __name__ == "__main__":
             # min(cpu_count, 4); we pin the explicit value so it
             # doesn't shrink on lower-cpu hosts.
             num_idle_processes=4,
-            # Memory safety net (2026-06-11). The per-session job process
-            # slowly grows over a long session (~14 MB/hr observed); with
-            # no limit it climbs until inference goes slower-than-realtime
-            # and the agent wedges (live: 18 h → silent, manual restart
-            # needed). job_memory_warn_mb (500, framework default) only
-            # WARNS — it floods the log but never recycles the job. This
-            # cap recycles a runaway job before it degrades. Set high
-            # enough (1500) that normal operation (~635 MB even after
-            # hours) never trips it — it fires only on a genuine runaway;
-            # the nightly recycle timer handles the normal slow climb.
-            # Env override JARVIS_JOB_MEMORY_LIMIT_MB; 0 disables.
-            job_memory_limit_mb=float(
-                os.environ.get("JARVIS_JOB_MEMORY_LIMIT_MB", "1500")
-            ),
+            # Memory safety net (2026-06-11, retuned 2026-06-21). Recycles a
+            # runaway job before its RSS climbs until inference goes
+            # slower-than-realtime and the agent wedges (the original 18 h →
+            # silent leak). job_memory_warn_mb (500, framework default) only
+            # WARNS. Default 1500 for cloud STT; raised to 5000 when
+            # faster-whisper runs IN-PROCESS (JARVIS_LOCAL_STT_ENABLED=1) — it
+            # loads the ~1.6 GB large-v3-turbo model into each job, and at 1500
+            # livekit-agents killed every job mid-transcription (exit -10) and
+            # respawned, an OOM loop that left JARVIS silent (live 2026-06-21:
+            # 24 kills in ~50 min). Resolved live so it also covers the
+            # tray-Local flip. Env JARVIS_JOB_MEMORY_LIMIT_MB wins; 0 disables.
+            job_memory_limit_mb=_job_memory_limit_mb(),
             # livekit-agents binds a health HTTP server on 8081 by
             # default (prod_default in worker.py). Override to 8181
             # to dodge port collisions with other tooling on the same

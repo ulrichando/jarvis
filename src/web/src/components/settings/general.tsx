@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/select";
 import { useSettings, useUpdateSettings } from "@/hooks/use-settings";
 import { modelsByProvider } from "@/lib/ai/models-meta";
+import { IMAGE_MODELS } from "@/lib/ai/image-models";
 import { cn } from "@/lib/utils";
 
 const JOB_TITLES = [
@@ -55,6 +56,7 @@ export function GeneralSection() {
   const [jobTitle, setJobTitle] = useState("");
   const [preferences, setPreferences] = useState("");
   const [model, setModel] = useState("");
+  const [imageModel, setImageModel] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
   const [temperature, setTemperature] = useState(0.7);
   const [responseCompletions, setResponseCompletions] = useState(false);
@@ -67,6 +69,7 @@ export function GeneralSection() {
     setJobTitle(data.user.jobTitle ?? "");
     setPreferences(data.user.preferences ?? "");
     setModel(data.defaults.model);
+    setImageModel(data.defaults.imageModel);
     setSystemPrompt(data.defaults.systemPrompt ?? "");
     setTemperature(data.defaults.temperature);
     setResponseCompletions(data.notifications?.responseCompletions ?? false);
@@ -83,6 +86,7 @@ export function GeneralSection() {
         },
         defaults: {
           model,
+          imageModel,
           systemPrompt: systemPrompt.trim() || undefined,
           temperature,
         },
@@ -333,6 +337,42 @@ export function GeneralSection() {
                     </SelectGroup>
                   </Fragment>
                 ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div>
+            <label className="block text-[14px] font-medium mb-0.5">
+              Image model
+            </label>
+            <p className="text-[13px] text-muted-foreground mb-1.5">
+              Used when you ask any chat to generate an image — independent of
+              the text model above. Needs an OpenAI or Google API key.
+            </p>
+            <Select
+              value={imageModel}
+              onValueChange={(v) => v && setImageModel(v)}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.values(IMAGE_MODELS).map((m) => {
+                  const hasKey = Boolean(
+                    (
+                      data.providers as Record<
+                        string,
+                        { hasKey?: boolean } | undefined
+                      >
+                    )?.[m.provider]?.hasKey,
+                  );
+                  return (
+                    <SelectItem key={m.id} value={m.id} disabled={!hasKey}>
+                      {m.label}
+                      {hasKey ? "" : " — needs a key"}
+                    </SelectItem>
+                  );
+                })}
               </SelectContent>
             </Select>
           </div>

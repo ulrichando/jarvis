@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getStore } from '@/lib/bridge/db'
-import { listEnvironments, reapStaleSandboxes, isEnvironmentOnline } from '@/lib/bridge/store'
+import { listEnvironments, reapStaleSandboxes, isEnvironmentOnline, ensureDefaultCloudEnv } from '@/lib/bridge/store'
 import { getUserId } from '@/lib/auth-helpers'
 import { bridgeError } from '@/lib/bridge/errors'
 
@@ -12,6 +12,7 @@ export async function GET(req: Request): Promise<NextResponse> {
   try {
     const store = getStore()
     const userId = await getUserId(req.headers)
+    ensureDefaultCloudEnv(store, userId) // always offer a "Default" cloud env (claude.ai parity)
     reapStaleSandboxes(store) // lazy GC of stale cloud sandboxes
     const now = Date.now()
     const environments = listEnvironments(store, userId).map((e) => ({

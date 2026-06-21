@@ -15,8 +15,35 @@ import { bridgeError } from '@/lib/bridge/errors'
 export async function POST(req: Request): Promise<NextResponse> {
   const body = (await req.json().catch(() => null)) as {
     repo?: string
+    name?: string
   } | null
   const repo = typeof body?.repo === 'string' ? body.repo.trim() : ''
+  const name = typeof body?.name === 'string' ? body.name.trim() : ''
+
+  // "Add cloud environment" — a named, repo-less cloud environment (the repo is
+  // picked per session). Each create is a new env (container envs aren't deduped
+  // by identity), matching claude.ai/code's "New cloud environment".
+  if (!repo && name) {
+    try {
+      const store = getStore()
+      const userId = await getUserId(req.headers)
+      const env = createEnvironment(store, {
+        machine_name: name,
+        directory: '/workspace',
+        max_sessions: 4,
+        worker_type: 'container',
+        user_id: userId,
+      })
+      return NextResponse.json(
+        { environment_id: env.environment_id, reused: false },
+        { status: 201 },
+      )
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return bridgeError(500, 'internal_error', `DB error: ${msg}`)
+    }
+  }
+
   if (!repo || !validRepoFullName(repo)) {
     return bridgeError(400, 'invalid_request', 'repo must be "owner/name"')
   }

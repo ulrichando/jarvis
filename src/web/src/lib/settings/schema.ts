@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MODELS_META, DEFAULT_MODEL, type Provider } from "@/lib/ai/models-meta";
+import { IMAGE_MODELS, DEFAULT_IMAGE_MODEL } from "@/lib/ai/image-models";
 
 export const PROVIDER_KEYS: Provider[] = [
   "anthropic",
@@ -43,11 +44,18 @@ export const settingsSchema = z.object({
         .string()
         .refine((m) => m in MODELS_META, "unknown model")
         .default(DEFAULT_MODEL),
+      // Which image model the in-chat `generateImage` tool uses. Decoupled
+      // from `model` (the text model) — image gen is always delegated.
+      imageModel: z
+        .string()
+        .refine((m) => m in IMAGE_MODELS, "unknown image model")
+        .default(DEFAULT_IMAGE_MODEL),
       systemPrompt: z.string().max(8000).optional(),
       temperature: z.number().min(0).max(2).default(0.7),
     })
     .default({
       model: DEFAULT_MODEL,
+      imageModel: DEFAULT_IMAGE_MODEL,
       temperature: 0.7,
     }),
   providers: z

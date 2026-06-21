@@ -58,6 +58,42 @@ def test_add_empty_content_rejected(store):
     assert "empty" in r["error"].lower()
 
 
+def test_memory_rolling_evicts_oldest_on_overflow(store):
+    """MEMORY is a ROLLING store: once full, a new capture evicts the OLDEST
+    entry instead of being silently rejected — the bug that quietly strangled
+    the capture loop. The add must SUCCEED and stay within the cap."""
+    from pipeline.file_memory import MEMORY_CHAR_LIMIT
+    chunk = "X" * 200
+    i = 0
+    # Fill until one more 200-char chunk wouldn't fit.
+    while store._char_count("memory") + len(chunk) + len(ENTRY_DELIMITER) <= MEMORY_CHAR_LIMIT:
+        assert store.add("memory", f"{i:03d}-{chunk}")["success"]
+        i += 1
+    oldest = f"000-{chunk}"
+    assert oldest in store._entries_for("memory")
+    # A new 200-char fact overflows → must roll off the oldest, not reject.
+    newest = f"NEW-{'Z' * 200}"
+    r = store.add("memory", newest)
+    assert r["success"] is True, r
+    assert newest in store._entries_for("memory")
+    assert oldest not in store._entries_for("memory")  # rolled off
+    assert store._char_count("memory") <= MEMORY_CHAR_LIMIT
+
+
+def test_user_store_hard_rejects_on_overflow(store):
+    """USER (identity) is NOT rolling — it hard-rejects on overflow so a durable
+    identity fact is never silently auto-dropped."""
+    from pipeline.file_memory import USER_CHAR_LIMIT
+    chunk = "Y" * 200
+    i = 0
+    while store._char_count("user") + len(chunk) + len(ENTRY_DELIMITER) <= USER_CHAR_LIMIT:
+        assert store.add("user", f"{i:03d}-{chunk}")["success"]
+        i += 1
+    r = store.add("user", "Z" * 300)
+    assert r["success"] is False
+    assert "exceed" in r["error"].lower() or "limit" in r["error"].lower()
+
+
 def test_add_duplicate_is_noop(store):
     store.add("user", "Likes terse replies.")
     r = store.add("user", "Likes terse replies.")
@@ -88,12 +124,22 @@ def test_add_respects_char_limit(tmp_path, monkeypatch):
     monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
     s = MemoryStore(memory_char_limit=50, user_char_limit=50)
     s.load_from_disk()
+    # MEMORY is a ROLLING store (2026-06-21): an over-limit add SUCCEEDS by
+    # evicting the oldest entry, and the total stays within the cap.
     assert s.add("memory", "x" * 40)["success"]
     over = s.add("memory", "y" * 40)  # 40 + delim + 40 > 50
-    assert over["success"] is False
-    assert "exceed" in over["error"].lower()
-    # The rejected entry was NOT written.
+    assert over["success"] is True                       # rolled, not rejected
+    assert "y" * 40 in s._entries_for("memory")
+    assert "x" * 40 not in s._entries_for("memory")      # oldest evicted
     assert s.read("memory")["entry_count"] == 1
+    assert s._char_count("memory") <= 50
+    # USER (identity) is NOT rolling — it hard-rejects so a durable fact is
+    # never auto-dropped.
+    assert s.add("user", "a" * 40)["success"]
+    over_u = s.add("user", "b" * 40)
+    assert over_u["success"] is False
+    assert "exceed" in over_u["error"].lower()
+    assert s.read("user")["entry_count"] == 1
 
 
 def test_replace_respects_char_limit(tmp_path, monkeypatch):

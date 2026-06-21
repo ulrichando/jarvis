@@ -34,6 +34,8 @@ import {
   userAskedForQuestions,
 } from "@/lib/design/format";
 import { webSearchTool } from "@/lib/tools/web-search";
+import { createGenerateImageTool } from "@/lib/tools/generate-image";
+import { imageGenAvailable, type GeneratedImage } from "@/lib/ai/image";
 
 // File extension → suggested filename when the model dumps a fenced
 // code block instead of using boltAction. Used by the recovery path
@@ -186,10 +188,12 @@ type Body = {
   workspaceId?: string;
   mode?: ChatMode;
   format?: Format;
+  // DeepSeek "Search" composer toggle — false hides the web-search tool.
+  search?: boolean;
 };
 
 export async function POST(req: Request) {
-  const { id, messages, model, system, workspaceId, mode, format }: Body = await req.json();
+  const { id, messages, model, system, workspaceId, mode, format, search }: Body = await req.json();
   const userId = await getUserId(req.headers);
   const settings = await loadSettings();
   let modelId = model ?? settings.defaults.model;
@@ -635,6 +639,25 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
     }
   }
 
+  // Image generation — a tool the chat model delegates to, decoupled from the
+  // text model: any model that can call tools (incl. DeepSeek, which has no
+  // image endpoint of its own) can trigger it; the pixels come from the user's
+  // configured image model. Plain chats only, and only when an image provider
+  // key exists, so the model never reaches for a dead tool. Generated images
+  // are collected here so onFinish can append a markdown reference to the
+  // persisted assistant text — tool parts themselves aren't persisted (see
+  // persist.ts), the live UI renders them from the streamed tool part.
+  const generatedImages: GeneratedImage[] = [];
+  let imageTools: ToolSet = {};
+  if (!workspaceId && (await imageGenAvailable())) {
+    imageTools = {
+      generateImage: createGenerateImageTool({
+        imageModelId: settings.defaults.imageModel,
+        onGenerated: (img) => generatedImages.push(img),
+      }),
+    };
+  }
+
   const result = streamText({
     model: selected.model,
     system: finalSystem,
@@ -656,7 +679,15 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
     // producing the requested artifact (`finish: tool-calls`, no
     // boltActions emitted). Workspace turns are for building code, not
     // research. webSearch stays available only for plain chats.
-    tools: workspaceId ? undefined : { webSearch: webSearchTool, ...mcpTools },
+    // Search toggle (DeepSeek) off → drop webSearch; otherwise keep the existing
+    // duck-duck-scrape tool. Other providers send no flag → kept (unchanged).
+    tools: workspaceId
+      ? undefined
+      : {
+          ...(search === false ? {} : { webSearch: webSearchTool }),
+          ...imageTools,
+          ...mcpTools,
+        },
     stopWhen: stepCountIs(5),
     onError: (event) => {
       // streamText surfaces provider errors via this hook — they don't
@@ -729,11 +760,27 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
           console.error("[chat] fence-recovery failed:", err);
         }
       }
+      // Persist generated images into the assistant TEXT as markdown so they
+      // survive reload — tool parts aren't persisted (persist.ts saves text
+      // only); the live UI rendered them from the streamed tool part. Dedupe
+      // by url in case the model echoed it despite the tool description telling
+      // it not to. The markdown <img> loads same-origin, so proxy.ts lets it
+      // through even under the bearer gate.
+      let assistantText = text;
+      for (const img of generatedImages) {
+        // Skip only if the image is ALREADY embedded as markdown (model echoed
+        // it despite the tool description). A bare-url mention doesn't count —
+        // we still append the real image markdown so it renders on reload.
+        if (!assistantText.includes(`](${img.url})`)) {
+          const alt = img.prompt.replace(/[[\]\n]/g, " ").slice(0, 120).trim();
+          assistantText += `${assistantText ? "\n\n" : ""}![${alt}](${img.url})`;
+        }
+      }
       if (!conversation) return;
       try {
         await saveAssistantMessage({
           conversationId: conversation.id,
-          text,
+          text: assistantText,
           tokensIn: totalUsage.inputTokens,
           tokensOut: totalUsage.outputTokens,
           stopReason: finishReason,

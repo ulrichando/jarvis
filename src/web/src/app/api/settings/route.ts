@@ -46,6 +46,7 @@ const patchSchema = z.object({
   defaults: z
     .object({
       model: z.string().optional(),
+      imageModel: z.string().optional(),
       systemPrompt: z.string().optional(),
       temperature: z.number().optional(),
     })

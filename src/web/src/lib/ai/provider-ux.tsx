@@ -505,7 +505,7 @@ const DEEPSEEK_UX: ProviderUX = {
   plus: DEFAULT_UX.plus,
   inlineToggles: [
     { id: "deepthink", label: "DeepThink", icon: Brain, defaultOn: false },
-    { id: "search", label: "Search", icon: Globe, defaultOn: true },
+    { id: "search", label: "Search", icon: Globe, defaultOn: false },
   ],
   // Don't collapse every non-reasoner DeepSeek model to "Instant" in the
   // picker trigger — that hid which model was actually selected

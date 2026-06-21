@@ -521,3 +521,28 @@ persist Auto-fix (Behavior toggle is UI-only) + per-routine Connectors; "Once"
 stores a recurring-ish cron (no exact one-time datetime without the runner);
 Calendar is cadence-approximate (no cron parser).
 **Revisit by:** 2026-06-26.
+
+## 17. /code composer mic: permission parity with claude.ai (device-aware prompt)
+
+Clicking the composer mic shows Chrome's basic "Use your microphones" prompt,
+while claude.ai shows the richer "Use available microphones (N)" prompt with a
+device dropdown + level meter (user report + screenshots 2026-06-20). Root
+cause: Jarvis's web mic is **browser dictation via the Web Speech API**
+(`SpeechRecognition`, `src/web/src/components/code/code-composer.tsx`) —
+client-side STT, no audio capture — which only triggers the simple prompt.
+claude.ai uses `getUserMedia` (it streams audio to a server STT), which is what
+makes Chrome show the device-aware prompt.
+
+DONE 2026-06-20 (prompt parity): `startRec` now does a one-time
+`getUserMedia({audio:true})` pre-flight before starting `SpeechRecognition`, so
+Chrome shows the same device-aware prompt and grants a persistent "Allow while
+visiting the site". Stream is released immediately (Web Speech handles the audio).
+
+STILL A DECISION (the real gap): the Web Speech API **cannot target a chosen
+input device** (always the system default) and gives no level meter, so true
+per-device selection like claude.ai's needs replacing the web composer mic with
+`getUserMedia` capture + a **server-side STT** (e.g. reuse the voice-agent's
+Deepgram/Whisper path) streaming audio from the browser. Browser STT (free,
+simple, default-device-only) vs server STT (real device picker + accuracy, but a
+transcription backend + ongoing cost). Decide before building.
+**Revisit by:** 2026-06-27.

@@ -17,7 +17,6 @@ import {
 import {
   DEFAULT_MODEL,
   MODELS_META,
-  OLLAMA_STATIC_TAGS,
   buildOllamaMeta,
   isOllamaId,
   modelsByProvider,
@@ -99,18 +98,21 @@ export function ComposerModelPicker() {
   const { data: available } = useAvailableProviders();
   const { data: discovered } = useDiscoveredOllamaModels();
 
-  // Discovered ollama models not already covered by a curated static entry.
-  const staticOllamaTags = new Set(Object.values(OLLAMA_STATIC_TAGS));
-  const dynamicOllama: ModelMeta[] = (discovered ?? [])
-    .filter((d) => !staticOllamaTags.has(d.tag))
-    .map((d) => buildOllamaMeta(d.tag));
-
-  // Static groups, with discovered ollama models appended to the ollama group.
-  const groups = modelsByProvider().map((g) =>
-    g.provider === "ollama" && dynamicOllama.length > 0
-      ? { ...g, models: [...g.models, ...dynamicOllama] }
-      : g,
+  // The picker lists ONLY ollama models actually pulled into the local daemon
+  // (from live discovery) — no hardcoded fallback, so nothing appears when the
+  // user hasn't downloaded a local model. The static ollama-* registry entries
+  // remain for routing/test-provider but are not shown here.
+  const installedOllama: ModelMeta[] = (discovered ?? []).map((d) =>
+    buildOllamaMeta(d.tag),
   );
+
+  // Swap the static ollama group's models for what's installed, and drop the
+  // ollama group entirely when nothing is pulled.
+  const groups = modelsByProvider()
+    .map((g) =>
+      g.provider === "ollama" ? { ...g, models: installedOllama } : g,
+    )
+    .filter((g) => g.provider !== "ollama" || g.models.length > 0);
 
   // Resolve the active model — including a discovered id not in MODELS_META.
   const active =

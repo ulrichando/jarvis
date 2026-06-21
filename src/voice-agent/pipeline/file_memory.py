@@ -57,7 +57,12 @@ ENTRY_DELIMITER = "\n§\n"
 
 # Char budgets per store. Generous enough for a curated set of durable
 # facts, tight enough that the frozen snapshot can't balloon the prompt.
-MEMORY_CHAR_LIMIT = 2200
+# MEMORY is a ROLLING store (oldest entries evicted on overflow, see `add`), so
+# its cap bounds the injected-prompt size, not how much can ever be captured.
+# Bumped 2200→3000 on 2026-06-21 (it had silently wedged at 99% full because the
+# consolidator was removed and the old `add` hard-rejected once full). ~+200
+# cached prompt tokens — trivial.
+MEMORY_CHAR_LIMIT = 3000
 USER_CHAR_LIMIT = 1375
 PROCEDURE_CHAR_LIMIT = 8000
 
@@ -271,17 +276,41 @@ class MemoryStore:
 
             new_total = len(ENTRY_DELIMITER.join(entries + [content]))
             if new_total > limit:
-                current = self._char_count(target)
-                return {
-                    "success": False,
-                    "error": (
-                        f"Memory at {current:,}/{limit:,} chars. Adding this "
-                        f"entry ({len(content)} chars) would exceed the limit. "
-                        f"Replace or remove existing entries first."
-                    ),
-                    "current_entries": entries,
-                    "usage": f"{current:,}/{limit:,}",
-                }
+                # MEMORY is a ROLLING window: rather than silently rejecting new
+                # captures once full (the old behavior — which quietly strangled
+                # the one evolution capability that actually works), evict the
+                # OLDEST entries until the new one fits, then append. USER
+                # (identity) + PROCEDURE (curated) still hard-reject so a durable
+                # fact is never auto-dropped — put identity facts in USER.
+                if target == "memory" and len(content) <= limit:
+                    evicted: List[str] = []
+                    while entries and len(
+                        ENTRY_DELIMITER.join(entries + [content])
+                    ) > limit:
+                        evicted.append(entries.pop(0))
+                    if evicted:
+                        logger.warning(
+                            "[memory] MEMORY full — rolled off %d oldest "
+                            "entr%s to fit a new capture (NOT a silent reject). "
+                            "First evicted: %r",
+                            len(evicted),
+                            "y" if len(evicted) == 1 else "ies",
+                            (evicted[0][:80] + "…")
+                            if len(evicted[0]) > 80
+                            else evicted[0],
+                        )
+                else:
+                    current = self._char_count(target)
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Memory at {current:,}/{limit:,} chars. Adding this "
+                            f"entry ({len(content)} chars) would exceed the limit. "
+                            f"Replace or remove existing entries first."
+                        ),
+                        "current_entries": entries,
+                        "usage": f"{current:,}/{limit:,}",
+                    }
 
             entries.append(content)
             self._set_entries(target, entries)

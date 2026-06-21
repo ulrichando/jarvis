@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
-import { Asterisk, ChevronRight, X, Shield, ExternalLink, Check, Settings } from "lucide-react";
+import { Asterisk, ChevronRight, X, Shield, ExternalLink, Check, PanelLeftOpen } from "lucide-react";
 
 // Session id ⇄ URL path. We display claude's shape (/code/session_<id>);
 // internally session ids are bare. Prefix on write, strip on read.
@@ -142,15 +142,19 @@ export default function CodePage() {
   const [sendNonce, setSendNonce] = useState(0);
   // Draggable width of the left sidebar (px). Persisted across reloads.
   const [sidebarWidth, setSidebarWidth] = useState(260);
+  // Collapse the session sidebar (like the main app's "Jarvis" sidebar).
+  const [codeSidebarOpen, setCodeSidebarOpen] = useState(true);
   // Inline review comments queued from the diff panel — bundled into the next
   // message with their location, like claude.ai/code.
   const [diffComments, setDiffComments] = useState<{ file: string; line: number; text: string }[]>([]);
-  // Additional repos to clone into a new container session (multi-repo).
+  // Additional repos to clone into a new container session (multi-repo). The
+  // composer pill row renders these with a remove × + a "+" repo picker.
   const [extraRepos, setExtraRepos] = useState<string[]>([]);
-  const [extraRepoText, setExtraRepoText] = useState("");
   // Environment config modal (env vars + setup script, claude.ai/code env config).
   const [envCfg, setEnvCfg] = useState<{
-    id: string;
+    id: string | null; // null in create mode — the env is created on save
+    mode: "create" | "edit";
+    name: string;
     envText: string;
     setupScript: string;
     networkLevel: string;
@@ -169,7 +173,14 @@ export default function CodePage() {
       if (r.ok) {
         const j = (await r.json()) as { environments: Machine[] };
         setMachines(j.environments);
-        setSelected((cur) => cur ?? (j.environments.length === 1 ? j.environments[0] : null));
+        // Default the selection to the cloud "Default" env (claude.ai/code web
+        // behavior — local machines are attach-only from the web), else a lone env.
+        setSelected(
+          (cur) =>
+            cur ??
+            j.environments.find((e) => e.worker_type === "container") ??
+            (j.environments.length === 1 ? j.environments[0] : null),
+        );
       } else {
         setMachines([]);
       }
@@ -522,8 +533,11 @@ export default function CodePage() {
             customAllowlist?: string;
           })
         : { envText: "", setupScript: "", networkLevel: "full", customAllowlist: "" };
+      const name = machines?.find((m) => m.environment_id === envId)?.machine_name ?? "Default";
       setEnvCfg({
         id: envId,
+        mode: "edit",
+        name,
         envText: j.envText,
         setupScript: j.setupScript,
         networkLevel: j.networkLevel ?? "full",
@@ -536,14 +550,35 @@ export default function CodePage() {
     }
   };
 
+  // "Add cloud environment…" — open the create modal (the env is created on save).
+  const createCloudEnvironment = () => {
+    setEnvCfg({ id: null, mode: "create", name: "", envText: "", setupScript: "", networkLevel: "trusted", customAllowlist: "" });
+  };
+
   const saveEnvConfig = async () => {
     if (!envCfg) return;
     setEnvCfgBusy(true);
     try {
-      await fetch(`/api/bridge/v1/environments/${envCfg.id}/config`, {
+      let envId = envCfg.id;
+      if (envCfg.mode === "create") {
+        // A named, repo-less cloud environment; the repo is picked per session.
+        const r = await fetch("/api/bridge/v1/environments/cloud", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: envCfg.name.trim() || "Default" }),
+        });
+        if (!r.ok) {
+          setError("Could not create environment.");
+          return;
+        }
+        envId = ((await r.json()) as { environment_id: string }).environment_id;
+      }
+      if (!envId) return;
+      await fetch(`/api/bridge/v1/environments/${envId}/config`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          name: envCfg.name.trim() || undefined,
           envText: envCfg.envText,
           setupScript: envCfg.setupScript,
           networkLevel: envCfg.networkLevel,
@@ -551,6 +586,22 @@ export default function CodePage() {
         }),
       });
       setEnvCfg(null);
+      loadMachines();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setEnvCfgBusy(false);
+    }
+  };
+
+  const archiveEnvironment = async () => {
+    if (!envCfg?.id) return;
+    if (!window.confirm("Archive this environment? It won't be offered for new sessions.")) return;
+    setEnvCfgBusy(true);
+    try {
+      await fetch(`/api/bridge/v1/environments/${envCfg.id}`, { method: "DELETE" });
+      setEnvCfg(null);
+      loadMachines();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -561,29 +612,50 @@ export default function CodePage() {
   return (
     // Full-screen overlay so /code presents like standalone Claude Code.
     <div className="fixed inset-0 z-40 flex bg-background text-foreground overflow-hidden">
-      <CodeSidebar
-        sessions={sessions}
-        activeSessionId={sessionId}
-        onSelectSession={(id) => { setSessionId(id || null); setShowRoutines(false); }}
-        onNewSession={() => { setSessionId(null); setInput(""); setShowRoutines(false); }}
-        onRefresh={loadSessions}
-        onShareSession={(id) => { setSessionId(id); setShowRoutines(false); setShareOpen(true); }}
-        routinesActive={showRoutines}
-        onOpenRoutines={() => { setShowRoutines(true); setSessionId(null); }}
-        width={sidebarWidth}
-      />
+      {codeSidebarOpen && (
+        <>
+          <CodeSidebar
+            sessions={sessions}
+            activeSessionId={sessionId}
+            onSelectSession={(id) => { setSessionId(id || null); setShowRoutines(false); }}
+            onNewSession={() => { setSessionId(null); setInput(""); setShowRoutines(false); }}
+            onRefresh={loadSessions}
+            onShareSession={(id) => { setSessionId(id); setShowRoutines(false); setShareOpen(true); }}
+            routinesActive={showRoutines}
+            onOpenRoutines={() => { setShowRoutines(true); setSessionId(null); }}
+            width={sidebarWidth}
+            onCollapse={() => setCodeSidebarOpen(false)}
+          />
 
-      {/* Draggable divider — a 1px hairline. Only the line tints on hover; the
-          wider span is an invisible grab zone (no fill) so it stays easy to hit. */}
-      <div
-        onMouseDown={startResize}
-        role="separator"
-        aria-orientation="vertical"
-        title="Drag to resize"
-        className="relative w-px shrink-0 cursor-col-resize bg-border/50 transition-colors hover:bg-border active:bg-border"
-      >
-        <span className="absolute inset-y-0 -left-1.5 -right-1.5" />
-      </div>
+          {/* Draggable divider — a 1px hairline. Only the line tints on hover; the
+              wider span is an invisible grab zone (no fill) so it stays easy to hit. */}
+          <div
+            onMouseDown={startResize}
+            role="separator"
+            aria-orientation="vertical"
+            title="Drag to resize"
+            className="relative w-px shrink-0 cursor-col-resize bg-border/50 transition-colors hover:bg-border active:bg-border"
+          >
+            <span className="absolute inset-y-0 -left-1.5 -right-1.5" />
+          </div>
+        </>
+      )}
+
+      {/* Collapsed → a thin rail with a button re-opens it (no overlap with the
+          session header; mirrors a collapsed sidebar). */}
+      {!codeSidebarOpen && (
+        <div className="flex shrink-0 flex-col items-center border-r border-border/40 px-1.5 pt-2.5">
+          <button
+            type="button"
+            onClick={() => setCodeSidebarOpen(true)}
+            aria-label="Open sidebar"
+            title="Open sidebar"
+            className="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+          >
+            <PanelLeftOpen className="size-4" />
+          </button>
+        </div>
+      )}
 
       <main className="flex flex-1 overflow-hidden">
         {/* chat column (messages + composer) */}
@@ -713,56 +785,6 @@ export default function CodePage() {
                 ))}
               </div>
             )}
-            {!sessionId && cloudRepo && (
-              <div className="mb-2">
-                <div className="mb-1 flex flex-wrap items-center gap-1.5">
-                  <span className="text-[11px] text-muted-foreground">Repos</span>
-                  <span className="rounded-md bg-accent/40 px-2 py-1 text-[11px] text-foreground/80">
-                    {cloudRepo} <span className="text-muted-foreground/55">primary</span>
-                  </span>
-                  {extraRepos.map((r, i) => (
-                    <span key={r} className="inline-flex items-center gap-1 rounded-md bg-accent/40 px-2 py-1 text-[11px] text-foreground/80">
-                      {r}
-                      <button
-                        type="button"
-                        aria-label={`Remove ${r}`}
-                        onClick={() => setExtraRepos((a) => a.filter((_, j) => j !== i))}
-                        className="text-muted-foreground hover:text-foreground"
-                      >
-                        <X className="size-3" />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-                <input
-                  value={extraRepoText}
-                  onChange={(e) => setExtraRepoText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key !== "Enter") return;
-                    e.preventDefault();
-                    const v = extraRepoText.trim();
-                    if (/^[^/\s]+\/[^/\s]+$/.test(v) && v !== cloudRepo && !extraRepos.includes(v)) {
-                      setExtraRepos((a) => [...a, v]);
-                      setExtraRepoText("");
-                    }
-                  }}
-                  placeholder="Add another repo (owner/name) — Enter"
-                  className="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-[12px] outline-none focus:border-orange-500/60"
-                />
-              </div>
-            )}
-            {!currentArchived && (selected || cloudRepo) && (
-              <div className="mb-2 flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => openEnvConfig()}
-                  disabled={envCfgBusy}
-                  className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60"
-                >
-                  <Settings className="size-3" /> Configure environment
-                </button>
-              </div>
-            )}
             {currentArchived ? (
               <div className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-accent/20 px-4 py-3">
                 <span className="text-[13px] text-muted-foreground">
@@ -786,6 +808,8 @@ export default function CodePage() {
               selected={selected}
               onPickMachine={setSelected}
               onRefreshMachines={loadMachines}
+              onConfigureEnvironment={(id) => openEnvConfig(id)}
+              onAddCloudEnvironment={createCloudEnvironment}
               placeholder={sessionId ? "Type / for commands" : "Describe a task or ask a question"}
               showPills={!sessionId}
               mode={mode}
@@ -797,6 +821,8 @@ export default function CodePage() {
               availableConnectors={availableConnectors}
               connectorsEditable={!sessionId}
               onPickRepo={setCloudRepo}
+              extraRepos={extraRepos}
+              onExtraReposChange={setExtraRepos}
               attachments={attachments}
               onAttachmentsChange={setAttachments}
               running={sessionId ? running : false}
@@ -886,7 +912,9 @@ export default function CodePage() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-1 flex items-center justify-between">
-              <div className="text-[15px] font-semibold text-foreground">Environment</div>
+              <div className="text-[15px] font-semibold text-foreground">
+                {envCfg.mode === "create" ? "New cloud environment" : "Update cloud environment"}
+              </div>
               <button
                 type="button"
                 onClick={() => setEnvCfg(null)}
@@ -897,33 +925,18 @@ export default function CodePage() {
               </button>
             </div>
             <div className="mb-3 text-[12.5px] text-muted-foreground">
-              Variables and a setup script applied to this environment&apos;s container sessions.
+              Changes to your environment will apply to new sessions.
             </div>
-            <label className="mb-1 block text-[12px] font-medium text-foreground/80">
-              Environment variables
-            </label>
-            <textarea
-              value={envCfg.envText}
-              onChange={(e) => setEnvCfg((c) => (c ? { ...c, envText: e.target.value } : c))}
-              rows={5}
-              spellCheck={false}
-              placeholder={"KEY=value\nANOTHER=value"}
-              className="mb-3 w-full resize-y rounded-lg border border-border bg-background px-3 py-2 font-mono text-[12px] text-foreground outline-none focus:border-orange-500/60"
+
+            <label className="mb-1 block text-[12px] font-medium text-foreground/80">Name</label>
+            <input
+              value={envCfg.name}
+              onChange={(e) => setEnvCfg((c) => (c ? { ...c, name: e.target.value } : c))}
+              placeholder="Default"
+              className="mb-3 w-full rounded-lg border border-border bg-background px-3 py-2 text-[12.5px] text-foreground outline-none focus:border-orange-500/60"
             />
-            <label className="mb-1 block text-[12px] font-medium text-foreground/80">
-              Setup script
-            </label>
-            <textarea
-              value={envCfg.setupScript}
-              onChange={(e) => setEnvCfg((c) => (c ? { ...c, setupScript: e.target.value } : c))}
-              rows={6}
-              spellCheck={false}
-              placeholder={"#!/bin/bash\nnpm install"}
-              className="mb-4 w-full resize-y rounded-lg border border-border bg-background px-3 py-2 font-mono text-[12px] text-foreground outline-none focus:border-orange-500/60"
-            />
-            <label className="mb-1 block text-[12px] font-medium text-foreground/80">
-              Network access
-            </label>
+
+            <label className="mb-1 block text-[12px] font-medium text-foreground/80">Network access</label>
             <select
               value={envCfg.networkLevel}
               onChange={(e) => setEnvCfg((c) => (c ? { ...c, networkLevel: e.target.value } : c))}
@@ -944,25 +957,66 @@ export default function CodePage() {
                 className="mb-2 w-full resize-y rounded-lg border border-border bg-background px-3 py-2 font-mono text-[12px] text-foreground outline-none focus:border-orange-500/60"
               />
             )}
-            <p className="mb-4 text-[11px] text-muted-foreground/60">
+            <p className="mb-3 text-[11px] text-muted-foreground/60">
               Non-Full levels route egress through an allowlist proxy (applies to new sessions).
             </p>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setEnvCfg(null)}
-                className="rounded-md px-3 py-1.5 text-[13px] text-muted-foreground hover:text-foreground"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={saveEnvConfig}
-                disabled={envCfgBusy}
-                className="rounded-md bg-orange-600 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-orange-500 disabled:opacity-60"
-              >
-                {envCfgBusy ? "Saving…" : "Save"}
-              </button>
+
+            <label className="mb-1 block text-[12px] font-medium text-foreground/80">Environment variables</label>
+            <p className="mb-1 text-[11px] text-muted-foreground/60">
+              In .env format. Visible to anyone using this environment — don&apos;t add secrets.
+            </p>
+            <textarea
+              value={envCfg.envText}
+              onChange={(e) => setEnvCfg((c) => (c ? { ...c, envText: e.target.value } : c))}
+              rows={5}
+              spellCheck={false}
+              placeholder={"NODE_ENV=production\nGIT_AUTHOR_NAME=Your Name"}
+              className="mb-3 w-full resize-y rounded-lg border border-border bg-background px-3 py-2 font-mono text-[12px] text-foreground outline-none focus:border-orange-500/60"
+            />
+
+            <label className="mb-1 block text-[12px] font-medium text-foreground/80">Setup script</label>
+            <p className="mb-1 text-[11px] text-muted-foreground/60">
+              Bash script that runs when a new session starts, before Jarvis Code launches.
+            </p>
+            <textarea
+              value={envCfg.setupScript}
+              onChange={(e) => setEnvCfg((c) => (c ? { ...c, setupScript: e.target.value } : c))}
+              rows={5}
+              spellCheck={false}
+              placeholder={"#!/bin/bash\nnpm install"}
+              className="mb-4 w-full resize-y rounded-lg border border-border bg-background px-3 py-2 font-mono text-[12px] text-foreground outline-none focus:border-orange-500/60"
+            />
+
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                {envCfg.mode === "edit" && (
+                  <button
+                    type="button"
+                    onClick={archiveEnvironment}
+                    disabled={envCfgBusy}
+                    className="rounded-md px-3 py-1.5 text-[13px] text-red-500 hover:bg-red-500/10 disabled:opacity-60"
+                  >
+                    Archive
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEnvCfg(null)}
+                  className="rounded-md px-3 py-1.5 text-[13px] text-muted-foreground hover:text-foreground"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={saveEnvConfig}
+                  disabled={envCfgBusy}
+                  className="rounded-md bg-orange-600 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-orange-500 disabled:opacity-60"
+                >
+                  {envCfgBusy ? "Saving…" : envCfg.mode === "create" ? "Create environment" : "Save changes"}
+                </button>
+              </div>
             </div>
           </div>
         </div>

@@ -72,6 +72,26 @@ def test_deepgram_build_returns_none_falls_through(monkeypatch):
     assert isinstance(chain, stt_mod.BreakeredGroqSTT)
 
 
+def test_deepgram_disabled_env_returns_whisper_only(monkeypatch):
+    """JARVIS_DEEPGRAM_DISABLED=1 skips Deepgram even when DEEPGRAM_API_KEY
+    is present, so the chain runs on Groq Whisper Large v3 Turbo as the
+    primary STT — the cost-saving migration off Deepgram. Reversible by
+    unsetting the flag."""
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-deepgram")
+    monkeypatch.setenv("JARVIS_DEEPGRAM_DISABLED", "1")
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq")
+    from providers.stt import (
+        build_stt_chain,
+        BreakeredGroqSTT,
+        _build_deepgram_stt,
+    )
+    # Short-circuits to None despite the key being set...
+    assert _build_deepgram_stt() is None
+    # ...so the chain is Groq Whisper alone, not a FallbackAdapter.
+    chain = build_stt_chain()
+    assert isinstance(chain, BreakeredGroqSTT)
+
+
 def test_deepgram_construction_failure_falls_through(monkeypatch):
     """If deepgram.STT(...) raises (bad config, network at init, etc.),
     log + fall through to Whisper alone."""
