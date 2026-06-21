@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# jarvis-computer-use — one-command launcher for the web /computer-use feature.
+# Brings up BOTH pieces the page needs, and reports status:
+#   1. desktop stream  (bin/jarvis-computer-use-stream → x11vnc + websockify :6080)
+#   2. agent sidecar   (src/voice-agent/computer_use_service.py → :8771)
+# The sidecar loads its own secrets from ~/.jarvis/keys.env. The web page
+# connects to both, gated by the web login.
+#
+#   jarvis-computer-use [start|stop|status]
+set -u
+
+REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
+STREAM="$REPO/bin/jarvis-computer-use-stream"
+VA="$REPO/src/voice-agent"
+PY="$VA/.venv/bin/python"
+LOG="$HOME/.local/share/jarvis/logs/computer-use-service.log"
+mkdir -p "$(dirname "$LOG")"
+
+# Bracket the first char so pgrep never matches its own command line.
+svc_up() { pgrep -f "[c]omputer_use_service.py" >/dev/null 2>&1; }
+
+case "${1:-start}" in
+  start)
+    "$STREAM" start
+    if svc_up; then
+      echo "sidecar: already up (:8771)"
+    elif [ -x "$PY" ]; then
+      ( cd "$VA" && setsid nohup "$PY" computer_use_service.py >>"$LOG" 2>&1 & )
+      echo "sidecar: starting on :8771 (log: $LOG)"
+    else
+      echo "sidecar: venv python not found at $PY" >&2
+      exit 1
+    fi
+    ;;
+  stop)
+    pkill -f "[c]omputer_use_service.py" 2>/dev/null && echo "sidecar: stopped" || echo "sidecar: not running"
+    "$STREAM" stop
+    ;;
+  status)
+    "$STREAM" status
+    svc_up && echo "sidecar: up (:8771)" || echo "sidecar: down"
+    ;;
+  *)
+    echo "usage: $0 [start|stop|status]" >&2
+    exit 1
+    ;;
+esac

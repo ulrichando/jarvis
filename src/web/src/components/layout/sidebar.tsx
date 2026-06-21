@@ -12,15 +12,24 @@ import {
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
+  Pencil,
   Plus,
   Search,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
 import { UserMenu } from "./user-menu";
 import { useUI } from "@/stores/ui";
 import { useChatStore } from "@/stores/chat";
 import {
   useConversations,
+  useDeleteConversation,
   useRenameConversation,
   type ConversationSummary,
 } from "@/hooks/use-conversations";
@@ -458,6 +467,13 @@ function RecentRow({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(c.title);
   const rename = useRenameConversation();
+  const del = useDeleteConversation();
+
+  const onDelete = () => {
+    if (confirm(`Delete "${isUntitled ? "Untitled" : c.title}"? This can't be undone.`)) {
+      del.mutate(c.id);
+    }
+  };
 
   // Re-sync the draft if the title changed under us (e.g. server
   // auto-named the chat after first message).
@@ -495,24 +511,47 @@ function RecentRow({
   }
 
   return (
-    <Link
-      href={href}
-      onDoubleClick={(e) => {
-        e.preventDefault();
-        setEditing(true);
-      }}
-      className={cn(
-        "block truncate rounded-md px-2.5 py-1 text-[13px] leading-6 transition-colors",
-        "hover:bg-sidebar-accent/60",
-        active
-          ? "bg-sidebar-accent text-sidebar-accent-foreground"
-          : isUntitled
-            ? "text-sidebar-foreground/40"
-            : "text-sidebar-foreground/85",
-      )}
-      title="Double-click to rename"
-    >
-      {isUntitled ? "Untitled" : c.title}
-    </Link>
+    <div className="group/row relative">
+      <Link
+        href={href}
+        onDoubleClick={(e) => {
+          e.preventDefault();
+          setEditing(true);
+        }}
+        className={cn(
+          "block truncate rounded-md py-1 pl-2.5 pr-7 text-[13px] leading-6 transition-colors",
+          "hover:bg-sidebar-accent/60",
+          active
+            ? "bg-sidebar-accent text-sidebar-accent-foreground"
+            : isUntitled
+              ? "text-sidebar-foreground/40"
+              : "text-sidebar-foreground/85",
+        )}
+        title="Double-click to rename"
+      >
+        {isUntitled ? "Untitled" : c.title}
+      </Link>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <button
+              aria-label="Conversation options"
+              onClick={(e) => e.preventDefault()}
+              className="absolute right-1 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-sidebar-foreground/50 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus:opacity-100 group-hover/row:opacity-100"
+            />
+          }
+        >
+          <MoreHorizontal className="size-3.5" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="min-w-40">
+          <DropdownMenuItem onClick={() => setEditing(true)} className="gap-2">
+            <Pencil className="size-3.5" /> Rename
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onDelete} className="gap-2 text-destructive">
+            <Trash2 className="size-3.5" /> Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
   );
 }

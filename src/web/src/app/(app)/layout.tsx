@@ -17,6 +17,11 @@ export default function AppLayout({
   if (pathname?.startsWith("/code")) {
     return <div className="h-screen w-full overflow-hidden">{children}</div>;
   }
+  // /computer-use is a full-bleed desktop view and /chat is a clean chat surface
+  // — the placeholder right-hand preview panel (+ its floating eye toggle) is
+  // noise on both, so hide it. Additive: every other route keeps it.
+  const hidePreview =
+    pathname?.startsWith("/computer-use") || pathname?.startsWith("/chat");
   return (
     <div className="relative flex h-screen w-full overflow-hidden">
       <Sidebar />
@@ -24,7 +29,7 @@ export default function AppLayout({
         <TopBar />
         <main className="flex-1 overflow-hidden">{children}</main>
       </div>
-      <PreviewPanel />
+      {!hidePreview && <PreviewPanel />}
     </div>
   );
 }

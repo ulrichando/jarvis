@@ -1,0 +1,24 @@
+# JARVIS computer-use sidecar — the agent loop behind the web /computer-use page.
+# Decoupled from jarvis-voice-agent.service on purpose (deploying it never needs
+# a voice-agent restart). Loads its own secrets from ~/.jarvis/keys.env via the
+# sidecar's _load_env_files().
+#
+# Enable (NOT auto-enabled — operator opt-in):
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now jarvis-computer-use.service
+# The desktop STREAM (x11vnc + websockify) is started separately by
+# bin/jarvis-computer-use-stream / bin/jarvis-computer-use.
+
+[Unit]
+Description=JARVIS computer-use sidecar (:8771)
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Projects/jarvis/src/voice-agent
+ExecStart=%h/Documents/Projects/jarvis/src/voice-agent/.venv/bin/python computer_use_service.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
