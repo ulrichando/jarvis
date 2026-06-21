@@ -1,0 +1,13 @@
+[Unit]
+Description=JARVIS nightly self-evolution — propose code improvements in the small hours
+
+[Timer]
+# ~3am, jittered across 30 min so it never lands at exactly :00. Persistent
+# catches up after a missed window (machine asleep at 3am).
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=1800
+Persistent=true
+Unit=jarvis-evolution-nightly.service
+
+[Install]
+WantedBy=timers.target
