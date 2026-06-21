@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   Code2,
+  GitPullRequest,
   Hammer,
   MessagesSquare,
   MoreHorizontal,
@@ -45,6 +46,7 @@ const CORE_NAV = [
   { href: "/chats", label: "Chats", icon: MessagesSquare },
   { href: "/code", label: "Code", icon: Code2 },
   { href: "/workbench", label: "Workbench", icon: Hammer },
+  { href: "/evolution", label: "Evolution", icon: GitPullRequest },
 ] as const;
 
 // Bucket a conversation into Today / Yesterday / Last 7 days / Older
