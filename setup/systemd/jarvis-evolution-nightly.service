@@ -1,0 +1,25 @@
+[Unit]
+Description=JARVIS nightly self-evolution proposals (proposal-only; never deploys)
+Documentation=file:%h/Documents/Projects/jarvis/bin/jarvis-evolution-nightly
+After=jarvis-voice-agent.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/mkdir -p %h/.local/share/jarvis/logs
+# Load the same env the agent uses, so the (gated) coding-agent spawn has the
+# LLM keys + any JARVIS_AUTOMOD_* flags. '-' = optional, never fail on absence.
+EnvironmentFile=-%h/Documents/Projects/jarvis/src/voice-agent/.env
+EnvironmentFile=-%h/.jarvis/keys.env
+ExecStart=%h/Documents/Projects/jarvis/bin/jarvis-evolution-nightly
+# The coding-agent spawn (when SPAWN_LIVE) can take many minutes.
+TimeoutStartSec=2400
+StandardOutput=append:%h/.local/share/jarvis/logs/evolution-nightly.log
+StandardError=append:%h/.local/share/jarvis/logs/evolution-nightly.log
+
+# Minimal hardening — must reach git/gh + spawn the coding-agent subprocess.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+# No [Install]: triggered by jarvis-evolution-nightly.timer, never at boot directly.

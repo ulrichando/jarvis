@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# jarvis-evolution-nightly — generate self-evolution proposals while you're away.
+#
+# PROPOSAL-ONLY: runs the detector + (gated) coding-agent spawn + (gated) PR
+# publish. It NEVER merges, deploys, or restarts anything — deploy only happens
+# when you approve a proposal in /evolution. Driven by
+# jarvis-evolution-nightly.timer in the small hours; safe to run by hand.
+#
+# SHADOW by default (detector-only). To go live:
+#   JARVIS_AUTOMOD_SPAWN_LIVE=1     — let it actually write proposals
+#   JARVIS_EVOLUTION_AUTOPUBLISH=1  — auto-open a PR per new proposal
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+VA="$REPO_ROOT/src/voice-agent"
+
+cd "$VA" || exit 1
+exec "$VA/.venv/bin/python" -m pipeline.automod.nightly
