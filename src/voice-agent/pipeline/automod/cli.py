@@ -277,7 +277,8 @@ def main(argv: list[str]) -> int:
     """
     if len(argv) < 2:
         print(
-            "usage: jarvis-automod <list|show|merge|deploy|reject|revert> [args]",
+            "usage: jarvis-automod "
+            "<list|show|merge|deploy|publish|reject|revert> [args]",
             file=sys.stderr,
         )
         return 2
@@ -331,6 +332,22 @@ def main(argv: list[str]) -> int:
             )
             return 0
         print(f"Deploy refused/failed: {info}", file=sys.stderr)
+        return 1
+
+    if cmd == "publish":
+        # Push the proposal branch + open a GitHub PR with the summary, so it
+        # can be reviewed remotely (the "upload to branches" step). Outward-
+        # facing. `--no-draft` opens a ready PR; default is a draft.
+        if len(argv) < 3:
+            print("usage: jarvis-automod publish <id> [--no-draft]",
+                  file=sys.stderr)
+            return 2
+        from pipeline.automod.publish import publish as _do_publish
+        ok, info = _do_publish(argv[2], draft="--no-draft" not in argv)
+        if ok:
+            print(f"Published. PR: {info}")
+            return 0
+        print(f"Publish failed: {info}", file=sys.stderr)
         return 1
 
     if cmd == "reject":
