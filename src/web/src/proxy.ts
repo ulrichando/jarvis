@@ -111,6 +111,32 @@ export function proxy(req: NextRequest) {
   const url = new URL(req.url)
   const path = url.pathname
 
+  // ── Canonical loopback host ──────────────────────────────────────────────
+  // `localhost`, `::1` and `127.0.0.1` are the SAME machine but DIFFERENT cookie
+  // hosts to the browser, so a better-auth session created under one is never
+  // sent to the other. Logging in on localhost then opening 127.0.0.1 (or vice
+  // versa) silently splits your session: getUserId can't find it, falls back to
+  // LOCAL_USER_ID, and /code shows that identity's stale session instead of
+  // yours. No cookie can span both hosts, so the only real fix is to force every
+  // browser navigation onto ONE loopback host — then the split is structurally
+  // impossible regardless of which name you type. Pages only: /api/* can't
+  // follow a host-changing redirect (fetch/EventSource won't), and the CLI
+  // bridge authenticates with a bearer token (host-agnostic). LAN IPs / real
+  // hostnames are left alone — those are legitimate remote access, already
+  // self-consistent on their own device. Override the target via
+  // JARVIS_CANONICAL_HOST (must match BETTER_AUTH_URL's host).
+  const CANONICAL_HOST = process.env.JARVIS_CANONICAL_HOST ?? '127.0.0.1'
+  if (!path.startsWith('/api/')) {
+    const rawHost = req.headers.get('host') ?? ''
+    const bareHost = hostFromHeader(rawHost)
+    if ((bareHost === 'localhost' || bareHost === '[::1]') && bareHost !== CANONICAL_HOST) {
+      const port = rawHost.includes(':') ? rawHost.slice(rawHost.lastIndexOf(':')) : ''
+      const dest = new URL(req.url)
+      dest.host = `${CANONICAL_HOST}${port}`
+      return NextResponse.redirect(dest, 307)
+    }
+  }
+
   // Page requests (not /api/*): JARVIS login gate. Unauthenticated page
   // navigations redirect to /login. Static assets are excluded by the
   // matcher; /login + /signup are public; /api/* falls through to the
