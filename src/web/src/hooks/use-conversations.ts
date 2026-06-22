@@ -8,6 +8,9 @@ export type ConversationSummary = {
   title: string;
   model: string;
   updatedAt: string;
+  // Pinned (starred) chats float to the top of Recents. Optional so consumers
+  // that don't select it (search) still typecheck.
+  pinned?: boolean;
   // Optional — only the /chats listing reads these (project tag +
   // "Filter by project"). Other consumers (sidebar, search) ignore them.
   projectId?: string | null;
@@ -72,6 +75,58 @@ export function useRenameConversation() {
       const prev = qc.getQueryData<ConversationSummary[]>(["conversations"]);
       qc.setQueryData<ConversationSummary[]>(["conversations"], (old) =>
         old?.map((c) => (c.id === id ? { ...c, title } : c)),
+      );
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["conversations"], ctx.prev);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["conversations"] }),
+  });
+}
+
+export function useSetConversationProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      id,
+      projectId,
+    }: {
+      id: string;
+      projectId: string | null;
+    }) => {
+      const r = await fetch(`/api/conversations/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["conversations"] });
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    },
+  });
+}
+
+export function useToggleConversationPin() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, pinned }: { id: string; pinned: boolean }) => {
+      const r = await fetch(`/api/conversations/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pinned }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+    },
+    // Optimistic — flip the cached `pinned` so the row jumps to/from the
+    // Pinned section instantly.
+    onMutate: async ({ id, pinned }) => {
+      await qc.cancelQueries({ queryKey: ["conversations"] });
+      const prev = qc.getQueryData<ConversationSummary[]>(["conversations"]);
+      qc.setQueryData<ConversationSummary[]>(["conversations"], (old) =>
+        old?.map((c) => (c.id === id ? { ...c, pinned } : c)),
       );
       return { prev };
     },
