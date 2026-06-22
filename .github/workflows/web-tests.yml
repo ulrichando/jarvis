@@ -37,6 +37,12 @@ jobs:
       - name: bun run build
         # This is the REQUIRED gate — catches broken imports, type errors,
         # and page compilation failures. Must pass for the job to succeed.
+        # auth.ts throws at import when DATABASE_URL is unset, which fails Next's
+        # page-data collection (e.g. /api/bridge/token). A dummy URL lets the
+        # lazy postgres client construct — no connection happens at build time.
+        env:
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+          BETTER_AUTH_SECRET: ci-build-only-not-a-secret
         run: bun run build
 
       - name: bun test
