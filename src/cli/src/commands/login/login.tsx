@@ -82,7 +82,9 @@ export function JarvisLogin({
       try {
         const port = await listener.start()
         const state = generateState()
-        const redirectUri = `http://localhost:${port}/callback`
+        // 127.0.0.1 (not localhost) to match the listener's IPv4 bind and
+        // RFC 8252 §8.3 — avoids the localhost→::1 vs 127.0.0.1 loopback miss.
+        const redirectUri = `http://127.0.0.1:${port}/callback`
         const url = `${serverRoot}/cli-auth?redirect_uri=${encodeURIComponent(
           redirectUri,
         )}&state=${encodeURIComponent(state)}`
