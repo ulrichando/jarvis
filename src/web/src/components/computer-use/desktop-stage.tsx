@@ -1,5 +1,5 @@
 "use client";
-import { type RefObject } from "react";
+import { type ReactNode, type RefObject } from "react";
 import { Hand, Plug, RotateCw } from "lucide-react";
 import { NoVNCView, type NoVNCHandle } from "./novnc-view";
 
@@ -44,7 +44,7 @@ export function DesktopStage({
                 ) : (
                   <>
                     <span className="inline-flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
-                      {running ? <><span className="size-2 animate-pulse rounded-full bg-primary" />Jarvis is working</> : <>Idle</>}
+                      {running ? <><span className="size-2 animate-pulse rounded-full bg-primary motion-reduce:animate-none" />Jarvis is working</> : <>Idle</>}
                     </span>
                     <button onClick={onTakeControl} className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-[11.5px] font-medium text-primary-foreground"><Hand className="size-3" />Take control</button>
                   </>
@@ -73,9 +73,9 @@ export function DesktopStage({
   );
 }
 
-function Centered({ children }: { children: React.ReactNode }) {
+function Centered({ children }: { children: ReactNode }) {
   return <div className="flex h-full items-center justify-center"><div className="flex max-w-md flex-col items-center gap-3 rounded-xl border border-border/60 bg-card/40 p-6 text-center text-sm">{children}</div></div>;
 }
-function StageBtn({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+function StageBtn({ children, onClick }: { children: ReactNode; onClick: () => void }) {
   return <button onClick={onClick} className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-card px-3 py-1.5 text-[12px] transition-colors hover:border-border">{children}</button>;
 }

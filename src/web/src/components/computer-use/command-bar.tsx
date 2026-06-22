@@ -24,7 +24,7 @@ export function CommandBar({
         />
         <button onClick={onSubmit} disabled={disabled || !value.trim()} title="Send"
           className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40">
-          {running ? <Loader2 className="size-4 animate-spin" /> : <CornerDownLeft className="size-4" />}
+          {running ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" /> : <CornerDownLeft className="size-4" />}
         </button>
       </div>
       <div className="mt-2 flex gap-3.5 px-1 text-[11px] text-muted-foreground/70">

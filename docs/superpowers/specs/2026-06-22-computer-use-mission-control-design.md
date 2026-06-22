@@ -171,9 +171,12 @@ divergent palette).
 
 - Real `<button>`s with `aria-label`/`title`; the segmented control is a
   radio-group semantics (`role="radiogroup"` / `aria-checked`).
-- Respect `prefers-reduced-motion` (already imported via `useReducedMotion`):
-  gate the pulse/spinner/step-reveal animations.
-- Step reveals use a short staggered fade (motion), bounded and subtle.
+- Respect `prefers-reduced-motion`: the pulse/spinner animations carry
+  Tailwind's `motion-reduce:animate-none` so they freeze under reduced motion.
+  (As-built: gated via the CSS utility rather than `useReducedMotion`; no
+  `motion/react` dependency in the page.)
+- Step reveals: the staggered fade-in is **deferred** as optional polish — the
+  shipped version renders steps statically. Revisit if motion polish is wanted.
 - Focus-visible rings on all controls; the command input keeps its focus ring.
 
 ## 9. Testing & verification

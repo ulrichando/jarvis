@@ -30,7 +30,7 @@ export function ActivityTimeline({
         <span className="text-[13px] font-semibold">Activity</span>
         {running && (
           <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
-            <span className="size-1.5 animate-pulse rounded-full bg-primary" /> Working
+            <span className="size-1.5 animate-pulse rounded-full bg-primary motion-reduce:animate-none" /> Working
           </span>
         )}
         {stepCount > 0 && (
@@ -67,7 +67,7 @@ export function ActivityTimeline({
             )}
             {showTrailingWork && (
               <div className="flex items-center gap-2.5 pb-2 text-[12px] text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin text-primary" /> Working…
+                <Loader2 className="size-3.5 animate-spin text-primary motion-reduce:animate-none" /> Working…
               </div>
             )}
           </div>

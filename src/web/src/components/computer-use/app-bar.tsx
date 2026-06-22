@@ -21,7 +21,7 @@ export function CuAppBar({
         <span className="text-[14.5px] font-medium tracking-tight">Computer Use</span>
       </div>
       <span className="inline-flex items-center gap-1.5 rounded-full border border-border/40 bg-card px-2.5 py-0.5 text-[11.5px] text-muted-foreground">
-        <span className={`size-1.5 rounded-full ${dot}`} />{connStatus}
+        <span className={`size-1.5 rounded-full ${dot}`} />{connStatus[0].toUpperCase() + connStatus.slice(1)}
       </span>
       <span className="hidden font-mono text-[10.5px] text-muted-foreground/80 sm:inline">session · {sessionId.slice(0, 4)}…{sessionId.slice(-3)}</span>
 
