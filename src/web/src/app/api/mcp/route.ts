@@ -5,6 +5,7 @@ import {
   removeMcpServer,
   setMcpServerEnabled,
 } from "@/lib/mcp/store";
+import { delServerAuth } from "@/lib/mcp/oauth-store";
 import { getUserId } from "@/lib/auth-helpers";
 import { LOCAL_USER_ID } from "@/lib/chat/persist";
 import { extractBearer } from "@/lib/bridge/auth";
@@ -96,5 +97,7 @@ export async function DELETE(req: Request): Promise<NextResponse> {
   const id = new URL(req.url).searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
   await removeMcpServer(id);
+  // Also drop any stored OAuth tokens/registration for this server.
+  await delServerAuth(id);
   return NextResponse.json({ ok: true });
 }
