@@ -151,11 +151,25 @@ export function proxy(req: NextRequest) {
   // `Sec-Fetch-Site: same-origin` on such requests and page JS cannot
   // forge it (forbidden header); a DNS-rebinding or cross-origin page
   // gets `cross-site` (and is killed by the Host allowlist above
-  // anyway). Non-browser callers (bridge, curl, extensions) lack the
-  // header entirely and still need the bearer token below. A local
-  // process forging the header with curl gains nothing it can't
-  // already do as the same user.
-  if (req.headers.get('sec-fetch-site') === 'same-origin') {
+  // anyway).
+  //
+  // But `Sec-Fetch-Site` is only unforgeable from *browsers*. A
+  // non-browser caller (curl/script) can set it freely — and if the box
+  // is ever fronted by a default reverse proxy (which rewrites Host to
+  // the localhost upstream, defeating the allowlist above), a *remote*
+  // forged-header request would otherwise sail past the bearer gate. So
+  // tie the carve-out to an authenticated session: the logged-in UI's
+  // fetch()/EventSource always send the session cookie, so requiring it
+  // costs legit traffic nothing, but a forged `Sec-Fetch-Site` with no
+  // session cookie now falls through to the bearer check below.
+  // `/api/auth/*` is exempt — it's the same-origin POST that CREATES the
+  // session (no cookie exists yet), and the public `/share/*` surface is
+  // a page route (served via /share/[token]/asset/…, not /api/*), so it
+  // never reaches this gate.
+  if (
+    req.headers.get('sec-fetch-site') === 'same-origin' &&
+    (path.startsWith('/api/auth/') || hasSessionCookie(req))
+  ) {
     return NextResponse.next()
   }
 

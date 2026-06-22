@@ -76,9 +76,26 @@ export async function PATCH(
     if (t) updates.title = t;
   }
   if (typeof body.pinned === "boolean") updates.pinned = body.pinned;
-  // null / "" → detach from project; a string id → attach.
-  if (body.projectId === null || typeof body.projectId === "string") {
-    updates.projectId = (body.projectId as string | null) || null;
+  // null / "" → detach from project; a non-empty string id → attach, but
+  // only after verifying the project belongs to THIS user. Without the
+  // ownership check a user could pin their chat to someone else's project
+  // id (IDOR) — and since the list query LEFT JOINs projects.name, that
+  // would leak the other user's project name back to them.
+  if (body.projectId === null || body.projectId === "") {
+    updates.projectId = null;
+  } else if (typeof body.projectId === "string") {
+    const [project] = await db
+      .select({ id: schema.projects.id })
+      .from(schema.projects)
+      .where(
+        and(
+          eq(schema.projects.id, body.projectId),
+          eq(schema.projects.userId, userId),
+        ),
+      )
+      .limit(1);
+    if (!project) return new Response("Project not found", { status: 404 });
+    updates.projectId = body.projectId;
   }
   if (Object.keys(updates).length === 0) {
     return new Response(
