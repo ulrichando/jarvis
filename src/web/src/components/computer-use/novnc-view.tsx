@@ -1,6 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { computeThumbSize } from "@/lib/computer-use/timeline";
+
+export type NoVNCHandle = { snapshot: (maxW?: number) => string | null };
 
 // @novnc/novnc@1.7 exports the RFB class as the package default (core/rfb.js).
 // It touches window/DOM at construction, so we import it dynamically inside the
@@ -23,7 +26,10 @@ type Props = {
   className?: string;
 };
 
-export function NoVNCView({ wsUrl, password, viewOnly = true, onState, className }: Props) {
+export const NoVNCView = forwardRef<NoVNCHandle, Props>(function NoVNCView(
+  { wsUrl, password, viewOnly = true, onState, className },
+  ref,
+) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rfbRef = useRef<RFBLike | null>(null);
   const viewOnlyRef = useRef(viewOnly);
@@ -35,6 +41,26 @@ export function NoVNCView({ wsUrl, password, viewOnly = true, onState, className
     viewOnlyRef.current = viewOnly;
     if (rfbRef.current) rfbRef.current.viewOnly = viewOnly;
   }, [viewOnly]);
+
+  useImperativeHandle(ref, () => ({
+    snapshot(maxW = 128) {
+      try {
+        const canvas = containerRef.current?.querySelector("canvas");
+        if (!canvas) return null;
+        const { w, h } = computeThumbSize(canvas.width, canvas.height, maxW);
+        if (!w || !h) return null;
+        const off = document.createElement("canvas");
+        off.width = w;
+        off.height = h;
+        const ctx = off.getContext("2d");
+        if (!ctx) return null;
+        ctx.drawImage(canvas, 0, 0, w, h);
+        return off.toDataURL("image/jpeg", 0.5);
+      } catch {
+        return null;
+      }
+    },
+  }), []);
 
   useEffect(() => {
     let rfb: RFBLike | null = null;
@@ -101,4 +127,4 @@ export function NoVNCView({ wsUrl, password, viewOnly = true, onState, className
       )}
     </div>
   );
-}
+});
