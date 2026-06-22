@@ -64,6 +64,12 @@ function hasSessionCookie(req: NextRequest): boolean {
 // healthcheckers can hit without a token.
 const PUBLIC_PATHS = new Set<string>([
   '/api/health',  // desktop tray probe (probe_jarvis_web) — identity only
+  // MCP OAuth callback: the provider redirects the browser here cross-site
+  // (Sec-Fetch-Site: cross-site), so the same-origin carve-out can't apply and
+  // there's no bearer to forward. It's safe to leave open — it does nothing
+  // without a matching unguessable `state` (the OAuth CSRF guard) stored
+  // server-side at /api/mcp/oauth/start, and it only redeems a one-time code.
+  '/api/mcp/oauth/callback',
 ])
 
 // Host header allowlist (DNS-rebinding defense, parallel to the bridge
@@ -104,6 +110,32 @@ function constantTimeStringEq(a: string, b: string): boolean {
 export function proxy(req: NextRequest) {
   const url = new URL(req.url)
   const path = url.pathname
+
+  // ── Canonical loopback host ──────────────────────────────────────────────
+  // `localhost`, `::1` and `127.0.0.1` are the SAME machine but DIFFERENT cookie
+  // hosts to the browser, so a better-auth session created under one is never
+  // sent to the other. Logging in on localhost then opening 127.0.0.1 (or vice
+  // versa) silently splits your session: getUserId can't find it, falls back to
+  // LOCAL_USER_ID, and /code shows that identity's stale session instead of
+  // yours. No cookie can span both hosts, so the only real fix is to force every
+  // browser navigation onto ONE loopback host — then the split is structurally
+  // impossible regardless of which name you type. Pages only: /api/* can't
+  // follow a host-changing redirect (fetch/EventSource won't), and the CLI
+  // bridge authenticates with a bearer token (host-agnostic). LAN IPs / real
+  // hostnames are left alone — those are legitimate remote access, already
+  // self-consistent on their own device. Override the target via
+  // JARVIS_CANONICAL_HOST (must match BETTER_AUTH_URL's host).
+  const CANONICAL_HOST = process.env.JARVIS_CANONICAL_HOST ?? '127.0.0.1'
+  if (!path.startsWith('/api/')) {
+    const rawHost = req.headers.get('host') ?? ''
+    const bareHost = hostFromHeader(rawHost)
+    if ((bareHost === 'localhost' || bareHost === '[::1]') && bareHost !== CANONICAL_HOST) {
+      const port = rawHost.includes(':') ? rawHost.slice(rawHost.lastIndexOf(':')) : ''
+      const dest = new URL(req.url)
+      dest.host = `${CANONICAL_HOST}${port}`
+      return NextResponse.redirect(dest, 307)
+    }
+  }
 
   // Page requests (not /api/*): JARVIS login gate. Unauthenticated page
   // navigations redirect to /login. Static assets are excluded by the
@@ -151,11 +183,25 @@ export function proxy(req: NextRequest) {
   // `Sec-Fetch-Site: same-origin` on such requests and page JS cannot
   // forge it (forbidden header); a DNS-rebinding or cross-origin page
   // gets `cross-site` (and is killed by the Host allowlist above
-  // anyway). Non-browser callers (bridge, curl, extensions) lack the
-  // header entirely and still need the bearer token below. A local
-  // process forging the header with curl gains nothing it can't
-  // already do as the same user.
-  if (req.headers.get('sec-fetch-site') === 'same-origin') {
+  // anyway).
+  //
+  // But `Sec-Fetch-Site` is only unforgeable from *browsers*. A
+  // non-browser caller (curl/script) can set it freely — and if the box
+  // is ever fronted by a default reverse proxy (which rewrites Host to
+  // the localhost upstream, defeating the allowlist above), a *remote*
+  // forged-header request would otherwise sail past the bearer gate. So
+  // tie the carve-out to an authenticated session: the logged-in UI's
+  // fetch()/EventSource always send the session cookie, so requiring it
+  // costs legit traffic nothing, but a forged `Sec-Fetch-Site` with no
+  // session cookie now falls through to the bearer check below.
+  // `/api/auth/*` is exempt — it's the same-origin POST that CREATES the
+  // session (no cookie exists yet), and the public `/share/*` surface is
+  // a page route (served via /share/[token]/asset/…, not /api/*), so it
+  // never reaches this gate.
+  if (
+    req.headers.get('sec-fetch-site') === 'same-origin' &&
+    (path.startsWith('/api/auth/') || hasSessionCookie(req))
+  ) {
     return NextResponse.next()
   }
 

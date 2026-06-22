@@ -11,6 +11,19 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
     # Default: no real telemetry → user not "recently active" unless a test says so.
     monkeypatch.setattr(nightly, "_user_recently_active", lambda: False)
+    # HERMETIC GIT: never let a test touch the real repo. Default = clean tree
+    # (no stash) + a stable branch (no checkout). Tests that exercise the
+    # stash/branch paths override deploy._git themselves.
+    import subprocess
+
+    def _fake_git(*args):
+        if args[:1] == ("status",):
+            return subprocess.CompletedProcess(args, 0, "", "")       # clean
+        if args[:1] == ("rev-parse",):
+            return subprocess.CompletedProcess(args, 0, "feat/test\n", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(deploy, "_git", _fake_git)
     return tmp_path
 
 
@@ -84,6 +97,48 @@ def test_publish_skips_already_published(home, monkeypatch):
     out = nightly.run()
     assert calls == ["automod-new"]      # only the unpublished one
     assert out["published"] == 1
+
+
+def test_stash_guards_a_dirty_tree(home, monkeypatch):
+    """A dirty live tree is stashed BEFORE the spawn + popped AFTER, so the
+    impl's `git reset --hard origin/master` can't destroy uncommitted work."""
+    import subprocess
+    _patch_pipeline(monkeypatch, detected=0, spawned=1)
+    calls = []
+
+    def tracking_git(*args):
+        calls.append(args)
+        if args[:1] == ("status",):
+            return subprocess.CompletedProcess(args, 0, " M live_edit.py\n", "")  # dirty
+        if args[:1] == ("rev-parse",):
+            return subprocess.CompletedProcess(args, 0, "feat/test\n", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(deploy, "_git", tracking_git)
+    out = nightly.run()
+    stash = [a for a in calls if a and a[0] == "stash"]
+    assert any(a[:2] == ("stash", "push") for a in stash), "dirty tree must be stashed"
+    assert any(a[:2] == ("stash", "pop") for a in stash), "stash must be popped after"
+    assert out["spawned"] == 1
+
+
+def test_aborts_if_dirty_tree_cannot_be_stashed(home, monkeypatch):
+    """If stashing a dirty tree fails, abort rather than let the impl wipe it."""
+    import subprocess
+    _patch_pipeline(monkeypatch, detected=0, spawned=0)
+
+    def failing_stash_git(*args):
+        if args[:1] == ("status",):
+            return subprocess.CompletedProcess(args, 0, " M live_edit.py\n", "")
+        if args[:2] == ("stash", "push"):
+            return subprocess.CompletedProcess(args, 1, "", "stash failed")
+        if args[:1] == ("rev-parse",):
+            return subprocess.CompletedProcess(args, 0, "feat/test\n", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(deploy, "_git", failing_stash_git)
+    out = nightly.run()
+    assert out.get("skipped") == "dirty-tree-unstashable"
 
 
 def test_run_never_raises_on_detector_error(home, monkeypatch):

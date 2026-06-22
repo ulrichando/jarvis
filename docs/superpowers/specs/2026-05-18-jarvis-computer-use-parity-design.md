@@ -1,7 +1,14 @@
 # JARVIS Computer-Use Parity — Design Spec
 
 **Date:** 2026-05-18
-**Status:** Approved (option B of the brainstorming session)
+**Status:** ⚠️ ARCHITECTURE SUPERSEDED (2026-05-20 rebuild). The `HandoffSubagent` /
+`transfer_to_computer_use` design + separate `subagents/`/`tools/computer_*` file map
++ native `computer_20251124` below no longer match the running system. Computer use is
+now a **single direct registry tool** (`tools/computer_use.py`) with a custom **SOM
+element-mode** schema, multi-provider via `pipeline/cu_adapters/`. This spec is retained
+for its loop-shape + safety reasoning. **For how CU actually works today, read
+[docs/runbook/computer-use.md](../../runbook/computer-use.md).**
+**Status (original):** Approved (option B of the brainstorming session)
 **Goal:** Match the canonical 2026 computer-use loop (Anthropic Computer Use / OpenAI Operator / Gemini 2.5 Computer Use) so JARVIS can drive arbitrary GUI tasks on Ulrich's Linux desktop end-to-end.
 **Supersedes:** [2026-04-28-desktop-computer-use-design.md](./2026-04-28-desktop-computer-use-design.md). That earlier design used a hybrid pattern (Gemini Live continuous vision stream → Groq/DeepSeek orchestrator → xdotool). The 2026 industry consensus converged on a different shape — *the vision-capable model owns the loop* — and Anthropic, OpenAI, and Google all standardized on the same tool surface. This spec replaces the prior approach with the canonical pattern.
 
