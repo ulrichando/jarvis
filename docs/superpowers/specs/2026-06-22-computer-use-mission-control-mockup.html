@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Computer Use — Mission Control</title>
+<style>
+  :root{
+    --bg:oklch(0.11 0.014 252);
+    --fg:oklch(0.97 0.007 240);
+    --card:oklch(0.16 0.022 250);
+    --card2:oklch(0.19 0.024 250);
+    --primary:oklch(0.80 0.155 198);
+    --primary-dim:oklch(0.80 0.155 198 / 0.14);
+    --primary-fg:oklch(0.09 0.012 252);
+    --muted:oklch(0.18 0.020 250);
+    --muted-fg:oklch(0.74 0.032 235);
+    --border:oklch(0.75 0.10 200 / 0.20);
+    --border-soft:oklch(0.75 0.10 200 / 0.11);
+    --success:oklch(0.78 0.16 155);
+    --warning:oklch(0.83 0.15 85);
+    --danger:oklch(0.65 0.22 25);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--fg);font-family:var(--font);font-size:13px;-webkit-font-smoothing:antialiased;overflow:hidden}
+  .app{height:100vh;display:flex;flex-direction:column}
+
+  /* ── App bar ───────────────────────────────────────── */
+  .appbar{height:52px;flex-shrink:0;display:flex;align-items:center;gap:14px;padding:0 16px;
+    border-bottom:1px solid var(--border-soft);background:linear-gradient(to bottom,oklch(0.14 0.018 250),var(--bg))}
+  .brand{display:flex;align-items:center;gap:9px}
+  .brand .logo{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;
+    background:var(--primary-dim);color:var(--primary)}
+  .brand .title{font-size:14.5px;font-weight:560;letter-spacing:-0.01em}
+  .chip{display:inline-flex;align-items:center;gap:6px;height:25px;padding:0 10px;border-radius:999px;
+    border:1px solid var(--border-soft);background:oklch(0.15 0.02 250);font-size:11.5px;color:var(--muted-fg)}
+  .dot{width:7px;height:7px;border-radius:50%}
+  .dot.ok{background:var(--success);box-shadow:0 0 0 3px oklch(0.78 0.16 155 / 0.15)}
+  .sep{width:1px;height:20px;background:var(--border-soft)}
+  .spacer{flex:1}
+  /* segmented mode control */
+  .seg{display:flex;padding:2px;gap:2px;border-radius:9px;background:oklch(0.14 0.018 250);border:1px solid var(--border-soft)}
+  .seg button{font:inherit;font-size:11.5px;border:0;background:transparent;color:var(--muted-fg);
+    padding:5px 11px;border-radius:7px;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+  .seg button.on{background:var(--primary-dim);color:var(--primary);font-weight:540}
+  .btn{font:inherit;font-size:12px;display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 12px;
+    border-radius:8px;border:1px solid var(--border-soft);background:var(--card);color:var(--fg);cursor:pointer}
+  .btn:hover{border-color:var(--border)}
+  .btn.icon{width:30px;padding:0;justify-content:center;color:var(--muted-fg)}
+  svg{width:15px;height:15px;stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round}
+
+  /* ── Body ──────────────────────────────────────────── */
+  .body{flex:1;display:flex;min-height:0}
+
+  /* Desktop hero */
+  .desktop{flex:1;min-width:0;padding:14px}
+  .frame{height:100%;border-radius:13px;border:1px solid var(--border);background:oklch(0.09 0.012 252);
+    overflow:hidden;display:flex;flex-direction:column;box-shadow:0 16px 40px -20px oklch(0 0 0 / 0.6)}
+  .frame .chrome{height:34px;flex-shrink:0;display:flex;align-items:center;gap:10px;padding:0 12px;
+    border-bottom:1px solid var(--border-soft);background:oklch(0.13 0.016 250);color:var(--muted-fg);font-size:11.5px}
+  .frame .chrome .tl{display:flex;gap:6px}.frame .chrome .tl i{width:9px;height:9px;border-radius:50%;background:oklch(0.3 0.02 250)}
+  .canvas{flex:1;position:relative;background:
+    radial-gradient(120% 80% at 30% 0%,oklch(0.26 0.05 230),transparent 60%),
+    linear-gradient(160deg,oklch(0.18 0.03 250),oklch(0.10 0.015 255))}
+  /* faux desktop bits */
+  .win{position:absolute;left:11%;top:14%;width:62%;height:62%;border-radius:9px;border:1px solid oklch(1 0 0 / 0.09);
+    background:oklch(0.97 0.01 240);box-shadow:0 24px 60px -20px oklch(0 0 0 / 0.7);overflow:hidden}
+  .win .bar{height:30px;background:oklch(0.93 0.01 240);border-bottom:1px solid oklch(0 0 0 / 0.08);display:flex;align-items:center;gap:6px;padding:0 10px}
+  .win .bar i{width:8px;height:8px;border-radius:50%}.win .bar .u{height:13px;flex:1;margin-left:8px;border-radius:7px;background:oklch(0.86 0.01 240)}
+  .win .body{padding:14px;display:flex;flex-direction:column;gap:9px}
+  .win .body .r{height:9px;border-radius:4px;background:oklch(0.9 0.02 60)}
+  .panel{position:absolute;left:0;right:0;bottom:0;height:38px;background:oklch(0.08 0.01 255 / 0.82);backdrop-filter:blur(6px);
+    border-top:1px solid oklch(1 0 0 / 0.06);display:flex;align-items:center;gap:8px;padding:0 12px}
+  .panel i{width:22px;height:22px;border-radius:6px;background:oklch(1 0 0 / 0.08)}
+  .panel i.act{background:var(--primary-dim);border:1px solid var(--primary)}
+  /* floating control overlay */
+  .overlay{position:absolute;left:50%;bottom:52px;transform:translateX(-50%);display:flex;align-items:center;gap:10px;
+    height:38px;padding:0 7px 0 14px;border-radius:999px;background:oklch(0.10 0.014 255 / 0.78);backdrop-filter:blur(10px);
+    border:1px solid var(--border);box-shadow:0 12px 30px -10px oklch(0 0 0 / 0.7)}
+  .overlay .live{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:var(--muted-fg)}
+  .overlay .pulse{width:8px;height:8px;border-radius:50%;background:var(--primary);box-shadow:0 0 0 0 var(--primary);animation:pulse 1.8s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 oklch(0.80 0.155 198 / 0.5)}100%{box-shadow:0 0 0 9px oklch(0.80 0.155 198 / 0)}}
+  .overlay .take{height:26px;padding:0 12px;border-radius:999px;background:var(--primary);color:var(--primary-fg);
+    font-size:11.5px;font-weight:560;border:0;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+
+  /* Activity timeline */
+  .activity{width:404px;flex-shrink:0;display:flex;flex-direction:column;border-left:1px solid var(--border-soft);background:oklch(0.115 0.015 252)}
+  .activity .ahead{height:46px;flex-shrink:0;display:flex;align-items:center;gap:9px;padding:0 16px;border-bottom:1px solid var(--border-soft)}
+  .ahead .h{font-size:13px;font-weight:600;letter-spacing:-0.01em}
+  .work{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--primary);
+    padding:3px 8px;border-radius:999px;background:var(--primary-dim)}
+  .work .pulse{width:6px;height:6px;border-radius:50%;background:var(--primary);animation:pulse 1.8s infinite}
+  .ahead .count{margin-left:auto;font-size:11px;color:var(--muted-fg);font-variant-numeric:tabular-nums}
+  .stream{flex:1;overflow-y:auto;padding:16px 16px 10px}
+  .task{display:flex;gap:10px;padding:11px 12px;border-radius:10px;background:var(--card);border:1px solid var(--border-soft);margin-bottom:16px}
+  .task .k{font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--primary);font-weight:600;margin-bottom:3px}
+  .task .t{font-size:13.5px;line-height:1.45}
+  .reason{color:var(--muted-fg);font-size:12.5px;line-height:1.55;margin:0 2px 16px;padding-left:11px;border-left:2px solid var(--border-soft)}
+  /* step row */
+  .step{display:flex;gap:11px;padding:0 0 16px;position:relative}
+  .rail{display:flex;flex-direction:column;align-items:center;flex-shrink:0}
+  .rail .ic{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:var(--card2);border:1px solid var(--border-soft);color:var(--muted-fg);z-index:1}
+  .rail .ic.done{background:oklch(0.78 0.16 155 / 0.16);border-color:oklch(0.78 0.16 155 / 0.4);color:var(--success)}
+  .rail .ic.run{background:var(--primary-dim);border-color:var(--primary);color:var(--primary)}
+  .rail .line{flex:1;width:1.5px;background:var(--border-soft);margin:2px 0 -16px}
+  .step .meat{flex:1;min-width:0}
+  .step .act{font-size:13px;line-height:1.4}
+  .step .act b{font-weight:560}
+  .step .par{font-family:var(--mono);font-size:11px;color:var(--muted-fg);margin-top:2px}
+  .step .time{font-size:10.5px;color:oklch(0.55 0.02 250);margin-top:3px;font-variant-numeric:tabular-nums}
+  .thumb{width:64px;height:40px;border-radius:6px;flex-shrink:0;border:1px solid var(--border-soft);
+    background:linear-gradient(150deg,oklch(0.3 0.05 230),oklch(0.13 0.02 255));margin-top:1px}
+  .spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+  /* permission card */
+  .perm{border:1px solid var(--primary);background:var(--primary-dim);border-radius:11px;padding:12px;margin:2px 0 16px}
+  .perm .q{font-size:13px}.perm .q b{font-weight:600}
+  .perm .pr{font-family:var(--mono);font-size:11px;color:var(--muted-fg);margin-top:3px}
+  .perm .row{display:flex;gap:7px;margin-top:11px}
+  .perm .a{font:inherit;font-size:11.5px;font-weight:560;border-radius:7px;padding:6px 12px;cursor:pointer;border:1px solid transparent}
+  .perm .a.y{background:var(--primary);color:var(--primary-fg)}
+  .perm .a.s{background:transparent;border-color:var(--border);color:var(--fg)}
+  .perm .a.n{background:transparent;border-color:var(--border-soft);color:var(--danger);margin-left:auto}
+
+  /* ── Command bar ───────────────────────────────────── */
+  .cmdbar{flex-shrink:0;padding:12px 16px 14px;border-top:1px solid var(--border-soft);background:oklch(0.115 0.015 252)}
+  .cmd{display:flex;align-items:center;gap:10px;height:50px;padding:0 8px 0 14px;border-radius:13px;
+    background:var(--card);border:1px solid var(--border);box-shadow:0 0 0 4px oklch(0.80 0.155 198 / 0.06)}
+  .modelchip{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 11px;border-radius:9px;
+    background:oklch(0.13 0.016 250);border:1px solid var(--border-soft);color:var(--fg);font-size:12px;cursor:pointer}
+  .modelchip .nv{font-size:8.5px;font-weight:700;letter-spacing:0.04em;color:var(--primary);background:var(--primary-dim);padding:2px 5px;border-radius:4px}
+  .cmd input{flex:1;background:transparent;border:0;outline:0;color:var(--fg);font:inherit;font-size:14px}
+  .cmd input::placeholder{color:oklch(0.55 0.02 250)}
+  .send{width:36px;height:36px;border-radius:9px;border:0;background:var(--primary);color:var(--primary-fg);cursor:pointer;display:grid;place-items:center}
+  .hint{margin:8px 4px 0;font-size:11px;color:oklch(0.5 0.02 250);display:flex;gap:14px}
+  .hint span{display:inline-flex;align-items:center;gap:5px}
+  kbd{font-family:var(--mono);font-size:10px;background:var(--muted);border:1px solid var(--border-soft);border-radius:4px;padding:1px 5px;color:var(--muted-fg)}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- App bar -->
+  <header class="appbar">
+    <div class="brand">
+      <div class="logo"><svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div>
+      <span class="title">Computer Use</span>
+    </div>
+    <span class="chip"><span class="dot ok"></span>Connected</span>
+    <div class="sep"></div>
+    <span class="chip" style="font-family:var(--mono);font-size:10.5px">session · 9f3a…c12</span>
+
+    <div class="spacer"></div>
+
+    <div class="seg" title="Approval mode">
+      <button class="on"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>Supervised</button>
+      <button>Auto</button>
+    </div>
+    <button class="btn"><svg viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2 2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L9 13"/></svg>Take control</button>
+    <button class="btn icon" title="More"><svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg></button>
+  </header>
+
+  <!-- Body -->
+  <div class="body">
+
+    <!-- Desktop hero -->
+    <section class="desktop">
+      <div class="frame">
+        <div class="chrome">
+          <div class="tl"><i></i><i></i><i></i></div>
+          <span>Live desktop</span>
+          <span style="margin-left:auto;font-family:var(--mono);font-size:10.5px">1920 × 1080</span>
+        </div>
+        <div class="canvas">
+          <div class="win">
+            <div class="bar"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i><div class="u"></div></div>
+            <div class="body">
+              <div class="r" style="width:40%;background:oklch(0.65 0.2 30)"></div>
+              <div class="r" style="width:88%"></div><div class="r" style="width:72%"></div>
+              <div class="r" style="width:80%"></div><div class="r" style="width:55%"></div>
+            </div>
+          </div>
+          <div class="overlay">
+            <span class="live"><span class="pulse"></span>Jarvis is working</span>
+            <button class="take"><svg viewBox="0 0 24 24" style="width:13px;height:13px"><path d="M18 11V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2 2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L9 13"/></svg>Take control</button>
+          </div>
+          <div class="panel">
+            <i class="act"></i><i></i><i></i><i></i>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Activity timeline -->
+    <aside class="activity">
+      <div class="ahead">
+        <span class="h">Activity</span>
+        <span class="work"><span class="pulse"></span>Working</span>
+        <span class="count">5 steps · 0:38</span>
+      </div>
+      <div class="stream">
+
+        <div class="task">
+          <div>
+            <div class="k">Task</div>
+            <div class="t">Open Firefox and go to news.ycombinator.com</div>
+          </div>
+        </div>
+
+        <p class="reason">I'll launch Firefox from the taskbar, then type the URL into the address bar and press Enter.</p>
+
+        <div class="step">
+          <div class="rail"><div class="ic done"><svg viewBox="0 0 24 24" style="width:12px;height:12px"><path d="m20 6-11 11-5-5"/></svg></div><div class="line"></div></div>
+          <div class="meat">
+            <div class="act">Took a <b>screenshot</b></div>
+            <div class="time">14:32:01</div>
+          </div>
+          <div class="thumb"></div>
+        </div>
+
+        <div class="step">
+          <div class="rail"><div class="ic done"><svg viewBox="0 0 24 24" style="width:12px;height:12px"><path d="m20 6-11 11-5-5"/></svg></div><div class="line"></div></div>
+          <div class="meat">
+            <div class="act">Clicked <b>Firefox</b> in the taskbar</div>
+            <div class="par">left_click · (412, 1042)</div>
+            <div class="time">14:32:02</div>
+          </div>
+          <div class="thumb"></div>
+        </div>
+
+        <div class="perm">
+          <div class="q">Allow Jarvis to <b>type a URL</b>?</div>
+          <div class="pr">type "news.ycombinator.com"</div>
+          <div class="row">
+            <button class="a y">Approve</button>
+            <button class="a s">For session</button>
+            <button class="a n">Deny</button>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="rail"><div class="ic done"><svg viewBox="0 0 24 24" style="width:12px;height:12px"><path d="m20 6-11 11-5-5"/></svg></div><div class="line"></div></div>
+          <div class="meat">
+            <div class="act">Typed <b>news.ycombinator.com</b></div>
+            <div class="par">type · address bar</div>
+            <div class="time">14:32:05</div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="rail"><div class="ic run"><svg class="spin" viewBox="0 0 24 24" style="width:12px;height:12px"><path d="M21 12a9 9 0 1 1-6.2-8.5"/></svg></div></div>
+          <div class="meat">
+            <div class="act">Pressing <b>Enter</b>…</div>
+            <div class="time">now</div>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+  </div>
+
+  <!-- Command bar -->
+  <footer class="cmdbar">
+    <div class="cmd">
+      <button class="modelchip"><svg viewBox="0 0 24 24" style="width:14px;height:14px"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg>Claude Sonnet 4.6 <span class="nv">NATIVE</span><svg viewBox="0 0 24 24" style="width:13px;height:13px"><path d="m6 9 6 6 6-6"/></svg></button>
+      <input placeholder="Tell Jarvis what to do on the desktop…" />
+      <button class="send"><svg viewBox="0 0 24 24"><path d="M9 10 4 15l5 5"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg></button>
+    </div>
+    <div class="hint">
+      <span><kbd>Enter</kbd> send</span>
+      <span><kbd>⇧ Enter</kbd> newline</span>
+      <span>Supervised — every action kind asks first</span>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>
