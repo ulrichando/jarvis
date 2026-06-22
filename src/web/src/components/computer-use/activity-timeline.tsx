@@ -29,7 +29,7 @@ export function ActivityTimeline({
       <div className="flex h-[46px] shrink-0 items-center gap-2 border-b border-border/40 px-4">
         <span className="text-[13px] font-semibold">Activity</span>
         {running && (
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
+          <span role="status" className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
             <span className="size-1.5 animate-pulse rounded-full bg-primary motion-reduce:animate-none" /> Working
           </span>
         )}
@@ -92,7 +92,7 @@ function Entry({ part, onApprove }: { part: Part; onApprove: (reqId: string, dec
         <div className="text-[13px] leading-snug">{part.text}</div>
         {part.ts ? <div className="mt-0.5 text-[10.5px] tabular-nums text-muted-foreground/70">{formatStepTime(part.ts)}</div> : null}
       </div>
-      {part.thumb ? <img src={part.thumb} alt="" className="mt-0.5 h-10 w-16 shrink-0 rounded-md border border-border/40 object-cover" /> : null}
+      {part.thumb ? <img src={part.thumb} alt="Desktop at this step" className="mt-0.5 h-10 w-16 shrink-0 rounded-md border border-border/40 object-cover" /> : null}
     </div>
   );
 }

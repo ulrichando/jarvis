@@ -121,7 +121,11 @@ export const NoVNCView = forwardRef<NoVNCHandle, Props>(function NoVNCView(
     <div className={className} style={{ position: "relative" }}>
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
       {status !== "connected" && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-neutral-500">
+        <div role="status" aria-live="polite"
+          className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 text-xs text-muted-foreground">
+          {status === "connecting" && !error
+            ? <span className="size-1.5 animate-pulse rounded-full bg-muted-foreground motion-reduce:animate-none" />
+            : null}
           {error ?? (status === "connecting" ? "Connecting to desktop…" : "Desktop disconnected")}
         </div>
       )}
