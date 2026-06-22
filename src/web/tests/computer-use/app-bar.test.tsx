@@ -19,4 +19,10 @@ describe("CuAppBar", () => {
     render(<CuAppBar {...base} running />);
     expect(screen.getByTitle("Stop the agent")).toBeTruthy();
   });
+  it("hides the session chip until the client-side id exists (SSR-safe)", () => {
+    const { rerender } = render(<CuAppBar {...base} sessionId="" />);
+    expect(screen.queryByText(/^session/)).toBeNull();
+    rerender(<CuAppBar {...base} sessionId="9f3a0000c12" />);
+    expect(screen.getByText(/^session/)).toBeTruthy();
+  });
 });

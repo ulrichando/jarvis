@@ -20,7 +20,7 @@ export default function ComputerUsePage() {
   const [supervised, setSupervised] = useState(true);
   const [model, setModel] = useState<string>(CU_MODELS[0].id);
   const [thread, setThread] = useState<ChatMsg[]>([]);
-  const [sessionId, setSessionId] = useState(newSessionId);
+  const [sessionId, setSessionId] = useState("");
   const [runStart, setRunStart] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -35,6 +35,11 @@ export default function ComputerUsePage() {
     }
   }, []);
   useEffect(() => { void refreshStatus(); }, [refreshStatus]);
+
+  // Session id is generated client-only: crypto.randomUUID() is non-deterministic,
+  // so producing it during SSR (then displaying it in the app-bar chip) mismatches
+  // on hydration. Empty on the server + first client render, then filled on mount.
+  useEffect(() => { setSessionId((id) => id || newSessionId()); }, []);
 
   useEffect(() => {
     if (!running || runStart == null) return;
