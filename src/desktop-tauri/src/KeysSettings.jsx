@@ -28,6 +28,43 @@ export default function KeysSettings() {
 
   useEffect(() => { refresh() }, [refresh])
 
+  // ── MCP connectors (~/.jarvis/mcp.json) — list / toggle / remove / add ──
+  // Mirrors the web Settings → Connectors card. OAuth connectors (Vercel /
+  // Notion) sign in from the web app; here we manage token-based + local ones.
+  const [mcp, setMcp] = useState([])
+  const [mcpAdding, setMcpAdding] = useState(false)
+  const [mcpName, setMcpName] = useState('')
+  const [mcpUrl, setMcpUrl] = useState('')
+  const [mcpToken, setMcpToken] = useState('')
+
+  const mcpRefresh = useCallback(async () => {
+    try { setMcp(await invoke('mcp_list')) }
+    catch (e) { setStatus(`Failed to read MCP servers: ${e}`) }
+  }, [])
+  useEffect(() => { mcpRefresh() }, [mcpRefresh])
+
+  const mcpToggle = async (name, enabled) => {
+    setBusy(true)
+    try { await invoke('mcp_set_enabled', { name, enabled }); await mcpRefresh() }
+    catch (e) { setStatus(`Toggle failed: ${e}`) } finally { setBusy(false) }
+  }
+  const mcpDelete = async (name) => {
+    if (!confirm(`Remove MCP server "${name}"?`)) return
+    setBusy(true)
+    try { await invoke('mcp_remove', { name }); setStatus(`Removed ${name}`); await mcpRefresh() }
+    catch (e) { setStatus(`Remove failed: ${e}`) } finally { setBusy(false) }
+  }
+  const mcpAdd = async () => {
+    if (!mcpName.trim() || !mcpUrl.trim()) return
+    setBusy(true)
+    try {
+      await invoke('mcp_add', { name: mcpName.trim(), url: mcpUrl.trim(), transport: 'http', token: mcpToken.trim() })
+      setStatus(`Added MCP server ${mcpName.trim()}`)
+      setMcpName(''); setMcpUrl(''); setMcpToken(''); setMcpAdding(false)
+      await mcpRefresh()
+    } catch (e) { setStatus(`Add failed: ${e}`) } finally { setBusy(false) }
+  }
+
   const onSave = async (env) => {
     const value = (edits[env] || '').trim()
     if (!value) return
@@ -156,6 +193,70 @@ export default function KeysSettings() {
                 </div>
               )}
             </div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── MCP Connectors ─────────────────────────────────────────── */}
+      <div style={{ ...headerStyle, position: 'static', marginTop: 26 }}>
+        <h2 style={{ margin: 0, fontSize: 18 }}>MCP Connectors</h2>
+        {!mcpAdding && (
+          <button onClick={() => setMcpAdding(true)} disabled={busy} style={smallButton}>
+            + Add server
+          </button>
+        )}
+      </div>
+      <p style={subtitleStyle}>
+        MCP servers the assistant can call (stored in <code>~/.jarvis/mcp.json</code>, shared
+        with the web app + voice agent). Add a token-based or local HTTP server here; OAuth
+        connectors (Vercel, Notion) sign in from the web app → Settings → Connectors.
+      </p>
+
+      {mcpAdding && (
+        <div style={{ ...rowStyle, flexDirection: 'column', alignItems: 'stretch', gap: 8, marginBottom: 8 }}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              value={mcpName} onChange={e => setMcpName(e.target.value)}
+              placeholder="Name (e.g. GitHub)" spellCheck={false}
+              style={{ ...inputStyle, flex: '0 0 32%' }}
+            />
+            <input
+              value={mcpUrl} onChange={e => setMcpUrl(e.target.value)}
+              placeholder="https://api.githubcopilot.com/mcp/" spellCheck={false}
+              style={inputStyle}
+            />
+          </div>
+          <input
+            type="password" value={mcpToken} onChange={e => setMcpToken(e.target.value)}
+            placeholder="Auth token (optional) — sent as Authorization: Bearer …"
+            spellCheck={false} autoComplete="off" style={inputStyle}
+          />
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button onClick={mcpAdd} disabled={busy || !mcpName.trim() || !mcpUrl.trim()} style={primaryButton}>Add</button>
+            <button onClick={() => { setMcpAdding(false); setMcpName(''); setMcpUrl(''); setMcpToken('') }} style={smallButton}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={listStyle}>
+        {mcp.length === 0 ? (
+          <div style={{ ...dimStyle, padding: 10 }}>No MCP servers yet.</div>
+        ) : mcp.map(s => (
+          <div key={s.name} style={rowStyle}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600 }}>
+                {s.name}
+                <span style={{ ...dimStyle, marginLeft: 8, textTransform: 'uppercase' }}>{s.transport}</span>
+                {s.hasAuth ? <span style={{ marginLeft: 6, color: '#9ca3af', fontSize: 11 }}>🔒</span> : null}
+                {s.oauth ? <span style={{ marginLeft: 6, color: '#22c55e', fontSize: 11 }}>oauth</span> : null}
+              </div>
+              <div style={{ ...dimStyle, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.url || '—'}</div>
+            </div>
+            <button
+              onClick={() => mcpToggle(s.name, !s.enabled)} disabled={busy}
+              style={{ ...smallButton, background: s.enabled ? '#166534' : '#374151', borderColor: s.enabled ? '#166534' : '#374151' }}
+            >{s.enabled ? 'Enabled' : 'Disabled'}</button>
+            <button onClick={() => mcpDelete(s.name)} disabled={busy} style={dangerButton}>Remove</button>
           </div>
         ))}
       </div>

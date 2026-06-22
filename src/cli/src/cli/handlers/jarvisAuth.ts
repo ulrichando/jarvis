@@ -24,7 +24,11 @@ import {
   upsertKeysEnv,
 } from '../../utils/jarvisKeysEnv.js'
 
-const DEFAULT_SERVER_URL = 'http://localhost:3000'
+// 127.0.0.1, not localhost: the web canonicalizes browser navs to 127.0.0.1
+// (proxy.ts) and the session cookie is host-scoped, so defaulting to localhost
+// would split the CLI's login host from the browser's. One loopback literal
+// everywhere (RFC 8252).
+const DEFAULT_SERVER_URL = 'http://127.0.0.1:3000'
 const FETCH_TIMEOUT_MS = 10_000
 
 const BASE_URL_KEY = 'JARVIS_BRIDGE_BASE_URL'

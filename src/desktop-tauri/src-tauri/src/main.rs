@@ -731,6 +731,147 @@ fn keys_read() -> Result<Vec<serde_json::Value>, String> {
     Ok(out)
 }
 
+// ── MCP servers (~/.jarvis/mcp.json) — desktop mirror of the web
+// Settings → Connectors card. Lets the desktop list / toggle / remove /
+// add the MCP servers the voice agent + web chat use. OAuth sign-in
+// (Vercel / Notion) stays in the web app — it needs the browser flow —
+// so this handles the token-based + local servers and on/off control.
+// Same {"servers": {name: spec}} shape the web store reads/writes.
+fn _mcp_path() -> std::path::PathBuf {
+    jarvis_home().join(".jarvis").join("mcp.json")
+}
+
+fn _mcp_read_doc() -> serde_json::Value {
+    let txt = std::fs::read_to_string(_mcp_path()).unwrap_or_default();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&txt).unwrap_or_else(|_| serde_json::json!({}));
+    // Normalize to { "servers": { … } }; accept a bare {name: spec} map too.
+    if parsed.get("servers").map(|s| s.is_object()).unwrap_or(false) {
+        parsed
+    } else if parsed.is_object() {
+        serde_json::json!({ "servers": parsed })
+    } else {
+        serde_json::json!({ "servers": {} })
+    }
+}
+
+fn _mcp_write_doc(doc: &serde_json::Value) -> Result<(), String> {
+    let path = _mcp_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let body = serde_json::to_string_pretty(doc).map_err(|e| e.to_string())? + "\n";
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // mcp.json can hold a Bearer token → keep it owner-only.
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn mcp_list() -> Result<Vec<serde_json::Value>, String> {
+    let doc = _mcp_read_doc();
+    let servers = doc
+        .get("servers")
+        .and_then(|s| s.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for (name, spec) in servers {
+        let transport = spec
+            .get("transport")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| {
+                if spec.get("url").is_some() { "http".into() } else { "stdio".into() }
+            });
+        let url = spec.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        // enabled = NOT (disabled==true OR enabled==false) — the voice loader's rule.
+        let disabled = spec.get("disabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        let enabled = !(disabled || spec.get("enabled").and_then(|v| v.as_bool()) == Some(false));
+        let has_auth = spec
+            .get("headers")
+            .and_then(|h| h.as_object())
+            .map(|h| !h.is_empty())
+            .unwrap_or(false);
+        let oauth = spec.get("oauth").and_then(|v| v.as_bool()).unwrap_or(false);
+        out.push(serde_json::json!({
+            "name": name, "transport": transport, "url": url,
+            "enabled": enabled, "hasAuth": has_auth, "oauth": oauth,
+        }));
+    }
+    out.sort_by(|a, b| a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or("")));
+    Ok(out)
+}
+
+#[tauri::command]
+fn mcp_set_enabled(name: String, enabled: bool) -> Result<(), String> {
+    let mut doc = _mcp_read_doc();
+    let servers = doc
+        .get_mut("servers")
+        .and_then(|s| s.as_object_mut())
+        .ok_or("bad mcp.json")?;
+    let spec = servers
+        .get_mut(&name)
+        .and_then(|s| s.as_object_mut())
+        .ok_or("server not found")?;
+    if enabled {
+        spec.remove("disabled");
+        spec.remove("enabled");
+    } else {
+        spec.insert("disabled".into(), serde_json::Value::Bool(true));
+    }
+    _mcp_write_doc(&doc)
+}
+
+#[tauri::command]
+fn mcp_remove(name: String) -> Result<(), String> {
+    let mut doc = _mcp_read_doc();
+    if let Some(servers) = doc.get_mut("servers").and_then(|s| s.as_object_mut()) {
+        servers.remove(&name);
+    }
+    _mcp_write_doc(&doc)
+}
+
+#[tauri::command]
+fn mcp_add(name: String, url: String, transport: String, token: String) -> Result<(), String> {
+    let name = name.trim();
+    let url = url.trim();
+    if name.is_empty() || url.is_empty() {
+        return Err("name and url required".into());
+    }
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("url must be http(s)".into());
+    }
+    let transport = if transport == "sse" { "sse" } else { "http" };
+    let mut spec = serde_json::Map::new();
+    spec.insert("transport".into(), serde_json::Value::String(transport.into()));
+    spec.insert("url".into(), serde_json::Value::String(url.into()));
+    let tok = token.trim();
+    if !tok.is_empty() {
+        let bearer = if tok.to_lowercase().starts_with("bearer ") {
+            tok.to_string()
+        } else {
+            format!("Bearer {tok}")
+        };
+        let mut headers = serde_json::Map::new();
+        headers.insert("Authorization".into(), serde_json::Value::String(bearer));
+        spec.insert("headers".into(), serde_json::Value::Object(headers));
+    }
+    let mut doc = _mcp_read_doc();
+    let servers = doc
+        .get_mut("servers")
+        .and_then(|s| s.as_object_mut())
+        .ok_or("bad mcp.json")?;
+    servers.insert(name.to_string(), serde_json::Value::Object(spec));
+    _mcp_write_doc(&doc)
+}
+
 #[tauri::command]
 fn keys_set(provider: String, value: String) -> Result<(), String> {
     let provider = provider.trim().to_string();
@@ -2979,6 +3120,10 @@ fn main() {
             keys_set,
             keys_clear,
             keys_restart_agent,
+            mcp_list,
+            mcp_set_enabled,
+            mcp_remove,
+            mcp_add,
             kiosk::enter_kiosk_on_monitor,
             kiosk::exit_kiosk,
             kiosk::kiosk_state,

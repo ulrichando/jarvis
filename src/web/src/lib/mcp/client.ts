@@ -1,9 +1,12 @@
 import "server-only";
+import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { tool, jsonSchema, type ToolSet } from "ai";
 import type { McpServer } from "./store";
+import { getServerAuth } from "./oauth-store";
+import { FileOAuthProvider } from "./oauth-provider";
 
 async function connect(server: McpServer): Promise<Client> {
   if (!server.url) {
@@ -11,9 +14,24 @@ async function connect(server: McpServer): Promise<Client> {
   }
   const client = new Client({ name: "jarvis-web", version: "1.0.0" });
   const url = new URL(server.url);
-  // Forward auth headers (e.g. Authorization: Bearer …) so token-protected
-  // servers connect. requestInit is applied to the transport's fetch calls.
-  const opts = server.headers ? { requestInit: { headers: server.headers } } : undefined;
+  // OAuth-backed connector → drive it through the refreshing auth provider so an
+  // expired access token is silently refreshed (and the new one re-mirrored into
+  // mcp.json). Otherwise forward static auth headers (e.g. a PAT Bearer).
+  const oauth = await getServerAuth(server.name);
+  const opts = oauth
+    ? {
+        authProvider: new FileOAuthProvider({
+          name: server.name,
+          state: randomUUID(),
+          url: server.url,
+          transport: server.transport === "sse" ? "sse" : "http",
+          redirectUri: oauth.redirectUri,
+          seed: { clientInfo: oauth.clientInfo, tokens: oauth.tokens },
+        }),
+      }
+    : server.headers
+      ? { requestInit: { headers: server.headers } }
+      : undefined;
   const transport =
     server.transport === "sse"
       ? new SSEClientTransport(url, opts)

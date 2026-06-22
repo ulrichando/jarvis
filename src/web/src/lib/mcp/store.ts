@@ -110,6 +110,28 @@ export async function addMcpServer(input: {
   return normalize(name, spec);
 }
 
+// Write (or refresh) an OAuth-backed server: the access token is mirrored into
+// `headers` so BOTH the web loader and the voice agent authenticate with it. The
+// `oauth: true` marker tells the web loader to use the refreshing auth provider
+// (oauth-provider.ts) instead of the static header; the long-lived refresh token
+// + client registration live separately in oauth-store (~/.jarvis/mcp-oauth.json).
+export async function upsertOAuthServer(input: {
+  name: string;
+  url: string;
+  transport: "http" | "sse";
+  accessToken: string;
+}): Promise<void> {
+  const data = await read();
+  const name = input.name.trim().slice(0, 60);
+  data.servers[name] = {
+    transport: input.transport,
+    url: input.url.trim(),
+    headers: { Authorization: `Bearer ${input.accessToken}` },
+    oauth: true,
+  };
+  await write(data);
+}
+
 export async function removeMcpServer(name: string): Promise<void> {
   const data = await read();
   if (name in data.servers) {

@@ -81,6 +81,19 @@ def run() -> Dict[str, Any]:
     #    load stale code + lose unpushed work. We snapshot the branch and restore
     #    it after spawning, so the live tree always returns to where it was.
     orig_branch = _deploy._git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    # SAFETY: the coding-agent wrapper runs `git reset --hard origin/master`,
+    # which would DESTROY any uncommitted work in the live tree (e.g. a feature
+    # you're mid-edit on). Stash it first, restore it after. The stash is a safe
+    # holding pen — even if the pop conflicts, the work survives in `git stash`.
+    dirty = bool(_deploy._git("status", "--porcelain").stdout.strip())
+    stashed = False
+    if dirty:
+        sr = _deploy._git("stash", "push", "-u", "-m", "evolution-nightly-autostash")
+        stashed = sr.returncode == 0 and "No local changes" not in (sr.stdout or "")
+        if not stashed:
+            logger.error("[nightly] could not stash a dirty tree — aborting to avoid data loss")
+            summary["skipped"] = "dirty-tree-unstashable"
+            return summary
     try:
         from pipeline.automod.spawner import drain_queue
         summary["spawned"] = asyncio.run(drain_queue())
@@ -88,6 +101,7 @@ def run() -> Dict[str, Any]:
         logger.warning("[nightly] spawn failed: %s", e)
         summary["spawn_error"] = str(e)
     finally:
+        # 1. Restore the branch the live tree was on.
         if orig_branch and orig_branch != "HEAD":
             cur = _deploy._git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
             if cur != orig_branch:
@@ -98,6 +112,15 @@ def run() -> Dict[str, Any]:
                     logger.error("[nightly] FAILED to restore branch %s (on %s): %s",
                                  orig_branch, cur, r.stderr.strip())
                     summary["branch_restore_error"] = r.stderr.strip()
+        # 2. Restore the stashed uncommitted work.
+        if stashed:
+            pr = _deploy._git("stash", "pop")
+            if pr.returncode == 0:
+                logger.info("[nightly] restored stashed uncommitted work")
+            else:
+                logger.error("[nightly] stash pop FAILED — your work is safe in "
+                             "`git stash list`: %s", pr.stderr.strip())
+                summary["stash_pop_error"] = pr.stderr.strip()
 
     # 3. Publish freshly-spawned, not-yet-published proposals (gated).
     if summary["spawned"] and _autopublish():

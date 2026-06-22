@@ -7,6 +7,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   Code2,
+  Folder,
+  FolderPlus,
   GitPullRequest,
   Hammer,
   MessagesSquare,
@@ -16,6 +18,7 @@ import {
   Pencil,
   Plus,
   Search,
+  Star,
   Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -24,6 +27,9 @@ import {
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
 } from "@/components/ui/dropdown-menu";
 import { UserMenu } from "./user-menu";
 import { useUI } from "@/stores/ui";
@@ -32,9 +38,13 @@ import {
   useConversations,
   useDeleteConversation,
   useRenameConversation,
+  useToggleConversationPin,
+  useSetConversationProject,
   type ConversationSummary,
 } from "@/hooks/use-conversations";
+import { useProjects } from "@/hooks/use-projects";
 import { useSettings } from "@/hooks/use-settings";
+import { useEvolutionCount } from "@/hooks/use-evolution-count";
 import { cn } from "@/lib/utils";
 import { DEFAULT_MODEL, MODELS_META } from "@/lib/ai/models-meta";
 import { PROVIDER_FEATURES, PROVIDER_SECTIONS } from "@/lib/ai/features";
@@ -104,6 +114,7 @@ export function Sidebar() {
   const recentsLabel = ux.recentsLabel ?? "Recents";
 
   const displayName = settings?.user?.name ?? "You";
+  const evolutionCount = useEvolutionCount();
 
   return (
     <>
@@ -157,6 +168,14 @@ export function Sidebar() {
                       >
                         <item.icon className="size-4 shrink-0 text-sidebar-foreground/70" />
                         {item.label}
+                        {item.href === "/evolution" && evolutionCount > 0 && (
+                          <span
+                            className="ml-auto inline-flex min-w-[1.1rem] items-center justify-center rounded-full bg-primary/15 px-1.5 text-[10px] font-medium tabular-nums text-primary"
+                            title={`${evolutionCount} proposal${evolutionCount === 1 ? "" : "s"} awaiting review`}
+                          >
+                            {evolutionCount}
+                          </span>
+                        )}
                       </Link>
                     );
                   })}
@@ -382,13 +401,17 @@ function RecentsList({
   }, [conversations, filter]);
 
   const grouped = useMemo(() => {
-    const out: Record<Bucket, ConversationSummary[]> = {
+    const out: Record<"pinned" | Bucket, ConversationSummary[]> = {
+      pinned: [],
       today: [],
       yesterday: [],
       week: [],
       older: [],
     };
-    for (const c of filtered) out[bucketOf(c.updatedAt)].push(c);
+    for (const c of filtered) {
+      if (c.pinned) out.pinned.push(c);
+      else out[bucketOf(c.updatedAt)].push(c);
+    }
     return out;
   }, [filtered]);
 
@@ -431,22 +454,36 @@ function RecentsList({
           no matches.
         </div>
       ) : (
-        (["today", "yesterday", "week", "older"] as Bucket[]).map((b) => {
-          const items = grouped[b];
-          if (items.length === 0) return null;
-          return (
-            <div key={b} className="mb-2">
-              <div className="px-2.5 pb-0.5 pt-1 text-[10px] font-medium uppercase tracking-wider text-sidebar-foreground/40">
-                {BUCKET_LABEL[b]}
+        <>
+          {grouped.pinned.length > 0 && (
+            <div className="mb-2">
+              <div className="flex items-center gap-1 px-2.5 pb-0.5 pt-1 text-[10px] font-medium uppercase tracking-wider text-sidebar-foreground/40">
+                <Star className="size-2.5 fill-current text-primary" /> Pinned
               </div>
               <div className="space-y-px">
-                {items.map((c) => (
+                {grouped.pinned.map((c) => (
                   <RecentRow key={c.id} c={c} pathname={pathname} />
                 ))}
               </div>
             </div>
-          );
-        })
+          )}
+          {(["today", "yesterday", "week", "older"] as Bucket[]).map((b) => {
+            const items = grouped[b];
+            if (items.length === 0) return null;
+            return (
+              <div key={b} className="mb-2">
+                <div className="px-2.5 pb-0.5 pt-1 text-[10px] font-medium uppercase tracking-wider text-sidebar-foreground/40">
+                  {BUCKET_LABEL[b]}
+                </div>
+                <div className="space-y-px">
+                  {items.map((c) => (
+                    <RecentRow key={c.id} c={c} pathname={pathname} />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </>
       )}
     </div>
   );
@@ -470,6 +507,9 @@ function RecentRow({
   const [draft, setDraft] = useState(c.title);
   const rename = useRenameConversation();
   const del = useDeleteConversation();
+  const pin = useToggleConversationPin();
+  const setProject = useSetConversationProject();
+  const { data: projects } = useProjects();
 
   const onDelete = () => {
     if (confirm(`Delete "${isUntitled ? "Untitled" : c.title}"? This can't be undone.`)) {
@@ -546,9 +586,51 @@ function RecentRow({
           <MoreHorizontal className="size-3.5" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="min-w-40">
+          <DropdownMenuItem
+            onClick={() => pin.mutate({ id: c.id, pinned: !c.pinned })}
+            className="gap-2"
+          >
+            <Star
+              className={cn("size-3.5", c.pinned && "fill-current text-primary")}
+            />
+            {c.pinned ? "Unstar" : "Star"}
+          </DropdownMenuItem>
           <DropdownMenuItem onClick={() => setEditing(true)} className="gap-2">
             <Pencil className="size-3.5" /> Rename
           </DropdownMenuItem>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger className="gap-2">
+              <FolderPlus className="size-3.5" /> Add to project
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="min-w-44">
+              {(projects ?? []).length === 0 ? (
+                <DropdownMenuItem disabled className="text-sidebar-foreground/40">
+                  No projects yet
+                </DropdownMenuItem>
+              ) : (
+                (projects ?? []).map((p) => (
+                  <DropdownMenuItem
+                    key={p.id}
+                    onClick={() =>
+                      setProject.mutate({ id: c.id, projectId: p.id })
+                    }
+                    className="gap-2"
+                  >
+                    <Folder className="size-3.5 shrink-0" />
+                    <span className="truncate">{p.name}</span>
+                  </DropdownMenuItem>
+                ))
+              )}
+              {c.projectId && (
+                <DropdownMenuItem
+                  onClick={() => setProject.mutate({ id: c.id, projectId: null })}
+                  className="gap-2 text-sidebar-foreground/60"
+                >
+                  Remove from project
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
           <DropdownMenuItem onClick={onDelete} className="gap-2 text-destructive">
             <Trash2 className="size-3.5" /> Delete
           </DropdownMenuItem>
