@@ -267,6 +267,42 @@ function ConnectorRow({
     onChanged();
   };
 
+  // OAuth connect: ask the server to begin the flow, then hand the browser to
+  // the provider's sign-in page. We come back at /api/mcp/oauth/callback →
+  // /settings?mcp=connected (handled in ConnectorsSection).
+  const startOAuth = async () => {
+    if (!connector.url) return;
+    setBusy(true);
+    try {
+      const r = await fetch("/api/mcp/oauth/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: connector.name, url: connector.url, transport: connector.transport }),
+      });
+      const j = (await r.json().catch(() => ({}))) as { authUrl?: string | null; error?: string };
+      if (!r.ok) {
+        toast.error(j.error ?? "Couldn't start sign-in");
+        return;
+      }
+      if (j.authUrl) {
+        window.location.href = j.authUrl; // → provider sign-in
+        return;
+      }
+      // Server didn't require sign-in — add it directly.
+      await fetch("/api/mcp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: connector.name, url: connector.url, transport: connector.transport }),
+      });
+      toast.success(`Connected ${connector.name}`, { description: "Restart JARVIS voice to apply" });
+      onChanged();
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="py-3.5">
       <div className="flex items-center gap-3">
@@ -290,15 +326,21 @@ function ConnectorRow({
             </button>
           </div>
         ) : connector.auth === "oauth" ? (
-          <a
-            href={connector.helpUrl}
-            target="_blank"
-            rel="noreferrer"
-            title="This connector signs in with OAuth, which Jarvis's token-based MCP client doesn't support yet — opens setup docs."
-            className="inline-flex items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1 text-[12.5px] text-muted-foreground hover:text-foreground"
-          >
-            Needs sign-in <ExternalLink className="size-3" />
-          </a>
+          connector.url ? (
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => void startOAuth()}>
+              {busy && <Loader2 className="mr-1.5 size-3.5 animate-spin" />} Sign in
+            </Button>
+          ) : (
+            <a
+              href={connector.helpUrl}
+              target="_blank"
+              rel="noreferrer"
+              title="This provider's managed MCP endpoint is enterprise/OAuth-gated — opens setup docs."
+              className="inline-flex items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1 text-[12.5px] text-muted-foreground hover:text-foreground"
+            >
+              Setup <ExternalLink className="size-3" />
+            </a>
+          )
         ) : (
           <Button variant="outline" size="sm" onClick={() => setOpen((v) => !v)}>
             {open ? "Cancel" : "Connect"}
@@ -360,6 +402,21 @@ export function ConnectorsSection() {
   }, []);
   useEffect(() => {
     loadServers();
+    // Handle the OAuth callback return: /settings?mcp=connected|error&…
+    const sp = new URLSearchParams(window.location.search);
+    const mcp = sp.get("mcp");
+    if (mcp === "connected") {
+      toast.success(`Connected ${sp.get("mcp_name") ?? "server"}`, {
+        description: "Restart JARVIS voice to apply",
+      });
+    } else if (mcp === "error") {
+      toast.error(`Sign-in failed: ${sp.get("mcp_msg") ?? "unknown error"}`);
+    }
+    if (mcp) {
+      ["mcp", "mcp_name", "mcp_msg"].forEach((k) => sp.delete(k));
+      const qs = sp.toString();
+      window.history.replaceState(null, "", window.location.pathname + (qs ? `?${qs}` : ""));
+    }
   }, [loadServers]);
 
   const matchOf = (c: Connector): LiveServer | undefined =>

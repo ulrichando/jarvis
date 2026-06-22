@@ -64,6 +64,12 @@ function hasSessionCookie(req: NextRequest): boolean {
 // healthcheckers can hit without a token.
 const PUBLIC_PATHS = new Set<string>([
   '/api/health',  // desktop tray probe (probe_jarvis_web) — identity only
+  // MCP OAuth callback: the provider redirects the browser here cross-site
+  // (Sec-Fetch-Site: cross-site), so the same-origin carve-out can't apply and
+  // there's no bearer to forward. It's safe to leave open — it does nothing
+  // without a matching unguessable `state` (the OAuth CSRF guard) stored
+  // server-side at /api/mcp/oauth/start, and it only redeems a one-time code.
+  '/api/mcp/oauth/callback',
 ])
 
 // Host header allowlist (DNS-rebinding defense, parallel to the bridge
