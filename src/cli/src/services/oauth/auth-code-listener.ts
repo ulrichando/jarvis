@@ -42,8 +42,12 @@ export class AuthCodeListener {
         )
       })
 
-      // Listen on specified port or 0 to let the OS assign an available port
-      this.localServer.listen(port ?? 0, 'localhost', () => {
+      // Listen on specified port or 0 to let the OS assign an available port.
+      // Bind the IPv4 loopback literal (127.0.0.1), NOT 'localhost': per
+      // RFC 8252 §8.3 'localhost' can resolve to ::1, so binding it but
+      // redirecting the browser to 127.0.0.1 (or vice versa) silently misses.
+      // The advertised redirect_uri in login.tsx must use the same literal.
+      this.localServer.listen(port ?? 0, '127.0.0.1', () => {
         const address = this.localServer.address() as AddressInfo
         this.port = address.port
         resolve(this.port)
