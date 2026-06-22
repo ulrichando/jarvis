@@ -12,6 +12,7 @@ export async function GET(req: Request) {
     .select({
       id: schema.conversations.id,
       title: schema.conversations.title,
+      pinned: schema.conversations.pinned,
       model: schema.conversations.model,
       // `updated_at` is `timestamp` WITHOUT time zone, written as the PG
       // session's local wall-clock (America/New_York) but parsed by node-pg
