@@ -38,6 +38,8 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable
 
+from _task_utils import log_task_exception
+
 
 __all__ = [
     # Constants
@@ -282,7 +284,8 @@ class LoopWatchdog:
         # on the same stuck condition.
         self._last_voice_active_ts = 0.0
         if auto_restart:
-            asyncio.create_task(self.restart_agent_unit(), name="stale-stt-restart")
+            _t = asyncio.create_task(self.restart_agent_unit(), name="stale-stt-restart")
+            _t.add_done_callback(log_task_exception)
 
     # ── OS-thread watchdog (loop wedge detection) ──────────────────
 

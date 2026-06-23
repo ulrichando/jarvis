@@ -45,6 +45,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from aiohttp import web
 
+from _task_utils import log_task_exception
 from voice_client_tray_config import (
     CLI_MODEL_FILE,
     CLI_MODELS_AVAILABLE,
@@ -763,7 +764,8 @@ class VoiceClientHttpApi:
             # Fire-and-forget — agent restart takes ~3-5 s; the user
             # sees the pill flip to amber "JARVIS booting" and back to
             # green.
-            asyncio.create_task(self.restart_agent_unit())
+            _t = asyncio.create_task(self.restart_agent_unit(), name="agent-restart")
+            _t.add_done_callback(log_task_exception)
             return web.json_response(
                 {"model": name, "restarting": True}, headers=cors,
             )
@@ -821,7 +823,8 @@ class VoiceClientHttpApi:
                 )
             TTS_PROVIDER_FILE.parent.mkdir(parents=True, exist_ok=True)
             TTS_PROVIDER_FILE.write_text(provider + "\n", encoding="utf-8")
-            asyncio.create_task(self.restart_agent_unit())
+            _t = asyncio.create_task(self.restart_agent_unit(), name="agent-restart")
+            _t.add_done_callback(log_task_exception)
             return web.json_response(
                 {"provider": provider, "restarting": True}, headers=cors,
             )
