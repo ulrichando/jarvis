@@ -25,9 +25,11 @@ Pipeline (each FINAL transcript runs through):
      llama-3.1-8b-instant + inject `[Route: BANTER]` prefix → return.
   8. REASONING fast-path: regex match → sync swap to qwen3-32b +
      inject prefix → return.
-  9. LangGraph slow-path: kick the compiled graph as a background
+  9. EMOTIONAL fast-path: emotion ∈ {frustrated, sad} + ≤6 words →
+     sync swap to EMOTIONAL inner + inject prefix → return.
+ 10. LangGraph slow-path: kick the compiled graph as a background
      task (it handles classifier → swap → prefix → tune internally).
- 10. Inline async classifier (fallback when graph is disabled):
+ 11. Inline async classifier (fallback when graph is disabled):
      Groq llama-3.1-8b classifies, swap session._llm / ._tts, inject
      prefix, tune interrupt thresholds per route.
 
@@ -434,6 +436,66 @@ def make_dispatch_handler(
             except Exception as e:
                 logger.warning(
                     f"[fast-path-reasoning] swap failed; falling back to classifier: {e}"
+                )
+
+        # Synchronous EMOTIONAL fast-path. When detect_emotion already
+        # tagged the turn as frustrated or sad AND the transcript is
+        # short (≤6 words), swap to the EMOTIONAL route synchronously.
+        # Emotional venting is often brief ("I'm so frustrated", "I feel
+        # terrible", "I'm exhausted"), and the 150-500 ms classifier
+        # round-trip adds perceptible dead air before the empathetic
+        # reply. Mirrors the BANTER and REASONING fast-paths above.
+        if emotion in ("frustrated", "sad") and word_count <= 6:
+            try:
+                fast_llm = dispatch_llm.pick("EMOTIONAL")
+                fast_tts = dispatch_tts.pick("EMOTIONAL", lang=session._jarvis_lang_ctx.get())
+                session._llm = fast_llm
+                session._tts = fast_tts
+                session._jarvis_emotion = emotion
+                session._jarvis_route   = "EMOTIONAL"
+                session._jarvis_llm_label = getattr(fast_llm, "_jarvis_label", None)
+
+                try:
+                    mw, md = compute_interrupt_tuning("EMOTIONAL", emotion)
+                    opts = getattr(session, "options", None)
+                    if opts is not None and hasattr(opts, "interruption"):
+                        opts.interruption["min_words"]    = mw
+                        opts.interruption["min_duration"] = md
+                except Exception as ie:
+                    logger.debug(f"[fast-path-emotional] interrupt-tune skipped: {ie}")
+
+                try:
+                    session._jarvis_turn_count = int(getattr(session, "_jarvis_turn_count", 0)) + 1
+                    _sstart = getattr(session, "_jarvis_session_start", None)
+                    _session_min = int((time.monotonic() - _sstart) / 60) if _sstart else 0
+                    _turn_n = session._jarvis_turn_count
+                    msgs = session_chat_messages(session)
+                    for m in reversed(msgs):
+                        if getattr(m, "role", None) == "user":
+                            content = getattr(m, "content", None)
+                            prefix = (
+                                f"[Route: EMOTIONAL] [Emotion: {emotion}] "
+                                f"[Turn {_turn_n} · session {_session_min}m] "
+                            )
+                            if isinstance(content, str) and not content.startswith("[Route:"):
+                                m.content = prefix + content
+                            elif isinstance(content, list) and content:
+                                first = content[0]
+                                if isinstance(first, str) and not first.startswith("[Route:"):
+                                    content[0] = prefix + first
+                            break
+                except Exception as pe:
+                    logger.debug(f"[fast-path-emotional] prefix inject skipped: {pe}")
+
+                logger.info(
+                    f"[fast-path-emotional] sync swap (no classifier): "
+                    f"emotion={emotion} llm={getattr(fast_llm, '_jarvis_label', '?')} "
+                    f"transcript={transcript[:60]!r}"
+                )
+                return
+            except Exception as e:
+                logger.warning(
+                    f"[fast-path-emotional] swap failed; falling back to classifier: {e}"
                 )
 
         # ── LangGraph dispatcher (Phase 1) ────────────────────────
