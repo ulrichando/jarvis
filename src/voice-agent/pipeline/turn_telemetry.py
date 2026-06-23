@@ -509,7 +509,7 @@ _CONFAB_BAD_STATES = {"hedged_no_evidence", "retry_factory_missing"}
 
 
 def _maybe_signal_evolution(correction_signal, confab_check_state) -> None:
-    """Wake the cognitive evolution loop (pipeline.automod.signal) when a turn
+    """Wake the cognitive evolution loop (pipeline.automod.experience_signal) when a turn
     carried a bug/correction — a correction_signal or a bad confab_check_state.
     Best-effort; never raises into the telemetry write. Phase 1, 2026-06-23."""
     try:
@@ -519,7 +519,7 @@ def _maybe_signal_evolution(correction_signal, confab_check_state) -> None:
         elif confab_check_state in _CONFAB_BAD_STATES:
             reason = f"confab:{confab_check_state}"
         if reason:
-            from pipeline.automod import signal as _signal
+            from pipeline.automod import experience_signal as _signal
             _signal.bump(reason)
     except Exception:
         pass

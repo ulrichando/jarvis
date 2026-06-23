@@ -1,6 +1,6 @@
 """Phase 1, Task 2: a turn carrying a correction or bad confab state wakes
 the cognitive evolution loop; a clean turn does not."""
-from pipeline.automod import signal
+from pipeline.automod import experience_signal as signal
 from pipeline import turn_telemetry
 
 

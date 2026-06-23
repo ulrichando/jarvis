@@ -7391,7 +7391,7 @@ async def entrypoint(ctx: JobContext) -> None:
     if os.environ.get("JARVIS_AUTOMOD_ENABLED", "0") == "1":
         try:
             async def _automod_loop():
-                from pipeline.automod import signal as _signal
+                from pipeline.automod import experience_signal as _signal
                 # Backstop: even with no signal, sweep at most this often so a
                 # missed bump can't stall evolution forever. Default 2h.
                 backstop = float(os.environ.get("JARVIS_AUTOMOD_BACKSTOP_S", "7200"))

@@ -47,7 +47,7 @@ def _signal_new_fact(action: str) -> None:
     add/replace count (read/remove aren't 'learning'). Never raises. 2026-06-23."""
     try:
         if str(action) in ("add", "replace"):
-            from pipeline.automod import signal as _signal
+            from pipeline.automod import experience_signal as _signal
             _signal.bump(f"fact:memory_{action}")
     except Exception:
         pass

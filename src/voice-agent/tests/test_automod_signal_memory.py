@@ -1,6 +1,6 @@
 """Phase 1, Task 3: learning a new fact (memory add/replace) wakes the
 cognitive evolution loop; read/remove do not."""
-from pipeline.automod import signal
+from pipeline.automod import experience_signal as signal
 from tools import memory
 
 

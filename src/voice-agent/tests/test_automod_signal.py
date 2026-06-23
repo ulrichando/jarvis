@@ -5,7 +5,7 @@ Async tests use asyncio.run() inside sync test fns — the repo convention
 """
 import asyncio
 
-from pipeline.automod import signal
+from pipeline.automod import experience_signal as signal
 
 
 def test_bump_records_reasons_and_sets_event():

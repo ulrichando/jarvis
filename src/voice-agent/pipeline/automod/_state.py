@@ -51,6 +51,33 @@ def set_evolution_paused(paused: bool) -> bool:
     return paused
 
 
+def auto_flag_path() -> Path:
+    """Presence enables AUTO mode: the cycle timer runs self-assessment →
+    queue → build → review automatically. Absent = MANUAL (user drives via
+    Build it / Run cycle)."""
+    return _automod_home() / ".evolution-auto"
+
+
+def is_auto_mode() -> bool:
+    return auto_flag_path().exists()
+
+
+def set_auto_mode(on: bool) -> bool:
+    p = auto_flag_path()
+    if on:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("auto\n", encoding="utf-8")
+    else:
+        p.unlink(missing_ok=True)
+    return on
+
+
+def cycle_marker_path() -> Path:
+    """PID marker for a running build cycle — prevents the auto timer from
+    starting a second overlapping cycle."""
+    return _automod_home() / ".cycle-running"
+
+
 def artifact_path(automod_id: str) -> Path:
     return _automod_home() / f"{automod_id}.json"
 
