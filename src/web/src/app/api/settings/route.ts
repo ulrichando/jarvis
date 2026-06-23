@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { loadSettings, redactForClient, saveSettings } from "@/lib/settings/store";
 import { DEFAULT_SETTINGS, settingsSchema } from "@/lib/settings/schema";
+import { baseURLSchema } from "@/lib/settings/base-url";
 
 export const runtime = "nodejs";
 
@@ -17,7 +18,7 @@ export async function GET() {
 const providerPatchSchema = z
   .object({
     apiKey: z.string().or(z.null()).optional(),
-    baseURL: z.string().or(z.null()).optional(),
+    baseURL: baseURLSchema,
   })
   .optional();
 
@@ -66,7 +67,7 @@ const patchSchema = z.object({
   connections: z
     .object({
       ollama: z
-        .object({ baseURL: z.string().or(z.null()).optional() })
+        .object({ baseURL: baseURLSchema })
         .partial()
         .optional(),
     })
