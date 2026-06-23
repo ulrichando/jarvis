@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -16,6 +17,14 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("jarvis.telemetry")
+
+# Spec B (Plane 3) — lightweight regex that flags obvious user corrections
+# for the automod pattern detector. Liberal-by-design: false positives cost
+# nothing (≥3-occurrence threshold + manual review filter them out).
+_CORRECTION_RE = re.compile(
+    r"(?i)\b(stop\s+\w+|don'?t\s+\w+|too\s+\w+|just\s+give\s+me|"
+    r"i\s+already\s+said\s+\w+|never\s+(?:say|do)\s+\w+)"
+)
 
 # Throttle counter for log_turn write failures: log the first one loudly,
 # then every 100th, so a persistent fault (disk full, locked DB) surfaces
@@ -496,6 +505,26 @@ def _self_rss_mb() -> Optional[float]:
         return None
 
 
+_CONFAB_BAD_STATES = {"hedged_no_evidence", "retry_factory_missing"}
+
+
+def _maybe_signal_evolution(correction_signal, confab_check_state) -> None:
+    """Wake the cognitive evolution loop (pipeline.automod.signal) when a turn
+    carried a bug/correction — a correction_signal or a bad confab_check_state.
+    Best-effort; never raises into the telemetry write. Phase 1, 2026-06-23."""
+    try:
+        reason = None
+        if correction_signal:
+            reason = f"correction:{str(correction_signal)[:80]}"
+        elif confab_check_state in _CONFAB_BAD_STATES:
+            reason = f"confab:{confab_check_state}"
+        if reason:
+            from pipeline.automod import signal as _signal
+            _signal.bump(reason)
+    except Exception:
+        pass
+
+
 def log_turn(
     *,
     db_path: Path = DEFAULT_DB_PATH,
@@ -577,6 +606,16 @@ def log_turn(
     on clean turns or when the kill switch was set.
     """
     try:
+        # Spec B (Plane 3) — extract correction signal from user text
+        # for the automod pattern detector. Computed here (inside log_turn)
+        # because autonomous_review_turn passes turn_id=0 (live turn without
+        # a DB row), so its UPDATE was silently a no-op on every turn.
+        _corr_signal = None
+        if user_text:
+            _cm = _CORRECTION_RE.search(user_text)
+            if _cm:
+                _corr_signal = _cm.group(0).strip().lower()
+
         with sqlite3.connect(db_path) as conn:
             conn.execute(
                 """INSERT INTO turns
@@ -593,8 +632,8 @@ def log_turn(
                     aec_layer1_active, aec_layer2_aec_active, aec_layer3_active,
                     output_profile, apm_delay_ms_p50, dtln_latency_ms_p95,
                     subagent_type, subagent_ms, subagent_status,
-                    user_lang, rss_mb)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    user_lang, rss_mb, correction_signal)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     ts_utc or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     user_text, jarvis_text, emotion, route, llm_used,
@@ -612,8 +651,12 @@ def log_turn(
                     output_profile, apm_delay_ms_p50, dtln_latency_ms_p95,
                     subagent_type, subagent_ms, subagent_status,
                     user_lang, _self_rss_mb(),
+                    _corr_signal,
                 ),
             )
+        # Phase 1 cognitive loop: wake the evolution loop if this turn carried a
+        # bug/correction signal. After the row is written; never blocks it.
+        _maybe_signal_evolution(_corr_signal, confab_check_state)
     except Exception as e:
         global _log_turn_fail_count
         _log_turn_fail_count += 1
