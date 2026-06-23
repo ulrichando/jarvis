@@ -53,6 +53,22 @@ def pytest_configure(config) -> None:
     # consolidator use monkeypatch.setenv("JARVIS_MEMORY_CONSOLIDATOR", "1").
     os.environ.setdefault("JARVIS_MEMORY_CONSOLIDATOR", "0")
 
+    # Strip the auto-mod build wrapper's injected env vars before the suite runs.
+    # A build runs THIS suite (the agent's pre-commit run + finalize's re-run)
+    # with JARVIS_AUTOMOD_BASE_REF pinned to the worktree's base SHA (+ worktree
+    # paths). Those must NOT leak into the finalize/revert tests: they call
+    # finalize_branch(), which would resolve the diff base to a SHA absent from
+    # their tmp repos → 'failed' instead of 'pending'. Live 2026-06-23: every
+    # build's own pytest run went red on 6 finalize tests → the agent refused to
+    # commit → no_commit_landed. Popping here (not the separate finalize process)
+    # isolates the tests while leaving the real build's finalize env intact.
+    for _var in (
+        "JARVIS_AUTOMOD_BASE_REF", "JARVIS_AUTOMOD_REPO_ROOT",
+        "JARVIS_AUTOMOD_TOOLING_ROOT", "JARVIS_AUTOMOD_SKIP_BASE_FETCH",
+        "JARVIS_AUTOMOD_BUILD_MODEL", "JARVIS_AUTOMOD_NO_NETWORK",
+    ):
+        os.environ.pop(_var, None)
+
     # Hermetic suite: live per-machine runtime state must never reach
     # prompt-shape assertions. A developer's ~/.jarvis/SOUL.md override
     # replaces the entire 18-section persona (so soul-parity tests would
