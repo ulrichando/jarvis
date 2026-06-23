@@ -162,10 +162,10 @@ describe('Gemini upstream model rename (Fix 5)', () => {
   beforeAll(() => { process.env.GEMINI_API_KEY = 'test-gemini' })
 
   test.each([
-    ['gemini-flash', 'gemini-2.5-flash'],
-    ['gemini-2.0-flash', 'gemini-2.5-flash'],
-    ['gemini-pro', 'gemini-2.5-pro'],
-    ['gemini-2.5-pro', 'gemini-2.5-pro'],
+    ['gemini-flash', 'gemini-3.5-flash'],
+    ['gemini-2.0-flash', 'gemini-3.5-flash'],
+    ['gemini-pro', 'gemini-pro-latest'],
+    ['gemini-2.5-pro', 'gemini-pro-latest'],
   ] as const)('jarvis id %s now resolves to upstream %s', (jarvisId, expectedUpstream) => {
     const p = getProviderForModel(jarvisId)!
     expect(p.model).toBe(expectedUpstream)
@@ -198,8 +198,10 @@ describe('Gemini 2.5 Pro & GPT-5 hidden-reasoning floor (Fix 6)', () => {
     expect(actual).toBe(expectedMax)
   })
 
-  test('gpt-5.1 keeps the client max_completion_tokens (no floor needed)', () => {
-    const p = getProviderForModel('gpt-5.1')!
+  test('gpt-5 chat-latest variant (non-reasoning) keeps the client max_completion_tokens', () => {
+    // gpt-5.1 now routes to gpt-5.5-pro (a reasoning model → floored). The
+    // non-reasoning case is the chat-latest variant, which must NOT be floored.
+    const p = getProviderForModel('gpt-5.1-chat-latest')!
     const out = convertRequest(
       { messages: [{ role: 'user', content: 'hi' }], max_tokens: 30 },
       p,
@@ -207,7 +209,7 @@ describe('Gemini 2.5 Pro & GPT-5 hidden-reasoning floor (Fix 6)', () => {
     expect(out.max_completion_tokens).toBe(30)
   })
 
-  test('gemini-flash (2.5-flash upstream) keeps client max_tokens (no floor needed)', () => {
+  test('gemini-flash (3.5-flash upstream) keeps client max_tokens (no floor needed)', () => {
     const p = getProviderForModel('gemini-flash')!
     const out = convertRequest(
       { messages: [{ role: 'user', content: 'hi' }], max_tokens: 30 },

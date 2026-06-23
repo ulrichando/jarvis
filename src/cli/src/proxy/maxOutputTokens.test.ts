@@ -76,10 +76,10 @@ describe('maxOutputTokens — per-model overrides (stricter than provider defaul
     ).toBe(8192)
   })
 
-  test('claude-opus-4-7 → 128K (Anthropic provider default 64K → overridden upward)', () => {
-    // Per Anthropic docs, Opus 4.7 supports 128K output (vs Sonnet 4.6 /
+  test('claude-opus-4-8 → 128K (Anthropic provider default 64K → overridden upward)', () => {
+    // Per Anthropic docs, Opus 4.8 supports 128K output (vs Sonnet 4.6 /
     // Haiku 4.5 at 64K). METADATA-only since Anthropic uses passthrough,
     // but kept accurate for any future UI surfacing of model capabilities.
-    expect(getProviderForModel('claude-opus-4-7')?.maxOutputTokens).toBe(131072)
+    expect(getProviderForModel('claude-opus-4-8')?.maxOutputTokens).toBe(131072)
   })
 })

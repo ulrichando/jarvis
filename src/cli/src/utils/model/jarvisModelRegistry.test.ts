@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   getJarvisModel,
+  getJarvisModelCapabilityOverride,
   getJarvisModels,
 } from './jarvisModelRegistry.js'
 
@@ -91,5 +92,41 @@ describe('jarvisModelRegistry — supportsVision', () => {
       .sort()
     const expected = [...VISION_CAPABLE_MODELS].sort()
     expect(flagged).toEqual(expected)
+  })
+})
+
+describe('jarvisModelRegistry — thinking capability override', () => {
+  // Regression: Anthropic tiers are declared `adaptive_thinking` (not the
+  // literal `thinking`). modelSupportsThinking() queries `thinking`; if the
+  // override returns false here, the CLI omits the `thinking` param but still
+  // attaches clear_thinking → every Claude request 400s. adaptive/interleaved
+  // thinking MUST imply base thinking support.
+  test.each(['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'])(
+    'adaptive-thinking model %s reports the `thinking` capability',
+    (modelId) => {
+      expect(getJarvisModel(modelId)).not.toBeNull()
+      expect(getJarvisModelCapabilityOverride(modelId, 'thinking')).toBe(true)
+    },
+  )
+
+  test('non-thinking capabilities are still answered literally', () => {
+    // haiku-4-5 has adaptive_thinking but NOT effort — must stay false.
+    expect(getJarvisModelCapabilityOverride('claude-haiku-4-5', 'effort')).toBe(
+      false,
+    )
+    expect(getJarvisModelCapabilityOverride('claude-opus-4-8', 'effort')).toBe(
+      true,
+    )
+  })
+
+  test('unknown model returns undefined (no override)', () => {
+    expect(
+      getJarvisModelCapabilityOverride('totally-made-up-model', 'thinking'),
+    ).toBeUndefined()
+  })
+
+  test('Opus is on 4.8, not the retired 4.7 id', () => {
+    expect(getJarvisModel('claude-opus-4-8')).toBeDefined()
+    expect(getJarvisModel('claude-opus-4-7')).toBeUndefined()
   })
 })

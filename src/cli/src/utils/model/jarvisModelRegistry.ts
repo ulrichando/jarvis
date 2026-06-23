@@ -114,7 +114,7 @@ const JARVIS_PROVIDER_DEFINITIONS: Record<
   openai: {
     baseUrl: 'https://api.openai.com/v1',
     apiKeyEnvVar: 'OPENAI_API_KEY',
-    defaultModel: 'gpt-4o',
+    defaultModel: 'gpt-5',
     supportsToolChoice: true,
     // 32K — GPT-5 family supports up to 128K per OpenAI's per-model
     // docs; 32K doubles the GPT-5 reasoning headroom without going to
@@ -169,7 +169,7 @@ const JARVIS_PROVIDER_DEFINITIONS: Record<
     // The registry value here aligns with that cap for accuracy +
     // future-proofing if the architecture changes. Bumped from 32K on
     // 2026-05-27 to match the CLI's own UPPER_LIMIT and Anthropic's
-    // documented 64K output cap for Sonnet 4.6 / Haiku 4.5 (Opus 4.7
+    // documented 64K output cap for Sonnet 4.6 / Haiku 4.5 (Opus 4.8
     // can do 128K natively but the CLI clamps to 64K anyway).
     baseUrl: 'https://api.anthropic.com/v1',
     apiKeyEnvVar: 'ANTHROPIC_API_KEY',
@@ -181,25 +181,31 @@ const JARVIS_PROVIDER_DEFINITIONS: Record<
 }
 
 const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
+  // DeepSeek retired `deepseek-chat` / `deepseek-reasoner` on current API
+  // keys (verified GET /models 2026-06-23 — only v4-pro / v4-flash remain;
+  // the old ids 404). Kept as HIDDEN aliases — they're still referenced by
+  // modelCost.ts, model.tsx, and several proxy tests — but repointed to the
+  // live v4 models so anything hitting them 200s instead of 404ing, and
+  // dropped from the /model picker.
   {
     id: 'deepseek-chat',
     label: 'DeepSeek Chat',
-    description: 'Default fast model',
+    description: 'Alias → DeepSeek V4 Flash',
     provider: 'deepseek',
-    upstreamModel: 'deepseek-chat',
+    upstreamModel: 'deepseek-v4-flash',
     tiers: ['default', 'balanced'],
     capabilities: ['effort'],
-    visibleInPicker: true,
+    visibleInPicker: false,
   },
   {
     id: 'deepseek-reasoner',
     label: 'DeepSeek Reasoner',
-    description: 'R1 · Complex reasoning',
+    description: 'Alias → DeepSeek V4 Pro',
     provider: 'deepseek',
-    upstreamModel: 'deepseek-reasoner',
+    upstreamModel: 'deepseek-v4-pro',
     tiers: ['reasoning'],
     capabilities: ['effort'],
-    visibleInPicker: true,
+    visibleInPicker: false,
   },
   {
     id: 'deepseek-v4-flash',
@@ -224,6 +230,10 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     fallback: ['deepseek-v4-flash', 'qwen/qwen3-32b'],
   },
   {
+    // The newer qwen3.6-27b is BLOCKED at this Groq org (403
+    // model_permission_blocked_org, verified live 2026-06-23) — enable it at
+    // console.groq.com/settings/limits, then bump upstreamModel to
+    // 'qwen/qwen3.6-27b'. Until then, stay on the working qwen3-32b.
     id: 'qwen/qwen3-32b',
     label: 'Groq Qwen3 32B',
     description: 'Primary · Best for everyday tasks',
@@ -280,17 +290,18 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     capabilities: ['effort', 'max_effort'],
     visibleInPicker: true,
   },
-  // Gemini upstream ids verified live 2026-05-27 via
-  // `GET /v1beta/openai/models`. `gemini-2.0-flash` is retired for
-  // new API keys; both jarvis-side flash aliases now route to
-  // `gemini-2.5-flash`. `gemini-2.5-pro-preview-03-25` was never on
-  // the OpenAI-compat endpoint — the stable id is just `gemini-2.5-pro`.
+  // Gemini upstream ids re-verified live 2026-06-23 against the OpenAI-compat
+  // endpoint the proxy actually uses. Flash → gemini-3.5-flash (stable,
+  // verified 200). Pro → gemini-pro-latest alias: the pinned
+  // gemini-3-pro-preview already returns "no longer available", so the moving
+  // alias avoids re-breaking on the next preview rotation. jarvis-side ids
+  // ('gemini-flash'/'gemini-pro'/etc.) are kept stable; only the upstream moves.
   {
     id: 'gemini-flash',
     label: 'Gemini Flash',
-    description: 'Gemini 2.5 Flash',
+    description: 'Gemini 3.5 Flash',
     provider: 'gemini',
-    upstreamModel: 'gemini-2.5-flash',
+    upstreamModel: 'gemini-3.5-flash',
     tiers: ['fast'],
     capabilities: [],
     supportsVision: true,
@@ -299,9 +310,9 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
   {
     id: 'gemini-2.0-flash',
     label: 'Gemini Flash',
-    description: 'Gemini 2.5 Flash (jarvis id retained for back-compat)',
+    description: 'Gemini 3.5 Flash (jarvis id retained for back-compat)',
     provider: 'gemini',
-    upstreamModel: 'gemini-2.5-flash',
+    upstreamModel: 'gemini-3.5-flash',
     tiers: ['fast'],
     capabilities: [],
     supportsVision: true,
@@ -310,9 +321,9 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
   {
     id: 'gemini-pro',
     label: 'Gemini Pro',
-    description: 'Gemini 2.5 Pro',
+    description: 'Gemini Pro (latest)',
     provider: 'gemini',
-    upstreamModel: 'gemini-2.5-pro',
+    upstreamModel: 'gemini-pro-latest',
     tiers: ['reasoning'],
     capabilities: [],
     supportsVision: true,
@@ -321,9 +332,9 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
   {
     id: 'gemini-2.5-pro',
     label: 'Gemini Pro',
-    description: 'Gemini 2.5 Pro',
+    description: 'Gemini Pro latest (jarvis id retained for back-compat)',
     provider: 'gemini',
-    upstreamModel: 'gemini-2.5-pro',
+    upstreamModel: 'gemini-pro-latest',
     tiers: ['reasoning'],
     capabilities: [],
     supportsVision: true,
@@ -362,22 +373,24 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
   // downgrades 'max' → 'high' for any model without `max_effort` capability,
   // which is correct for OpenAI: 'high' is the strongest tier the API accepts.
   // Voice tray (voice_client_tray_config.py) advertises the same five IDs.
+  // 2026-06-23: upstreams bumped to the 5.4 line (verified GET /models) — the
+  // jarvis-side IDs stay stable so the voice tray + vision tests keep resolving.
   {
     id: 'gpt-5-nano',
-    label: 'OpenAI GPT-5 Nano',
-    description: 'GPT-5 nano · cheapest, fastest',
+    label: 'OpenAI GPT-5.4 Nano',
+    description: 'GPT-5.4 nano · cheapest, fastest',
     provider: 'openai',
-    upstreamModel: 'gpt-5-nano',
+    upstreamModel: 'gpt-5.4-nano',
     tiers: ['fast'],
     capabilities: ['effort'],
     visibleInPicker: false,
   },
   {
     id: 'gpt-5-mini',
-    label: 'OpenAI GPT-5 Mini',
-    description: 'GPT-5 mini · balanced cost vs. quality',
+    label: 'OpenAI GPT-5.4 Mini',
+    description: 'GPT-5.4 mini · balanced cost vs. quality',
     provider: 'openai',
-    upstreamModel: 'gpt-5-mini',
+    upstreamModel: 'gpt-5.4-mini',
     tiers: ['balanced', 'fast'],
     capabilities: ['effort'],
     supportsVision: true,
@@ -385,16 +398,20 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
   },
   {
     id: 'gpt-5',
-    label: 'OpenAI GPT-5',
-    description: 'GPT-5 · reasoning + general purpose',
+    label: 'OpenAI GPT-5.4',
+    description: 'GPT-5.4 · reasoning + general purpose',
     provider: 'openai',
-    upstreamModel: 'gpt-5',
+    upstreamModel: 'gpt-5.4',
     tiers: ['reasoning', 'balanced'],
     capabilities: ['effort'],
     supportsVision: true,
     visibleInPicker: true,
   },
   {
+    // gpt-5.5-pro / gpt-5.4-pro are Responses-API only (404 on /chat/completions
+    // through the proxy, verified live 2026-06-23), so the reasoning flagship
+    // stays on the working gpt-5.1. gpt-5 above already serves the latest
+    // gpt-5.4 for general use.
     id: 'gpt-5.1',
     label: 'OpenAI GPT-5.1',
     description: 'GPT-5.1 · adaptive reasoning',
@@ -407,10 +424,10 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
   },
   {
     id: 'gpt-5.1-chat-latest',
-    label: 'OpenAI GPT-5.1 Chat',
-    description: 'GPT-5.1 chat variant · non-reasoning',
+    label: 'OpenAI GPT-5.3 Chat',
+    description: 'GPT-5.3 chat variant · non-reasoning',
     provider: 'openai',
-    upstreamModel: 'gpt-5.1-chat-latest',
+    upstreamModel: 'gpt-5.3-chat-latest',
     tiers: ['balanced'],
     capabilities: [],
     visibleInPicker: false,
@@ -498,14 +515,14 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
   // heuristic in utils/effort.ts (which excludes anything matching
   // 'haiku'/'sonnet'/'opus' for non-1P).
   {
-    id: 'claude-opus-4-7',
-    label: 'Claude Opus 4.7',
-    description: 'Opus 4.7 with 1M context · Most capable for complex work',
+    id: 'claude-opus-4-8',
+    label: 'Claude Opus 4.8',
+    description: 'Opus 4.8 with 1M context · Most capable for complex work',
     provider: 'anthropic',
-    upstreamModel: 'claude-opus-4-7',
+    upstreamModel: 'claude-opus-4-8',
     tiers: ['reasoning', 'long_context', 'orchestration'],
     capabilities: ['adaptive_thinking', 'effort', 'max_effort'],
-    // Opus 4.7's published max_output is 128K per Anthropic's models
+    // Opus 4.8's published max_output is 128K per Anthropic's models
     // overview (https://platform.claude.com/docs/en/about-claude/models/overview).
     // Sonnet 4.6 + Haiku 4.5 cap at 64K (Anthropic provider default).
     // METADATA only — the proxy uses passthrough for Anthropic, so the
@@ -715,6 +732,19 @@ export function getJarvisModelCapabilityOverride(
   const entry = getJarvisModel(model)
   if (!entry) {
     return undefined
+  }
+  // Adaptive/interleaved thinking both imply base thinking support.
+  // modelSupportsThinking() queries the literal 'thinking' capability, so a
+  // model declared only as 'adaptive_thinking' must still answer true here —
+  // otherwise the thinking param is dropped while clear_thinking is still
+  // attached, and Anthropic 400s the whole request.
+  if (capability === 'thinking') {
+    return entry.capabilities.some(
+      c =>
+        c === 'thinking' ||
+        c === 'adaptive_thinking' ||
+        c === 'interleaved_thinking',
+    )
   }
   return entry.capabilities.includes(capability)
 }

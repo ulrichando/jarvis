@@ -27,7 +27,10 @@ import { has1mContext } from './context.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
-import { getAPIProvider } from './model/providers.js'
+import {
+  getAPIProvider,
+  isFirstPartyAnthropicBaseUrl,
+} from './model/providers.js'
 import { getInitialSettings } from './settings/settings.js'
 
 /**
@@ -227,6 +230,12 @@ export function shouldIncludeFirstPartyOnlyBetas(): boolean {
 export function shouldUseGlobalCacheScope(): boolean {
   return (
     getAPIProvider() === 'firstParty' &&
+    // Global (cross-user) system-prompt cache only exists on real
+    // api.anthropic.com. Through a proxy (e.g. the jarvis :4000 proxy,
+    // ANTHROPIC_BASE_URL=localhost) it yields no shared cache AND emits
+    // cache_control.scope:"global" on the system block, which 400s
+    // whenever tool definitions render before it ("not a true prefix").
+    isFirstPartyAnthropicBaseUrl() &&
     !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)
   )
 }

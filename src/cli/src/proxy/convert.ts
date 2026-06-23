@@ -450,10 +450,19 @@ function resolveDeepSeekThinking(
 function usesHiddenReasoning(provider: Provider): boolean {
   if (provider.model.includes('gpt-oss')) return true
   if (provider.name === 'kimi') return true
-  // OpenAI GPT-5, GPT-5-mini, GPT-5-nano (exclude gpt-5.1 + later)
-  if (provider.name === 'openai' && /^gpt-5(-mini|-nano)?$/.test(provider.model)) return true
-  // Google Gemini 2.5 Pro (hidden thinking; the flash variants don't)
-  if (provider.name === 'gemini' && provider.model.startsWith('gemini-2.5-pro')) return true
+  // OpenAI GPT-5 reasoning family (gpt-5, 5.x, -mini, -nano, -pro): hidden
+  // chain-of-thought eats the response budget. Version-agnostic so model
+  // bumps don't silently drop the floor. The non-reasoning chat variants
+  // (…-chat-latest) don't hide reasoning, so exclude them.
+  if (
+    provider.name === 'openai' &&
+    provider.model.startsWith('gpt-5') &&
+    !provider.model.includes('chat')
+  ) {
+    return true
+  }
+  // Google Gemini Pro tiers (2.5-pro, 3-pro, …) hide thinking; flash doesn't.
+  if (provider.name === 'gemini' && provider.model.includes('-pro')) return true
   return false
 }
 

@@ -1629,9 +1629,13 @@ async function* queryModel(
       }
     }
 
-    // Get API context management strategies if enabled
+    // Get API context management strategies if enabled.
+    // Gate clear_thinking on the ACTUAL thinking param we ship, not the
+    // hasThinking intent flag: modelSupportsThinking() can drop `thinking`
+    // (e.g. a registry capability gap) while hasThinking stays true, and
+    // clear_thinking without thinking is a hard 400 from Anthropic.
     const contextManagement = getAPIContextManagement({
-      hasThinking,
+      hasThinking: thinking !== undefined,
       isRedactThinkingActive: betasParams.includes(REDACT_THINKING_BETA_HEADER),
       clearAllThinking: thinkingClearLatched,
     })
