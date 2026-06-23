@@ -42,6 +42,17 @@ def is_available() -> bool:
 # ── Tool handler ──────────────────────────────────────────────────────
 
 
+def _signal_new_fact(action: str) -> None:
+    """Wake the cognitive evolution loop when JARVIS learns a new fact. Only
+    add/replace count (read/remove aren't 'learning'). Never raises. 2026-06-23."""
+    try:
+        if str(action) in ("add", "replace"):
+            from pipeline.automod import signal as _signal
+            _signal.bump(f"fact:memory_{action}")
+    except Exception:
+        pass
+
+
 def _handle_memory(args: dict) -> str:
     """Dispatch a ``memory`` tool call to the file-backed store.
 
@@ -91,6 +102,9 @@ def _handle_memory(args: dict) -> str:
         msg = result.get("message") or result.get("error")
         if msg:
             logger.info("[memory] %s %s → %s", action, target, msg)
+        # Phase 1: a successful new fact wakes the cognitive evolution loop.
+        if not result.get("error"):
+            _signal_new_fact(action)
     return json.dumps(result, ensure_ascii=False)
 
 
