@@ -541,9 +541,15 @@ class ClientState:
     # POST /screen-share. UI uses this to render a "sharing screen"
     # indicator next to the mute pill.
     sharing_screen: bool = False
-    # Active TTS provider spec (e.g., "groq:troy").
-    # Read from TTS_PROVIDER_FILE on every /status hit.
+    # Active TTS provider spec (e.g., "groq:troy" or "kokoro:af_heart").
+    # Read from TTS_PROVIDER_FILE on every /status hit, then corrected to the
+    # actual on-device engine via active_tts_provider() when a local override
+    # is set (so the tray never shows Orpheus while Kokoro is speaking).
     tts_provider:  str = ""
+    # Active STT engine actually transcribing (e.g. "faster-whisper:large-v3-turbo
+    # (local)"). DISTINCT from speech_model, which is the reply LLM, not the
+    # transcriber. Set in /status from active_stt_engine().
+    stt_engine:    str = ""
     # Informative only — lets the UI show "jarvis@ws://..." if it
     # wants. Populated once on connect.
     url:           Optional[str] = None

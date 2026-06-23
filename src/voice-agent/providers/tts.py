@@ -422,6 +422,23 @@ def build_dispatching_tts() -> DispatchingTTS:
     )
     if _local_primary:
         logger.info("[dispatch] JARVIS_LOCAL_TTS_PRIMARY=1 — local TTS promoted to primary on all routes")
+    # Strict local: JARVIS_LOCAL_TTS_ONLY=1 drops EVERY cloud/network rung
+    # (Orpheus AND Edge-TTS) so TTS is 100% on-device — the mirror of the STT
+    # JARVIS_STT_LOCAL_ONLY policy. A local-engine failure then has NO fallback
+    # (loud: logged below + silence), which is the deliberate "strictly local"
+    # trade the user chose. No-op unless the local rung built. Implies local-first.
+    _local_only = (
+        os.environ.get("JARVIS_LOCAL_TTS_ONLY", "0") == "1"
+        and _local_fallback is not None
+    )
+    if _local_only:
+        _local_primary = True
+        _only_engine = os.environ.get("JARVIS_LOCAL_TTS_ENGINE", "piper").strip() or "piper"
+        logger.warning(
+            "[dispatch] JARVIS_LOCAL_TTS_ONLY=1 — cloud TTS fallback removed "
+            "(Orpheus + Edge dropped); on-device %s only. A local-engine failure "
+            "has NO fallback by design.", _only_engine,
+        )
 
     inners: dict[str, object] = {}
     fallback = None
@@ -432,6 +449,11 @@ def build_dispatching_tts() -> DispatchingTTS:
         (Orpheus/EL intermittent) or the network is down, the next rung
         takes over. Preserves the .voice_id attribute the DispatchingTTS
         exposes for telemetry."""
+        if _local_only:
+            # Strict local: ignore the cloud `primary`; return the on-device
+            # TTS alone (no FallbackAdapter → no Orpheus, no Edge). Shared
+            # across all four routes, same as the local fallback already is.
+            return _local_fallback
         rungs = [primary]
         if _edge_fallback is not None:
             rungs.append(_edge_fallback)
@@ -489,15 +511,21 @@ def build_dispatching_tts() -> DispatchingTTS:
     # used by DispatchingTTS.pick(route, lang='fr') regardless of
     # route. Defaults to fr-FR-HenriNeural (male, standard French);
     # override via JARVIS_FR_EDGE_VOICE.
-    fr_voice = os.environ.get("JARVIS_FR_EDGE_VOICE", "fr-FR-HenriNeural")
-    try:
-        _fr_inner = edge_tts_plugin.EdgeTTS(voice=fr_voice)
-        _fr_inner.voice_id = f"edge:{fr_voice[:18]}…"
-    except Exception as e:
-        logger.warning(
-            f"[dispatch] French edge_tts construction failed ({e}); "
-            f"fr will fall back to English chain"
-        )
+    if _local_only:
+        # French EdgeTTS is Microsoft cloud — dropped under strict-local. The
+        # 'fr' pick falls back to the on-device English chain (af_heart reading
+        # French) rather than reaching the network.
         _fr_inner = None
+    else:
+        fr_voice = os.environ.get("JARVIS_FR_EDGE_VOICE", "fr-FR-HenriNeural")
+        try:
+            _fr_inner = edge_tts_plugin.EdgeTTS(voice=fr_voice)
+            _fr_inner.voice_id = f"edge:{fr_voice[:18]}…"
+        except Exception as e:
+            logger.warning(
+                f"[dispatch] French edge_tts construction failed ({e}); "
+                f"fr will fall back to English chain"
+            )
+            _fr_inner = None
 
     return DispatchingTTS(inners=inners, fallback=fallback, fr_inner=_fr_inner)

@@ -54,6 +54,8 @@ from voice_client_tray_config import (
     TTS_PROVIDERS_AVAILABLE,
     TOOL_BUSY_FILE,
     SILENT_MODE_FILE,
+    active_stt_engine,
+    active_tts_provider,
     agent_is_thinking,
     read_cli_model,
     read_speech_model,
@@ -272,6 +274,15 @@ class VoiceClientHttpApi:
             except Exception:
                 _kv = ""
             self.state.tts_provider = "kokoro:" + (_kv or "af_heart")
+        # AgentSession pipeline path: the JARVIS_LOCAL_TTS_PRIMARY/ONLY env flags
+        # force on-device Kokoro regardless of the cloud tray pick, so report the
+        # REAL engine — otherwise /status keeps showing groq:troy while Kokoro is
+        # actually speaking (the 2026-06-22 "tts not local?" label bug). No-op
+        # when no local override is set (returns the file pick unchanged).
+        self.state.tts_provider = active_tts_provider(self.state.tts_provider)
+        # STT engine actually transcribing (distinct from the reply-LLM
+        # speech_model): faster-whisper local when the STT flags are set.
+        self.state.stt_engine = active_stt_engine()
         # Cheap stat call — flag file is touched/removed by the agent's
         # tool wrappers around every run_jarvis_cli call.
         self.state.tool_running  = TOOL_BUSY_FILE.exists()
@@ -768,9 +779,21 @@ class VoiceClientHttpApi:
                 current = TTS_PROVIDER_FILE.read_text(encoding="utf-8").strip()
             except FileNotFoundError:
                 current = ""
+            # Correct the legacy file pick to the engine ACTUALLY in effect
+            # (Kokoro/Piper when the local override is set) and surface it in the
+            # `available` map so the tray shows the truth, not the Orpheus pick.
+            active = active_tts_provider(current)
+            available = dict(TTS_PROVIDERS_AVAILABLE)
+            if active and active not in available:
+                if active.startswith("kokoro:"):
+                    available[active] = f"Kokoro · {active.split(':', 1)[1]} (local)"
+                elif active.endswith(":local"):
+                    available[active] = f"{active.split(':', 1)[0].capitalize()} (local)"
+                else:
+                    available[active] = active
             return web.json_response({
-                "provider":  current,
-                "available": TTS_PROVIDERS_AVAILABLE,
+                "provider":  active,
+                "available": available,
             }, headers=cors)
 
         # POST

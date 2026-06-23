@@ -29,6 +29,7 @@ of the audit).
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -54,6 +55,8 @@ __all__ = [
     # Helpers
     "default_tts_provider",
     "ensure_tts_provider_file",
+    "active_tts_provider",
+    "active_stt_engine",
     "read_speech_model",
     "read_cli_model",
     "agent_is_thinking",
@@ -190,6 +193,46 @@ def ensure_tts_provider_file() -> None:
     if not TTS_PROVIDER_FILE.exists():
         TTS_PROVIDER_FILE.parent.mkdir(parents=True, exist_ok=True)
         TTS_PROVIDER_FILE.write_text(default_tts_provider() + "\n", encoding="utf-8")
+
+
+def active_tts_provider(current: str) -> str:
+    """The TTS provider/engine ACTUALLY in effect.
+
+    The legacy tray switcher writes a cloud pick (e.g. ``groq:troy``) to
+    ``TTS_PROVIDER_FILE``, but the AgentSession pipeline overrides it on-device
+    when ``JARVIS_LOCAL_TTS_PRIMARY`` / ``JARVIS_LOCAL_TTS_ONLY`` is set (Kokoro
+    actually speaks). Report what's TRUE so the tray doesn't show Orpheus while
+    Kokoro is live — the 2026-06-22 "tts not local?" label bug. ``current`` is
+    the legacy file/tray selection, returned unchanged when no override is on.
+    """
+    if (os.environ.get("JARVIS_LOCAL_TTS_PRIMARY") == "1"
+            or os.environ.get("JARVIS_LOCAL_TTS_ONLY") == "1"):
+        engine = (os.environ.get("JARVIS_LOCAL_TTS_ENGINE") or "kokoro").strip() or "kokoro"
+        if engine == "kokoro":
+            voice = (os.environ.get("JARVIS_LOCAL_TTS_VOICE") or "af_heart").strip() or "af_heart"
+            return f"kokoro:{voice}"
+        return f"{engine}:local"
+    return current
+
+
+def active_stt_engine() -> str:
+    """The STT engine ACTUALLY in effect — distinct from ``speech_model``,
+    which is the reply LLM, not the transcriber. faster-whisper on-device when
+    the local STT env flags are set (``JARVIS_LOCAL_STT_PRIMARY`` /
+    ``JARVIS_STT_LOCAL_ONLY``); otherwise the active cloud STT. Lets the tray
+    show that STT is local (it had no STT label before — part of the same bug)."""
+    if (os.environ.get("JARVIS_LOCAL_STT_PRIMARY") == "1"
+            or os.environ.get("JARVIS_STT_LOCAL_ONLY") == "1"):
+        model = (os.environ.get("JARVIS_LOCAL_STT_MODEL") or "large-v3-turbo").strip() or "large-v3-turbo"
+        # faster-whisper drops the family prefix (its model id is e.g.
+        # "large-v3-turbo"); show the familiar "whisper-…" spelling so the label
+        # matches the Groq model id (whisper-large-v3-turbo) — same model, local.
+        if not model.startswith("whisper"):
+            model = f"whisper-{model}"
+        return f"{model} (local)"
+    if os.environ.get("JARVIS_DEEPGRAM_DISABLED") == "1" or not os.environ.get("DEEPGRAM_API_KEY"):
+        return "groq:whisper-large-v3-turbo"
+    return "deepgram:nova-3"
 
 
 # ── State flag files (set/cleared by jarvis_agent) ──────────────────
