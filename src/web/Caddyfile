@@ -13,9 +13,10 @@
 	# /code terminal websocket → the pty-server (8772). Routed through Caddy so
 	# it rides TLS + Cloudflare Access instead of being a raw exposed port. Set
 	# NEXT_PUBLIC_PTY_URL=wss://$JARVIS_DOMAIN/pty at BUILD time so the browser
-	# uses this path. NOTE: the pty socket is currently UNAUTHENTICATED — Access
-	# + the app login are the gate; adding per-session auth to the pty is a
-	# pending hardening (see docs/runbook/deploy-online.md).
+	# uses this path. The pty socket now requires a per-session HS256 token in
+	# its init frame (minted by /api/workspace/[id]/pty-token, behind the app
+	# auth; JARVIS_PTY_REQUIRE_AUTH=1 in compose) — so Access + app login + the
+	# socket token are three independent layers, not one.
 	@pty path /pty /pty/*
 	reverse_proxy @pty web:8772
 

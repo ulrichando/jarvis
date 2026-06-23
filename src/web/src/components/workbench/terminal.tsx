@@ -60,11 +60,32 @@ export function WorkbenchTerminal({ workspaceId }: Props) {
     let hintShown = false;
     let ws: WebSocket | null = null;
 
-    const connect = () => {
+    // Per-session credential for the PTY socket. Same-origin POST → the cookie
+    // carries the app session, which the /api/* gate authenticates. Best-effort:
+    // a loopback/dev sidecar doesn't require it, so a fetch failure still lets
+    // the terminal connect (the sidecar is the one that enforces). Re-minted on
+    // every reconnect so the token TTL can stay short.
+    const fetchPtyToken = async (): Promise<string | undefined> => {
+      try {
+        const res = await fetch(
+          `/api/workspace/${encodeURIComponent(workspaceId)}/pty-token`,
+          { method: "POST" },
+        );
+        if (!res.ok) return undefined;
+        const j = await res.json();
+        return typeof j?.token === "string" ? j.token : undefined;
+      } catch {
+        return undefined;
+      }
+    };
+
+    const connect = async () => {
       if (disposed) return;
       if (attempt === 0) {
         term.write("\r\n\x1b[2m[connecting to terminal…]\x1b[0m\r\n");
       }
+      const token = await fetchPtyToken();
+      if (disposed) return; // unmounted while awaiting the token
       ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
@@ -76,6 +97,7 @@ export function WorkbenchTerminal({ workspaceId }: Props) {
           JSON.stringify({
             type: "init",
             workspaceId,
+            token,
             cols: term.cols,
             rows: term.rows,
           }),

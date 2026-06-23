@@ -92,13 +92,23 @@ Your domain is already on Cloudflare, so:
 - A request with a wrong/absent bearer to a real `/api/*` route → `401 auth required`.
 - A request with a forged Host → `403 host not allowed`.
 
-## Known gap — the pty terminal is unauthenticated at the socket
-The `/code` terminal (`scripts/pty-server.mjs`, port 8772) is a raw PTY shell
-with **no auth at the websocket level**. It's now routed through Caddy `/pty`
-(behind TLS + Cloudflare Access + the app login) and bound to 0.0.0.0 only
-inside the container (never published to the host). That layering is the gate —
-but a per-session token check on the pty itself is a pending hardening before
-this is truly multi-user-safe. Set `NEXT_PUBLIC_PTY_URL=wss://<domain>/pty` at
+## The pty terminal — now authenticated at the socket
+The `/code` terminal (`scripts/pty-server.mjs`, port 8772) is a raw PTY shell.
+It is fronted by Caddy `/pty` (TLS + Cloudflare Access + app login) and bound to
+0.0.0.0 only inside the container (never published to the host) — **and** it now
+requires a per-session **HS256 token** in its `init` frame:
+
+- The browser mints one from `POST /api/workspace/[id]/pty-token` (behind the
+  `/api/*` gate) right before each (re)connect; the token is scoped to that
+  workspace + a 10-min TTL and signed with `JARVIS_PROXY_JWT_SECRET`.
+- The sidecar verifies it OFFLINE (`scripts/lib/pty-auth.mjs`) before spawning a
+  shell. Enforcement auto-engages whenever the socket is bound off-loopback, and
+  is set explicitly via `JARVIS_PTY_REQUIRE_AUTH=1` in compose. It **fails
+  closed**: if the signing secret is absent, every connection is rejected.
+
+So Access + app login + the socket token are three independent layers. Set
+`JARVIS_PROXY_JWT_SECRET` (a stable `openssl rand -base64 32`) in the prod env so
+it survives container recreates, and `NEXT_PUBLIC_PTY_URL=wss://<domain>/pty` at
 **build** time so the browser uses the routed path, not the raw port.
 
 ## Residual risk (accept it explicitly)

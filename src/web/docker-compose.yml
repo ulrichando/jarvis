@@ -47,6 +47,11 @@ services:
       # pty-server binds 0.0.0.0 in-container so Caddy reaches it over the docker
       # network; it's NOT published to the host (only Caddy's /pty route fronts it).
       JARVIS_PTY_HOST: "0.0.0.0"
+      # Require a per-session token on the PTY websocket (minted by
+      # /api/workspace/[id]/pty-token, behind the app auth). Auto-on anyway for
+      # the 0.0.0.0 bind above; set explicitly so a bind change can't silently
+      # open an unauthenticated shell. Fails closed if the JWT secret is absent.
+      JARVIS_PTY_REQUIRE_AUTH: "1"
       # Auth/host/DB come from .env.production:
       #   JARVIS_LOCAL_API_TOKEN, JARVIS_WEB_ALLOWED_HOSTS, BETTER_AUTH_URL,
       #   JARVIS_CANONICAL_HOST, DATABASE_URL, provider keys.

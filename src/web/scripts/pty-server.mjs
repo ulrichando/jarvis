@@ -29,6 +29,7 @@ import {
   ensureRunning,
   execShellArgs,
 } from "./lib/docker.mjs";
+import { verifyPtyToken, readPtyJwtSecret } from "./lib/pty-auth.mjs";
 
 // 8772 (NOT 8769): 8767-8769 is the voice-client status port block
 // (jarvis/gemini/openai); jarvis-gpt-tools' status server owns 8769, and
@@ -49,6 +50,27 @@ const WORKSPACES_ROOT =
 
 const SHELL = process.env.SHELL || "/bin/bash";
 let MODE = process.env.JARVIS_WORKBENCH_MODE ?? "auto";
+
+// Per-session auth on the websocket. The init frame must carry a short-lived
+// HS256 token (minted by /api/workspace/[id]/pty-token, behind the app's auth)
+// scoped to the workspace. Required automatically whenever the socket is bound
+// off-loopback (the documented foot-gun this guards) or forced on via env —
+// so exposing the sidecar can't accidentally ship an open root shell. On
+// loopback it's optional, preserving the frictionless `npm run dev` posture.
+// Fails CLOSED: require auth but no secret on disk → reject every connection.
+const REQUIRE_AUTH =
+  process.env.JARVIS_PTY_REQUIRE_AUTH === "1" || HOST !== "127.0.0.1";
+// The secret is read LAZILY at verify time, not cached here: the web app shares
+// this container and may create ~/.jarvis/keys.env on its first mint AFTER this
+// process boots, and a lazy read also picks up rotation. Prefer setting
+// JARVIS_PROXY_JWT_SECRET in the environment so both halves agree with no race.
+if (REQUIRE_AUTH && !readPtyJwtSecret()) {
+  console.error(
+    "[pty-server] AUTH REQUIRED but JARVIS_PROXY_JWT_SECRET is unset " +
+      "(env or ~/.jarvis/keys.env) — connections are rejected until it exists. " +
+      "Set it in the environment, or open the /code terminal once so the web app mints it.",
+  );
+}
 
 async function resolveMode() {
   if (MODE === "local" || MODE === "docker") return MODE;
@@ -87,6 +109,20 @@ wss.on("connection", (ws) => {
         send({ type: "exit", code: 1, error: "bad workspace id" });
         try { ws.close(); } catch {}
         return;
+      }
+
+      if (REQUIRE_AUTH) {
+        const secret = readPtyJwtSecret();
+        const v = secret
+          ? verifyPtyToken(String(msg.token || ""), secret, id)
+          : { ok: false, reason: "server has no signing secret" };
+        if (!v.ok) {
+          console.warn(`[pty-server] rejected init for ${id}: ${v.reason}`);
+          send({ type: "output", data: "\x1b[31m[terminal auth failed]\x1b[0m\r\n" });
+          send({ type: "exit", code: 1, error: "unauthorized" });
+          try { ws.close(); } catch {}
+          return;
+        }
       }
 
       const cwd = path.join(WORKSPACES_ROOT, id);
