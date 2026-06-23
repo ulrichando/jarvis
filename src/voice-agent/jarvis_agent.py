@@ -6095,6 +6095,18 @@ async def maybe_publish_assistant_says(
         logger.debug(f"[chat-panel] assistant_says publish failed: {_e!r}")
 
 
+async def _automod_tick() -> None:
+    """One evolution pass: always scan (queue intents for review); BUILD only in
+    AUTO mode. Extracted module-level so it's unit-testable. Phase 1, 2026-06-23
+    cognitive-loop (docs/superpowers/plans/2026-06-23-cognitive-evolution-loop-phase1.md)."""
+    from pipeline.automod import patterns as _automod_patterns
+    from pipeline.automod import spawner as _automod_spawner
+    from pipeline.automod._state import is_auto_mode
+    _automod_patterns.scan_and_emit()
+    if is_auto_mode():
+        await _automod_spawner.drain_queue()
+
+
 async def entrypoint(ctx: JobContext) -> None:
     """
     Runs once per client that joins a room. This is the actual
@@ -7378,34 +7390,27 @@ async def entrypoint(ctx: JobContext) -> None:
     # Both no-op when their respective env gates aren't set.
     if os.environ.get("JARVIS_AUTOMOD_ENABLED", "0") == "1":
         try:
-            from pipeline.automod import patterns as _automod_patterns
-            from pipeline.automod import spawner as _automod_spawner
-
             async def _automod_loop():
-                from pipeline.automod._state import is_auto_mode
-                interval = int(os.environ.get(
-                    "JARVIS_AUTOMOD_PATTERN_INTERVAL_S", "1800"
-                ))
+                from pipeline.automod import signal as _signal
+                # Backstop: even with no signal, sweep at most this often so a
+                # missed bump can't stall evolution forever. Default 2h.
+                backstop = float(os.environ.get("JARVIS_AUTOMOD_BACKSTOP_S", "7200"))
+                cooldown = float(os.environ.get("JARVIS_AUTOMOD_COOLDOWN_S", "30"))
                 while True:
+                    await _signal.wait(backstop)   # wakes on a real signal OR backstop
+                    _signal.clear()
                     try:
-                        # Detection always runs: queue intents for review.
-                        _automod_patterns.scan_and_emit()
-                        # BUILD only in AUTO mode. In MANUAL mode we leave the
-                        # intents queued for the user to review + build via
-                        # /evolution. Without this gate the loop auto-built in
-                        # manual mode (the nightly path already gates this way;
-                        # this in-process loop must too). 2026-06-23.
-                        if is_auto_mode():
-                            await _automod_spawner.drain_queue()
+                        await _automod_tick()
                     except Exception as _e:  # noqa: BLE001
-                        logger.warning("[automod] loop iteration failed: %s", _e)
-                    await asyncio.sleep(interval)
+                        logger.warning("[automod] tick failed: %s", _e)
+                    # Debounce a burst of signals into one pass.
+                    await asyncio.sleep(cooldown)
 
             asyncio.create_task(_automod_loop(), name="automod-pattern-loop")
             logger.info(
-                "[automod] pattern detector + spawner scheduled "
-                "(interval=%ss; spawn_live=%s)",
-                os.environ.get("JARVIS_AUTOMOD_PATTERN_INTERVAL_S", "1800"),
+                "[automod] event-driven pattern detector + spawner scheduled "
+                "(backstop=%ss; spawn_live=%s; mode-gated build)",
+                os.environ.get("JARVIS_AUTOMOD_BACKSTOP_S", "7200"),
                 os.environ.get("JARVIS_AUTOMOD_SPAWN_LIVE", "0"),
             )
         except Exception as _e:  # noqa: BLE001
