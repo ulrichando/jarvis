@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -30,6 +31,7 @@ if str(_VOICE_AGENT_ROOT) not in sys.path:
     sys.path.insert(0, str(_VOICE_AGENT_ROOT))
 
 from pipeline.automod import artifact, test_gate
+from pipeline.automod import criteria
 from pipeline.automod._state import artifact_path, intent_file_path
 
 logger = logging.getLogger("jarvis.automod.finalize")
@@ -44,9 +46,19 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _base_ref() -> str:
+    """The ref the disposable worktree branched from — finalize MUST diff against
+    the SAME ref or it double-counts the divergence (that mismatch is what
+    produced the bogus `too_many_files` rejections). Defaults to local `master`
+    (the current code), which is where the worktree is now based; origin/master
+    is intentionally stale here (local is 32 commits ahead). Override with
+    JARVIS_AUTOMOD_BASE_REF."""
+    return os.environ.get("JARVIS_AUTOMOD_BASE_REF", "master")
+
+
 def _read_intent(automod_id: str) -> dict:
     """Read the intent file written by the wrapper script. Returns a
-    dict with lower-cased keys (intent, rationale, kind)."""
+    dict with lower-cased keys (intent, rationale, kind, evolution)."""
     p = intent_file_path(automod_id)
     if not p.exists():
         return {"intent": "(missing intent file)"}
@@ -54,7 +66,19 @@ def _read_intent(automod_id: str) -> dict:
     for line in p.read_text(encoding="utf-8").splitlines():
         if ":" in line:
             k, v = line.split(":", 1)
-            out[k.strip().lower()] = v.strip()
+            key = k.strip().lower()
+            value = v.strip()
+            # Multi-line INTENT bodies (retries) appear last; don't let their
+            # body lines clobber fields already parsed above.
+            if key in out and key in ("intent", "attempt", "lineage", "prior_failures"):
+                continue
+            if key in ("evolution", "prior_failures"):
+                try:
+                    out[key] = json.loads(value)
+                except json.JSONDecodeError:
+                    out[key] = {} if key == "evolution" else []
+            else:
+                out[key] = value
     return out
 
 
@@ -67,10 +91,14 @@ def _rerun_pytest() -> tuple[bool, str]:
     cwd = Path(__file__).resolve().parents[2]
     if not cwd.exists():
         return False, "voice-agent dir missing"
+    tooling_root = Path(os.environ.get(
+        "JARVIS_AUTOMOD_TOOLING_ROOT",
+        str(Path(__file__).resolve().parents[4]),
+    ))
+    python = tooling_root / "src" / "voice-agent" / ".venv" / "bin" / "python"
     try:
         proc = subprocess.run(
-            [str(cwd / ".venv" / "bin" / "python"), "-m", "pytest",
-             "tests/", "-q", "--tb=no"],
+            [str(python), "-m", "pytest", "tests/", "-q", "--tb=no"],
             cwd=cwd, capture_output=True, text=True,
             timeout=300,
         )
@@ -90,9 +118,31 @@ def finalize_branch(automod_id: str, branch: str,
     """Validate the auto-mod branch + write artifact. Returns the artifact dict."""
     intent_record = _read_intent(automod_id)
     intent = intent_record.get("intent", "")
+    evolution = intent_record.get("evolution")
+    if not isinstance(evolution, dict) or not evolution.get("criteria_version"):
+        evolution = criteria.enrich_record({
+            "id": automod_id,
+            "kind": intent_record.get("kind", "unknown"),
+            "intent": intent,
+            "rationale": intent_record.get("rationale", ""),
+        })["evolution"]
 
-    # 1. Did a commit land?
-    parent = _git("rev-parse", "master").stdout.strip()
+    # Retry-lineage fields (learn-and-retry loop). Carried into every artifact so
+    # the retry scanner can cap attempts and avoid repeating the same fix.
+    try:
+        _attempt = int(intent_record.get("attempt", 1) or 1)
+    except (TypeError, ValueError):
+        _attempt = 1
+    _lineage = {
+        "attempt": _attempt,
+        "lineage": intent_record.get("lineage") or automod_id,
+        "prior_failures": intent_record.get("prior_failures") or [],
+        "priority": intent_record.get("priority") or "P3",
+    }
+
+    # 1. Did a commit land? Compare against the worktree's actual base ref.
+    base = _base_ref()
+    parent = _git("rev-parse", base).stdout.strip()
     head = _git("rev-parse", "HEAD").stdout.strip()
     if not head or head == parent:
         art = {
@@ -106,6 +156,8 @@ def finalize_branch(automod_id: str, branch: str,
             "test_output_tail": "",
             "status": "failed",
             "rejection_reason": "no_commit_landed",
+            "evolution": evolution,
+            **_lineage,
             "created_at": _now_iso(),
         }
         artifact.write(art)
@@ -114,8 +166,8 @@ def finalize_branch(automod_id: str, branch: str,
         _delete_branch(branch)
         return art
 
-    # 2. Compute diff.
-    diff_text = _git("diff", "master..HEAD").stdout
+    # 2. Compute diff against the base the worktree branched from.
+    diff_text = _git("diff", f"{base}..HEAD").stdout
 
     # 3. Validate diff.
     ok, reason = test_gate.validate_diff(diff_text)
@@ -131,6 +183,8 @@ def finalize_branch(automod_id: str, branch: str,
             "test_output_tail": "",
             "status": "failed",
             "rejection_reason": reason,
+            "evolution": evolution,
+            **_lineage,
             "created_at": _now_iso(),
         }
         artifact.write(art)
@@ -154,6 +208,8 @@ def finalize_branch(automod_id: str, branch: str,
                 "test_output_tail": test_tail,
                 "status": "failed",
                 "rejection_reason": "tests_failed_on_rerun",
+                "evolution": evolution,
+                **_lineage,
                 "created_at": _now_iso(),
             }
             artifact.write(art)
@@ -162,7 +218,9 @@ def finalize_branch(automod_id: str, branch: str,
             _delete_branch(branch)
             return art
 
-    # 5. Write pending artifact.
+    # 5. Write pending artifact. Persist a truncated unified diff so the
+    # /evolution review UI can show it without shelling git (and so it survives
+    # the branch being deleted on merge/reject). Capped to keep artifacts small.
     art = {
         "id": automod_id,
         "intent": intent,
@@ -170,13 +228,25 @@ def finalize_branch(automod_id: str, branch: str,
         "parent_sha": parent,
         "head_sha": head,
         "files_changed": test_gate.files_changed(diff_text),
-        "diff_summary": _git("diff", "--shortstat", "master..HEAD").stdout.strip(),
+        "diff_summary": _git("diff", "--shortstat", f"{base}..HEAD").stdout.strip(),
+        "diff": diff_text[:60000],
+        "diff_truncated": len(diff_text) > 60000,
         "test_output_tail": test_tail,
         "status": "pending",
+        "evolution": evolution,
+        **_lineage,
         "created_at": _now_iso(),
     }
     artifact.write(art)
     artifact.audit("automod_committed", id=automod_id, head_sha=head)
+    # Proposal is now reviewable → notify (sub-project C). Best-effort; the audit
+    # event also lets the /evolution activity feed surface it.
+    try:
+        from pipeline.automod import notify
+        notify.notify_proposal_ready(automod_id, intent)
+        artifact.audit("automod_proposal_ready", id=automod_id)
+    except Exception:  # noqa: BLE001 — never break finalize on a notify failure
+        pass
     _git("checkout", "master")
     return art
 

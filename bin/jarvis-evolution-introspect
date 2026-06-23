@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# jarvis-evolution-introspect — run one JARVIS self-assessment now.
+# Gathers evidence (weak fitness axes, recurring corrections, failed builds) and
+# asks the model to name its own flaws + improvements. Prints the JSON result.
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+VA="$REPO_ROOT/src/voice-agent"
+
+cd "$VA" || exit 1
+exec "$VA/.venv/bin/python" -m pipeline.automod.introspection "$@"

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# jarvis-evolution-cycle — autonomous build cycle: assess → queue → build one at
+# a time → learn-and-retry failures (up to the cap) → leave passing builds for
+# review. Honors the pause flag. Long-running (each build spawns a coding agent).
+# Optional arg: max number of goals to build this run.
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+VA="$REPO_ROOT/src/voice-agent"
+
+cd "$VA" || exit 1
+# The cycle is the explicit build actuator; force spawn-live for its subtree.
+export JARVIS_AUTOMOD_SPAWN_LIVE=1
+exec "$VA/.venv/bin/python" -m pipeline.automod.cycle "$@"

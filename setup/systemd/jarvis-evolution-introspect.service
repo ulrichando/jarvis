@@ -1,0 +1,25 @@
+[Unit]
+Description=JARVIS scheduled self-assessment (introspection — names its own flaws + queues improvements)
+Documentation=file:%h/Documents/Projects/jarvis/bin/jarvis-evolution-introspect
+After=jarvis-voice-agent.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/mkdir -p %h/.local/share/jarvis/logs
+# Load the same env the agent uses so the introspection LLM call has the keys
+# (ANTHROPIC_API_KEY etc.). '-' = optional, never fail on absence.
+EnvironmentFile=-%h/Documents/Projects/jarvis/src/voice-agent/.env
+EnvironmentFile=-%h/.jarvis/keys.env
+ExecStart=%h/Documents/Projects/jarvis/bin/jarvis-evolution-introspect
+# One out-of-band LLM call; never spawns a build. Generous ceiling.
+TimeoutStartSec=180
+StandardOutput=append:%h/.local/share/jarvis/logs/evolution-introspect.log
+StandardError=append:%h/.local/share/jarvis/logs/evolution-introspect.log
+
+# Minimal hardening (reads telemetry/ledger + makes one HTTPS call).
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+# No [Install]: triggered by jarvis-evolution-introspect.timer, never at boot directly.

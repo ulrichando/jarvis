@@ -30,6 +30,27 @@ def lockfile_path() -> Path:
     return _automod_home() / ".lock"
 
 
+def pause_flag_path() -> Path:
+    """Presence of this file pauses the autonomous evolution build cycle
+    (universal-signal pattern, like ~/.jarvis/.silent-mode)."""
+    return _automod_home() / ".evolution-paused"
+
+
+def is_evolution_paused() -> bool:
+    return pause_flag_path().exists()
+
+
+def set_evolution_paused(paused: bool) -> bool:
+    """Create/remove the pause flag. Returns the resulting paused state."""
+    p = pause_flag_path()
+    if paused:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("paused\n", encoding="utf-8")
+    else:
+        p.unlink(missing_ok=True)
+    return paused
+
+
 def artifact_path(automod_id: str) -> Path:
     return _automod_home() / f"{automod_id}.json"
 
@@ -58,6 +79,7 @@ HARD_BLOCKLIST_PATHS = (
     "src/voice-agent/sanitizers/",
     "src/voice-agent/confab_detector.py",
     "src/voice-agent/pipeline/automod/",
+    "src/voice-agent/evolution/",                  # human-owned fitness gate
     "src/voice-agent/pipeline/skill_review.py",  # reviewer prompt protected
     "src/voice-agent/prompts/soul.md",            # persona git-only
     "CLAUDE.md",
@@ -76,6 +98,7 @@ HARD_BLOCKLIST_PATHS = (
     # / selftest.py live under pipeline/automod/, already blocked above.)
     "bin/jarvis-evolution-watchdog",
     "bin/jarvis-evolution-nightly",
+    "bin/jarvis-evolution-ondemand",
 )
 
 # Allowed prefix — diffs may touch only files under this prefix.

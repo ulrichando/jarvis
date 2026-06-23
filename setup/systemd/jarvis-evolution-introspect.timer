@@ -1,0 +1,13 @@
+[Unit]
+Description=JARVIS scheduled self-assessment — daily introspection
+
+[Timer]
+# Daily at 05:30 local. Verified with `systemd-analyze calendar`. Persistent
+# catches up a missed run if the box was asleep at the scheduled time.
+OnCalendar=*-*-* 05:30:00
+Persistent=true
+AccuracySec=5min
+Unit=jarvis-evolution-introspect.service
+
+[Install]
+WantedBy=timers.target

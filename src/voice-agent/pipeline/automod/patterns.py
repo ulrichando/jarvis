@@ -2,8 +2,8 @@
 
 scans turn_telemetry.db for 3 pattern classes:
   - correction repeat (≥3 same signal in `turns.correction_signal`)
-  - confab self-flag (≥3 turns with confab_check_state='save_claim'
-    in last CONFAB_WINDOW_DAYS days)
+  - confab self-flag (≥3 turns with confab_check_state IN
+    ('hedged_no_evidence', 'retry_factory_missing') in last CONFAB_WINDOW_DAYS days)
   - tool-gap repeat (deferred — table exists but bucketing logic is
     a future iteration)
 
@@ -22,16 +22,50 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
 
-from pipeline.automod._state import queue_path
+from pipeline.automod import criteria
+from pipeline.automod._state import queue_path, _automod_home
 
 logger = logging.getLogger("jarvis.automod.patterns")
 
 THRESHOLD = 3
 CONFAB_WINDOW_DAYS = 7
+
+# Failure-driven retry: a failed build is re-queued with the failure lesson and
+# a directive to try a DIFFERENT, narrower approach — up to MAX_RETRY_ATTEMPTS
+# total attempts (initial + retries), so the loop learns instead of repeating
+# the same failing fix.
+MAX_RETRY_ATTEMPTS = 5
+RETRY_RECENCY_DAYS = 7
+
+# Light root-cause scaffold: collapse near-duplicate correction phrases onto a
+# canonical label so related corrections can be grouped later (sub-project A).
+# The label is recorded on the intent as `root_cause`; the SQL grouping/dedup is
+# unchanged for now. Full embedding/LLM clustering is deferred.
+_SYNONYM_MAP = {
+    "wordy": "verbosity", "verbose": "verbosity", "shorter": "verbosity",
+    "concise": "verbosity", "too long": "verbosity", "brief": "verbosity",
+    "rambling": "verbosity",
+    "wrong tool": "tool_routing", "use the": "tool_routing",
+    "slow": "latency", "took too long": "latency", "faster": "latency",
+    "made up": "confabulation", "didnt actually": "confabulation",
+    "you lied": "confabulation",
+}
+
+
+def _normalize_signal(s: str) -> str:
+    """Canonicalize a correction signal for root-cause grouping. Lowercase,
+    strip punctuation, collapse whitespace, then map known synonyms."""
+    t = re.sub(r"[^a-z0-9 ]", "", (s or "").lower())
+    t = re.sub(r"\s+", " ", t).strip()
+    for key, canon in _SYNONYM_MAP.items():
+        if key in t:
+            return canon
+    return t
 
 ERROR_BURST_WINDOW_HOURS = 2
 ERROR_BURST_COUNT = 3
@@ -57,6 +91,7 @@ def _now_iso() -> str:
 
 
 def _emit(record: dict) -> None:
+    record = criteria.enrich_record(record)
     _ensure_queue_dir()
     line = json.dumps(record, ensure_ascii=False)
     with queue_path().open("a", encoding="utf-8") as f:
@@ -109,6 +144,7 @@ def _scan_corrections(conn: sqlite3.Connection) -> int:
                       f"the offending behavior originates and patch it.",
             "rationale": f"user corrected this {count} times "
                          f"({first_seen} → {last_seen})",
+            "root_cause": _normalize_signal(signal),
             "evidence": {"signal": signal, "count": count,
                          "first_seen": first_seen, "last_seen": last_seen},
             "created_at": _now_iso(),
@@ -127,15 +163,22 @@ def _scan_confabs(conn: sqlite3.Connection) -> int:
         "%Y-%m-%dT%H:%M:%SZ",
         time.gmtime(time.time() - CONFAB_WINDOW_DAYS * 86400),
     )
+    # The confab_check_state vocabulary is NOT 'save_claim' — that was a
+    # design-time assumption that never matched reality. The live DB uses:
+    #   hedged_no_evidence — JARVIS made a claim without tool evidence
+    #   retry_factory_missing — factory missing during retry (system-side)
+    #   caught_t1_passed / caught_t3_passed — caught but recovered (near-miss)
+    # Count only the hard-failure states (hedged_no_evidence + retry_factory_missing).
     row = conn.execute(
         """SELECT COUNT(*), MAX(ts_utc) FROM turns
-            WHERE confab_check_state = 'save_claim' AND ts_utc >= ?""",
+            WHERE confab_check_state IN ('hedged_no_evidence', 'retry_factory_missing')
+              AND ts_utc >= ?""",
         (cutoff,),
     ).fetchone()
     count, last_seen = row[0] or 0, row[1]
     if count < THRESHOLD:
         return 0
-    signal = f"__confab_save_claim_window_{CONFAB_WINDOW_DAYS}d__"
+    signal = f"__confab_failure_window_{CONFAB_WINDOW_DAYS}d__"
     existing = conn.execute(
         "SELECT proposed_at FROM recurring_corrections WHERE signal=?",
         (signal,),
@@ -146,11 +189,13 @@ def _scan_confabs(conn: sqlite3.Connection) -> int:
     _emit({
         "id": rec_id,
         "kind": "confab",
-        "intent": "Investigate the recurring save-claim confabulation pattern. "
-                  "JARVIS is saying 'I'll remember' / 'saved' without actually "
-                  "calling memory(). Likely a prompt-strength issue in the "
-                  "supervisor or memory tool description.",
-        "rationale": f"{count} save_claim confabs in last {CONFAB_WINDOW_DAYS} days",
+        "intent": "Investigate recurring confabulation failures. "
+                  "JARVIS is making claims without tool evidence "
+                  "(hedged_no_evidence) or hitting system-side confab "
+                  "gate failures (retry_factory_missing). Likely a "
+                  "prompt-strength issue in the supervisor or tool "
+                  "descriptions.",
+        "rationale": f"{count} confab gate failures in last {CONFAB_WINDOW_DAYS} days",
         "evidence": {"count": count, "last_seen": last_seen,
                      "window_days": CONFAB_WINDOW_DAYS},
         "created_at": _now_iso(),
@@ -278,6 +323,155 @@ def _scan_errors(conn: sqlite3.Connection) -> int:
     return emitted
 
 
+def _scan_fitness(conn: sqlite3.Connection) -> int:
+    """Emit a proposal for the persistently-weak fitness axis (sub-project A,
+    2026-06-23). Reads the evolution ledger (read-only), picks the weak axis via
+    fitness_feedback, and emits ONE concrete intent. Deduped via
+    recurring_corrections with a synthetic signal, exactly like _scan_confabs.
+    Never raises — returns 0 on any error."""
+    try:
+        from pipeline.automod import fitness_feedback
+        from evolution.ledger import read_readings
+        # Ledger lives beside turn_telemetry.db; honor the same JARVIS_HOME path.
+        ledger_db = _telemetry_db_path().parent / "evolution_ledger.db"
+        readings = read_readings(limit=fitness_feedback.LOOKBACK_M, db_path=ledger_db)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[automod] fitness scan skipped: %s", e)
+        return 0
+    hit = fitness_feedback.weak_axis(readings)
+    if not hit:
+        return 0
+    axis, evidence = hit
+    built = fitness_feedback.build_intent(axis, evidence)
+    if not built:
+        return 0
+    signal = f"__fitness_axis_{axis}__"
+    existing = conn.execute(
+        "SELECT proposed_at FROM recurring_corrections WHERE signal=?",
+        (signal,),
+    ).fetchone()
+    if existing and existing[0]:
+        return 0
+    rec_id = _next_id("fitness")
+    _emit({
+        "id": rec_id,
+        "kind": "fitness",
+        "intent": built["intent"],
+        "rationale": built["rationale"],
+        "root_cause": f"fitness_{axis}",
+        "evidence": evidence,
+        "created_at": _now_iso(),
+    })
+    now = _now_iso()
+    if existing:
+        conn.execute(
+            "UPDATE recurring_corrections SET proposed_at=?, count=?, last_seen=? WHERE signal=?",
+            (now, evidence["n_below"], now, signal),
+        )
+    else:
+        conn.execute(
+            """INSERT INTO recurring_corrections
+               (signal, first_seen, last_seen, count, proposed_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (signal, now, now, evidence["n_below"], now),
+        )
+    conn.commit()
+    return 1
+
+
+def _retry_hint(reason: str) -> str:
+    r = (reason or "").lower()
+    if "too_many_files" in r:
+        return ("Your previous diff touched far too many files. Scope this to AT MOST 5 files — "
+                "ideally a single file or one prompt edit. If the change is inherently large, pick "
+                "the SINGLE highest-leverage file and do only that.")
+    if "test" in r:
+        return ("Your previous diff broke the test suite. Make a smaller, safer change that keeps "
+                "all tests green; run the tests mentally before committing.")
+    if "no_commit" in r:
+        return ("The previous attempt produced no commit at all. Make a concrete, minimal change "
+                "and actually commit it.")
+    if "diff_validation" in r or "blocklist" in r:
+        return ("The previous diff hit a blocked path. Only edit files under src/voice-agent/ and "
+                "never touch the safety/blocklisted files.")
+    return "Take a fundamentally different, narrower approach than the previous attempt."
+
+
+def build_retry_intent(art: dict) -> dict | None:
+    """Build a learn-and-retry intent from a failed artifact, with the failure
+    lesson + a directive to try a DIFFERENT, narrower approach. Returns None if
+    the artifact is ineligible (not failed / fixture / at the attempt cap).
+    Shared by the nightly scanner and the immediate build cycle."""
+    if art.get("status") != "failed":
+        return None
+    ident = str(art.get("lineage") or art.get("id") or "")
+    if "test" in ident or "smoke" in ident:
+        return None  # don't retry fixtures
+    attempt = int(art.get("attempt", 1) or 1)
+    if attempt >= MAX_RETRY_ATTEMPTS:
+        return None
+    reason = str(art.get("rejection_reason", ""))
+    lineage = art.get("lineage") or art.get("id")
+    original = str(art.get("intent", "")).split("\n\n")[0][:400]
+    prior = list(art.get("prior_failures", [])) + [f"attempt {attempt}: {reason}"]
+    new_intent = (
+        f"RETRY (attempt {attempt + 1} of {MAX_RETRY_ATTEMPTS}) of a self-evolution "
+        f"change that FAILED.\n\n"
+        f"GOAL:\n{original}\n\n"
+        "PREVIOUS FAILURES — do NOT repeat these approaches:\n"
+        + "\n".join(f"- {x}" for x in prior)
+        + f"\n\n{_retry_hint(reason)}"
+    )
+    return {
+        "id": _next_id("retry"),
+        "kind": art.get("kind") or "retry",
+        "intent": new_intent,
+        "rationale": f"learn-and-retry after failure: {reason}",
+        "lineage": lineage,
+        "attempt": attempt + 1,
+        "prior_failures": prior,
+        "priority": art.get("priority") or "P1",  # inherit the goal's rank
+        "root_cause": art.get("root_cause") or "retry",
+        "created_at": _now_iso(),
+    }
+
+
+def _scan_failed_retries() -> int:
+    """Re-queue recently-failed builds via build_retry_intent. Marks each failed
+    artifact `retried` so it is enqueued at most once. Skips stale failures.
+    Never raises."""
+    cutoff = time.time() - RETRY_RECENCY_DAYS * 86400
+    emitted = 0
+    try:
+        artifacts = sorted(_automod_home().glob("automod-*.json"))
+    except Exception:  # noqa: BLE001
+        return 0
+    for p in artifacts:
+        try:
+            art = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if art.get("retried"):
+            continue
+        created = str(art.get("created_at", ""))
+        try:
+            if created and time.mktime(time.strptime(created[:19], "%Y-%m-%dT%H:%M:%S")) < cutoff:
+                continue  # too old to chase
+        except (ValueError, TypeError):
+            pass
+        intent = build_retry_intent(art)
+        if not intent:
+            continue
+        _emit(intent)
+        try:
+            art["retried"] = True
+            p.write_text(json.dumps(art, indent=2, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+        emitted += 1
+    return emitted
+
+
 def scan_and_emit() -> int:
     """Scan all pattern classes; emit intents that crossed threshold.
     Returns total intents emitted across all classes."""
@@ -291,6 +485,8 @@ def scan_and_emit() -> int:
             emitted += _scan_corrections(conn)
             emitted += _scan_confabs(conn)
             emitted += _scan_errors(conn)   # NEW (auto-mod error-driven, Spec 2026-05-27)
+            emitted += _scan_fitness(conn)  # NEW (per-axis fitness feedback, sub-project A)
+            emitted += _scan_failed_retries()  # NEW (learn-and-retry failed builds)
     except sqlite3.Error as e:
         logger.warning("[automod] scan failed: %s: %s",
                        type(e).__name__, e)

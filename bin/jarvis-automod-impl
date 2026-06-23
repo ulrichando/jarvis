@@ -10,13 +10,18 @@ set -euo pipefail
 
 INTENT_FILE="$1"
 ID="$(basename "$INTENT_FILE" .intent.txt)"
-LOG="$HOME/.jarvis/auto-mods/$ID.log"
+JARVIS_HOME_DIR="${JARVIS_HOME:-$HOME/.jarvis}"
+LOG="$JARVIS_HOME_DIR/auto-mods/$ID.log"
 mkdir -p "$(dirname "$LOG")"
 
 # Derive REPO_ROOT from this script's location (bin/..) so the wrapper
 # works regardless of where the repo is checked out, not just one machine.
+# The spawner may override it with a disposable git worktree so this wrapper
+# never has to reset the live checkout.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+DEFAULT_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="${JARVIS_AUTOMOD_REPO_ROOT:-$DEFAULT_REPO_ROOT}"
+TOOLING_ROOT="${JARVIS_AUTOMOD_TOOLING_ROOT:-$REPO_ROOT}"
 cd "$REPO_ROOT"
 
 BRANCH="automod/$ID"
@@ -24,18 +29,18 @@ BRANCH="automod/$ID"
   echo "[$(date -u +%FT%TZ)] [automod-impl] starting id=$ID"
   echo "[$(date -u +%FT%TZ)] [automod-impl] cwd=$REPO_ROOT branch=$BRANCH"
 
-  git checkout master
-  # Sync local master to origin/master BEFORE branching. Without this,
-  # the proposal branch inherits whatever the local checkout had (which
-  # may be tens of commits stale, especially after a fresh auto-merge
-  # landed something to origin/master and the wrapper hasn't pulled).
-  # Live failure 2026-05-28: local master was 39 commits behind origin
-  # → subagent saw the OLD version of jarvis_agent.py → couldn't find
-  # the target line the intent referenced → finalize wrote
-  # status=failed → Stage 7 still tried to merge an empty branch.
-  git fetch origin master --quiet
-  git reset --hard origin/master --quiet
-  git checkout -b "$BRANCH"
+  # Branch from the CURRENT code (local master by default) without moving the
+  # live checkout's master branch. In normal scheduler use REPO_ROOT is a
+  # disposable detached worktree prepared by spawner.py (already based on this
+  # ref). finalize._base_ref MUST match BASE_REF. origin/master is intentionally
+  # stale on this box (local is ahead), so default to local master; override
+  # with JARVIS_AUTOMOD_BASE_REF=origin/master to build against the remote.
+  BASE_REF="${JARVIS_AUTOMOD_BASE_REF:-master}"
+  case "$BASE_REF" in
+    origin/*) [ "${JARVIS_AUTOMOD_SKIP_BASE_FETCH:-0}" != "1" ] && git fetch origin master --quiet ;;
+  esac
+  git checkout --detach "$BASE_REF" --quiet
+  git checkout -b "$BRANCH" --quiet
 
   INTENT_BODY="$(cat "$INTENT_FILE")"
 
@@ -72,9 +77,9 @@ to <=5 files and <=2000 diff lines, ABORT -- print why and exit without
 committing."
 
   export JARVIS_AUTOMOD_NO_NETWORK=1
-  timeout 600 "$REPO_ROOT/bin/jarvis" -p "$PROMPT" || true
+  timeout 600 "$TOOLING_ROOT/bin/jarvis" -p "$PROMPT" || true
 
-  "$REPO_ROOT/src/voice-agent/.venv/bin/python" \
+  "$TOOLING_ROOT/src/voice-agent/.venv/bin/python" \
     "$REPO_ROOT/src/voice-agent/pipeline/automod/finalize.py" \
     "$ID" "$BRANCH"
 
@@ -87,7 +92,7 @@ committing."
   # Live failure 2026-05-28 smoke002: subagent ABORTed (stale-master bug,
   # fixed above), finalize wrote status=failed, Stage 7 still attempted
   # the merge.
-  ARTIFACT_FILE="$HOME/.jarvis/auto-mods/$ID.json"
+  ARTIFACT_FILE="$JARVIS_HOME_DIR/auto-mods/$ID.json"
   if [ -f "$ARTIFACT_FILE" ]; then
       FINALIZE_STATUS=$(python3 -c "
 import json, sys
@@ -111,6 +116,11 @@ except Exception:
   # Saves refs/automod-rollback/<id> pointing at master pre-merge HEAD,
   # merges proposal branch, pushes master, restarts voice-agent.
   if [ "${JARVIS_AUTOMOD_AUTO_MERGE:-0}" = "1" ]; then
+      if [ -n "${JARVIS_AUTOMOD_REPO_ROOT:-}" ]; then
+          echo "[$(date -u +%FT%TZ)] [automod-impl] AUTO_MERGE ignored in isolated worktree; use /evolution approval instead"
+          exit 0
+      fi
+
       echo "[$(date -u +%FT%TZ)] [automod-impl] AUTO_MERGE=1 — proceeding"
 
       # 7a. Save rollback ref BEFORE touching master.
@@ -150,7 +160,7 @@ except Exception:
       echo "[$(date -u +%FT%TZ)] [automod-impl] auto-merged: id=$ID merge_sha=$MERGE_SHA"
 
       # 7d. Stamp the artifact JSON with auto-merge metadata.
-      "$REPO_ROOT/src/voice-agent/.venv/bin/python" \
+      "$TOOLING_ROOT/src/voice-agent/.venv/bin/python" \
           "$REPO_ROOT/src/voice-agent/pipeline/automod/finalize.py" \
           mark-auto-merged "$ID" \
           --rollback-ref "$ROLLBACK_REF" \
