@@ -1,0 +1,32 @@
+# Caddy — origin TLS + reverse proxy. Cloudflare sits IN FRONT of this
+# (DNS proxied, mode Full (strict)). Set JARVIS_DOMAIN in .env.production.
+
+{$JARVIS_DOMAIN:localhost} {
+	# Cloudflare Origin Certificate (Cloudflare dash → SSL/TLS → Origin Server →
+	# Create Certificate). Mount it into the caddy service. For local/no-CF,
+	# comment these two lines out — Caddy uses its internal CA instead (then set
+	# Cloudflare's SSL mode to "Full", not "Full (strict)").
+	tls /etc/caddy/origin.crt /etc/caddy/origin.key
+
+	encode zstd gzip
+
+	# /code terminal websocket → the pty-server (8772). Routed through Caddy so
+	# it rides TLS + Cloudflare Access instead of being a raw exposed port. Set
+	# NEXT_PUBLIC_PTY_URL=wss://$JARVIS_DOMAIN/pty at BUILD time so the browser
+	# uses this path. NOTE: the pty socket is currently UNAUTHENTICATED — Access
+	# + the app login are the gate; adding per-session auth to the pty is a
+	# pending hardening (see docs/runbook/deploy-online.md).
+	@pty path /pty /pty/*
+	reverse_proxy @pty web:8772
+
+	reverse_proxy web:3000
+
+	# Baseline origin headers — Cloudflare WAF/Access are the primary edge layer.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}

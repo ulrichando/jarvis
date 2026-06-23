@@ -1,0 +1,14 @@
+node_modules
+.next
+.git
+.env
+.env.local
+.env.production
+*.log
+.DS_Store
+coverage
+playwright-report
+test-results
+Dockerfile
+docker-compose*.yml
+.dockerignore

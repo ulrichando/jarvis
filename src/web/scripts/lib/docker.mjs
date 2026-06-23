@@ -26,6 +26,67 @@ export function containerName(workspaceId) {
   return `jarvis-ws-${workspaceId}`;
 }
 
+// ── Enterprise sandbox hardening ────────────────────────────────────────────
+// Untrusted code runs in these containers (the /code workbench + the
+// arbitrary-shell exec route), so they're locked down by default:
+//   • a dedicated bridge network, ISOLATED from the host's other services
+//     (the :4000 proxy, :8765 bridge, Postgres) and from other workspaces
+//   • no Linux capabilities, no privilege escalation
+//   • no swap-beyond-memory (paired with the existing --memory cap)
+// Opt-in stricter modes (env) for a hostile / multi-user posture:
+//   JARVIS_SANDBOX_NETWORK=none   → no network at all (use a per-workspace
+//                                   egress proxy if the workload needs internet)
+//   JARVIS_SANDBOX_READONLY=1     → read-only root FS + tmpfs /tmp,/run
+//   JARVIS_SANDBOX_RUNTIME=runsc  → gVisor (kernel isolation; runsc must be
+//                                   installed + registered as a docker runtime)
+//   JARVIS_SANDBOX_KEEP_CAPS=1    → keep default caps (browser workspaces that
+//                                   need user-namespace/seccomp tricks)
+// Egress filtering (block 169.254.169.254 metadata + the host IP from the
+// sandbox net) is a host DOCKER-USER iptables step — see
+// docs/runbook/deploy-online.md.
+const SANDBOX_NETWORK = process.env.JARVIS_SANDBOX_NETWORK ?? "jarvis-sandbox";
+const SANDBOX_RUNTIME = process.env.JARVIS_SANDBOX_RUNTIME ?? "";
+const SANDBOX_READONLY = process.env.JARVIS_SANDBOX_READONLY === "1";
+const SANDBOX_KEEP_CAPS = process.env.JARVIS_SANDBOX_KEEP_CAPS === "1";
+
+let _sandboxNetEnsured = false;
+async function ensureSandboxNetwork() {
+  if (_sandboxNetEnsured) return;
+  // Built-in / special network names are not ours to create.
+  if (["none", "host", "bridge", "default"].includes(SANDBOX_NETWORK)) {
+    _sandboxNetEnsured = true;
+    return;
+  }
+  const exists = await dockerText([
+    "network", "inspect", "-f", "{{.Name}}", SANDBOX_NETWORK,
+  ]);
+  if (!exists) {
+    // Dedicated user-defined bridge: keeps sandboxes off the default bridge so
+    // they can't reach the host's other published services or each other by
+    // name. Internet egress still works — block metadata + host via the
+    // DOCKER-USER iptables rules in the runbook. For ZERO egress set
+    // JARVIS_SANDBOX_NETWORK=none.
+    await execFileP("docker", [
+      "network", "create", "--driver", "bridge", SANDBOX_NETWORK,
+    ]).catch(() => {});
+  }
+  _sandboxNetEnsured = true;
+}
+
+function sandboxRunFlags() {
+  const flags = ["--security-opt", "no-new-privileges", "--network", SANDBOX_NETWORK];
+  if (!SANDBOX_KEEP_CAPS) flags.push("--cap-drop", "ALL");
+  if (SANDBOX_RUNTIME) flags.push("--runtime", SANDBOX_RUNTIME);
+  if (SANDBOX_READONLY) {
+    flags.push(
+      "--read-only",
+      "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g",
+      "--tmpfs", "/run:rw,nosuid,nodev,size=64m",
+    );
+  }
+  return flags;
+}
+
 async function dockerJson(args) {
   const { stdout } = await execFileP("docker", args, { maxBuffer: 4 * 1024 * 1024 });
   return JSON.parse(stdout);
@@ -121,6 +182,7 @@ export async function ensureRunning(workspaceId, envVars) {
     }
   }
 
+  await ensureSandboxNetwork();
   const args = [
     "run",
     "-d",
@@ -131,12 +193,16 @@ export async function ensureRunning(workspaceId, envVars) {
     "-w", "/workspace",
     "-P",                      // publish all EXPOSEd ports to random host ports
     "--memory", "2g",
+    "--memory-swap", "2g",     // cap total at 2g — no swap-beyond-memory DoS
     "--cpus", "2",
     "--pids-limit", "512",
     "--restart", "no",
+    ...sandboxRunFlags(),      // isolated network + cap-drop + no-new-privileges (+opt-in readonly/gVisor)
     ...envFlags,
-    // Run init as root so `apt-get install` etc. works if the user wants
-    // it. We still `exec` as the host UID below for file-ownership sanity.
+    // Init runs as root so in-container `apt-get install` works if needed —
+    // but with --cap-drop=ALL + no-new-privileges that "root" holds NO Linux
+    // capabilities and can't escalate. Commands still `exec` as the host UID
+    // below for file-ownership sanity.
     IMAGE,
     "sleep", "infinity",
   ];

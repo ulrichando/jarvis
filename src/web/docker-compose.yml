@@ -1,0 +1,101 @@
+# JARVIS web — single-tenant enterprise stack.
+#   caddy            → TLS termination + reverse proxy (Cloudflare in front of THIS)
+#   web              → Next app + pty-server (non-root; talks to docker only via the proxy)
+#   docker-proxy     → restricted Docker API (the web app's ONLY path to spawn sandboxes)
+#   postgres         → app database
+#
+# Secrets come from ./.env.production (gitignored) — move to a real secrets
+# manager for prod (see docs/runbook/deploy-online.md). DooD note: sandbox
+# containers run on the HOST daemon, so the workspaces dir is bind-mounted at
+# the SAME host path in `web` and passed as JARVIS_WORKSPACES_ROOT — the path
+# must resolve identically for the app (file reads) and the daemon (-v mounts).
+
+x-workspaces-root: &workspaces_root ${JARVIS_WORKSPACES_ROOT:-/srv/jarvis/workspaces}
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [web]
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Inlined into the client bundle at build time → set your domain.
+        NEXT_PUBLIC_PTY_URL: ${NEXT_PUBLIC_PTY_URL:-}
+    restart: unless-stopped
+    env_file:
+      - path: .env.production
+        required: false
+    environment:
+      NODE_ENV: production
+      # Reach Docker ONLY through the restricted proxy — never the raw socket.
+      DOCKER_HOST: tcp://docker-proxy:2375
+      # Must be a HOST path (the host daemon interprets the sandbox -v mounts).
+      JARVIS_WORKSPACES_ROOT: *workspaces_root
+      JARVIS_REQUIRE_LOCAL_AUTH: "1"
+      JARVIS_SANDBOX_READONLY: "1"
+      # pty-server binds 0.0.0.0 in-container so Caddy reaches it over the docker
+      # network; it's NOT published to the host (only Caddy's /pty route fronts it).
+      JARVIS_PTY_HOST: "0.0.0.0"
+      # Auth/host/DB come from .env.production:
+      #   JARVIS_LOCAL_API_TOKEN, JARVIS_WEB_ALLOWED_HOSTS, BETTER_AUTH_URL,
+      #   JARVIS_CANONICAL_HOST, DATABASE_URL, provider keys.
+    volumes:
+      # Same host path AND same in-container path → DooD bind-mount consistency
+      # (the host daemon interprets the sandbox -v paths, so they must resolve
+      # identically inside `web`).
+      - ${JARVIS_WORKSPACES_ROOT:-/srv/jarvis/workspaces}:${JARVIS_WORKSPACES_ROOT:-/srv/jarvis/workspaces}
+    depends_on:
+      docker-proxy: { condition: service_started }
+      postgres: { condition: service_healthy }
+    expose: ["3000"]
+
+  # Tecnativa socket-proxy: the web app can create/exec/manage CONTAINERS +
+  # NETWORKS + IMAGES, but is denied host-level / privileged Docker ops. This is
+  # the enterprise alternative to mounting /var/run/docker.sock into the app
+  # (which would be host-root-equivalent).
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    restart: unless-stopped
+    environment:
+      CONTAINERS: "1"
+      EXEC: "1"
+      NETWORKS: "1"
+      IMAGES: "1"
+      POST: "1"
+      # Everything else stays 0 (default deny): INFO, SWARM, NODES, SECRETS,
+      # SYSTEM, etc. — no host-level reach.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    expose: ["2375"]
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: jarvis
+      POSTGRES_DB: jarvis
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jarvis -d jarvis"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    expose: ["5432"]
+
+volumes:
+  caddy_data:
+  caddy_config:
+  pg_data:

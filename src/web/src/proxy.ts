@@ -80,6 +80,16 @@ const HOST_ALLOWLIST = new Set<string>([
   '127.0.0.1',
   'localhost',
   '[::1]',
+  // Production: the public hostname(s) the app is served at, comma-separated
+  // in JARVIS_WEB_ALLOWED_HOSTS (e.g. "jarvis.example.com"). REQUIRED to serve
+  // at a real domain — without it every /api/* request 403s. Keeps the
+  // DNS-rebinding defense intact: only loopback + these EXPLICIT hosts pass,
+  // so this is an allowlist, not a wildcard. Pair with JARVIS_REQUIRE_LOCAL_AUTH=1
+  // and a front gate (Cloudflare Access) — see docs/runbook/deploy-online.md.
+  ...(process.env.JARVIS_WEB_ALLOWED_HOSTS ?? '')
+    .split(',')
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean),
 ])
 
 function hostFromHeader(host: string | null): string {
