@@ -13,7 +13,7 @@ const thread: ChatMsg[] = [
 
 describe("ActivityTimeline", () => {
   it("renders the task, reasoning, and a timestamped step", () => {
-    render(<ActivityTimeline thread={thread} running={false} elapsedMs={0} ready onApprove={() => {}} onRunExample={() => {}} />);
+    render(<ActivityTimeline thread={thread} running={false} runStart={null} ready onApprove={() => {}} onRunExample={() => {}} />);
     expect(screen.getByText("Open Firefox")).toBeTruthy();
     expect(screen.getByText("I'll launch Firefox.")).toBeTruthy();
     expect(screen.getByText("Clicked Firefox")).toBeTruthy();
@@ -21,7 +21,7 @@ describe("ActivityTimeline", () => {
   });
   it("shows examples and runs one when empty + ready", () => {
     const onRunExample = vi.fn();
-    render(<ActivityTimeline thread={[]} running={false} elapsedMs={0} ready onApprove={() => {}} onRunExample={onRunExample} />);
+    render(<ActivityTimeline thread={[]} running={false} runStart={null} ready onApprove={() => {}} onRunExample={onRunExample} />);
     fireEvent.click(screen.getByText("Take a screenshot and tell me what's open"));
     expect(onRunExample).toHaveBeenCalledWith("Take a screenshot and tell me what's open");
   });

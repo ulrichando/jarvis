@@ -22,7 +22,6 @@ export default function ComputerUsePage() {
   const [thread, setThread] = useState<ChatMsg[]>([]);
   const [sessionId, setSessionId] = useState("");
   const [runStart, setRunStart] = useState<number | null>(null);
-  const [elapsedMs, setElapsedMs] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
   const novncRef = useRef<NoVNCHandle | null>(null);
 
@@ -40,12 +39,6 @@ export default function ComputerUsePage() {
   // so producing it during SSR (then displaying it in the app-bar chip) mismatches
   // on hydration. Empty on the server + first client render, then filled on mount.
   useEffect(() => { setSessionId((id) => id || newSessionId()); }, []);
-
-  useEffect(() => {
-    if (!running || runStart == null) return;
-    const id = setInterval(() => setElapsedMs(Date.now() - runStart), 500);
-    return () => clearInterval(id);
-  }, [running, runStart]);
 
   const appendPart = useCallback((part: Part) => {
     setThread((prev) => {
@@ -74,7 +67,7 @@ export default function ComputerUsePage() {
   const runTask = useCallback(async (override?: string) => {
     const t = (override ?? task).trim();
     if (!t || running || !status?.ready) return;
-    setTakeover(false); setRunning(true); setTask(""); setRunStart(Date.now()); setElapsedMs(0);
+    setTakeover(false); setRunning(true); setTask(""); setRunStart(Date.now());
     setThread((prev) => [...prev, { role: "user", parts: [{ kind: "text", text: t }] }, { role: "assistant", parts: [] }]);
     const ctrl = new AbortController(); abortRef.current = ctrl;
     try {
@@ -127,7 +120,7 @@ export default function ComputerUsePage() {
           onTakeControl={takeControl} onGiveControl={() => setTakeover(false)} onConnect={connect} onRecheck={() => void refreshStatus()} onVncState={setVnc}
         />
         <ActivityTimeline
-          thread={thread} running={running} elapsedMs={elapsedMs} ready={!!status?.ready}
+          thread={thread} running={running} runStart={runStart} ready={!!status?.ready}
           onApprove={resolvePermission} onRunExample={(ex) => void runTask(ex)}
         />
       </div>

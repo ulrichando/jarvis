@@ -1,4 +1,5 @@
 "use client";
+import { useEffect, useState } from "react";
 import { Loader2, Check } from "lucide-react";
 import { Markdown } from "@/components/markdown/markdown";
 import { PermissionCard } from "./permission-card";
@@ -11,11 +12,11 @@ const EXAMPLES = [
 ];
 
 export function ActivityTimeline({
-  thread, running, elapsedMs, ready, onApprove, onRunExample,
+  thread, running, runStart, ready, onApprove, onRunExample,
 }: {
   thread: ChatMsg[];
   running: boolean;
-  elapsedMs: number;
+  runStart: number | null;
   ready: boolean;
   onApprove: (reqId: string, decision: "once" | "session" | "deny") => void;
   onRunExample: (ex: string) => void;
@@ -34,7 +35,7 @@ export function ActivityTimeline({
           </span>
         )}
         {stepCount > 0 && (
-          <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">{stepCount} steps · {formatElapsed(elapsedMs)}</span>
+          <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">{stepCount} steps · <ElapsedCounter key={runStart ?? 0} runStart={runStart} running={running} /></span>
         )}
       </div>
 
@@ -77,6 +78,19 @@ export function ActivityTimeline({
   );
 }
 
+// Owns its own 500ms tick so only this label re-renders during a run — keeps the
+// page (and the live noVNC canvas in DesktopStage) off the twice-a-second re-render.
+// Parent keys it on runStart, so each new run remounts it with a fresh 0:00.
+function ElapsedCounter({ runStart, running }: { runStart: number | null; running: boolean }) {
+  const [elapsedMs, setElapsedMs] = useState(() => (runStart == null ? 0 : Date.now() - runStart));
+  useEffect(() => {
+    if (!running || runStart == null) return;
+    const id = setInterval(() => setElapsedMs(Date.now() - runStart), 500);
+    return () => clearInterval(id);
+  }, [running, runStart]);
+  return <>{formatElapsed(elapsedMs)}</>;
+}
+
 function Entry({ part, onApprove }: { part: Part; onApprove: (reqId: string, decision: "once" | "session" | "deny") => void }) {
   if (part.kind === "text") return <div className="mb-4 border-l-2 border-border/40 pl-3 text-[12.5px] leading-relaxed text-muted-foreground"><Markdown content={part.text} /></div>;
   if (part.kind === "permission") return <div className="mb-4"><PermissionCard part={part} onApprove={onApprove} /></div>;
@@ -92,7 +106,10 @@ function Entry({ part, onApprove }: { part: Part; onApprove: (reqId: string, dec
         <div className="text-[13px] leading-snug">{part.text}</div>
         {part.ts ? <div className="mt-0.5 text-[10.5px] tabular-nums text-muted-foreground/70">{formatStepTime(part.ts)}</div> : null}
       </div>
-      {part.thumb ? <img src={part.thumb} alt="Desktop at this step" className="mt-0.5 h-10 w-16 shrink-0 rounded-md border border-border/40 object-cover" /> : null}
+      {part.thumb ? (
+        // eslint-disable-next-line @next/next/no-img-element -- base64 dataURL; next/image can't optimize it, and fixed h-10 w-16 means no CLS
+        <img src={part.thumb} alt="Desktop at this step" className="mt-0.5 h-10 w-16 shrink-0 rounded-md border border-border/40 object-cover" />
+      ) : null}
     </div>
   );
 }
