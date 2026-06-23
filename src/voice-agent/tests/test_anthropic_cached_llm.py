@@ -148,6 +148,106 @@ def test_marker_split_when_stable_prefix_unset():
     assert "cache_control" not in system_blocks[1]
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Empty/whitespace text-block guard (2026-06-23 "looking it up, never
+# returns the result" incident). Anthropic 400s the WHOLE request with
+# "messages: text content blocks must contain non-whitespace text" if any
+# message carries an empty text block; chat_ctx serialization emits these
+# for interrupted/cancelled assistant turns. Once one lands in history,
+# every supervisor turn 400s (not retryable) → the agent goes silent and
+# never delivers the (already-retrieved) result.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_strip_empties_drops_whitespace_text_block():
+    """A whitespace-only text block is removed; the message survives with a
+    placeholder so role alternation / tool pairing isn't broken."""
+    from providers.anthropic_cached_llm import _strip_empty_text_blocks
+
+    msgs = [
+        {"role": "user", "content": [{"type": "text", "text": "what were the scores?"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "   "}]},
+    ]
+    n = _strip_empty_text_blocks(msgs)
+    assert n == 1
+    for m in msgs:
+        for b in m["content"]:
+            if isinstance(b, dict) and b.get("type") == "text":
+                assert b["text"].strip(), f"empty text block survived: {b!r}"
+    assert msgs[1]["content"], "assistant message must not be left with empty content"
+
+
+def test_strip_empties_keeps_tool_use_block():
+    """An empty text block alongside a tool_use is dropped, the tool_use kept —
+    a tool call with no preamble text must still execute."""
+    from providers.anthropic_cached_llm import _strip_empty_text_blocks
+
+    msgs = [{
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": ""},
+            {"type": "tool_use", "id": "t1", "name": "web_search", "input": {}},
+        ],
+    }]
+    _strip_empty_text_blocks(msgs)
+    types = [b.get("type") for b in msgs[0]["content"]]
+    assert types == ["tool_use"], f"expected only tool_use, got {types}"
+
+
+def test_strip_empties_handles_string_content():
+    """Plain-string content that is whitespace-only is replaced, not left empty
+    (Anthropic rejects empty string content too)."""
+    from providers.anthropic_cached_llm import _strip_empty_text_blocks
+
+    msgs = [{"role": "user", "content": "   "}]
+    _strip_empty_text_blocks(msgs)
+    assert msgs[0]["content"].strip(), "whitespace string content must be replaced"
+
+
+def test_strip_empties_leaves_valid_messages_untouched():
+    """No empty blocks → no mutation, nothing reported cleaned."""
+    from providers.anthropic_cached_llm import _strip_empty_text_blocks
+
+    msgs = [
+        {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "hello"}]},
+    ]
+    before = [[dict(b) for b in m["content"]] for m in msgs]
+    n = _strip_empty_text_blocks(msgs)
+    assert n == 0
+    assert [m["content"] for m in msgs] == before
+
+
+def test_no_empty_text_block_reaches_anthropic_create():
+    """End-to-end wiring: when serialization yields a message with an empty text
+    block (the incident condition), chat() must strip it BEFORE the
+    messages.create(...) call so Anthropic never 400s."""
+    from unittest.mock import MagicMock, patch
+
+    wrapper, mock_create = _build_wrapper()
+    ctx = _build_chat_ctx("system prompt")
+
+    poisoned_messages = [
+        {"role": "user", "content": [{"type": "text", "text": "what were the scores?"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "   "}]},  # cancelled turn
+    ]
+    extra_data = MagicMock()
+    extra_data.system_messages = []
+    with patch.object(type(ctx), "to_provider_format", return_value=(poisoned_messages, extra_data)):
+        _drive_chat(wrapper, ctx)
+
+    assert mock_create.called, "messages.create was not invoked"
+    sent = mock_create.call_args.kwargs["messages"]
+    for m in sent:
+        content = m["content"]
+        if isinstance(content, list):
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "text":
+                    assert b["text"].strip(), f"empty text block sent to Anthropic: {b!r}"
+        elif isinstance(content, str):
+            assert content.strip(), "empty string content sent to Anthropic"
+
+
 def test_no_split_falls_back_to_last_block_cache():
     """When the system text has neither a stable_prefix match nor a
     marker, the wrapper must NOT crash — it falls back to the parent

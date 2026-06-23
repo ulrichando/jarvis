@@ -128,6 +128,46 @@ def _model_rejects_sampling_params(model: str) -> bool:
     return bool(_NO_SAMPLING_PARAMS_RE.search(model or ""))
 
 
+def _is_empty_text_block(block: Any) -> bool:
+    """A text content block carrying no non-whitespace text."""
+    return (
+        isinstance(block, dict)
+        and block.get("type") == "text"
+        and not (isinstance(block.get("text"), str) and block["text"].strip())
+    )
+
+
+def _strip_empty_text_blocks(messages: list) -> int:
+    """Remove empty/whitespace-only text content blocks before the Anthropic
+    request. Anthropic 400s the WHOLE request ("messages: text content blocks
+    must contain non-whitespace text") if any message carries one, and the error
+    is NOT retryable — so a single empty block (chat_ctx serializes these for
+    interrupted/cancelled or otherwise empty assistant turns) wedges every
+    subsequent supervisor turn and the agent goes silent mid-task (the
+    2026-06-23 "looking it up, never returns the result" incident). Empty blocks
+    are dropped; if that would leave a message with no content, a single '…'
+    placeholder keeps the message — and thus user/assistant alternation and
+    tool_use/tool_result pairing — intact. Returns the count cleaned (logging).
+    """
+    cleaned = 0
+    placeholder = "…"  # '…' — non-whitespace, satisfies the API constraint
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            if not content.strip():
+                msg["content"] = placeholder
+                cleaned += 1
+        elif isinstance(content, list):
+            kept = [b for b in content if not _is_empty_text_block(b)]
+            n = len(content) - len(kept)
+            if n:
+                cleaned += n
+                msg["content"] = kept or [{"type": "text", "text": placeholder}]
+    return cleaned
+
+
 class AnthropicCachedLLM(lk_anthropic.LLM):
     """`lk_anthropic.LLM` whose system message is split into a stable
     cached prefix + an uncached volatile suffix.
@@ -265,6 +305,15 @@ class AnthropicCachedLLM(lk_anthropic.LLM):
             format="anthropic", inject_trailing_user_message=inject_trailing
         )
         messages = cast(list[anthropic.types.MessageParam], anthropic_ctx)
+        # Strip empty/whitespace text blocks BEFORE the cache_control loop and
+        # the API call — Anthropic 400s (non-retryably) on any empty text block,
+        # which would otherwise wedge the supervisor for the rest of the session.
+        _n_empty = _strip_empty_text_blocks(messages)
+        if _n_empty:
+            logger.debug(
+                "anthropic: stripped %d empty text block(s) from request messages",
+                _n_empty,
+            )
 
         # ── system-block construction (the one and only behavioural diff) ──
         # The parent maps each system message to one TextBlockParam and
