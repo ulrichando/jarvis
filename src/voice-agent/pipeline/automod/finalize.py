@@ -300,6 +300,15 @@ def finalize_branch(automod_id: str, branch: str,
     }
     artifact.write(art)
     artifact.audit("automod_committed", id=automod_id, head_sha=head)
+    # Count against the daily cap ONLY now that the proposal is reviewable. A
+    # failed build (no commit / tests red / rejected diff) returns earlier and
+    # never reaches here, so it never consumes the budget (user 2026-06-23:
+    # "only count it if it's successful for review"). Best-effort.
+    try:
+        from pipeline.automod import throttle
+        throttle.mark_admitted(automod_id)
+    except Exception:  # noqa: BLE001 — cap accounting must never break finalize
+        pass
     # Proposal is now reviewable → notify (sub-project C). Best-effort; the audit
     # event also lets the /evolution activity feed surface it.
     try:

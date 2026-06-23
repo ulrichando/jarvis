@@ -37,7 +37,11 @@ from pipeline.automod._state import (
 
 logger = logging.getLogger("jarvis.automod.spawner")
 
-SPAWN_TIMEOUT_S = 600
+# 30 min by default: a build must explore + edit + run the full test suite
+# (~70s) + commit, which 10 min couldn't fit (every build hit
+# automod_spawn_timeout → no_commit_landed). Must be >= the wrapper's inner
+# `timeout` so finalize gets to run. Env-overridable.
+SPAWN_TIMEOUT_S = int(os.environ.get("JARVIS_AUTOMOD_SPAWN_TIMEOUT_S", "1800"))
 
 # Repo root + absolute path to the wrapper script. This file lives at
 # .../src/voice-agent/pipeline/automod/spawner.py, so:
@@ -65,16 +69,30 @@ def _git(*args: str) -> subprocess.CompletedProcess:
 
 
 def _worktree_path(rec_id: str) -> Path:
-    return _automod_home() / "worktrees" / rec_id
+    # MUST live at ~/.jarvis/worktrees/<id>, NOT ~/.jarvis/auto-mods/worktrees/<id>.
+    # The CLI's auto-edit guard treats any '.jarvis' path segment as a dangerous
+    # directory and refuses edits, EXCEPT when the segment right after '.jarvis'
+    # is exactly 'worktrees' (its git-worktree exemption). Nesting under
+    # auto-mods/ misses that exemption, so the build agent can't write a single
+    # file in the worktree → every build failed no_commit_landed (2026-06-23).
+    return _automod_home().parent / "worktrees" / rec_id
 
 
-def _prepare_worktree(rec_id: str) -> Path:
-    """Create a detached, disposable worktree for one proposal.
+def _prepare_worktree(rec_id: str) -> tuple[Path, str]:
+    """Create a detached, disposable worktree for one proposal. Returns
+    (worktree_path, base_sha).
 
     The wrapper used to reset the live checkout to origin/master before
     branching. That is unsafe when the user's local master is ahead of origin.
     A throwaway worktree gives the coding subprocess a clean base without ever
     moving the live checkout.
+
+    base_sha is the EXACT commit the worktree was created from, captured here so
+    the wrapper + finalize pin every git op (checkout, diff) to that snapshot.
+    Without this, finalize diffed against the live `master` ref — and a parallel
+    session committing to master mid-build polluted the proposal's diff with
+    unrelated files (live 2026-06-23: a concurrent cloudflare commit made a
+    1-file docstring proposal look like 6 files → bogus too_many_files reject).
     """
     wt = _worktree_path(rec_id)
     if wt.exists():
@@ -84,7 +102,7 @@ def _prepare_worktree(rec_id: str) -> Path:
     # Base the disposable worktree on the CURRENT code. Default = local `master`
     # (origin/master is intentionally stale here — local is 32 commits ahead, and
     # building from stale origin both misses current features and explodes the
-    # diff). finalize._base_ref MUST match this. Override with JARVIS_AUTOMOD_BASE_REF.
+    # diff). Override with JARVIS_AUTOMOD_BASE_REF.
     base = os.environ.get("JARVIS_AUTOMOD_BASE_REF", "master")
     if base.startswith("origin/"):
         # only fetch when explicitly building against the remote
@@ -93,7 +111,10 @@ def _prepare_worktree(rec_id: str) -> Path:
     add = _git("worktree", "add", "--detach", "--force", str(wt), base)
     if add.returncode != 0:
         raise RuntimeError(f"git worktree add failed (base={base}): {add.stderr.strip()}")
-    return wt
+    # Pin to the resolved commit, NOT the moving `base` ref.
+    rev = _git("-C", str(wt), "rev-parse", "HEAD")
+    base_sha = rev.stdout.strip() or base
+    return wt, base_sha
 
 
 def _cleanup_worktree(wt: Path) -> None:
@@ -185,7 +206,7 @@ async def _spawn_one(intent: dict) -> str:
         return "error"
 
     try:
-        worktree = _prepare_worktree(rec_id)
+        worktree, base_sha = _prepare_worktree(rec_id)
     except Exception as e:  # noqa: BLE001
         logger.error("[automod] worktree prep failed: id=%s err=%s", rec_id, e)
         artifact.audit("automod_spawn_error", id=rec_id,
@@ -200,11 +221,14 @@ async def _spawn_one(intent: dict) -> str:
         env = os.environ.copy()
         env["JARVIS_AUTOMOD_REPO_ROOT"] = str(worktree)
         env["JARVIS_AUTOMOD_TOOLING_ROOT"] = str(REPO_ROOT)
-        # Build from the CURRENT code. Default local `master` (origin/master is
-        # stale here — local is ahead; diffing against it double-counts the gap
-        # and produced bogus too_many_files rejections). Honors an explicit
-        # override. finalize._base_ref + the wrapper default match this.
-        env["JARVIS_AUTOMOD_BASE_REF"] = os.environ.get("JARVIS_AUTOMOD_BASE_REF", "master")
+        # Pin the wrapper checkout + finalize diff to the EXACT commit the
+        # worktree was created from (base_sha), NOT the live `master` ref. A
+        # parallel session committing to master mid-build was moving `master`
+        # out from under finalize, so finalize diffed against the wrong base
+        # and swept unrelated files into the proposal (live 2026-06-23: a
+        # concurrent cloudflare commit turned a 1-file docstring into a bogus
+        # too_many_files:6>5 reject). The SHA can't move.
+        env["JARVIS_AUTOMOD_BASE_REF"] = base_sha
         env["JARVIS_AUTOMOD_SKIP_BASE_FETCH"] = "1"
         proc = await asyncio.create_subprocess_exec(
             str(WRAPPER_SCRIPT),
@@ -233,10 +257,8 @@ async def drain_queue(*, only_id: str | None = None, force: bool = False) -> int
     """Drain queue.jsonl: for each intent, gate via throttle; on admit,
     spawn the wrapper. Returns count of successfully launched spawns.
 
-    `force=True` bypasses the daily-build cap — used by the explicit, user-
-    clicked "Build it" / on-demand path, which the user has asked be uncapped.
-    The autonomous detector path leaves force=False so its cap still bounds
-    unattended spawning.
+    `force=True` is reserved for admin/debug paths. Normal manual and auto
+    evolution both leave force=False so the 5/day budget bounds all builds.
 
     Always-safe. No-op when JARVIS_AUTOMOD_SPAWN_LIVE != '1' or when the
     evolution cycle is paused."""
@@ -266,13 +288,18 @@ async def drain_queue(*, only_id: str | None = None, force: bool = False) -> int
                                 intent.get("id"), reason)
                     artifact.audit("automod_rejected", id=intent.get("id"),
                                    reason=reason)
+                    if reason == "daily_cap_reached":
+                        remaining.append(intent)
                     continue
             status = await _spawn_one(intent)
             if status == "spawned":
-                throttle.mark_admitted(intent["id"])
+                # The daily cap counts only REVIEWABLE proposals: finalize calls
+                # throttle.mark_admitted when it writes a PENDING artifact. A
+                # spawned-but-failed build (no commit / tests red / rejected diff)
+                # must NOT consume the budget (user 2026-06-23).
                 spawned += 1
             # Timeout/error are consumed (don't retry).
-        if only_id:
+        if only_id or remaining:
             _write_queue(remaining)
         else:
             _truncate_queue()
