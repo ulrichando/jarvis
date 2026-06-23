@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars (gitignored) and fill in. No secrets here — the API
+# token comes from the CLOUDFLARE_API_TOKEN env var, not this file.
+account_id     = "your-cloudflare-account-id"
+zone_id        = "your-zone-id"
+hostname       = "jarvis.yourdomain.com"
+origin_ip      = "203.0.113.10" # ← the VPS public IP (the one piece that needs a server)
+allowed_emails = ["you@yourdomain.com"]

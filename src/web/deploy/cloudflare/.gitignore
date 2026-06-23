@@ -1,0 +1,7 @@
+# Terraform state can contain resolved values — never commit it.
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+# Your real values (IPs/emails) — not secret, but keep them local.
+terraform.tfvars
