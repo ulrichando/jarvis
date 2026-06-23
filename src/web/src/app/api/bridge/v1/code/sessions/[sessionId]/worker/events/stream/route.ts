@@ -2,11 +2,9 @@ import { getStore } from '@/lib/bridge/db'
 import {
   getInboundFloorSeq,
   listInboundSince,
-  validateSessionToken,
 } from '@/lib/bridge/store'
 import { waitForInbound } from '@/lib/bridge/events'
-import { extractBearer } from '@/lib/bridge/auth'
-import { bridgeError } from '@/lib/bridge/errors'
+import { authorizeSessionToken } from '@/lib/bridge/authz'
 
 export const dynamic = 'force-dynamic'
 
@@ -27,12 +25,9 @@ export async function GET(
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<Response> {
   const { sessionId } = await ctx.params
-  const token = extractBearer(req.headers.get('authorization'))
-  if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
+  const denied = authorizeSessionToken(req, sessionId)
+  if (denied) return denied
   const store = getStore()
-  if (!validateSessionToken(store, sessionId, token)) {
-    return bridgeError(401, 'unauthorized', 'Invalid session token')
-  }
 
   const url = new URL(req.url)
   const fromParam =

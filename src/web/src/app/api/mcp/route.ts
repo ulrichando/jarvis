@@ -6,27 +6,7 @@ import {
   setMcpServerEnabled,
 } from "@/lib/mcp/store";
 import { delServerAuth } from "@/lib/mcp/oauth-store";
-import { getUserId } from "@/lib/auth-helpers";
-import { LOCAL_USER_ID } from "@/lib/chat/persist";
-import { extractBearer } from "@/lib/bridge/auth";
-
-// MCP servers live in a GLOBAL store (~/.jarvis/mcp.json) — no per-user
-// ownership — but POST/PATCH/DELETE are credential-bearing mutations (a server
-// URL + auth headers; a hostile entry can exfil headers or SSRF). proxy.ts's
-// /api/* bearer gate is the intended network protection but it's opt-in, so the
-// mutations are gated app-side too: allow a trusted bearer (CLI) or a real
-// signed-in session; reject the LOCAL_USER_ID fallback when the login gate is
-// active. JARVIS_AUTH_DISABLED=1 (proxy.ts's own dev escape) opens it for
-// single-user/dev.
-async function requireAuth(req: Request): Promise<NextResponse | null> {
-  if (process.env.JARVIS_AUTH_DISABLED === "1") return null;
-  if (extractBearer(req.headers.get("authorization"))) return null;
-  const userId = await getUserId(req.headers);
-  if (userId === LOCAL_USER_ID) {
-    return NextResponse.json({ error: "authentication required" }, { status: 401 });
-  }
-  return null;
-}
+import { requireMcpAuth } from "@/lib/mcp/authz";
 
 // GET /api/mcp — JARVIS's MCP servers (from ~/.jarvis/mcp.json).
 // Auth headers are REDACTED here: the browser only learns whether a server has
@@ -42,7 +22,7 @@ export async function GET(): Promise<NextResponse> {
 
 // POST /api/mcp { name, url, transport?, headers? } — add an HTTP/SSE server.
 export async function POST(req: Request): Promise<NextResponse> {
-  const denied = await requireAuth(req);
+  const denied = await requireMcpAuth(req);
   if (denied) return denied;
   const body = (await req.json().catch(() => ({}))) as {
     name?: string;
@@ -80,7 +60,7 @@ export async function POST(req: Request): Promise<NextResponse> {
 
 // PATCH /api/mcp { id, enabled } — enable/disable a server without removing it.
 export async function PATCH(req: Request): Promise<NextResponse> {
-  const denied = await requireAuth(req);
+  const denied = await requireMcpAuth(req);
   if (denied) return denied;
   const body = (await req.json().catch(() => ({}))) as { id?: string; enabled?: boolean };
   if (!body.id || typeof body.enabled !== "boolean") {
@@ -92,7 +72,7 @@ export async function PATCH(req: Request): Promise<NextResponse> {
 
 // DELETE /api/mcp?id=<name> — remove a server.
 export async function DELETE(req: Request): Promise<NextResponse> {
-  const denied = await requireAuth(req);
+  const denied = await requireMcpAuth(req);
   if (denied) return denied;
   const id = new URL(req.url).searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });

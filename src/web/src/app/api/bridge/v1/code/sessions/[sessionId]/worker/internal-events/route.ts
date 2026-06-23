@@ -3,9 +3,8 @@ import { getStore } from '@/lib/bridge/db'
 import {
   appendInternalEvents,
   listInternalEvents,
-  validateSessionToken,
 } from '@/lib/bridge/store'
-import { extractBearer } from '@/lib/bridge/auth'
+import { authorizeSessionToken } from '@/lib/bridge/authz'
 import { bridgeError } from '@/lib/bridge/errors'
 
 // CCR v2 worker internal events — transcript/compaction state the CLI needs
@@ -13,25 +12,12 @@ import { bridgeError } from '@/lib/bridge/errors'
 // POST body: { worker_epoch, events: [...] }. GET (?subagents=true) returns
 // { data: [...] } — single page, no next_cursor (paginatedGet stops there).
 
-function authorize(
-  req: Request,
-  sessionId: string,
-): NextResponse | null {
-  const token = extractBearer(req.headers.get('authorization'))
-  if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
-  const store = getStore()
-  if (!validateSessionToken(store, sessionId, token)) {
-    return bridgeError(401, 'unauthorized', 'Invalid session token')
-  }
-  return null
-}
-
 export async function POST(
   req: Request,
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params
-  const denied = authorize(req, sessionId)
+  const denied = authorizeSessionToken(req, sessionId)
   if (denied) return denied
   const body = (await req.json().catch(() => null)) as {
     events?: unknown[]
@@ -66,7 +52,7 @@ export async function GET(
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params
-  const denied = authorize(req, sessionId)
+  const denied = authorizeSessionToken(req, sessionId)
   if (denied) return denied
   try {
     const subagents =

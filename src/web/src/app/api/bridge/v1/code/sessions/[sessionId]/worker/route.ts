@@ -1,11 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getStore } from '@/lib/bridge/db'
-import {
-  findSession,
-  mergeWorkerState,
-  validateSessionToken,
-} from '@/lib/bridge/store'
-import { extractBearer } from '@/lib/bridge/auth'
+import { findSession, mergeWorkerState } from '@/lib/bridge/store'
+import { authorizeSessionToken } from '@/lib/bridge/authz'
 import { bridgeError } from '@/lib/bridge/errors'
 
 // CCR v2 worker state. CCRClient.initialize() PUTs {worker_status:'idle',
@@ -14,21 +10,12 @@ import { bridgeError } from '@/lib/bridge/errors'
 // as {worker: {external_metadata}}. This endpoint was the missing piece that
 // made initialize() fail → transport close → session-recreate loop.
 
-function authorize(req: Request, sessionId: string): NextResponse | null {
-  const token = extractBearer(req.headers.get('authorization'))
-  if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
-  if (!validateSessionToken(getStore(), sessionId, token)) {
-    return bridgeError(401, 'unauthorized', 'Invalid session token')
-  }
-  return null
-}
-
 export async function PUT(
   req: Request,
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params
-  const denied = authorize(req, sessionId)
+  const denied = authorizeSessionToken(req, sessionId)
   if (denied) return denied
   const body = (await req.json().catch(() => null)) as Record<
     string,
@@ -58,7 +45,7 @@ export async function GET(
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params
-  const denied = authorize(req, sessionId)
+  const denied = authorizeSessionToken(req, sessionId)
   if (denied) return denied
   try {
     const session = findSession(getStore(), sessionId)

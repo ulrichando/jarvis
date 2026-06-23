@@ -5,30 +5,16 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { FileOAuthProvider } from "@/lib/mcp/oauth-provider";
 import { savePending, type Transport } from "@/lib/mcp/oauth-store";
-import { getUserId } from "@/lib/auth-helpers";
-import { LOCAL_USER_ID } from "@/lib/chat/persist";
-import { extractBearer } from "@/lib/bridge/auth";
+import { requireMcpAuth } from "@/lib/mcp/authz";
 
 export const runtime = "nodejs";
-
-// Same mutation gate as /api/mcp: a trusted bearer (CLI) or a real signed-in
-// session — never the LOCAL_USER_ID fallback when the login gate is active.
-async function requireAuth(req: Request): Promise<NextResponse | null> {
-  if (process.env.JARVIS_AUTH_DISABLED === "1") return null;
-  if (extractBearer(req.headers.get("authorization"))) return null;
-  const userId = await getUserId(req.headers);
-  if (userId === LOCAL_USER_ID) {
-    return NextResponse.json({ error: "authentication required" }, { status: 401 });
-  }
-  return null;
-}
 
 // POST { name, url, transport? } → { authUrl } | { authUrl: null }
 // Begins MCP OAuth: discovery + dynamic client registration + PKCE, all driven
 // by the SDK. We don't connect for real — we let the provider capture the
 // authorization URL and hand it back so the browser can navigate to it.
 export async function POST(req: Request): Promise<NextResponse> {
-  const denied = await requireAuth(req);
+  const denied = await requireMcpAuth(req);
   if (denied) return denied;
 
   const body = (await req.json().catch(() => ({}))) as {

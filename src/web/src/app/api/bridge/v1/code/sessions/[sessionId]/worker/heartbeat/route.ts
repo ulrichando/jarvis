@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getStore } from '@/lib/bridge/db'
-import { findSession, validateSessionToken } from '@/lib/bridge/store'
-import { extractBearer } from '@/lib/bridge/auth'
+import { findSession } from '@/lib/bridge/store'
+import { authorizeSessionToken } from '@/lib/bridge/authz'
 import { bridgeError } from '@/lib/bridge/errors'
 
 // POST /api/bridge/v1/code/sessions/{id}/worker/heartbeat — CCR v2 liveness.
@@ -12,16 +12,13 @@ export async function POST(
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params
-  const token = extractBearer(req.headers.get('authorization'))
-  if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
+  const denied = authorizeSessionToken(req, sessionId)
+  if (denied) return denied
   const body = (await req.json().catch(() => null)) as {
     worker_epoch?: number
   } | null
   try {
     const store = getStore()
-    if (!validateSessionToken(store, sessionId, token)) {
-      return bridgeError(401, 'unauthorized', 'Invalid session token')
-    }
     const session = findSession(store, sessionId)
     if (
       typeof body?.worker_epoch === 'number' &&

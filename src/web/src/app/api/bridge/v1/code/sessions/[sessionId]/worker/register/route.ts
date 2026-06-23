@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getStore } from '@/lib/bridge/db'
-import { bumpWorkerEpoch, validateSessionToken } from '@/lib/bridge/store'
-import { extractBearer } from '@/lib/bridge/auth'
+import { bumpWorkerEpoch } from '@/lib/bridge/store'
+import { authorizeSessionToken } from '@/lib/bridge/authz'
 import { bridgeError } from '@/lib/bridge/errors'
 
 // POST /api/bridge/v1/code/sessions/{id}/worker/register — CCR v2 worker
@@ -13,13 +13,10 @@ export async function POST(
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params
-  const token = extractBearer(req.headers.get('authorization'))
-  if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
+  const denied = authorizeSessionToken(req, sessionId)
+  if (denied) return denied
   try {
     const store = getStore()
-    if (!validateSessionToken(store, sessionId, token)) {
-      return bridgeError(401, 'unauthorized', 'Invalid session token')
-    }
     const epoch = bumpWorkerEpoch(store, sessionId)
     return NextResponse.json({ worker_epoch: epoch })
   } catch (err) {

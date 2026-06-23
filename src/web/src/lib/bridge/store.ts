@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 
 export interface Store {
   db: Database.Database
@@ -467,6 +467,20 @@ export function findEnvironmentByIdentity(
   return row ?? null
 }
 
+/**
+ * Constant-time secret/token comparison. A missing stored secret
+ * (null/undefined/empty) never authorizes; a length mismatch returns false
+ * without calling timingSafeEqual (which requires equal-length buffers).
+ * Mirrors the pattern already used in proxyJwt.ts / github/webhook — avoids
+ * leaking the match position that early-exit `===` would.
+ */
+function secretEquals(stored: string | null | undefined, given: string): boolean {
+  if (!stored) return false
+  const a = Buffer.from(stored, 'utf8')
+  const b = Buffer.from(given, 'utf8')
+  return a.length === b.length && timingSafeEqual(a, b)
+}
+
 export function validateEnvSecret(
   store: Store,
   envId: string,
@@ -474,7 +488,7 @@ export function validateEnvSecret(
 ): boolean {
   const env = findEnvironment(store, envId)
   if (!env) return false
-  return env.environment_secret === secret
+  return secretEquals(env.environment_secret, secret)
 }
 
 export function deleteEnvironment(store: Store, envId: string): void {
@@ -838,7 +852,7 @@ export function getSessionGitScope(session: SessionRow): string[] {
 /** True when `token` matches the session's stored git capability token. */
 export function validateGitCapToken(store: Store, sessionId: string, token: string): boolean {
   const m = parseContainerMeta(findSession(store, sessionId))
-  return !!m.gitCapToken && m.gitCapToken === token
+  return secretEquals(m.gitCapToken, token)
 }
 
 /** The persisted CLI worker launch spec — enough to re-exec the worker into an
@@ -1128,7 +1142,7 @@ export function validateSessionToken(
   token: string,
 ): boolean {
   const row = findSession(store, sessionId)
-  return !!row && !!row.session_token && row.session_token === token
+  return !!row && secretEquals(row.session_token, token)
 }
 
 /** Register-worker semantics: bump and return the session's worker epoch. */
@@ -1186,7 +1200,7 @@ export function validateWorkSessionToken(
        WHERE w.id = ? AND w.environment_id = ?`,
     )
     .get(workId, envId) as { t: string | null } | undefined
-  return !!row?.t && row.t === token
+  return secretEquals(row?.t, token)
 }
 
 /**

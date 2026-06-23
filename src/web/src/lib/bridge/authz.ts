@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/bridge/db";
-import { findEnvironment, findSession } from "@/lib/bridge/store";
+import { findEnvironment, findSession, validateSessionToken } from "@/lib/bridge/store";
 import { extractBearer } from "@/lib/bridge/auth";
 import { getUserId } from "@/lib/auth-helpers";
 import { LOCAL_USER_ID } from "@/lib/chat/persist";
@@ -38,6 +38,24 @@ export async function authorizeSession(
       return bridgeError(401, "unauthenticated", "Session expired — please sign in again");
     }
     return bridgeError(403, "forbidden", "Not your session");
+  }
+  return null;
+}
+
+// Worker session-token gate for the CCR v2 /code worker routes: the bearer is
+// the per-session ingress token minted at session creation. Extracted from the
+// 7 worker routes that each repeated this exact check (2 as a local `authorize`,
+// 5 inlined). Returns an error response to short-circuit on, or null when
+// allowed. Distinct from authorizeSession above (the browser cookie-ownership
+// gate); this is the token-presenting worker's gate.
+export function authorizeSessionToken(
+  req: Request,
+  sessionId: string,
+): NextResponse | null {
+  const token = extractBearer(req.headers.get("authorization"));
+  if (!token) return bridgeError(401, "unauthorized", "Missing bearer");
+  if (!validateSessionToken(getStore(), sessionId, token)) {
+    return bridgeError(401, "unauthorized", "Invalid session token");
   }
   return null;
 }

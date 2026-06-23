@@ -6,10 +6,9 @@ import {
   appendSessionEvent,
   findSession,
   hasInboundUuid,
-  validateSessionToken,
 } from '@/lib/bridge/store'
 import { clearLiveText, emitInbound, setLiveText } from '@/lib/bridge/events'
-import { extractBearer } from '@/lib/bridge/auth'
+import { authorizeSessionToken } from '@/lib/bridge/authz'
 import { bridgeError } from '@/lib/bridge/errors'
 
 // Structural slice of an ephemeral stream_event carrying a full-so-far
@@ -34,8 +33,8 @@ export async function POST(
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params
-  const token = extractBearer(req.headers.get('authorization'))
-  if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
+  const denied = authorizeSessionToken(req, sessionId)
+  if (denied) return denied
   const body = (await req.json().catch(() => null)) as {
     worker_epoch?: number
     events?: Array<{ payload?: Record<string, unknown>; ephemeral?: boolean }>
@@ -45,9 +44,6 @@ export async function POST(
   }
   try {
     const store = getStore()
-    if (!validateSessionToken(store, sessionId, token)) {
-      return bridgeError(401, 'unauthorized', 'Invalid session token')
-    }
     const session = findSession(store, sessionId)
     if (
       typeof body.worker_epoch === 'number' &&

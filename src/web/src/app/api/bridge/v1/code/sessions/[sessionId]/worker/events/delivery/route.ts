@@ -1,8 +1,5 @@
 import { NextResponse } from 'next/server'
-import { getStore } from '@/lib/bridge/db'
-import { validateSessionToken } from '@/lib/bridge/store'
-import { extractBearer } from '@/lib/bridge/auth'
-import { bridgeError } from '@/lib/bridge/errors'
+import { authorizeSessionToken } from '@/lib/bridge/authz'
 
 // POST /api/bridge/v1/code/sessions/{id}/worker/events/delivery — inbound
 // delivery acks ({ worker_epoch, updates: [{event_id, status}] }). The
@@ -13,12 +10,8 @@ export async function POST(
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params
-  const token = extractBearer(req.headers.get('authorization'))
-  if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
-  const store = getStore()
-  if (!validateSessionToken(store, sessionId, token)) {
-    return bridgeError(401, 'unauthorized', 'Invalid session token')
-  }
+  const denied = authorizeSessionToken(req, sessionId)
+  if (denied) return denied
   await req.json().catch(() => null)
   return new NextResponse(null, { status: 204 })
 }
