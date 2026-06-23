@@ -1,6 +1,7 @@
 import "server-only";
 
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
   DEFAULT_SETTINGS,
@@ -10,8 +11,11 @@ import {
 import { providerEnvKey } from "@/lib/ai/provider-keys";
 import type { Provider } from "@/lib/ai/models-meta";
 
-const SETTINGS_DIR = path.join(process.cwd(), ".jarvis");
+const SETTINGS_DIR = path.join(os.homedir(), ".jarvis");
 const SETTINGS_FILE = path.join(SETTINGS_DIR, "settings.json");
+// Legacy cwd-relative location (pre-2026-06). Read once for migration; the next
+// saveSettings() writes the new ~/.jarvis path, superseding it.
+const LEGACY_SETTINGS_FILE = path.join(process.cwd(), ".jarvis", "settings.json");
 
 let cache: Settings | null = null;
 
@@ -21,13 +25,17 @@ async function ensureDir() {
 
 export async function loadSettings(): Promise<Settings> {
   if (cache) return cache;
-  try {
-    const raw = await fs.readFile(SETTINGS_FILE, "utf-8");
-    const parsed = settingsSchema.safeParse(JSON.parse(raw));
-    cache = parsed.success ? parsed.data : DEFAULT_SETTINGS;
-  } catch {
-    cache = DEFAULT_SETTINGS;
+  for (const file of [SETTINGS_FILE, LEGACY_SETTINGS_FILE]) {
+    try {
+      const raw = await fs.readFile(file, "utf-8");
+      const parsed = settingsSchema.safeParse(JSON.parse(raw));
+      cache = parsed.success ? parsed.data : DEFAULT_SETTINGS;
+      return cache;
+    } catch {
+      // not at this location — try the next
+    }
   }
+  cache = DEFAULT_SETTINGS;
   return cache;
 }
 
