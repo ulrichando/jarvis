@@ -138,7 +138,17 @@ fi
 # ── Built-in Jarvis model registry ────────────────────────────────────────
 # Provider identities and picker entries now come from src/utils/model/jarvisModelRegistry.ts.
 
-# ── Start proxy ───────────────────────────────────────────────────────────
+# ── Proxy (:4000) ─────────────────────────────────────────────────────────
+# Prefer the persistent systemd --user service (jarvis-proxy.service): it's
+# immortal (Restart=always) + shared, so a `jarvis` session must NOT spawn,
+# supervise, or kill its own proxy — that fights the service (the EXIT pkill
+# would drop the service's proxy; a 2nd proxy clashes on :4000). When the
+# service is active, do nothing and let the health check below confirm it;
+# otherwise fall back to a session-scoped proxy + bash respawn supervisor.
+if command -v systemctl >/dev/null 2>&1 \
+   && systemctl --user is-active --quiet jarvis-proxy.service 2>/dev/null; then
+  echo "[jarvis] proxy: using persistent jarvis-proxy.service on :4000"
+else
 # Pre-flight: kill any orphaned proxy from a prior session that didn't
 # clean up. Without this, the new proxy fails with EADDRINUSE, the new
 # CLI silently connects to the OLD proxy (which still has the pre-rotation
@@ -155,26 +165,64 @@ if [ -n "$STALE_PROXY" ] && kill -0 "$STALE_PROXY" 2>/dev/null; then
   kill -KILL "$STALE_PROXY" 2>/dev/null || true
 fi
 
-"$BUN" "$ROOT/src/proxy/server.ts" &>/tmp/jarvis-proxy.log &
-PROXY_PID=$!
+# Start the proxy under a respawn SUPERVISOR so a mid-session crash
+# self-heals instead of stranding the live CLI with "Unable to connect to
+# API". start.sh historically started it once; start-desktop.sh has long
+# had this supervisor (added 2026-05-29 after the proxy died silently
+# mid-session) — this ports the same loop to the plain `jarvis` launcher.
+# 2s back-off, capped at 5 restarts per 30s window; past that the proxy is
+# assumed genuinely broken (env/port/syntax) and we stop pegging the CPU.
+: > /tmp/jarvis-proxy.log
+(
+  # Parent runs under `set -euo pipefail`; disable -e here so a non-zero
+  # proxy exit (the whole reason this loop exists) doesn't abort the
+  # supervisor on the first crash.
+  set +e
+  PROXY_RESTARTS=0
+  PROXY_WINDOW_START=$(date +%s)
+  while true; do
+    "$BUN" "$ROOT/src/proxy/server.ts" >>/tmp/jarvis-proxy.log 2>&1 &
+    PROXY_CHILD=$!
+    # Forward the parent's teardown to the bun child; `wait` is signal-
+    # interruptible only while a trap is registered.
+    trap "kill $PROXY_CHILD 2>/dev/null; exit 0" TERM INT
+    wait $PROXY_CHILD
+    EC=$?
+    NOW=$(date +%s)
+    if (( NOW - PROXY_WINDOW_START > 30 )); then
+      PROXY_WINDOW_START=$NOW
+      PROXY_RESTARTS=0
+    fi
+    PROXY_RESTARTS=$((PROXY_RESTARTS + 1))
+    if (( PROXY_RESTARTS > 5 )); then
+      echo "[jarvis-proxy-sup] proxy crashed $PROXY_RESTARTS times in <30s; giving up (check env / port conflict)" \
+        >>/tmp/jarvis-proxy.log
+      break
+    fi
+    echo "[jarvis-proxy-sup] proxy exited (code=$EC); respawn #$PROXY_RESTARTS in 2s" \
+      >>/tmp/jarvis-proxy.log
+    sleep 2
+  done
+) &
+PROXY_SUP_PID=$!
 
-# Robust cleanup. The OLD code used `trap "kill $PROXY_PID" EXIT` plus
-# `exec systemd-run ...` below — but `exec` replaces this bash process,
-# so the trap dies with it and the proxy gets orphaned. Ctrl+C in the
-# CLI then leaves a zombie listening on :4000 that the next `jarvis`
-# run silently inherits (with stale env vars). Keeping bash alive (no
-# exec) lets the trap actually fire.
+# Tear the supervisor (and its live proxy child) down when this launcher
+# exits. The supervisor's own TERM trap kills its child; the pkill is a
+# backstop for a child that outlived it. No `exec` below keeps this bash
+# alive so the EXIT trap actually fires (a prior bug orphaned the proxy).
 cleanup_proxy() {
-  if [ -n "${PROXY_PID:-}" ] && kill -0 "$PROXY_PID" 2>/dev/null; then
-    kill -TERM "$PROXY_PID" 2>/dev/null || true
+  if [ -n "${PROXY_SUP_PID:-}" ] && kill -0 "$PROXY_SUP_PID" 2>/dev/null; then
+    kill -TERM "$PROXY_SUP_PID" 2>/dev/null || true
     for _ in 1 2 3 4 5 6; do
-      kill -0 "$PROXY_PID" 2>/dev/null || break
+      kill -0 "$PROXY_SUP_PID" 2>/dev/null || break
       sleep 0.25
     done
-    kill -KILL "$PROXY_PID" 2>/dev/null || true
+    kill -KILL "$PROXY_SUP_PID" 2>/dev/null || true
   fi
+  pkill -f "$ROOT/src/proxy/server.ts" 2>/dev/null || true
 }
 trap cleanup_proxy EXIT
+fi  # end: prefer systemd jarvis-proxy.service, else session-scoped supervisor
 
 for i in $(seq 1 15); do
   if curl -s http://localhost:4000/health >/dev/null 2>&1; then break; fi

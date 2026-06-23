@@ -1,0 +1,50 @@
+[Unit]
+Description=JARVIS LLM proxy (Bun HTTP server on 127.0.0.1:4000, Claude-Code-compatible)
+After=network-online.target
+Wants=network-online.target
+# Defeat systemd's crash-loop give-up. The default (DefaultStartLimitBurst=5 /
+# DefaultStartLimitIntervalSec=10s) makes a Restart=always unit STOP retrying
+# after 5 starts in 10s — the exact "permanently dead" failure we're escaping
+# (the old bash supervisor capped at 5/30s too). 0 disables rate limiting, so
+# Restart=always retries FOREVER. This is the single load-bearing line.
+StartLimitIntervalSec=0
+
+[Service]
+# exec: unit is "started" only once execve() succeeds (a bad path fails loudly,
+# unlike simple). No Type=notify/WatchdogSec here — the in-proxy
+# uncaughtException/unhandledRejection guards (server.ts) keep the process from
+# dying in the first place; systemd is the out-of-process backstop.
+Type=exec
+WorkingDirectory=%h/Documents/Projects/jarvis/src/cli
+# Wrapper sources keys.env via bash (systemd EnvironmentFile can't parse its
+# export/quoted lines) then exec's bun on the proxy.
+ExecStart=%h/Documents/Projects/jarvis/bin/jarvis-proxy-service
+
+# ── Immortality: retry forever, exponential backoff 2s→60s over 8 steps so a
+#    hard-broken proxy (bad env / port clash) doesn't peg a core. ──
+Restart=always
+RestartSec=2
+RestartSteps=8
+RestartMaxDelaySec=60
+
+# ── Memory-leak guard: throttle at 512M, hard kill-and-restart INSIDE this
+#    cgroup at 768M, so a leak never invokes the box-wide OOM killer. ──
+MemoryHigh=512M
+MemoryMax=768M
+OOMPolicy=kill
+
+# ── Logs: append across restarts to a persistent path (the old bash loop
+#    logged to /tmp, which is cleared). ──
+StandardOutput=append:%h/.local/share/jarvis/logs/proxy.log
+StandardError=append:%h/.local/share/jarvis/logs/proxy.log
+
+# ── Cheap hardening (mirrors jarvis-voice-agent.service); loopback-only. ──
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=default.target

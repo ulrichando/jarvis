@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Persistent launcher for the :4000 jarvis proxy, run by
+# jarvis-proxy.service (systemd --user). Sources the SAME env start.sh does
+# (root .env → cli/.env.local → ~/.jarvis/keys.env, last wins) via bash
+# `source` — systemd's own EnvironmentFile= cannot parse keys.env's
+# `export`/quoted lines, which is why this wrapper exists. Then `exec`s bun
+# so systemd tracks the proxy process directly and Restart=always works.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CLI="$ROOT/src/cli"
+
+set -a
+[ -f "$ROOT/.env" ]          && source "$ROOT/.env"
+[ -f "$CLI/.env.local" ]     && source "$CLI/.env.local"
+[ -f "$HOME/.jarvis/keys.env" ] && source "$HOME/.jarvis/keys.env"
+set +a
+
+# Match the proxy env the interactive launcher sets (start.sh:102-130) so the
+# service routes models + auth identically to a `jarvis` session.
+export JARVIS_PROXY_PORT="${JARVIS_PROXY_PORT:-4000}"
+export JARVIS_MODEL_REGISTRY_ENABLED=1
+export JARVIS_PROVIDER="${JARVIS_PROVIDER:-deepseek}"
+export JARVIS_DISABLE_AUTH="${JARVIS_DISABLE_AUTH:-1}"
+export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-jarvis-proxy}"
+
+BUN="$CLI/vendor/bun/linux-x64/bun"
+[ -x "$BUN" ] || BUN="$(command -v bun)"
+exec "$BUN" "$CLI/src/proxy/server.ts"

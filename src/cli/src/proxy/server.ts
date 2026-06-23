@@ -17,6 +17,22 @@ const PORT = parseInt(process.env.JARVIS_PROXY_PORT ?? '4000')
 
 console.log(`[jarvis-proxy] Starting on port ${PORT}`)
 
+// Last-resort process guards. A single bad request — or, most commonly, a
+// client that disconnects mid-stream so an unguarded controller.enqueue()
+// throws inside a stream `finally` — must NEVER take the whole proxy down.
+// Bun terminates the process on an unhandled rejection/exception by default,
+// which is exactly how the proxy silently vanished mid-session (no stderr, no
+// log, after hours of clean traffic). Each request is independent, so log the
+// fault and keep serving; the next request is unaffected. This is the durable
+// cure regardless of which exact line threw — see the systemd unit for the
+// out-of-process backstop.
+process.on('uncaughtException', (err) => {
+  console.error('[jarvis-proxy] uncaughtException (kept alive):', err)
+})
+process.on('unhandledRejection', (reason) => {
+  console.error('[jarvis-proxy] unhandledRejection (kept alive):', reason)
+})
+
 type AttemptOutcome = {
   response: Response | null
   errorMessage: string | null
@@ -213,6 +229,19 @@ const server = Bun.serve({
     }
 
     return new Response('Not found', { status: 404 })
+  },
+  // Catch-all for anything thrown out of the request lifecycle or a socket
+  // error. Without it, a throw escaping fetch() (or a low-level connection
+  // error) can take the whole process down. Return a 500 instead of dying.
+  error(err: Error) {
+    console.error('[jarvis-proxy] Bun.serve error (kept alive):', err)
+    return new Response(
+      JSON.stringify({
+        type: 'error',
+        error: { type: 'api_error', message: 'internal proxy error' },
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    )
   },
 })
 
