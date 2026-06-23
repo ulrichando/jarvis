@@ -39,8 +39,11 @@ jobs:
         # and page compilation failures. Must pass for the job to succeed.
         run: bun run build
 
-      - name: bun test
-        # web tests depend on better-sqlite3 native bindings; rebuilt by
-        # bun install in CI but flip to required once confirmed green.
+      - name: bun run test
+        # The suite is vitest (the package "test" script). It MUST run via
+        # `bun run test`; `bun test` invokes bun's native runner, which
+        # mis-handles the vitest suite (~107 spurious failures). Still
+        # non-blocking until one green CI run is observed here — then drop
+        # continue-on-error to enforce. (Local `vitest run`: 298 passing.)
         continue-on-error: true
-        run: bun test
+        run: bun run test
