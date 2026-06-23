@@ -7382,13 +7382,21 @@ async def entrypoint(ctx: JobContext) -> None:
             from pipeline.automod import spawner as _automod_spawner
 
             async def _automod_loop():
+                from pipeline.automod._state import is_auto_mode
                 interval = int(os.environ.get(
                     "JARVIS_AUTOMOD_PATTERN_INTERVAL_S", "1800"
                 ))
                 while True:
                     try:
+                        # Detection always runs: queue intents for review.
                         _automod_patterns.scan_and_emit()
-                        await _automod_spawner.drain_queue()
+                        # BUILD only in AUTO mode. In MANUAL mode we leave the
+                        # intents queued for the user to review + build via
+                        # /evolution. Without this gate the loop auto-built in
+                        # manual mode (the nightly path already gates this way;
+                        # this in-process loop must too). 2026-06-23.
+                        if is_auto_mode():
+                            await _automod_spawner.drain_queue()
                     except Exception as _e:  # noqa: BLE001
                         logger.warning("[automod] loop iteration failed: %s", _e)
                     await asyncio.sleep(interval)
