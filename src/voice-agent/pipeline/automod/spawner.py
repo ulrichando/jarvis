@@ -200,7 +200,11 @@ async def _spawn_one(intent: dict) -> str:
         env = os.environ.copy()
         env["JARVIS_AUTOMOD_REPO_ROOT"] = str(worktree)
         env["JARVIS_AUTOMOD_TOOLING_ROOT"] = str(REPO_ROOT)
-        env["JARVIS_AUTOMOD_BASE_REF"] = "origin/master"
+        # Build from the CURRENT code. Default local `master` (origin/master is
+        # stale here — local is ahead; diffing against it double-counts the gap
+        # and produced bogus too_many_files rejections). Honors an explicit
+        # override. finalize._base_ref + the wrapper default match this.
+        env["JARVIS_AUTOMOD_BASE_REF"] = os.environ.get("JARVIS_AUTOMOD_BASE_REF", "master")
         env["JARVIS_AUTOMOD_SKIP_BASE_FETCH"] = "1"
         proc = await asyncio.create_subprocess_exec(
             str(WRAPPER_SCRIPT),

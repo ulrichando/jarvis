@@ -30,6 +30,20 @@ def _make_intent(id_, **overrides):
     return base
 
 
+@pytest.fixture(autouse=True)
+def _stub_worktrees(tmp_path, monkeypatch):
+    """Spawner tests should never create real git worktrees in the checkout."""
+    from pipeline.automod import spawner
+
+    def _prepare(rec_id: str) -> Path:
+        p = tmp_path / "worktrees" / rec_id
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    monkeypatch.setattr(spawner, "_prepare_worktree", _prepare)
+    monkeypatch.setattr(spawner, "_cleanup_worktree", lambda _p: None)
+
+
 def test_shadow_mode_returns_zero_no_spawn(tmp_path, monkeypatch):
     monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
     monkeypatch.delenv("JARVIS_AUTOMOD_SPAWN_LIVE", raising=False)
@@ -118,6 +132,33 @@ def test_throttle_rejection_drops_from_queue(tmp_path, monkeypatch):
         assert not queue_path.read_text().strip()
 
 
+def test_drain_queue_only_id_preserves_other_intents(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    monkeypatch.setenv("JARVIS_AUTOMOD_SPAWN_LIVE", "1")
+    monkeypatch.setenv("JARVIS_AUTOMOD_DAILY_CAP", "10")
+    _seed_queue(tmp_path, [
+        _make_intent("id1"),
+        _make_intent("id2"),
+        _make_intent("id3"),
+    ])
+
+    async def fake_exec(*args, **kwargs):
+        class _Fake:
+            returncode = 0
+            pid = 1
+            async def wait(self): return 0
+        return _Fake()
+
+    from pipeline.automod import spawner
+    with patch.object(asyncio, "create_subprocess_exec", side_effect=fake_exec):
+        n = asyncio.run(spawner.drain_queue(only_id="id2"))
+
+    assert n == 1
+    queue_path = tmp_path / "auto-mods" / "queue.jsonl"
+    remaining = [json.loads(line)["id"] for line in queue_path.read_text().splitlines()]
+    assert remaining == ["id1", "id3"]
+
+
 def test_timeout_treated_as_consumed(tmp_path, monkeypatch):
     """A spawn that times out is logged + dropped from queue."""
     monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
@@ -151,9 +192,11 @@ def test_intent_file_written_before_spawn(tmp_path, monkeypatch):
     _seed_queue(tmp_path, [_make_intent("id1", intent="MY-TEST-INTENT")])
 
     captured_args = []
+    captured_env = []
 
     async def fake_exec(*args, **kwargs):
         captured_args.append(args)
+        captured_env.append(kwargs.get("env") or {})
         class _Fake:
             returncode = 0
             pid = 1
@@ -165,8 +208,15 @@ def test_intent_file_written_before_spawn(tmp_path, monkeypatch):
         asyncio.run(spawner.drain_queue())
 
     assert captured_args
-    # Second positional arg should be the intent file path
+    assert captured_env
+    # Second positional arg should be the intent file path; the wrapper should
+    # run in an isolated worktree, not the live checkout.
     intent_file = tmp_path / "auto-mods" / "id1.intent.txt"
     assert intent_file.exists()
     body = intent_file.read_text()
     assert "MY-TEST-INTENT" in body
+    assert "EVOLUTION:" in body
+    assert captured_env[0]["JARVIS_AUTOMOD_REPO_ROOT"].endswith("worktrees/id1")
+    # Builds branch from the CURRENT code (local master) — origin/master is stale
+    # here and diffing against it double-counts the divergence (bogus too_many_files).
+    assert captured_env[0]["JARVIS_AUTOMOD_BASE_REF"] == "master"
