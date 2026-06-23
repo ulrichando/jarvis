@@ -998,6 +998,7 @@ fn cli_model_pretty(id: &str) -> Option<&'static str> {
         "gpt-5.1"                                        => Some("OpenAI · GPT-5.1"),
         "gpt-5-mini"                                     => Some("OpenAI · GPT-5 mini"),
         "qwen/qwen3-32b"                                 => Some("Groq · qwen3-32b"),
+        "deepseek-v4-pro"                                => Some("DeepSeek · V4 Pro"),
         _ => None,
     }
 }
@@ -1019,8 +1020,50 @@ fn speech_model_pretty(id: &str) -> Option<&'static str> {
         "qwen/qwen3-32b"                                 => Some("Groq · qwen3-32b"),
         "ollama/qwen3:30b-a3b"                           => Some("Local · Qwen3 30B-A3B"),
         "ollama/gpt-oss:120b"                            => Some("Local · gpt-oss 120B"),
+        "deepseek-v4-flash"                              => Some("DeepSeek · V4 Flash"),
         _ => None,
     }
+}
+
+/// True if a provider's API key is configured (process env, then
+/// ~/.jarvis/keys.env, then repo .env). Used to hide tray model entries
+/// whose provider key isn't set — no point offering a model that 401s.
+fn provider_key_present(env_var: &str) -> bool {
+    if std::env::var(env_var).map(|v| !v.trim().is_empty()).unwrap_or(false) {
+        return true;
+    }
+    if _keys_read_map().get(env_var).map(|v| !v.trim().is_empty()).unwrap_or(false) {
+        return true;
+    }
+    _repo_keys_read_map().get(env_var).map(|v| !v.trim().is_empty()).unwrap_or(false)
+}
+
+/// Names of models currently pulled into the local Ollama daemon
+/// (GET /api/tags). Empty when Ollama isn't running or nothing is pulled —
+/// so local menu entries only appear once a model is actually downloaded.
+fn ollama_installed_models() -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    if let Ok(o) = hidden_command("curl")
+        .args(["-s", "--max-time", "2", "http://localhost:11434/api/tags"])
+        .output()
+    {
+        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&o.stdout) {
+            if let Some(arr) = json.get("models").and_then(|m| m.as_array()) {
+                for m in arr {
+                    if let Some(name) = m.get("name").and_then(|n| n.as_str()) {
+                        set.insert(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    set
+}
+
+/// True if `target` (e.g. "qwen3:30b-a3b") is among the installed Ollama
+/// models, tolerating a trailing ":tag" (":latest" etc.).
+fn ollama_has(installed: &std::collections::HashSet<String>, target: &str) -> bool {
+    installed.iter().any(|m| m == target || m.starts_with(&format!("{target}:")))
 }
 
 /// Switch the active CLI model by POSTing to the voice-client. The
@@ -2481,6 +2524,17 @@ fn main() {
                 .build(app)?;
             let header_sep   = PredefinedMenuItem::separator(app)?;
 
+            // Detect what's actually usable so the menu only offers working
+            // models (user request 2026-06-23): API models are gated on key
+            // presence, local models on what Ollama has pulled. Detection runs
+            // once at launch — relaunch the desktop to pick up a new key or a
+            // freshly pulled Ollama model.
+            let have_anthropic = provider_key_present("ANTHROPIC_API_KEY");
+            let have_openai    = provider_key_present("OPENAI_API_KEY");
+            let have_groq      = provider_key_present("GROQ_API_KEY");
+            let have_deepseek  = provider_key_present("DEEPSEEK_API_KEY");
+            let ollama_models  = ollama_installed_models();
+
             // ── SPEECH submenu (nested under Models) ──
             // Switching speech requires an agent restart (~5 s amber).
             // 2026-05-18: curated to 6 entries matching
@@ -2496,23 +2550,28 @@ fn main() {
             let v_gpt_5_mini    = MenuItemBuilder::with_id("speech_gpt-5-mini",        "Use OpenAI · GPT-5 mini (alternative)").build(app)?;
             let v_gpt_5_1       = MenuItemBuilder::with_id("speech_gpt-5.1",           "Use OpenAI · GPT-5.1 (best OpenAI tools)").build(app)?;
             let v_qwen          = MenuItemBuilder::with_id("speech_qwen/qwen3-32b",    "Use Groq · qwen3-32b (no-API-quota option)").build(app)?;
+            // DeepSeek re-added 2026-06-23 per user request (daily-driver model).
+            // Speech uses v4-flash — the fast one, and the only v4 DeepSeek in
+            // providers/llm.py SPEECH_MODELS (v4-pro isn't a speech entry).
+            let v_deepseek      = MenuItemBuilder::with_id("speech_deepseek-v4-flash", "Use DeepSeek · V4 Flash (fast)").build(app)?;
             // Local (Ollama) — runs the voice brain fully on-device. qwen3-30b-a3b
             // is the CPU sweet spot (MoE, ~3B active, tool-calling verified);
             // gpt-oss-120b is heavier + slower on CPU. Both are in SPEECH_MODELS.
             let v_local_qwen3   = MenuItemBuilder::with_id("speech_ollama/qwen3:30b-a3b", "Use Local · Qwen3 30B-A3B (Ollama, on-device, fast)").build(app)?;
             let v_local_gptoss  = MenuItemBuilder::with_id("speech_ollama/gpt-oss:120b",  "Use Local · gpt-oss 120B (Ollama, heavy, slow on CPU)").build(app)?;
             let speech_sep_local = PredefinedMenuItem::separator(app)?;
-            let speech_submenu = SubmenuBuilder::new(app, "Speech model ▸")
-                .item(&v_claude_haiku)
-                .item(&v_claude_sonnet)
-                .item(&v_claude_opus)
-                .item(&v_gpt_5_mini)
-                .item(&v_gpt_5_1)
-                .item(&v_qwen)
-                .item(&speech_sep_local)
-                .item(&v_local_qwen3)
-                .item(&v_local_gptoss)
-                .build()?;
+            let mut speech_sb = SubmenuBuilder::new(app, "Speech model ▸");
+            if have_anthropic { speech_sb = speech_sb.item(&v_claude_haiku).item(&v_claude_sonnet).item(&v_claude_opus); }
+            if have_openai    { speech_sb = speech_sb.item(&v_gpt_5_mini).item(&v_gpt_5_1); }
+            if have_groq      { speech_sb = speech_sb.item(&v_qwen); }
+            if have_deepseek  { speech_sb = speech_sb.item(&v_deepseek); }
+            // Local (Ollama) — only the supported models that are actually pulled.
+            let local_qwen3_ok  = ollama_has(&ollama_models, "qwen3:30b-a3b");
+            let local_gptoss_ok = ollama_has(&ollama_models, "gpt-oss:120b");
+            if local_qwen3_ok || local_gptoss_ok { speech_sb = speech_sb.item(&speech_sep_local); }
+            if local_qwen3_ok  { speech_sb = speech_sb.item(&v_local_qwen3); }
+            if local_gptoss_ok { speech_sb = speech_sb.item(&v_local_gptoss); }
+            let speech_submenu = speech_sb.build()?;
 
             // ── TTS VOICE submenu (nested under Models) ──
             // Switches the synthesis voice without restarting the agent.
@@ -2570,22 +2629,22 @@ fn main() {
             // multi-turn tool use). Opus for hardest multi-step work.
             // Haiku for fast single-shot calls. gpt-5.1 / 5-mini are
             // OpenAI alternatives. qwen3-32b is the no-API-quota
-            // option. DeepSeek family retired (94-96% hallucination
-            // per Artificial Analysis 2026).
+            // option. DeepSeek V4 Pro re-added 2026-06-23 per user
+            // request — it's their daily-driver CLI model — despite the
+            // documented hallucination rate (94% per Artificial Analysis).
             let m_claude_sonnet = MenuItemBuilder::with_id("model_claude-sonnet-4-6", "Use Claude · Sonnet 4.6 (default, best tool calling)").build(app)?;
             let m_claude_opus   = MenuItemBuilder::with_id("model_claude-opus-4-7",   "Use Claude · Opus 4.7  (1M ctx · most capable)").build(app)?;
             let m_claude_haiku  = MenuItemBuilder::with_id("model_claude-haiku-4-5",  "Use Claude · Haiku 4.5  (fastest)").build(app)?;
             let m_gpt_5_1       = MenuItemBuilder::with_id("model_gpt-5.1",           "Use OpenAI · GPT-5.1 (best OpenAI tools)").build(app)?;
             let m_gpt_5_mini    = MenuItemBuilder::with_id("model_gpt-5-mini",        "Use OpenAI · GPT-5 mini (alternative)").build(app)?;
             let m_qwen          = MenuItemBuilder::with_id("model_qwen/qwen3-32b",    "Use Groq · qwen3-32b (no-API-quota option)").build(app)?;
-            let tool_submenu = SubmenuBuilder::new(app, "Tool model ▸")
-                .item(&m_claude_sonnet)
-                .item(&m_claude_opus)
-                .item(&m_claude_haiku)
-                .item(&m_gpt_5_1)
-                .item(&m_gpt_5_mini)
-                .item(&m_qwen)
-                .build()?;
+            let m_deepseek      = MenuItemBuilder::with_id("model_deepseek-v4-pro",   "Use DeepSeek · V4 Pro (strong reasoning)").build(app)?;
+            let mut tool_sb = SubmenuBuilder::new(app, "Tool model ▸");
+            if have_anthropic { tool_sb = tool_sb.item(&m_claude_sonnet).item(&m_claude_opus).item(&m_claude_haiku); }
+            if have_openai    { tool_sb = tool_sb.item(&m_gpt_5_1).item(&m_gpt_5_mini); }
+            if have_groq      { tool_sb = tool_sb.item(&m_qwen); }
+            if have_deepseek  { tool_sb = tool_sb.item(&m_deepseek); }
+            let tool_submenu = tool_sb.build()?;
 
             let tts_sep = PredefinedMenuItem::separator(app)?;
 
@@ -2887,6 +2946,7 @@ fn main() {
                         "model_gpt-5.1"                                    => switch_cli_model(app, "gpt-5.1"),
                         "model_gpt-5-mini"                                 => switch_cli_model(app, "gpt-5-mini"),
                         "model_qwen/qwen3-32b"                             => switch_cli_model(app, "qwen/qwen3-32b"),
+                        "model_deepseek-v4-pro"                            => switch_cli_model(app, "deepseek-v4-pro"),
                         // Speech-model picks (these trigger an agent restart)
                         // 2026-05-18: curated to 6 entries matching
                         // SPEECH_MODELS_AVAILABLE in voice_client_tray_config.py
@@ -2896,6 +2956,7 @@ fn main() {
                         "speech_gpt-5-mini"                                => switch_speech_model(app, "gpt-5-mini"),
                         "speech_gpt-5.1"                                   => switch_speech_model(app, "gpt-5.1"),
                         "speech_qwen/qwen3-32b"                            => switch_speech_model(app, "qwen/qwen3-32b"),
+                        "speech_deepseek-v4-flash"                         => switch_speech_model(app, "deepseek-v4-flash"),
                         "speech_ollama/qwen3:30b-a3b"                      => switch_speech_model(app, "ollama/qwen3:30b-a3b"),
                         "speech_ollama/gpt-oss:120b"                       => switch_speech_model(app, "ollama/gpt-oss:120b"),
                         // TTS-voice picks (no agent restart — file written, read on next utterance)

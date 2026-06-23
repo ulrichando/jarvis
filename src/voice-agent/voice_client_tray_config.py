@@ -101,6 +101,9 @@ CLI_MODELS_AVAILABLE: tuple[str, ...] = (
     "gpt-5-mini",
     # Groq — strongest open-weights tool-caller in the stack.
     "qwen/qwen3-32b",
+    # DeepSeek — re-added 2026-06-23 per user request (their daily-driver
+    # CLI model) despite the documented 94% hallucination rate.
+    "deepseek-v4-pro",
     #
     # Dropped 2026-05-18 (still in jarvis_agent.py CLI_MODELS for
     # env-var passthrough resolution if needed, but hidden here):
