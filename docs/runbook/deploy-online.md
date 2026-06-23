@@ -47,8 +47,16 @@ non-root) → **docker-proxy** (restricted Docker API) + **postgres**.
 ```
 cd src/web
 cp .env.production.example .env.production   # fill it in (rotated secrets!)
-docker compose build
-docker compose up -d
+# Drop the origin cert/key into ./certs (Cloudflare Origin Certificate, or a
+# self-signed pair for a no-CF/local bring-up). The caddy service mounts it.
+mkdir -p certs   # → certs/origin.crt, certs/origin.key
+# --env-file is REQUIRED: compose interpolates ${POSTGRES_PASSWORD},
+# ${NEXT_PUBLIC_PTY_URL}, ${JARVIS_WORKSPACES_ROOT}, etc. from its dotenv file,
+# which defaults to .env (NOT .env.production). Without this they'd be empty and
+# the postgres ${POSTGRES_PASSWORD:?} guard aborts the up.
+docker compose --env-file .env.production build
+docker compose --env-file .env.production up -d
+docker compose --env-file .env.production exec web npm run db:migrate
 ```
 - The web app talks to Docker **only** through `tecnativa/docker-socket-proxy`
   (container/exec/network ops; no host-level reach) — never the raw socket.

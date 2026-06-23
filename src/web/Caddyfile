@@ -3,10 +3,11 @@
 
 {$JARVIS_DOMAIN:localhost} {
 	# Cloudflare Origin Certificate (Cloudflare dash → SSL/TLS → Origin Server →
-	# Create Certificate). Mount it into the caddy service. For local/no-CF,
-	# comment these two lines out — Caddy uses its internal CA instead (then set
-	# Cloudflare's SSL mode to "Full", not "Full (strict)").
-	tls /etc/caddy/origin.crt /etc/caddy/origin.key
+	# Create Certificate), dropped into the cert dir the compose caddy service
+	# mounts (./certs by default → /etc/caddy/certs). For local/no-CF, comment
+	# this line out — Caddy uses its internal CA instead (then set Cloudflare's
+	# SSL mode to "Full", not "Full (strict)").
+	tls /etc/caddy/certs/origin.crt /etc/caddy/certs/origin.key
 
 	encode zstd gzip
 

@@ -4,6 +4,9 @@ node_modules
 .env
 .env.local
 .env.production
+certs
+*.crt
+*.key
 *.log
 .DS_Store
 coverage

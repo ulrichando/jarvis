@@ -21,6 +21,12 @@ services:
       - "80:80"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Origin cert dir (Cloudflare Origin Certificate for Full (strict), or any
+      # cert/key pair) → the Caddyfile loads /etc/caddy/certs/origin.{crt,key}.
+      # Default ./certs (gitignored — never commit a key). For local/no-CF, drop
+      # a self-signed pair here, or comment the `tls` line in the Caddyfile to
+      # use Caddy's internal CA.
+      - ${JARVIS_ORIGIN_CERT_DIR:-./certs}:/etc/caddy/certs:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on: [web]
@@ -93,6 +99,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}
     volumes:
       - pg_data:/var/lib/postgresql/data
+      # Runs once on a fresh data dir — creates the `web` schema the drizzle
+      # migrations target (they don't create it themselves). See the SQL header.
+      - ./scripts/db-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U jarvis -d jarvis"]
       interval: 10s
