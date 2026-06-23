@@ -59,6 +59,8 @@ def test_correction_pattern_emits_intent_at_threshold(tmp_path, monkeypatch):
     assert rec["kind"] == "correction"
     assert rec["intent"]
     assert "stop saying sir" in rec["intent"].lower()
+    assert rec["evolution"]["fitness_goal"] == "self_configuration"
+    assert "feedback" in rec["evolution"]["satisfied"]
 
 
 def test_correction_below_threshold_no_emit(tmp_path, monkeypatch):
@@ -112,7 +114,7 @@ def test_confab_self_flag_emits_at_threshold(tmp_path, monkeypatch):
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ",
                            time.gmtime(now - offset_h * 3600))
         _seed_turn(conn, ts=ts, user_text="x", jarvis_text="I'll remember",
-                   confab_check_state="save_claim")
+                   confab_check_state="hedged_no_evidence")
     conn.commit()
     conn.close()
 
@@ -121,6 +123,7 @@ def test_confab_self_flag_emits_at_threshold(tmp_path, monkeypatch):
     queue = (tmp_path / "auto-mods" / "queue.jsonl").read_text().strip().splitlines()
     rec = json.loads(queue[0])
     assert rec["kind"] == "confab"
+    assert rec["evolution"]["fitness_goal"] == "self_protection"
 
 
 def test_no_emit_when_no_turns(tmp_path, monkeypatch):
