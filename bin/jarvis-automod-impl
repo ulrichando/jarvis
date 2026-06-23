@@ -64,8 +64,9 @@ HARD RULES (violating ANY means the spawner will reject your commit and delete t
    - USER.md
 3. Do NOT delete tests or weaken assertions. You MAY add tests.
 4. Do NOT add @pytest.mark.skip / @pytest.mark.skipif / @pytest.mark.xfail.
-5. Before committing, run:
-     cd src/voice-agent && .venv/bin/python -m pytest tests/ -q
+5. Before committing, run the test suite. This worktree has NO local .venv, so
+   use the tooling interpreter at this absolute path (do NOT use .venv/bin):
+     cd src/voice-agent && ${TOOLING_ROOT}/src/voice-agent/.venv/bin/python -m pytest tests/ -q
 6. If tests fail: DO NOT commit. Print the failure summary and stop.
 7. If tests pass: git add only the files you edited (NEVER git add -A).
    Commit with a one-line Conventional Commit message describing the change.
@@ -76,8 +77,20 @@ The change must be focused and minimal. If you can't reduce the intent
 to <=5 files and <=2000 diff lines, ABORT -- print why and exit without
 committing."
 
+  # Evolution build-model picker: ~/.jarvis/auto-mods/build-model (set from the
+  # /evolution UI) overrides the global cli-model for THIS build only. Empty or
+  # absent → inherit the global model. start.sh honors JARVIS_AUTOMOD_BUILD_MODEL.
+  _build_model_file="$HOME/.jarvis/auto-mods/build-model"
+  if [ -r "$_build_model_file" ]; then
+    _bm="$(tr -d '[:space:]' < "$_build_model_file")"
+    [ -n "$_bm" ] && export JARVIS_AUTOMOD_BUILD_MODEL="$_bm"
+  fi
+
   export JARVIS_AUTOMOD_NO_NETWORK=1
-  timeout 600 "$TOOLING_ROOT/bin/jarvis" -p "$PROMPT" || true
+  # 25 min for the coding agent itself; the spawner's SPAWN_TIMEOUT_S (30 min)
+  # is the outer bound, leaving ~5 min for finalize (diff-gate + test re-run +
+  # commit check) to run after. 10 min was too short → no_commit_landed.
+  timeout "${JARVIS_AUTOMOD_BUILD_TIMEOUT_S:-1500}" "$TOOLING_ROOT/bin/jarvis" -p "$PROMPT" || true
 
   "$TOOLING_ROOT/src/voice-agent/.venv/bin/python" \
     "$REPO_ROOT/src/voice-agent/pipeline/automod/finalize.py" \

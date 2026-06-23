@@ -36,6 +36,15 @@ from pipeline.automod._state import artifact_path, intent_file_path
 
 logger = logging.getLogger("jarvis.automod.finalize")
 
+# Presence check for the changed-line coverage gate (coverage_gate.py). When
+# available, _rerun_pytest runs the suite under `coverage run` so the gate can
+# read .coverage; absent → plain pytest and the gate records 'skipped'.
+try:
+    import coverage as _coverage  # noqa: F401
+    _HAS_COVERAGE = True
+except Exception:  # noqa: BLE001
+    _HAS_COVERAGE = False
+
 
 def _git(*args, **kw) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], capture_output=True, text=True,
@@ -96,9 +105,16 @@ def _rerun_pytest() -> tuple[bool, str]:
         str(Path(__file__).resolve().parents[4]),
     ))
     python = tooling_root / "src" / "voice-agent" / ".venv" / "bin" / "python"
+    # Run under `coverage run` (when available) so coverage_gate can read the
+    # .coverage data file. argv[0] stays the tooling python either way.
+    if _HAS_COVERAGE:
+        cmd = [str(python), "-m", "coverage", "run", "-m", "pytest",
+               "tests/", "-q", "--tb=no"]
+    else:
+        cmd = [str(python), "-m", "pytest", "tests/", "-q", "--tb=no"]
     try:
         proc = subprocess.run(
-            [str(python), "-m", "pytest", "tests/", "-q", "--tb=no"],
+            cmd,
             cwd=cwd, capture_output=True, text=True,
             timeout=300,
         )
@@ -192,8 +208,12 @@ def finalize_branch(automod_id: str, branch: str,
         _delete_branch(branch)
         return art
 
-    # 4. Optional pytest re-run.
+    # 4. Optional pytest re-run (under coverage, for the changed-line gate).
     test_tail = "(skipped)"
+    coverage_result: dict = {
+        "status": "skipped", "reason": "test re-run skipped",
+        "score": None, "covered": 0, "measurable": 0, "files": {},
+    }
     if not skip_test_rerun:
         green, test_tail = _rerun_pytest()
         if not green:
@@ -218,6 +238,46 @@ def finalize_branch(automod_id: str, branch: str,
             _delete_branch(branch)
             return art
 
+        # 4b. Changed-line coverage gate. Advisory by default (records the score
+        # on the artifact). In enforce mode a low score fails the proposal — the
+        # agent added code the suite never exercises. Never raises.
+        try:
+            from pipeline.automod import coverage_gate
+            coverage_result = coverage_gate.evaluate(
+                diff_text, cwd=Path(__file__).resolve().parents[2])
+        except Exception as e:  # noqa: BLE001 — never break finalize on the gate
+            coverage_result = {"status": "error", "reason": str(e)[:200],
+                               "score": None, "covered": 0, "measurable": 0,
+                               "files": {}}
+        if (os.environ.get("JARVIS_AUTOMOD_COVERAGE_GATE", "advisory") == "enforce"
+                and coverage_result.get("score") is not None):
+            try:
+                min_score = float(os.environ.get("JARVIS_AUTOMOD_COVERAGE_MIN", "0.7"))
+            except ValueError:
+                min_score = 0.7
+            if coverage_result["score"] < min_score:
+                art = {
+                    "id": automod_id,
+                    "intent": intent,
+                    "branch": branch,
+                    "parent_sha": parent,
+                    "head_sha": head,
+                    "files_changed": test_gate.files_changed(diff_text),
+                    "diff_summary": "coverage-insufficient",
+                    "test_output_tail": test_tail,
+                    "coverage_gate": coverage_result,
+                    "status": "failed",
+                    "rejection_reason": "coverage_insufficient",
+                    "evolution": evolution,
+                    **_lineage,
+                    "created_at": _now_iso(),
+                }
+                artifact.write(art)
+                artifact.audit("automod_failed", id=automod_id,
+                               reason="coverage_insufficient")
+                _delete_branch(branch)
+                return art
+
     # 5. Write pending artifact. Persist a truncated unified diff so the
     # /evolution review UI can show it without shelling git (and so it survives
     # the branch being deleted on merge/reject). Capped to keep artifacts small.
@@ -232,6 +292,7 @@ def finalize_branch(automod_id: str, branch: str,
         "diff": diff_text[:60000],
         "diff_truncated": len(diff_text) > 60000,
         "test_output_tail": test_tail,
+        "coverage_gate": coverage_result,
         "status": "pending",
         "evolution": evolution,
         **_lineage,
