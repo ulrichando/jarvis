@@ -25,7 +25,6 @@ import {
   Table2,
   Terminal,
   Users,
-  Wand2,
   type LucideIcon,
 } from "lucide-react";
 import type { Provider } from "./models-meta";
@@ -69,14 +68,6 @@ export const PROVIDER_FEATURES: Record<Provider, Feature[]> = {
     // sidebar's top-level CORE_NAV already has a Code entry linking to
     // /code, and rendering both produced a duplicate "Code" item in the
     // sidebar.
-    {
-      slug: "customize",
-      label: "Customize",
-      icon: Wand2,
-      href: "/customize",
-      description:
-        "Named tones and instructions — formal, concise, teacher, reviewer. Swap personality without editing the system prompt.",
-    },
     {
       slug: "design",
       label: "Design",

@@ -4,8 +4,8 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { PROVIDER_FEATURES } from "@/lib/ai/features";
 
-// JARVIS-branded landing for a top-level feature (Computer use / Customize /
-// Artifacts). These are JARVIS's own features — the URL and header deliberately
+// JARVIS-branded landing for a top-level feature (Computer use / Artifacts).
+// These are JARVIS's own features — the URL and header deliberately
 // carry NO provider name (the old /anthropic/<slug> route redirects here).
 export function FeatureLanding({ slug }: { slug: string }) {
   const feature = PROVIDER_FEATURES.anthropic.find((f) => f.slug === slug);
