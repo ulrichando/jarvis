@@ -67,6 +67,19 @@ def test_load_soul_returns_git_default_when_no_override(monkeypatch, tmp_path):
     assert soul.find("WHO YOU ARE") < 200
 
 
+def test_soul_requires_web_corroboration(monkeypatch, tmp_path):
+    """A single web hit must not be laundered into a flat fact — the
+    CALIBRATED UNCERTAINTY section requires corroborating a looked-up
+    claim before stating it as settled (added 2026-06-23 after JARVIS
+    asserted single-source web results as fact)."""
+    monkeypatch.setattr(pb, "SOUL_PATH_OVERRIDE", tmp_path / "nonexistent-SOUL.md")
+    low = pb.load_soul().lower()
+    assert "calibrated uncertainty" in low
+    assert "looked-up" in low            # the rule label
+    assert "corroborate" in low          # must corroborate before asserting
+    assert "unconfirmed" in low          # else attribute / call it unconfirmed
+
+
 def test_override_replaces_default(monkeypatch, tmp_path):
     ov = tmp_path / "SOUL.md"
     ov.write_text("You are a calm, terse research partner.", encoding="utf-8")
