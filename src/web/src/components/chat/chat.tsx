@@ -29,7 +29,7 @@ import { type UIMessage } from "ai";
 import { useEffect, useMemo, useRef, useState, startTransition } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { PanelLeftOpen } from "lucide-react";
+import { PanelLeftOpen, Package } from "lucide-react";
 import { Thread } from "./thread";
 import { Composer } from "./composer";
 import { EmptyState } from "./empty-state";
@@ -42,16 +42,23 @@ import { FunctionGrid } from "./function-grid";
 import { TaskPanel } from "./task-panel";
 import { useChatStore } from "@/stores/chat";
 import { useVoiceMode } from "@/lib/chat/use-voice-mode";
+import { appendImageMarkdown } from "@/lib/chat/image-markdown";
 import { useEditedFiles } from "@/stores/edited-files";
 import { useSettings } from "@/hooks/use-settings";
+import { useSkills, expandSkill } from "@/hooks/use-skills";
 import { useUI } from "@/stores/ui";
-import { DEFAULT_MODEL, MODELS_META } from "@/lib/ai/models-meta";
+import { DEFAULT_MODEL, MODELS_META, modelSupportsVision } from "@/lib/ai/models-meta";
 import { getProviderUX } from "@/lib/ai/provider-ux";
 import { StreamingMessageParser } from "@/lib/actions/message-parser";
 import { ActionRunner, type ActionEvent } from "@/lib/actions/runner";
 import { apiWriteFile } from "@/lib/workspace/client";
-import type { TrackedAction, ArtifactData } from "@/lib/actions/types";
+import type { TrackedAction, ArtifactData, ArtifactKind } from "@/lib/actions/types";
 import { ArtifactPanel } from "./artifact-panel";
+import {
+  ArtifactSidePanel,
+  type PanelArtifact,
+} from "@/components/artifacts/artifact-side-panel";
+import { useConversationArtifacts } from "@/hooks/use-artifacts";
 import { ScaffoldPicker } from "@/components/workbench/scaffold-picker";
 
 type ChatProps = {
@@ -420,6 +427,30 @@ export function Chat({
   const [verifyById, setVerifyById] = useState<Map<string, VerifyOutcome>>(
     () => new Map(),
   );
+  // ── claude.ai-style self-contained artifacts (System B) ──────────────
+  // Separate from the bolt `artifacts` map above. Keyed by slug; holds the
+  // CURRENT streamed content per artifact this session. Historical versions
+  // come from the persisted query and are merged in `panelArtifacts` below.
+  const [liveArtifacts, setLiveArtifacts] = useState<
+    Map<
+      string,
+      {
+        slug: string;
+        title: string;
+        kind: ArtifactKind;
+        language?: string | null;
+        content: string;
+      }
+    >
+  >(() => new Map());
+  const liveArtifactsRef = useRef(liveArtifacts);
+  useEffect(() => {
+    liveArtifactsRef.current = liveArtifacts;
+  }, [liveArtifacts]);
+  const [artifactPanelOpen, setArtifactPanelOpen] = useState(false);
+  const [activeArtifactSlug, setActiveArtifactSlug] = useState<string | null>(
+    null,
+  );
   const previewPollRef = useRef<{ cancel: () => void } | null>(null);
 
   const { toggleSidebar, sidebarOpen } = useUI();
@@ -432,6 +463,44 @@ export function Chat({
   const targetWorkspaceId = workspaceIdProp ?? storeWorkspaceId;
   const targetWorkspaceName = workspaceNameProp ?? storeWorkspaceName;
   const { data: settings } = useSettings();
+  const { data: skills } = useSkills();
+  // Image generation is available when an OpenAI or Google key is configured —
+  // independent of the chat model. Drives the composer's "Image" toggle.
+  const imageAvailable = Boolean(
+    (
+      settings?.providers as
+        | Record<string, { hasKey?: boolean } | undefined>
+        | undefined
+    )?.google?.hasKey ||
+      (
+        settings?.providers as
+          | Record<string, { hasKey?: boolean } | undefined>
+          | undefined
+      )?.openai?.hasKey,
+  );
+
+  // Settings → Notifications → "Response completions". Fires a browser
+  // notification when a reply finishes AND the tab is in the background (no
+  // point notifying a focused tab). No-op unless the toggle is on and the
+  // user granted permission (requested when they flip the toggle in Settings).
+  const maybeNotifyComplete = () => {
+    if (!settings?.notifications?.responseCompletions) return;
+    if (typeof document === "undefined" || !document.hidden) return;
+    if (typeof Notification === "undefined" || Notification.permission !== "granted")
+      return;
+    try {
+      const n = new Notification("JARVIS", {
+        body: "Your response is ready.",
+        tag: "jarvis-response",
+      });
+      n.onclick = () => {
+        window.focus();
+        n.close();
+      };
+    } catch {
+      /* notification API can throw in some embedded contexts — ignore */
+    }
+  };
 
   const activeMeta = MODELS_META[model] ?? MODELS_META[DEFAULT_MODEL];
   const provider = activeMeta.provider;
@@ -541,7 +610,11 @@ export function Chat({
 
   // Per-turn DeepSeek toggle state (DeepThink → reasoner model; Search → gate
   // the web-search tool), read in the /api/chat request body below.
-  const turnTogglesRef = useRef<{ deepthink?: boolean; search?: boolean }>({});
+  const turnTogglesRef = useRef<{
+    deepthink?: boolean;
+    search?: boolean;
+    image?: boolean;
+  }>({});
 
   const submit = async (
     text?: string,
@@ -558,8 +631,11 @@ export function Chat({
     turnTogglesRef.current = {
       deepthink: opts.toggles?.deepthink,
       search: opts.toggles?.search,
+      image: opts.toggles?.image,
     };
-    const content = (text ?? input).trim();
+    // Expand a `/skill-name [args]` composer command into its saved prompt
+    // template (Settings → Skills). No-op for non-skill text / while loading.
+    const content = expandSkill((text ?? input).trim(), skills ?? []);
     const hasImages = (opts.images?.length ?? 0) > 0;
     if (
       (!content && !hasImages) ||
@@ -567,6 +643,14 @@ export function Chat({
       status === "submitted"
     ) {
       return;
+    }
+    // Warn (don't block) when an image is attached to a text-only model — the
+    // attachment pipeline works, but a non-vision model just replies "I don't
+    // see a picture", which is otherwise baffling.
+    if (hasImages && !modelSupportsVision(model ?? DEFAULT_MODEL)) {
+      toast.warning(
+        "This model can't see images — switch to a vision model (Claude, GPT, or Gemini) to use the attachment.",
+      );
     }
 
     // Reset multi-stage plan tracking on user-initiated turns so a new
@@ -698,6 +782,20 @@ export function Chat({
       scheduleArtifactFlush();
     };
 
+    // System-B self-contained artifacts. Seed from the running session
+    // state so a revision in a later turn appends a version (vs resetting).
+    // rAF-coalesced like the bolt flush above (stream fires many/sec).
+    const localJarvis = new Map(liveArtifactsRef.current);
+    let jarvisFlushScheduled = false;
+    const scheduleJarvisFlush = () => {
+      if (jarvisFlushScheduled) return;
+      jarvisFlushScheduled = true;
+      requestAnimationFrame(() => {
+        jarvisFlushScheduled = false;
+        setLiveArtifacts(new Map(localJarvis));
+      });
+    };
+
     const invalidateForFile = (filePath: string) => {
       qc.invalidateQueries({ queryKey: ["ws", targetWorkspaceId, "tree"] });
       qc.invalidateQueries({ queryKey: ["design-tree", targetWorkspaceId] });
@@ -809,6 +907,41 @@ export function Chat({
           onFileComplete(a.action.filePath);
         }
       },
+      onJarvisArtifactOpen: (a) => {
+        // New emission of this slug (fresh artifact, or a revision in a
+        // later turn) — reset the streamed content for the new version and
+        // surface the panel focused on it.
+        localJarvis.set(a.slug, {
+          slug: a.slug,
+          title: a.title,
+          kind: a.kind,
+          language: a.language,
+          content: "",
+        });
+        setActiveArtifactSlug(a.slug);
+        setArtifactPanelOpen(true);
+        scheduleJarvisFlush();
+      },
+      onJarvisArtifactStream: (a) => {
+        localJarvis.set(a.slug, {
+          slug: a.slug,
+          title: a.title,
+          kind: a.kind,
+          language: a.language,
+          content: a.content,
+        });
+        scheduleJarvisFlush();
+      },
+      onJarvisArtifactClose: (a) => {
+        localJarvis.set(a.slug, {
+          slug: a.slug,
+          title: a.title,
+          kind: a.kind,
+          language: a.language,
+          content: a.content,
+        });
+        scheduleJarvisFlush();
+      },
     });
 
     // 2. Network round-trip
@@ -817,6 +950,11 @@ export function Chat({
 
     let assistantText = "";
     let parsedSoFar = "";
+    // Images produced by the `generateImage` tool this turn. The custom SSE
+    // parser is text-only, so we collect them from `tool-output-available`
+    // events and append them as markdown at `finish` (after the text, matching
+    // the server's onFinish persistence). Rendered via the Markdown <img>.
+    const pendingImages: { url: string; prompt?: string }[] = [];
     // Reasoning trace for this turn. Persisted across auto-continue
     // passes (same assistantId) so the "Thoughts" block shows the full
     // chain of thought, not just the last segment.
@@ -921,6 +1059,9 @@ export function Chat({
           format,
           // Search → gate the existing webSearchTool in the route.
           search: turnTogglesRef.current.search,
+          // Image toggle → force server-side image generation (model-independent;
+          // works with DeepSeek thinking models that can't reliably call tools).
+          image: turnTogglesRef.current.image,
         }),
         signal: ctrl.signal,
       }).finally(() => clearTimeout(stuck));
@@ -1010,7 +1151,10 @@ export function Chat({
             parser.parse(assistantId, assistantText);
             parsedSoFar = assistantText;
             streamPending.current = { id: assistantId, text: assistantText };
-            scheduleFlush();
+            // Settings → Capabilities → Streaming. When off, skip the live
+            // per-token flush — text accumulates and is committed once at
+            // finalize, so the reply appears all at once. Default on.
+            if (settings?.capabilities?.streaming !== false) scheduleFlush();
           } else if (
             evt.type === "reasoning-delta" &&
             typeof evt.delta === "string"
@@ -1018,9 +1162,35 @@ export function Chat({
             reasoningText += evt.delta;
             reasoningPending.current = { id: assistantId, text: reasoningText };
             scheduleReasoningFlush();
+          } else if (evt.type === "tool-output-available") {
+            // generateImage tool result. Collect successful images; append
+            // them at `finish` (below) so they land AFTER the model's text,
+            // matching the server's persisted order. Errors flow through the
+            // model's own text (it sees the error in the tool output).
+            const out = (
+              evt as unknown as {
+                output?: { status?: string; url?: string; prompt?: string };
+              }
+            ).output;
+            if (out?.status === "ok" && typeof out.url === "string") {
+              pendingImages.push({ url: out.url, prompt: out.prompt });
+            }
           } else if (evt.type === "finish") {
             finishReason = (evt as unknown as { finishReason?: string })
               .finishReason;
+            // Reconcile generated images. appendImageMarkdown ALSO strips any
+            // /api/media markdown the model wrote in its own text — including a
+            // HALLUCINATED fake url (no tool call) that would otherwise render
+            // as a broken <img>. So run it unconditionally: it appends the real
+            // tool images AND removes model-emitted ones. Same helper the server
+            // uses for persistence, so live + reload stay identical.
+            const reconciled = appendImageMarkdown(assistantText, pendingImages);
+            if (reconciled !== assistantText) {
+              assistantText = reconciled;
+              parsedSoFar = assistantText;
+              streamPending.current = { id: assistantId, text: assistantText };
+              scheduleFlush();
+            }
           } else if (evt.type === "message-metadata") {
             // Server-forwarded per-step usage. We accumulate input +
             // output across multi-step turns (auto-continuations etc.)
@@ -1464,8 +1634,17 @@ export function Chat({
         setStatus("error");
       } else {
         setStatus("ready");
+        maybeNotifyComplete();
         qc.invalidateQueries({ queryKey: ["conversations"] });
         if (chatId) qc.invalidateQueries({ queryKey: ["conversation", chatId] });
+        // Refetch persisted artifacts so the panel picks up DB ids +
+        // canonical version history (enables publish/open-in-tab).
+        if (chatId) {
+          qc.invalidateQueries({
+            queryKey: ["artifacts", "conversation", chatId],
+          });
+          qc.invalidateQueries({ queryKey: ["artifacts"] });
+        }
       }
     } catch (e) {
       const err = e as Error & { name?: string };
@@ -1657,6 +1836,89 @@ export function Chat({
 
   const isEmpty = messages.length === 0;
 
+  // ── Artifact panel data (System B) ──────────────────────────────────
+  // Persisted artifacts for this conversation (DB id + version history).
+  // Plain chat only — the embedded workbench chat uses System A.
+  const { data: persistedArtifacts } = useConversationArtifacts(
+    !embedded ? chatId : undefined,
+  );
+  // Merge persisted (authoritative: id, history, shareToken) with the live
+  // session stream (a freshly streamed/edited version not yet persisted).
+  const panelArtifacts = useMemo<PanelArtifact[]>(() => {
+    const bySlug = new Map<string, PanelArtifact>();
+    for (const p of persistedArtifacts ?? []) {
+      bySlug.set(p.slug, {
+        id: p.id,
+        slug: p.slug,
+        title: p.title,
+        kind: p.kind,
+        language: p.versions.at(-1)?.language ?? null,
+        versions: p.versions.map((v) => v.content),
+        shareToken: p.shareToken,
+      });
+    }
+    for (const [slug, l] of liveArtifacts) {
+      const existing = bySlug.get(slug);
+      if (!existing) {
+        if (!l.content) continue; // nothing streamed yet
+        bySlug.set(slug, {
+          slug,
+          title: l.title,
+          kind: l.kind,
+          language: l.language ?? null,
+          versions: [l.content],
+          shareToken: null,
+        });
+        continue;
+      }
+      // A new/edited version streaming before it's persisted → show it live.
+      if (l.content && l.content !== existing.versions.at(-1)) {
+        bySlug.set(slug, {
+          ...existing,
+          title: l.title || existing.title,
+          versions: [...existing.versions, l.content],
+        });
+      }
+    }
+    return [...bySlug.values()];
+  }, [persistedArtifacts, liveArtifacts]);
+
+  const showArtifactPanel =
+    !embedded && artifactPanelOpen && panelArtifacts.length > 0;
+  const showReopenPill =
+    !embedded && !artifactPanelOpen && panelArtifacts.length > 0;
+
+  // Follow ASYNC height growth to the bottom while the user is stuck. Thread's
+  // auto-scroll only fires on `messages` changes — so content that grows the
+  // height WITHOUT a messages change (a generated <img> finishing its load, a
+  // late embed, reasoning expanding) wouldn't pull the view down, which is the
+  // "doesn't scroll after generating an image" bug. The stick latch stays true
+  // through growth (it only disarms on a deliberate user scroll-up), so we only
+  // follow when the user hasn't scrolled away to read history. Instant, not
+  // smooth, to avoid stacking animations during rapid growth. Keyed on isEmpty
+  // so the observer (re)binds when the first message mounts the container.
+  const isAtBottomRef = useRef(isAtBottom);
+  isAtBottomRef.current = isAtBottom;
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    let lastHeight = el.scrollHeight;
+    const follow = () => {
+      const h = el.scrollHeight;
+      if (h > lastHeight + 1 && isAtBottomRef.current) {
+        el.scrollTo({ top: h, behavior: "auto" });
+      }
+      lastHeight = h;
+    };
+    const ro = new ResizeObserver(follow);
+    ro.observe(el);
+    // Content is usually nested one level deep (overflow: visible on the inner
+    // wrapper), so the container's own box may not resize when content grows.
+    const inner = el.firstElementChild;
+    if (inner) ro.observe(inner);
+    return () => ro.disconnect();
+  }, [isEmpty]);
+
   // When embedded in the workbench we always want the composer pinned
   // to the bottom (like a real chat) regardless of whether there are
   // messages yet. The standalone /chat empty state still uses the
@@ -1738,6 +2000,7 @@ export function Chat({
               hideWorkspacePicker={embedded}
               unifiedUX={unifiedUX}
               placeholder={composerPlaceholder}
+              imageAvailable={imageAvailable && !targetWorkspaceId}
             />
           </div>
           <FunctionGrid
@@ -1763,7 +2026,11 @@ export function Chat({
 
   if (isEmpty && embedded) {
     return (
-      <div className="flex h-full flex-col">
+      <div
+      className="flex h-full flex-col"
+      data-chat-font={settings?.appearance?.fontSize ?? "md"}
+      data-chat-density={settings?.appearance?.density ?? "cozy"}
+    >
         {!sidebarOpen && !hideSidebarToggle && (
           <div className="flex h-10 shrink-0 items-center px-2">
             <button
@@ -1808,7 +2075,11 @@ export function Chat({
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div
+      className="relative flex h-full flex-col"
+      data-chat-font={settings?.appearance?.fontSize ?? "md"}
+      data-chat-density={settings?.appearance?.density ?? "cozy"}
+    >
       {embedded && !sidebarOpen && !hideSidebarToggle && (
         <div className="flex h-10 shrink-0 items-center px-2 border-b border-border/30">
           <button
@@ -1820,6 +2091,8 @@ export function Chat({
           </button>
         </div>
       )}
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col">
       <div ref={scrollContainerRef} className="relative flex-1 overflow-y-auto">
         <Thread
           messages={messages}
@@ -1902,7 +2175,38 @@ export function Chat({
         hideWorkspacePicker={embedded}
         unifiedUX={unifiedUX}
         placeholder={composerPlaceholder}
+        imageAvailable={imageAvailable && !targetWorkspaceId}
       />
+        </div>
+        {showArtifactPanel && (
+          <div className="w-[44%] min-w-[380px] max-w-[680px] shrink-0 overflow-hidden border-l border-border/60">
+            <ArtifactSidePanel
+              artifacts={panelArtifacts}
+              activeSlug={
+                activeArtifactSlug ??
+                panelArtifacts[panelArtifacts.length - 1]?.slug ??
+                ""
+              }
+              onActiveSlugChange={setActiveArtifactSlug}
+              onClose={() => setArtifactPanelOpen(false)}
+            />
+          </div>
+        )}
+      </div>
+      {showReopenPill && (
+        <button
+          onClick={() => {
+            setArtifactPanelOpen(true);
+            setActiveArtifactSlug(
+              panelArtifacts[panelArtifacts.length - 1]?.slug ?? null,
+            );
+          }}
+          className="absolute bottom-24 right-5 z-20 flex items-center gap-1.5 rounded-full border border-border/60 bg-card/90 px-3 py-1.5 text-[12px] font-medium text-foreground shadow-md backdrop-blur transition-colors hover:bg-accent"
+        >
+          <Package className="size-3.5 text-muted-foreground" />
+          Artifacts ({panelArtifacts.length})
+        </button>
+      )}
       <ShortcutsHelp open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
     </div>
   );

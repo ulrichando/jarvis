@@ -697,3 +697,92 @@ export function buildDesignPrompt({
     })
   );
 }
+
+// Plain-chat (NON-workspace) system-prompt fragment that activates
+// claude.ai-style self-contained ARTIFACTS. Kept short + provider-agnostic
+// (mirrors the bolt artifact-format structure that already works across
+// Claude / DeepSeek / Kimi). This is the System B path — distinct from the
+// workbench's multi-file <boltArtifact> builds, which are NOT available in
+// plain chat. If the model never emits a <jarvisArtifact>, nothing breaks —
+// its output just renders as normal prose.
+export function buildArtifactPrompt(): string {
+  return `
+
+<artifacts>
+  When the user asks you to CREATE something self-contained and substantial
+  that they'll want to view, run, keep, or iterate on, put it in an ARTIFACT
+  instead of dumping it into the chat body. Artifacts render live in a side
+  panel next to the conversation (Preview + Code tabs), are versioned, and
+  can be downloaded or published.
+
+  USE AN ARTIFACT FOR a single self-contained unit:
+    - kind="react"    — one self-contained React component (default export).
+                        Hooks from "react". STYLE WITH TAILWIND classes — they
+                        render (Tailwind is loaded). You may import npm libs
+                        directly (e.g. lucide-react, recharts, framer-motion,
+                        three, @react-three/fiber, d3) — they auto-resolve.
+    - kind="html"     — one complete HTML document. Tailwind classes work; you
+                        may also load CDN scripts (e.g. cdnjs three.js) and use
+                        bare module imports (three, d3, …).
+    - kind="svg"      — one SVG image.
+    - kind="mermaid"  — one Mermaid diagram/flowchart (mermaid source only).
+    - kind="markdown" — a substantial document/report/spec (markdown).
+    - kind="code"     — a standalone code snippet/file in any language
+                        (set language="python" etc.). No preview, code view only.
+    - kind="csv"      — tabular data (renders as a table).
+    - kind="json"     — a JSON document (renders pretty-printed).
+
+  DON'T use an artifact for: short answers, quick inline snippets the user is
+  just asking about, conversational replies, or multi-file applications.
+  Prefer inline content when it's small or purely explanatory.
+
+  FORMAT — emit the artifact as a single block, with the content RAW inside
+  the tag (NO markdown \`\`\` fences around it):
+
+    <jarvisArtifact kind="react" slug="stable-kebab-id" title="Short Title" language="tsx">
+    ...the FULL artifact content, no code fences...
+    </jarvisArtifact>
+
+  Attributes:
+    - kind     (required) one of react|html|svg|mermaid|markdown|code
+    - slug     (required) a stable kebab-case id. REUSE THE SAME slug when you
+               revise an existing artifact — that creates a new VERSION the
+               user can step back through. Pick a NEW slug only for a genuinely
+               new artifact.
+    - title    (required) a short human title.
+    - language (optional) source language hint for syntax highlighting
+               (e.g. tsx, html, python).
+
+  AI-POWERED ARTIFACTS (react/html): the artifact's own JS can call back into
+  the assistant + tools at runtime via a bridge:
+    - \`await window.jarvis.complete(prompt, { system? })\` → returns the
+      model's text. Use it for in-artifact chat, generation, grading, etc.
+    - \`await window.jarvis.callTool(serverName, toolName, args)\` → calls a
+      connected MCP tool and returns its result (for "live" data on load).
+    Both are async, may reject, and only work for the signed-in owner — guard
+    with try/catch and a graceful fallback.
+
+  RULES:
+    - One concept per artifact. Put complete, runnable content — never diffs,
+      "...", or "rest unchanged" placeholders.
+    - For kind="react", the file MUST \`export default\` a component that takes
+      no required props and needs no external files.
+    - You may write a short sentence of prose before/after the artifact, but
+      the artifact body itself stays entirely inside the tag.
+    - When the user asks to change an existing artifact, re-emit the WHOLE
+      artifact with the SAME slug (a new version), not a diff.
+
+  EXAMPLE:
+    user: make me a counter component
+
+    assistant:
+    Here's a simple counter.
+    <jarvisArtifact kind="react" slug="counter" title="Counter" language="tsx">
+    import { useState } from "react";
+    export default function Counter() {
+      const [n, setN] = useState(0);
+      return <button onClick={() => setN(n + 1)} style={{ padding: 16, fontSize: 24 }}>count: {n}</button>;
+    }
+    </jarvisArtifact>
+</artifacts>`;
+}

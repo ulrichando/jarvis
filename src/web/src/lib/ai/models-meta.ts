@@ -31,6 +31,21 @@ export type ModelMeta = {
   nonReasoningFallback?: string;
 };
 
+// Conservative vision check — used to warn when an image is attached to a
+// text-only model (otherwise the model just replies "I don't see a picture"
+// and the user has no idea why). Errs toward "no" so we warn rather than
+// silently fail: the big multimodal providers (Anthropic/OpenAI/Google) are
+// trusted; Kimi/Groq are pattern-gated; DeepSeek/Ollama assumed text-only.
+export function modelSupportsVision(id: string): boolean {
+  const lid = id.toLowerCase();
+  const provider = MODELS_META[id]?.provider;
+  if (provider === "anthropic" || provider === "openai" || provider === "google")
+    return true;
+  if (provider === "kimi") return lid.includes("vision");
+  if (provider === "groq") return /scout|maverick|vision|llama-4/.test(lid);
+  return false; // deepseek, ollama, unknown → assume text-only
+}
+
 export const PROVIDER_LABEL: Record<Provider, string> = {
   anthropic: "Anthropic",
   openai: "OpenAI",

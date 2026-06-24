@@ -1,5 +1,5 @@
-import { FeatureLanding } from "@/components/layout/feature-landing";
+import { ArtifactsView } from "@/components/artifacts/artifacts-view";
 
 export default function ArtifactsPage() {
-  return <FeatureLanding slug="artifacts" />;
+  return <ArtifactsView />;
 }

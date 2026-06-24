@@ -155,9 +155,16 @@ export const artifacts = pgTable(
     slug: text("slug").notNull(),
     title: text("title").notNull(),
     kind: text("kind", {
-      enum: ["code", "markdown", "html", "react", "svg", "mermaid"],
+      // Plain text column (no PG enum) — adding kinds is a TS-only change.
+      enum: ["code", "markdown", "html", "react", "svg", "mermaid", "csv", "json"],
     }).notNull(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    // Publish/share: an unguessable token + expiry. Null = unpublished.
+    // The UNIQUE constraint's index serves the public token lookup, so no
+    // separate index is needed. Mirrors the workspace share-token pattern.
+    shareToken: text("share_token").unique(),
+    shareExpiresAt: timestamp("share_expires_at"),
   },
   (table) => [index("artifacts_conversation_idx").on(table.conversationId)],
 );

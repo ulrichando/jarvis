@@ -104,20 +104,27 @@ export async function saveAssistantMessage({
   tokensIn?: number;
   tokensOut?: number;
   stopReason?: string;
-}) {
-  if (!db) return;
-  await db.insert(schema.messages).values({
-    conversationId,
-    role: "assistant",
-    content: [{ type: "text", text }],
-    tokensIn,
-    tokensOut,
-    stopReason,
-  });
+}): Promise<string | null> {
+  if (!db) return null;
+  // Return the inserted id so callers (e.g. artifact persistence in
+  // chat/route.ts onFinish) can attribute artifact versions to this turn.
+  // Existing callers that ignore the return are unaffected.
+  const [row] = await db
+    .insert(schema.messages)
+    .values({
+      conversationId,
+      role: "assistant",
+      content: [{ type: "text", text }],
+      tokensIn,
+      tokensOut,
+      stopReason,
+    })
+    .returning({ id: schema.messages.id });
   await db
     .update(schema.conversations)
     .set({ updatedAt: new Date() })
     .where(eq(schema.conversations.id, conversationId));
+  return row?.id ?? null;
 }
 
 /**

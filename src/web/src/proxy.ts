@@ -48,8 +48,9 @@ const LOCAL_TOKEN = process.env.JARVIS_LOCAL_API_TOKEN ?? ''
 const AUTH_DISABLED = process.env.JARVIS_AUTH_DISABLED === '1'
 // /share/<token> is a read-only public share page (token-gated, renders only
 // the deployed site — never source/secrets), so it must be reachable without
-// a login session.
-const LOGIN_PUBLIC_PREFIXES = ['/login', '/signup', '/share']
+// a login session. /a/<token> is the same idea for a published single
+// artifact (server-rendered, view-only — no source browser, no secrets).
+const LOGIN_PUBLIC_PREFIXES = ['/login', '/signup', '/share', '/a']
 
 function hasSessionCookie(req: NextRequest): boolean {
   // http (dev) vs __Secure- prefix (https/prod).

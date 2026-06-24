@@ -21,8 +21,12 @@ import {
   writeFile,
 } from "@/lib/workspace/storage";
 import { readKnowledgeBlock } from "@/lib/workspace/knowledge";
+import { readGlobalKnowledgeBlock } from "@/lib/knowledge/store";
 import { generateQuestions, renderQuestionsHtml } from "@/lib/design/questionnaire";
-import { buildWorkbenchPrompt, buildDesignPrompt } from "@/lib/actions/jarvis-prompt";
+import { buildWorkbenchPrompt, buildDesignPrompt, buildArtifactPrompt } from "@/lib/actions/jarvis-prompt";
+import { extractJarvisArtifacts } from "@/lib/artifacts/extract";
+import { detectArtifacts } from "@/lib/artifacts/detect";
+import { upsertArtifactFromMessage } from "@/lib/artifacts/store";
 import { buildDesignContextBlock } from "@/lib/design-context";
 import { getBrand } from "@/lib/design/brand";
 import {
@@ -35,7 +39,16 @@ import {
 } from "@/lib/design/format";
 import { webSearchTool } from "@/lib/tools/web-search";
 import { createGenerateImageTool } from "@/lib/tools/generate-image";
-import { imageGenAvailable, type GeneratedImage } from "@/lib/ai/image";
+import {
+  imageGenAvailable,
+  generateChatImage,
+  type GeneratedImage,
+} from "@/lib/ai/image";
+import {
+  appendImageMarkdown,
+  stripGeneratedImagesForModel,
+  hasImageIntent,
+} from "@/lib/chat/image-markdown";
 
 // File extension → suggested filename when the model dumps a fenced
 // code block instead of using boltAction. Used by the recovery path
@@ -178,6 +191,32 @@ KaTeX ($...$ or $$...$$) for mathematical expressions ONLY. Never use math notat
 Skip greetings and filler. Never start with "Certainly", "Of course", "Great question", or any opener. Just answer.`;
 }
 
+/**
+ * Personalization block from the user's profile (Settings → General). These
+ * fields (name / callName / jobTitle / preferences) were saved but never
+ * reached the model — so the assistant didn't know who it was talking to or
+ * how to address them. Appended to the system prompt so they actually apply.
+ */
+function buildUserContextPrompt(user: {
+  name?: string;
+  callName?: string;
+  jobTitle?: string;
+  preferences?: string;
+}): string {
+  const lines: string[] = [];
+  const name = user.name?.trim();
+  const callName = user.callName?.trim();
+  const jobTitle = user.jobTitle?.trim();
+  const preferences = user.preferences?.trim();
+  if (name) lines.push(`The user's name is ${name}.`);
+  if (callName) lines.push(`Address them as "${callName}".`);
+  if (jobTitle) lines.push(`Their role / title: ${jobTitle}.`);
+  if (preferences)
+    lines.push(`Their stated preferences — honor these:\n${preferences}`);
+  if (lines.length === 0) return "";
+  return `\n\n# About the user you're talking to\n${lines.join("\n")}`;
+}
+
 type ChatMode = "design";
 
 type Body = {
@@ -190,10 +229,14 @@ type Body = {
   format?: Format;
   // DeepSeek "Search" composer toggle — false hides the web-search tool.
   search?: boolean;
+  // Universal "Image" composer toggle — true forces server-side image
+  // generation for this turn (model-independent), matching Open WebUI's
+  // explicit image mode. Works even with thinking models that can't tool-call.
+  image?: boolean;
 };
 
 export async function POST(req: Request) {
-  const { id, messages, model, system, workspaceId, mode, format, search }: Body = await req.json();
+  const { id, messages, model, system, workspaceId, mode, format, search, image }: Body = await req.json();
   const userId = await getUserId(req.headers);
   const settings = await loadSettings();
   let modelId = model ?? settings.defaults.model;
@@ -354,13 +397,44 @@ export async function POST(req: Request) {
     }
   }
 
-  const modelMessages = await convertToModelMessages(messages);
+  // Strip generated-image markdown from the assistant HISTORY before it goes to
+  // the model. The rendered `![..](/api/media/..)` url is DISPLAY-only; feeding
+  // it back teaches the model to mimic the pattern and hallucinate fake
+  // /api/media urls (which 404 → broken images) instead of calling the tool.
+  // Replaced with a neutral placeholder so the model still knows an image was
+  // made. Does NOT touch what the user sees or what we persist.
+  const historyForModel = messages.map((m) =>
+    m.role === "assistant"
+      ? {
+          ...m,
+          parts: m.parts.map((p) =>
+            p.type === "text"
+              ? { ...p, text: stripGeneratedImagesForModel(p.text) }
+              : p,
+          ),
+        }
+      : m,
+  );
+  const modelMessages = await convertToModelMessages(historyForModel);
 
   // If the chat is targeting a workspace, append the bolt-style artifact
   // instructions so the model emits <boltArtifact>/<boltAction> blocks
   // that our streaming parser (lib/actions/message-parser.ts) can route
   // into file writes and shell execs.
   let finalSystem = system ?? settings.defaults.systemPrompt ?? buildDefaultSystemPrompt();
+  // Personalization: make the user's profile (name/callName/jobTitle/
+  // preferences) actually reach the assistant. No-op when the profile is empty.
+  finalSystem += buildUserContextPrompt(settings.user ?? {});
+  // Global knowledge docs (Settings → Knowledge) — reference material the user
+  // uploaded, injected into every chat. No-op when none are enabled.
+  finalSystem += await readGlobalKnowledgeBlock();
+  // Plain chat (no workspace): activate claude.ai-style self-contained
+  // artifacts so the model can emit <jarvisArtifact> blocks the artifact
+  // side panel renders + persists. Workspace turns keep the bolt path
+  // below. Kill-switch: JARVIS_WEB_ARTIFACTS_ENABLED=0.
+  if (!workspaceId && process.env.JARVIS_WEB_ARTIFACTS_ENABLED !== "0") {
+    finalSystem += buildArtifactPrompt();
+  }
   if (workspaceId) {
     const ws = await getWorkspace(workspaceId);
     if (ws) {
@@ -658,6 +732,84 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
     };
   }
 
+  // Clear image request → generate the image SERVER-SIDE and return it
+  // directly, bypassing the model's tool-calling. Why: deepseek-v4-flash (and
+  // other thinking models) can't be forced via tool_choice ("Thinking mode does
+  // not support this tool_choice", 400) and, in a long conversation, unreliably
+  // answer with TEXT (a hallucinated /api/media url, or a copied placeholder)
+  // instead of calling the tool — which renders as a broken image. Doing it
+  // here is deterministic: every clear "generate an image of X" yields a real,
+  // file-backed image regardless of model. We emulate a tool-output event so
+  // the client renders it through its normal path. On failure we fall through
+  // to the model (so it can explain, e.g. a missing key).
+  // Trigger when the user flips the explicit Image toggle (deterministic, like
+  // Open WebUI's image mode) OR when the message clearly reads as an image
+  // request (auto-detect convenience). The toggle is the reliable path for
+  // thinking models; auto-detect covers "generate a boat" without toggling.
+  const forceImage =
+    "generateImage" in imageTools &&
+    (image === true || hasImageIntent(firstUserText));
+  if (forceImage) {
+    try {
+      const image = await generateChatImage({
+        prompt: firstUserText,
+        modelId: settings.defaults.imageModel,
+      });
+      const assistantText = appendImageMarkdown("", [image]);
+      if (conversation) {
+        try {
+          await saveAssistantMessage({
+            conversationId: conversation.id,
+            text: assistantText,
+            tokensIn: 0,
+            tokensOut: 0,
+            stopReason: "stop",
+          });
+        } catch (err) {
+          console.error("[chat] failed to persist forced-image message", err);
+        }
+      }
+      const encoder = new TextEncoder();
+      const headers: Record<string, string> = {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-store",
+      };
+      if (conversation) headers["X-Conversation-Id"] = conversation.id;
+      const toolEvent = {
+        type: "tool-output-available",
+        toolCallId: "forced-image",
+        output: {
+          status: "ok",
+          url: image.url,
+          prompt: image.prompt,
+          model: image.modelLabel,
+        },
+      };
+      console.log("[chat] image intent → generated server-side, bypassed model");
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify(toolEvent)}\n\n`),
+          );
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ type: "finish", finishReason: "stop" })}\n\n`,
+            ),
+          );
+          controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
+          controller.close();
+        },
+      });
+      return new Response(stream, { headers });
+    } catch (err) {
+      console.warn(
+        "[chat] forced image generation failed; falling back to model:",
+        err instanceof Error ? err.message : err,
+      );
+      // fall through to normal streamText
+    }
+  }
+
   const result = streamText({
     model: selected.model,
     system: finalSystem,
@@ -762,29 +914,39 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
       }
       // Persist generated images into the assistant TEXT as markdown so they
       // survive reload — tool parts aren't persisted (persist.ts saves text
-      // only); the live UI rendered them from the streamed tool part. Dedupe
-      // by url in case the model echoed it despite the tool description telling
-      // it not to. The markdown <img> loads same-origin, so proxy.ts lets it
-      // through even under the bearer gate.
-      let assistantText = text;
-      for (const img of generatedImages) {
-        // Skip only if the image is ALREADY embedded as markdown (model echoed
-        // it despite the tool description). A bare-url mention doesn't count —
-        // we still append the real image markdown so it renders on reload.
-        if (!assistantText.includes(`](${img.url})`)) {
-          const alt = img.prompt.replace(/[[\]\n]/g, " ").slice(0, 120).trim();
-          assistantText += `${assistantText ? "\n\n" : ""}![${alt}](${img.url})`;
-        }
-      }
+      // only). The custom chat client renders the SAME markdown live via the
+      // shared helper, so live + reload match byte-for-byte. The markdown <img>
+      // loads same-origin, so proxy.ts lets it through even under the bearer gate.
+      const assistantText = appendImageMarkdown(text, generatedImages);
       if (!conversation) return;
       try {
-        await saveAssistantMessage({
+        const messageId = await saveAssistantMessage({
           conversationId: conversation.id,
           text: assistantText,
           tokensIn: totalUsage.inputTokens,
           tokensOut: totalUsage.outputTokens,
           stopReason: finishReason,
         });
+        // Persist + version any self-contained <jarvisArtifact> blocks the
+        // model emitted (plain-chat only; workspace turns use the bolt
+        // path). Server-trusted: runs under consumeStream, off the raw
+        // persisted text, so artifacts can't be forged by the client.
+        if (!workspaceId && process.env.JARVIS_WEB_ARTIFACTS_ENABLED !== "0") {
+          // Explicit <jarvisArtifact> tags AND naturally-emitted substantial
+          // code/HTML/SVG/mermaid blocks (claude.ai's >15-line heuristic), so
+          // the gallery captures everything substantial regardless of tagging.
+          const artifacts = [
+            ...extractJarvisArtifacts(assistantText),
+            ...detectArtifacts(assistantText),
+          ];
+          if (artifacts.length > 0) {
+            await upsertArtifactFromMessage({
+              conversationId: conversation.id,
+              messageId,
+              artifacts,
+            });
+          }
+        }
       } catch (err) {
         console.error("[chat] failed to persist assistant message", err);
       }

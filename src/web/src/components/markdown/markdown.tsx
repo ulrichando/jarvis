@@ -237,6 +237,7 @@ function stripBlocksByStateMachine(content: string): string {
     "boltactionresults",
     "jarvisplan",
     "jarvisverify",
+    "jarvisartifact",
   ];
   const lower = content.toLowerCase();
   let out = "";
@@ -301,7 +302,7 @@ function stripBlocksByStateMachine(content: string): string {
   return out;
 }
 
-function stripDesignTags(content: string): string {
+export function stripDesignTags(content: string): string {
   let s = stripBlocksByStateMachine(content);
 
   // Defensive cleanups for content that escaped the bolt blocks
@@ -344,6 +345,12 @@ function stripDesignTags(content: string): string {
     // body). Same DB-persisted history pattern as boltActionResults.
     .replace(/<jarvisverify\b[\s\S]*?<\/jarvisverify>/gi, "")
     .replace(/<jarvisverify\b[\s\S]*$/i, "")
+    // <jarvisArtifact> blocks (System B self-contained artifacts) —
+    // surfaced in the artifact side panel + gallery, never the Markdown
+    // body. Stripped during streaming by the parser; this catches the
+    // persisted-history path the same way as the jarvisPlan block above.
+    .replace(/<jarvisartifact\b[\s\S]*?<\/jarvisartifact>/gi, "")
+    .replace(/<jarvisartifact\b[\s\S]*$/i, "")
     // <preview>...</preview> — sometimes the model wraps its output
     // in a `preview` tag (likely a hallucinated leftover from
     // training data). It has no semantic meaning to the runtime and

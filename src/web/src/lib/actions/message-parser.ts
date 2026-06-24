@@ -16,7 +16,7 @@
 //     <boltAction type="start">                   — start dev server
 //   </boltArtifact>
 
-import type { Action, ActionType, ArtifactData, FileAction, ShellAction, StartAction } from "./types";
+import type { Action, ActionType, ArtifactData, ArtifactKind, FileAction, ShellAction, StartAction } from "./types";
 
 // Tag constants stored lowercase so case-insensitive matching is a
 // single .toLowerCase() on the input. Some models emit `<boltArtifact>`,
@@ -40,6 +40,14 @@ const PLAN_TAG_CLOSE = "</jarvisplan>";
 // to be re-sent in the conversation history.
 const RESULTS_TAG_OPEN = "<boltactionresults";
 const RESULTS_TAG_CLOSE = "</boltactionresults>";
+// JARVIS claude.ai-style self-contained artifact (System B). A single
+// renderable unit (one React component / HTML page / SVG / mermaid /
+// markdown doc / code snippet) — NOT a multi-file bolt build. Content
+// streams live into the artifact side panel; the tag is stripped from
+// visible prose (like jarvisPlan). Distinct prefix from <boltartifact>
+// so System A's parsing path is byte-for-byte unchanged.
+const JARVIS_ARTIFACT_TAG_OPEN = "<jarvisartifact";
+const JARVIS_ARTIFACT_TAG_CLOSE = "</jarvisartifact>";
 
 export type ArtifactCallbackData = ArtifactData & {
   messageId: string;
@@ -58,6 +66,16 @@ export type PlanCallbackData = {
   complete: boolean;
 };
 
+export type JarvisArtifactCallbackData = {
+  messageId: string;
+  slug: string;
+  title: string;
+  kind: ArtifactKind;
+  language?: string;
+  content: string;
+  complete: boolean;
+};
+
 export type ParserCallbacks = {
   onArtifactOpen?: (data: ArtifactCallbackData) => void;
   onArtifactClose?: (data: ArtifactCallbackData) => void;
@@ -65,6 +83,10 @@ export type ParserCallbacks = {
   onActionStream?: (data: ActionCallbackData) => void;
   onActionClose?: (data: ActionCallbackData) => void;
   onPlan?: (data: PlanCallbackData) => void;
+  // System B self-contained artifacts (<jarvisArtifact>).
+  onJarvisArtifactOpen?: (data: JarvisArtifactCallbackData) => void;
+  onJarvisArtifactStream?: (data: JarvisArtifactCallbackData) => void;
+  onJarvisArtifactClose?: (data: JarvisArtifactCallbackData) => void;
 };
 
 type PartialAction =
@@ -79,11 +101,14 @@ type MessageState = {
   insideAction: boolean;
   insidePlan: boolean;
   insideResults: boolean;
+  insideJarvisArtifact: boolean;
   artifactCounter: number;
   currentArtifact?: ArtifactData;
+  currentJarvisArtifact?: { slug: string; title: string; kind: ArtifactKind; language?: string };
   currentAction: PartialAction;
   actionId: number;
   planContent: string;
+  jarvisArtifactContent: string;
 };
 
 function stripCodeFence(content: string): string {
@@ -124,10 +149,12 @@ export class StreamingMessageParser {
         insideAction: false,
         insidePlan: false,
         insideResults: false,
+        insideJarvisArtifact: false,
         artifactCounter: 0,
         currentAction: { type: "", content: "" },
         actionId: 0,
         planContent: "",
+        jarvisArtifactContent: "",
       };
       this.#messages.set(messageId, state);
     }
@@ -178,6 +205,52 @@ export class StreamingMessageParser {
         this.callbacks.onPlan?.({
           messageId,
           content: state.planContent,
+          complete: false,
+        });
+        return commit(state, output, input.length);
+      }
+
+      if (state.insideJarvisArtifact) {
+        // Accumulate the self-contained artifact body until </jarvisArtifact>.
+        // Content is NEVER emitted to the visible output — it's surfaced via
+        // the onJarvisArtifact* callbacks and rendered in the side panel.
+        const meta = state.currentJarvisArtifact!;
+        const closeIndex = lower.indexOf(JARVIS_ARTIFACT_TAG_CLOSE, i);
+        const finalize = (raw: string): string => {
+          // Markdown artifacts ARE markdown — keep their fences. Other
+          // kinds get a stray wrapping ```fence``` stripped + entities
+          // unescaped, exactly like file-action content.
+          if (meta.kind === "markdown") return raw;
+          return unescapeTags(stripCodeFence(raw));
+        };
+        if (closeIndex !== -1) {
+          state.jarvisArtifactContent += input.slice(i, closeIndex);
+          this.callbacks.onJarvisArtifactClose?.({
+            messageId,
+            slug: meta.slug,
+            title: meta.title,
+            kind: meta.kind,
+            language: meta.language,
+            content: finalize(state.jarvisArtifactContent).trim(),
+            complete: true,
+          });
+          state.insideJarvisArtifact = false;
+          state.currentJarvisArtifact = undefined;
+          state.jarvisArtifactContent = "";
+          i = closeIndex + JARVIS_ARTIFACT_TAG_CLOSE.length;
+          continue;
+        }
+        // Tag not closed yet — stream the in-progress content so Preview
+        // builds up live (same UX as file actions), then bail until the
+        // next chunk arrives.
+        state.jarvisArtifactContent += input.slice(i);
+        this.callbacks.onJarvisArtifactStream?.({
+          messageId,
+          slug: meta.slug,
+          title: meta.title,
+          kind: meta.kind,
+          language: meta.language,
+          content: finalize(state.jarvisArtifactContent),
           complete: false,
         });
         return commit(state, output, input.length);
@@ -279,6 +352,7 @@ export class StreamingMessageParser {
           ARTIFACT_TAG_OPEN.length,
           PLAN_TAG_OPEN.length,
           RESULTS_TAG_OPEN.length,
+          JARVIS_ARTIFACT_TAG_OPEN.length,
         );
         let j = i;
         let probe = "";
@@ -347,11 +421,53 @@ export class StreamingMessageParser {
             consumed = true;
             break;
           }
+          // Full match for jarvisArtifact: open a self-contained artifact.
+          if (probe === JARVIS_ARTIFACT_TAG_OPEN) {
+            const next = input[j + 1];
+            if (next && next !== ">" && next !== " ") {
+              // `<jarvisArtifactSomething` — not our tag.
+              output += input.slice(i, j + 1);
+              i = j + 1;
+              consumed = true;
+              break;
+            }
+            const tagEnd = input.indexOf(">", j);
+            if (tagEnd === -1) return commit(state, output, i);
+            const tag = input.slice(i, tagEnd + 1);
+            const slug =
+              extractAttr(tag, "slug") ?? extractAttr(tag, "id") ?? "artifact";
+            const title = extractAttr(tag, "title") ?? "Artifact";
+            const kindRaw = (extractAttr(tag, "kind") ?? "code").toLowerCase();
+            const kind = (
+              ["code", "markdown", "html", "react", "svg", "mermaid"].includes(
+                kindRaw,
+              )
+                ? kindRaw
+                : "code"
+            ) as ArtifactKind;
+            const language = extractAttr(tag, "language");
+            state.insideJarvisArtifact = true;
+            state.currentJarvisArtifact = { slug, title, kind, language };
+            state.jarvisArtifactContent = "";
+            this.callbacks.onJarvisArtifactOpen?.({
+              messageId,
+              slug,
+              title,
+              kind,
+              language,
+              content: "",
+              complete: false,
+            });
+            i = tagEnd + 1;
+            consumed = true;
+            break;
+          }
           // Probe is no longer a prefix of any known tag — bail.
           if (
             !ARTIFACT_TAG_OPEN.startsWith(probe) &&
             !PLAN_TAG_OPEN.startsWith(probe) &&
-            !RESULTS_TAG_OPEN.startsWith(probe)
+            !RESULTS_TAG_OPEN.startsWith(probe) &&
+            !JARVIS_ARTIFACT_TAG_OPEN.startsWith(probe)
           ) {
             output += input.slice(i, j + 1);
             i = j + 1;
@@ -368,7 +484,8 @@ export class StreamingMessageParser {
           j === input.length &&
           (ARTIFACT_TAG_OPEN.startsWith(probe) ||
             PLAN_TAG_OPEN.startsWith(probe) ||
-            RESULTS_TAG_OPEN.startsWith(probe))
+            RESULTS_TAG_OPEN.startsWith(probe) ||
+            JARVIS_ARTIFACT_TAG_OPEN.startsWith(probe))
         ) {
           break;
         }
