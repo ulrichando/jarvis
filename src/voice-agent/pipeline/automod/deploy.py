@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from pipeline.automod._state import _automod_home
+from pipeline.automod._state import _automod_home, artifact_path
 
 # Repo root: this file is src/voice-agent/pipeline/automod/deploy.py
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -80,9 +80,33 @@ def _git(*args: str) -> subprocess.CompletedProcess:
 
 
 def tree_is_clean() -> bool:
-    """True if the working tree has no uncommitted changes. A deploy REQUIRES
-    this so the watchdog's hard-reset rollback can never destroy data."""
+    """True if the working tree has no uncommitted changes."""
     return _git("status", "--porcelain").stdout.strip() == ""
+
+
+def _proposal_files_dirty(automod_id: str) -> list[str]:
+    """Return the proposal's own changed files that ALSO have uncommitted local
+    changes — those (and only those) would conflict the ff-merge. Unrelated
+    dirty files don't matter: ff-merge leaves them untouched (verified), and the
+    watchdog rollback stashes before `git reset --hard`, so they're never
+    destroyed. Empty list = safe to deploy even with a dirty tree.
+
+    This replaces the old whole-tree clean requirement, which made deploy
+    impossible whenever a parallel session left the repo dirty (2026-06-23)."""
+    try:
+        art = json.loads(artifact_path(automod_id).read_text(encoding="utf-8"))
+        files = set(art.get("files_changed") or [])
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not files:
+        return []
+    dirty = []
+    for line in _git("status", "--porcelain").stdout.splitlines():
+        # porcelain: "XY <path>" — 2 status chars + space, then the path.
+        path = line[3:].strip().strip('"')
+        if path in files:
+            dirty.append(path)
+    return sorted(dirty)
 
 
 def _seconds_since_last_turn() -> Optional[float]:
@@ -113,28 +137,39 @@ def _wait_for_quiet(min_gap_s: int = 60, cap_s: int = 75) -> None:
         waited += 5
 
 
-def _restart_agent() -> None:
-    subprocess.run(
+def _restart_agent() -> tuple[bool, str]:
+    r = subprocess.run(
         ["systemctl", "--user", "restart", "jarvis-voice-agent.service"],
+        capture_output=True,
+        text=True,
         check=False,
     )
+    if r.returncode == 0:
+        return True, ""
+    return False, (r.stderr or r.stdout or f"systemctl exited {r.returncode}").strip()
 
 
 def deploy(automod_id: str, *, deadline_s: int = DEFAULT_DEADLINE_S) -> tuple[bool, str]:
     """Deploy an APPROVED proposal: clean-tree guard → capture rollback SHA →
     ff-merge → write deploy marker → restart. The watchdog takes it from here.
 
-    Returns (True, merge_sha) or (False, reason). Never proceeds on a dirty tree.
+    Returns (True, merge_sha) or (False, reason). Proceeds even with unrelated
+    uncommitted files present, refusing only if the PROPOSAL'S OWN files are
+    dirty (which would conflict the ff-merge). The watchdog rollback stashes
+    before reset, so a rollback never destroys uncommitted work.
     """
     # Lazy import to avoid a circular import (cli imports deploy for the
     # subcommand; deploy needs cli's merge + audit).
     from pipeline.automod import artifact
     from pipeline.automod.cli import cmd_merge
 
-    if not tree_is_clean():
+    dirty_own = _proposal_files_dirty(automod_id)
+    if dirty_own:
         return False, (
-            "refused: working tree is dirty — commit or stash first so an "
-            "auto-rollback can't destroy uncommitted work."
+            "refused: the proposal's own files have uncommitted changes ("
+            + ", ".join(dirty_own)
+            + ") — commit or stash those so the ff-merge doesn't conflict. "
+            "Unrelated dirty files are fine."
         )
 
     rollback_sha = _git("rev-parse", "HEAD").stdout.strip()
@@ -146,14 +181,16 @@ def deploy(automod_id: str, *, deadline_s: int = DEFAULT_DEADLINE_S) -> tuple[bo
         return False, f"merge_failed:{info}"
     merge_sha = info
 
-    write_marker({
+    marker = {
         "automod_id": automod_id,
         "merge_sha": merge_sha,
         "rollback_sha": rollback_sha,
         "deployed_at": _now_iso(),
         "deadline_s": int(deadline_s),
-        "state": "watching",
-    })
+        "restart_requested_monotonic": None,
+        "state": "pending-restart",
+    }
+    write_marker(marker)
     try:
         artifact.audit(
             "automod_deploy_started",
@@ -163,5 +200,20 @@ def deploy(automod_id: str, *, deadline_s: int = DEFAULT_DEADLINE_S) -> tuple[bo
         pass
 
     _wait_for_quiet()
-    _restart_agent()
+    marker["restart_requested_monotonic"] = time.monotonic()
+    marker["state"] = "watching"
+    write_marker(marker)
+    restart_ok, restart_detail = _restart_agent()
+    if not restart_ok:
+        marker["state"] = "restart-failed"
+        marker["restart_error"] = restart_detail
+        write_marker(marker)
+        try:
+            artifact.audit(
+                "automod_deploy_restart_failed",
+                id=automod_id, merge_sha=merge_sha, error=restart_detail,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return False, f"restart_failed:{restart_detail}"
     return True, merge_sha
