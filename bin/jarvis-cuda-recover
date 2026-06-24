@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# jarvis-cuda-recover — clear a wedged CUDA context by reloading nvidia_uvm.
+#
+# Why: on this laptop, suspend/resume or a GPU Xid fault (e.g. Xid 31 MMU fault)
+# leaves CUDA wedged — every process gets CUDA_ERROR_UNKNOWN (999) from cuInit,
+# even though `nvidia-smi` (NVML) keeps working. JARVIS's Whisper GPU STT (and
+# Ollama GPU) then fail. The STT chain cascades to Groq Whisper so JARVIS stays
+# alive, but it leaves the local/$0 path until CUDA is cleared. Reloading the
+# nvidia_uvm kernel module fixes it WITHOUT a reboot — X uses nvidia_drm /
+# nvidia_modeset, not nvidia_uvm, so the desktop is untouched. The only
+# precondition is that nvidia_uvm's refcount is 0, so we stop the voice-agent
+# (the GPU holder) first.
+#
+# Idempotent: a no-op when CUDA is healthy. Invoked from jarvis-voice-recover on
+# resume (`from-recover`, which leaves the agent stopped for the caller's restart
+# loop to bring up). Run by hand to fully recover: `sudo bin/jarvis-cuda-recover`.
+#
+# Discovered + first applied live 2026-06-21 (GPU STT brought JARVIS from ~72%
+# dropped utterances on CPU to sub-second on the RTX 2060).
+set -uo pipefail
+
+USER_NAME="${JARVIS_USER:-ulrich}"
+USER_UID="$(id -u "$USER_NAME" 2>/dev/null || echo 1000)"
+RUNTIME_DIR="/run/user/$USER_UID"
+REASON="${1:-manual}"
+
+log() { logger -t jarvis-cuda-recover "$*" 2>/dev/null || true; echo "[jarvis-cuda-recover] $*"; }
+
+# Run `systemctl --user` as the target user whether we were invoked as root
+# (the resume hook) or as the user (manual). Mirrors jarvis-voice-recover.
+uctl() {
+    if [ "$(id -u)" = "0" ]; then
+        sudo -u "$USER_NAME" XDG_RUNTIME_DIR="$RUNTIME_DIR" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=$RUNTIME_DIR/bus" \
+            systemctl --user "$@"
+    else
+        systemctl --user "$@"
+    fi
+}
+
+# CUDA healthy ⇔ the driver API initialises. ctypes against libcuda.so.1; no venv
+# / CUDA toolkit needed — this is the same call ctranslate2/torch make first.
+cuda_ok() {
+    python3 - <<'PY' 2>/dev/null
+import ctypes, sys
+try:
+    sys.exit(0 if ctypes.CDLL("libcuda.so.1").cuInit(0) == 0 else 1)
+except Exception:
+    sys.exit(1)
+PY
+}
+
+if cuda_ok; then
+    log "CUDA healthy ($REASON) — no action"
+    exit 0
+fi
+
+log "CUDA wedged ($REASON) — reloading nvidia_uvm"
+
+# modprobe needs root. Re-exec under passwordless sudo if available.
+if [ "$(id -u)" != "0" ]; then
+    if sudo -n true 2>/dev/null; then exec sudo -n "$0" "$REASON"; fi
+    log "not root and no passwordless sudo — cannot reload; STT stays on Groq fallback"
+    exit 1
+fi
+
+# Stop the GPU holder so nvidia_uvm's refcount drops to 0 (rmmod fails otherwise).
+uctl stop jarvis-voice-agent.service 2>/dev/null || true
+sleep 1
+if modprobe -r nvidia_uvm 2>/dev/null && modprobe nvidia_uvm 2>/dev/null; then
+    log "nvidia_uvm reloaded"
+else
+    log "nvidia_uvm reload failed (module still busy?) — a reboot may be needed; Groq fallback covers STT meanwhile"
+fi
+
+# When called from jarvis-voice-recover, leave the agent stopped — its restart
+# loop brings the whole stack up in dependency order. Standalone: bring it back.
+if [ "$REASON" != "from-recover" ]; then
+    uctl start jarvis-voice-agent.service 2>/dev/null || true
+    if cuda_ok; then log "CUDA recovered"; else log "CUDA STILL wedged after reload — reboot likely required"; fi
+fi
+exit 0

@@ -22,11 +22,11 @@ pattern — there is no single "offline switch". A DOWN endpoint fails fast
 (`APIConnectionError`) and cascades; a reachable-but-slow one is bounded
 by the per-rung timeout.
 
-> ⚠️ The **LLM** rung is special: when `JARVIS_LOCAL_LLM_ENABLED=1` the
-> local model is **rung-0 (PRIMARY)** — tried *first*, ahead of cloud —
-> so enabling it changes your daily-driver JARVIS to the local model.
-> The STT/TTS/Vision rungs are genuine *last* resorts (only hit when the
-> cloud rungs fail).
+> ⚠️ The **LLM** rung is special: when `JARVIS_LOCAL_LLM_ENABLED=1` and
+> the startup `/v1/models` probe confirms the endpoint/model, the local
+> model is **rung-0 (PRIMARY)** — tried *first*, ahead of cloud. The
+> STT/TTS/Vision rungs are genuine *last* resorts (only hit when the cloud
+> rungs fail).
 
 ---
 
@@ -43,6 +43,8 @@ bottom of that file.
 | `JARVIS_LOCAL_LLM_MODEL` | `qwen3:14b` | Ollama model tag. |
 | `JARVIS_LOCAL_LLM_API_KEY` | `ollama` | Auth header (Ollama ignores it; vLLM may need a real key). |
 | `JARVIS_LOCAL_LLM_TIMEOUT` | `60` | Per-request seconds. Generous for cold/big-model loads; a down endpoint still fails fast. |
+| `JARVIS_LOCAL_LLM_PROBE_TIMEOUT` | `1.0` | Startup probe timeout for `GET /v1/models`; the local rung is skipped if the endpoint/model is absent. |
+| `JARVIS_LOCAL_LLM_ASSUME_AVAILABLE` | `0` | Test/manual escape hatch: skip the startup probe and trust the configured endpoint/model. |
 | `JARVIS_LOCAL_LLM_ROUTES` | *(empty=all)* | CSV subset of routes (e.g. `BANTER,TASK_CODE`). |
 | `JARVIS_LOCAL_STT_ENABLED` | `0` | faster-whisper local STT last rung. |
 | `JARVIS_LOCAL_STT_MODEL` | `large-v3` | Whisper size (`base`/`small`/`large-v3`). |
@@ -120,11 +122,12 @@ r = c.chat.completions.create(model="llama3.1:8b",
 print(r.choices[0].finish_reason, r.choices[0].message.tool_calls)
 PY
 ```
-With the service running + flags on, confirm the telemetry `model` column
-shows `local:<model>` (LLM) and `[stt.local]` / `[tts.local]` lines in
-`~/.local/share/jarvis/logs/voice-agent.log`. Kill Ollama (`systemctl
-stop ollama`) mid-session → next turn cascades back to cloud (look for
-the FallbackAdapter cascade in the log).
+With the service running + flags on, confirm startup logs show the local
+LLM probe passing and telemetry `model` shows `local:<model>` for the scoped
+routes. If `/v1/models` is unreachable or does not advertise the configured
+model, the dispatcher skips the local rung and logs `local LLM requested but
+unavailable`. STT/TTS still show `[stt.local]` / `[tts.local]` lines in
+`~/.local/share/jarvis/logs/voice-agent.log`.
 
 ---
 

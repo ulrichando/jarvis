@@ -89,6 +89,15 @@ if command -v pactl >/dev/null 2>&1; then
 fi
 sleep 1
 
+# ── Clear a CUDA wedge (suspend/Xid → cuInit 999) BEFORE restarting, so Whisper
+#    GPU STT comes back on-device instead of failing (there is no Groq fallback
+#    when JARVIS_STT_LOCAL_ONLY=1). No-op when CUDA is healthy; when wedged it
+#    stops the agent + reloads nvidia_uvm and leaves the agent down for the
+#    restart loop below to bring up. Root only (modprobe). ────────────────────
+if [ "$(id -u)" = "0" ]; then
+    "$(dirname "$0")/jarvis-cuda-recover" from-recover || log "warning: jarvis-cuda-recover returned non-zero"
+fi
+
 # ── Restart in dependency order (client Requires/After agent). ─────────────
 for svc in jarvis-voice-agent.service jarvis-voice-client.service; do
     uctl restart "$svc" || log "warning: restart $svc returned non-zero"

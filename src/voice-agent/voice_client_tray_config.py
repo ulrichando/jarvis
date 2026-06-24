@@ -104,6 +104,9 @@ CLI_MODELS_AVAILABLE: tuple[str, ...] = (
     # DeepSeek — re-added 2026-06-23 per user request (their daily-driver
     # CLI model) despite the documented 94% hallucination rate.
     "deepseek-v4-pro",
+    # Kimi — K2.7 code model (Moonshot). Strong agentic tool-caller; added
+    # 2026-06-23 per user request. Routes via the proxy's kimi provider.
+    "kimi-k2.7-code",
     #
     # Dropped 2026-05-18 (still in jarvis_agent.py CLI_MODELS for
     # env-var passthrough resolution if needed, but hidden here):
@@ -158,6 +161,12 @@ SPEECH_MODELS_AVAILABLE: tuple[str, ...] = (
     # (qwen3-32b: BFCL v3 #2 open-weights, <400ms TTFT). For no-
     # OpenAI-quota / no-Anthropic-credit days.
     "qwen/qwen3-32b",
+    # Kimi — K2.7 code model (Moonshot), added 2026-06-23 per user request for
+    # voice tool-calling. CAVEAT: K2.6 broke the voice path (spontaneous
+    # built-in web_search tool-call → Moonshot 400 → supervisor wedge → silent).
+    # K2.7-code is UNVERIFIED on the live voice loop — if JARVIS goes silent
+    # after switching to it, that's the same bug; switch back to Haiku.
+    "kimi-k2.7-code",
     #
     # Dropped 2026-05-18 (registered in providers/llm.py, hidden here):
     #   - gpt-5-nano               (in-code: weakest tool calling)

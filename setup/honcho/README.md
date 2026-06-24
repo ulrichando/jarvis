@@ -2,8 +2,8 @@
 
 [Honcho](https://github.com/plastic-labs/honcho) is the backend behind JARVIS's
 `recall` tool: it auto-syncs every message, builds a user model, and serves
-semantic cross-session recall. It is the only *real* memory-provider backend
-(the `openviking` / `hindsight` plugins are inert stubs).
+semantic cross-session recall. It is the only memory-provider backend
+(the inert mirror stubs were removed 2026-06-23).
 
 **It is OPTIONAL.** JARVIS's file-backed memory (`USER.md` / `MEMORY.md` /
 `PROCEDURES.md`, written via the `memory` tool and injected into the prompt)

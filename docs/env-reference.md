@@ -137,7 +137,7 @@ The auto-mod loop is off by default. See `CLAUDE.md` for the hard blocklist.
 |---|---|
 | `JARVIS_AUTOMOD_ENABLED` | `1` activates pattern detector + `propose_code_mod` voice tool |
 | `JARVIS_AUTOMOD_SPAWN_LIVE` | `1` enables subprocess spawner (default: shadow mode) |
-| `JARVIS_AUTOMOD_DAILY_CAP` | Max PRs per day (default: 3) |
+| `JARVIS_AUTOMOD_DAILY_CAP` | Max evolution builds per UTC day (default: 5) |
 | `JARVIS_AUTOMOD_PATTERN_INTERVAL_S` | Pattern detector poll interval |
 | `JARVIS_AUTOMOD_MAX_DIFF_LINES` | Max diff lines per auto-mod proposal |
 | `JARVIS_AUTOMOD_MAX_FILES` | Max files per auto-mod proposal |

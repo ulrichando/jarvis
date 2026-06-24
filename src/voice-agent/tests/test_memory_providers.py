@@ -17,16 +17,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 _PLUGINS = Path(__file__).parent.parent / "plugins" / "memory"
 
-# leaf -> the env key its is_available() gates on
+# leaf -> the env key its is_available() gates on.
+# The 7 inert stub backends (mem0/openviking/hindsight/holographic/retaindb/
+# supermemory/byterover) were removed 2026-06-23 — honcho is the only real
+# backend and already fills the single-select deep-recall slot.
 _BACKENDS = {
     "honcho": "HONCHO_API_KEY",
-    "byterover": "BYTEROVER_API_KEY",
-    "hindsight": "HINDSIGHT_API_KEY",
-    "holographic": "HOLOGRAPHIC_API_KEY",
-    "mem0": "MEM0_API_KEY",
-    "openviking": "OPENVIKING_API_KEY",
-    "retaindb": "RETAINDB_API_KEY",
-    "supermemory": "SUPERMEMORY_API_KEY",
 }
 
 
@@ -82,28 +78,8 @@ def test_honcho_inert_without_key(monkeypatch):
     assert prov.is_available() is False
 
 
-def test_all_backends_inert_without_key(monkeypatch):
-    """Every memory backend gates off when its API key is unset."""
-    for leaf, key in _BACKENDS.items():
-        monkeypatch.delenv(key, raising=False)
-        mod = _load_leaf(leaf)
-        # the inline provider class is the only MemoryProvider subclass in the module
-        from tools.memory_providers import MemoryProvider
-
-        cls = next(
-            v
-            for v in vars(mod).values()
-            if isinstance(v, type)
-            and issubclass(v, MemoryProvider)
-            and v is not MemoryProvider
-        )
-        prov = cls()
-        assert prov.name == leaf, f"{leaf}: name mismatch ({prov.name!r})"
-        assert prov.is_available() is False, f"{leaf}: should be inert without {key}"
-
-
-def test_discovery_loads_all_eight_memory_backends():
-    """Plugin discovery finds all 8 memory/<leaf> keys, all enabled, no errors."""
+def test_discovery_loads_memory_backends():
+    """Plugin discovery finds the memory/<leaf> backends, all enabled, no errors."""
     from tools.plugin_system import discover_plugins
 
     rows = [

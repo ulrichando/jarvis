@@ -46,3 +46,34 @@ def test_route_from_output_unknown_falls_back_to_task_other():
 def test_legacy_task_label_normalizes_to_task_other():
     """A classifier emitting bare 'TASK' (old label) gets normalized."""
     assert route_from_classifier_output("TASK") == "TASK_OTHER"
+
+
+def test_router_prompt_distinguishes_browser_from_other():
+    """The router prompt must cleanly separate INTERACTIVE browser work from web
+    lookups. Current routing (2026-06): web_search / web_fetch are DIRECT tools,
+    so web lookups route to TASK_OTHER; TASK_BROWSER is reserved for page
+    interaction (navigate, login, forms, clicks). Guards against misrouting a
+    web lookup into a headless browser task."""
+    from pipeline.turn_router import ROUTER_PROMPT_TEMPLATE
+
+    # TASK_BROWSER is for interactive/visible browser work.
+    assert "TASK_BROWSER" in ROUTER_PROMPT_TEMPLATE
+    assert "page interaction" in ROUTER_PROMPT_TEMPLATE
+
+    # The web path (web_search / web_fetch) lives under TASK_OTHER.
+    assert "web_search" in ROUTER_PROMPT_TEMPLATE
+    assert "web_fetch" in ROUTER_PROMPT_TEMPLATE
+
+    # The IMPORTANT note must steer web lookups to TASK_OTHER, not the browser.
+    important = ROUTER_PROMPT_TEMPLATE.split("IMPORTANT:")[1]
+    assert "TASK_BROWSER" in important
+    assert "TASK_OTHER" in important
+
+    # "search the web" must be in TASK_OTHER, NOT TASK_BROWSER.
+    browser_section_start = ROUTER_PROMPT_TEMPLATE.index("TASK_BROWSER")
+    other_section_start = ROUTER_PROMPT_TEMPLATE.index("TASK_OTHER")
+    reasoning_section_start = ROUTER_PROMPT_TEMPLATE.index("REASONING")
+    browser_section = ROUTER_PROMPT_TEMPLATE[browser_section_start:other_section_start]
+    other_section = ROUTER_PROMPT_TEMPLATE[other_section_start:reasoning_section_start]
+    assert "search the web" in other_section
+    assert "search the web" not in browser_section

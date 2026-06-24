@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
 
 
 def test_no_deepgram_key_returns_whisper_only(monkeypatch):
@@ -88,6 +87,40 @@ def test_deepgram_disabled_env_returns_whisper_only(monkeypatch):
     # Short-circuits to None despite the key being set...
     assert _build_deepgram_stt() is None
     # ...so the chain is Groq Whisper alone, not a FallbackAdapter.
+    chain = build_stt_chain()
+    assert isinstance(chain, BreakeredGroqSTT)
+
+
+def test_local_only_strips_all_cloud_fallback(monkeypatch):
+    """JARVIS_STT_LOCAL_ONLY=1 removes EVERY cloud rung (Deepgram + Groq Whisper),
+    so the chain is the on-device faster-whisper ALONE — 100% local, no cloud
+    safety net (user request 2026-06-21). Reversible by unsetting the flag.
+    The CPU/int8 build is constructed without loading the model (lazy), so this
+    needs no GPU."""
+    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq")
+    monkeypatch.setenv("JARVIS_LOCAL_STT_ENABLED", "1")
+    monkeypatch.setenv("JARVIS_LOCAL_STT_PRIMARY", "1")
+    monkeypatch.setenv("JARVIS_STT_LOCAL_ONLY", "1")
+    monkeypatch.setenv("JARVIS_LOCAL_STT_DEVICE", "cpu")
+    monkeypatch.setenv("JARVIS_LOCAL_STT_COMPUTE", "int8")
+    from providers.stt import build_stt_chain
+    from providers.faster_whisper_stt import FasterWhisperSTT
+    chain = build_stt_chain()
+    assert isinstance(chain, FasterWhisperSTT), (
+        f"expected on-device FasterWhisperSTT alone, got {type(chain).__name__}"
+    )
+
+
+def test_local_only_noop_without_local_rung(monkeypatch):
+    """JARVIS_STT_LOCAL_ONLY=1 is a safe no-op when the local rung isn't built
+    (local STT disabled): the chain still degrades to Groq Whisper rather than
+    returning an empty chain."""
+    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq")
+    monkeypatch.delenv("JARVIS_LOCAL_STT_ENABLED", raising=False)
+    monkeypatch.setenv("JARVIS_STT_LOCAL_ONLY", "1")
+    from providers.stt import build_stt_chain, BreakeredGroqSTT
     chain = build_stt_chain()
     assert isinstance(chain, BreakeredGroqSTT)
 

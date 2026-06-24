@@ -25,6 +25,7 @@ def cloud_keys(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-dummy")
     for k in ("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY"):
         monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("JARVIS_LOCAL_LLM_ASSUME_AVAILABLE", raising=False)
 
 
 def _route_label(disp, route):
@@ -40,6 +41,7 @@ def test_llm_local_rung_off_by_default(cloud_keys, monkeypatch):
 
 def test_llm_local_rung_on_all_routes(cloud_keys, monkeypatch):
     monkeypatch.setenv("JARVIS_LOCAL_LLM_ENABLED", "1")
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_ASSUME_AVAILABLE", "1")
     monkeypatch.setenv("JARVIS_LOCAL_LLM_MODEL", "qwen3:14b")
     monkeypatch.delenv("JARVIS_LOCAL_LLM_ROUTES", raising=False)
     from providers.llm import build_dispatching_llm
@@ -51,6 +53,7 @@ def test_llm_local_rung_on_all_routes(cloud_keys, monkeypatch):
 
 def test_llm_local_rung_route_filter(cloud_keys, monkeypatch):
     monkeypatch.setenv("JARVIS_LOCAL_LLM_ENABLED", "1")
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_ASSUME_AVAILABLE", "1")
     monkeypatch.setenv("JARVIS_LOCAL_LLM_MODEL", "m")
     monkeypatch.setenv("JARVIS_LOCAL_LLM_ROUTES", "REASONING")
     from providers.llm import build_dispatching_llm
@@ -65,10 +68,24 @@ def test_llm_local_only_when_no_cloud_keys(monkeypatch):
     for k in ("GROQ_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("JARVIS_LOCAL_LLM_ENABLED", "1")
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_ASSUME_AVAILABLE", "1")
     monkeypatch.setenv("JARVIS_LOCAL_LLM_MODEL", "solo")
     from providers.llm import build_dispatching_llm
     disp = build_dispatching_llm()
     assert _route_label(disp, "BANTER") == "local:solo"
+
+
+def test_llm_local_rung_skipped_when_unavailable(cloud_keys, monkeypatch):
+    """Stale local env must not make telemetry claim local when no server/model exists."""
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_ENABLED", "1")
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_MODEL", "qwen3:14b")
+    monkeypatch.delenv("JARVIS_LOCAL_LLM_ASSUME_AVAILABLE", raising=False)
+
+    import providers.llm as llm
+    monkeypatch.setattr(llm, "_probe_local_llm", lambda *args, **kw: (False, "down"))
+
+    disp = llm.build_dispatching_llm()
+    assert not _route_label(disp, "BANTER").startswith("local:")
 
 
 def test_llm_tray_entries_present_and_build(monkeypatch):

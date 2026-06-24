@@ -307,17 +307,28 @@ naming the best route for the assistant's reply:
   TASK_DESKTOP  — clicks, screenshots, "look at my screen",
                   GUI work, app launches ("open Chrome"),
                   minimized-window work, any visible-desktop request
-  TASK_BROWSER  — "navigate to X", "search the web for Y", "open
-                  the Wikipedia page for Z", visible browser actions
+  TASK_BROWSER  — visible or interactive browser actions: "navigate to
+                  X", "go to X.com", "open the Wikipedia page for Z",
+                  "log into my account", filling forms, clicking links,
+                  any task that needs page interaction or login state
   TASK_CODE     — write / fix / refactor code, run a script, debug
                   a stack trace, work with a code file
   TASK_FILES    — read / edit / grep / patch files (no execution),
                   "show me line N of foo.py"
-  TASK_OTHER    — fact lookup, web_fetch, memory ops, schedule, todo,
-                  vuln_check, anything that doesn't fit a sub-route above
+  TASK_OTHER    — web_search, web_fetch, short factual questions
+                  ("what is X", "who is Y", "when did Z", definitions,
+                  conversions), "search the web for Y", "look up X
+                  online", "find flights to Paris", memory ops,
+                  schedule, todo, vuln_check, anything that doesn't
+                  fit a sub-route above
   REASONING     — multi-step thinking, planning, long-form debugging,
                   "what's the best way to X"
   EMOTIONAL     — feelings, support, hard decisions, frustration
+
+IMPORTANT: "search for X" / "look up X online" / "find X on the web"
+→ TASK_OTHER (use web_search + web_fetch, not a headless browser).
+TASK_BROWSER is ONLY for tasks that need page interaction (login,
+form fill, click links) or a visible browser tab.
 
 Recent conversation:
 {history}

@@ -68,15 +68,14 @@ Environment=JARVIS_RECALL_TRIGGER_LIVE=1
 Environment=JARVIS_SKILL_REVIEW_APPLY=1
 # Spec 2026-05-24 source-code self-mod, Plane 3 — Step A enable.
 # Activates the pattern detector + propose_code_mod voice tool. The
-# pattern detector scans turn_telemetry.db every JARVIS_AUTOMOD_PATTERN_INTERVAL_S
-# seconds (default 1800) and emits intents to ~/.jarvis/auto-mods/queue.jsonl
-# on ≥3-occurrence threshold crossings.
-# IMPORTANT: JARVIS_AUTOMOD_SPAWN_LIVE is intentionally NOT set here.
-# Without it the spawner is a no-op — intents accumulate in queue.jsonl
-# but no subprocess fires. Flip SPAWN_LIVE=1 only after a 7-day queue
-# audit confirms the patterns are sane.
+    # pattern detector scans turn_telemetry.db every JARVIS_AUTOMOD_PATTERN_INTERVAL_S
+    # seconds (default 1800) and emits intents to ~/.jarvis/auto-mods/queue.jsonl
+    # on ≥3-occurrence threshold crossings. SPAWN_LIVE only creates reviewed
+    # proposal branches/artifacts in disposable worktrees; deploy still requires
+    # explicit approval in /evolution.
 # Spec: docs/superpowers/specs/2026-05-24-jarvis-source-code-self-mod-design.md
 Environment=JARVIS_AUTOMOD_ENABLED=1
+Environment=JARVIS_AUTOMOD_SPAWN_LIVE=1
 # `start` (not `dev`) — production mode, no file-watch, JSON logs.
 # Uses the venv's interpreter directly so we don't need `source
 # .venv/bin/activate` in the ExecStart.

@@ -305,6 +305,15 @@ def build_stt_chain(vad=None):
     if os.environ.get("JARVIS_LOCAL_STT_PRIMARY", "0") == "1" and local_stt is not None:
         rungs = [local_stt] + [s for s in rungs if s is not local_stt]
         logger.info("[stt] JARVIS_LOCAL_STT_PRIMARY=1 — local faster-whisper promoted to primary")
+    # Local-only: strip EVERY cloud fallback rung (Deepgram is already gone via
+    # JARVIS_DEEPGRAM_DISABLED; this also drops the Groq Whisper rung) so STT is
+    # 100% on-device. Pure $0/private. Trade-off: if the local rung fails (e.g. a
+    # CUDA wedge after suspend) there is NO cloud safety net — recovery leans on
+    # bin/jarvis-cuda-recover (reloads nvidia_uvm on resume). No-op unless the
+    # local rung built; reversible by unsetting JARVIS_STT_LOCAL_ONLY.
+    if os.environ.get("JARVIS_STT_LOCAL_ONLY", "0") == "1" and local_stt is not None:
+        rungs = [local_stt]
+        logger.info("[stt] JARVIS_STT_LOCAL_ONLY=1 — cloud STT fallback removed; on-device faster-whisper only")
     if not rungs:  # whisper is always built — defensive
         return whisper_stt
     if len(rungs) == 1:
