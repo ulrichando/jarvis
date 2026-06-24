@@ -53,7 +53,7 @@ def test_rejects_blocked_path_sanitizers():
 def test_rejects_path_outside_allowed_prefix():
     from pipeline.automod.test_gate import validate_diff
     diff = (
-        "diff --git a/src/desktop-tauri/src/App.jsx b/src/desktop-tauri/src/App.jsx\n"
+        "diff --git a/src/voice-agent/desktop-tauri/src/App.jsx b/src/voice-agent/desktop-tauri/src/App.jsx\n"
         "--- a/x\n+++ b/x\n@@\n-x\n+y\n"
     )
     ok, reason = validate_diff(diff)

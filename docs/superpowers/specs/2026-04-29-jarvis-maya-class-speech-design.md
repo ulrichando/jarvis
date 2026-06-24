@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-29
 **Status:** Approved
-**Scope:** `src/voice-agent/jarvis_agent.py`, `src/desktop-tauri/server/speech.ts`, new `src/voice-agent/turn_telemetry.py`
+**Scope:** `src/voice-agent/jarvis_agent.py`, `src/voice-agent/desktop-tauri/server/speech.ts`, new `src/voice-agent/turn_telemetry.py`
 
 ## Problem
 
@@ -106,7 +106,7 @@ Edge cases:
 
 ### Component 5 — Streaming TTS with voice swap
 
-Lives in `src/desktop-tauri/server/speech.ts` (the existing speech sidecar at `:8766`).
+Lives in `src/voice-agent/desktop-tauri/server/speech.ts` (the existing speech sidecar at `:8766`).
 
 Two changes:
 
@@ -179,12 +179,12 @@ Every component degrades to current behaviour on failure:
 | File | Change |
 |---|---|
 | `src/voice-agent/jarvis_agent.py` | Add `_detect_emotion()`, `_route_turn()`, `_dispatch_llm()`; rewrite `entrypoint()` LLM call site to go through dispatcher; prepend `[Route:..][Emotion:..]` to messages |
-| `src/desktop-tauri/server/speech.ts` | New `/tts-stream` endpoint accepting sentence stream; existing `/tts` retained for non-streaming callers |
+| `src/voice-agent/desktop-tauri/server/speech.ts` | New `/tts-stream` endpoint accepting sentence stream; existing `/tts` retained for non-streaming callers |
 | `src/voice-agent/turn_telemetry.py` | NEW — SQLite logger + `--report` CLI |
 | `src/voice-agent/tests/test_emotion_router.py` | NEW — pytest fixtures for emotion detector and turn router |
-| `src/desktop-tauri/scripts/launch.sh` | Add `JARVIS_VOICE_BANTER/TASK/REASONING/EMOTIONAL` defaults if unset |
+| `src/voice-agent/desktop-tauri/scripts/launch.sh` | Add `JARVIS_VOICE_BANTER/TASK/REASONING/EMOTIONAL` defaults if unset |
 
-No changes to: `src/cli/` (boundary), `src/os/desktop/` (misty-scone), `src/web/`, `src/desktop-tauri/src/` (the React webview is unaffected — TTS is sidecar-side), the `JARVIS_INSTRUCTIONS` constant body (only the message-prefix injection changes).
+No changes to: `src/cli/` (boundary), `src/os/desktop/` (misty-scone), `src/web/`, `src/voice-agent/desktop-tauri/src/` (the React webview is unaffected — TTS is sidecar-side), the `JARVIS_INSTRUCTIONS` constant body (only the message-prefix injection changes).
 
 ## Configuration
 

@@ -19,7 +19,7 @@ You review JARVIS code changes against the project's load-bearing constraints. Y
 - Confab-detector tool-evidence lookback is 10, with `transfer_to_*` counted as evidence.
 - New code uses voice-agent's own `.venv` (`.venv/bin/python`), not project root.
 
-**2. Desktop-Tauri** (if `src/desktop-tauri/**` is touched):
+**2. Desktop-Tauri** (if `src/voice-agent/desktop-tauri/**` is touched):
 - Release builds run BOTH `npm run build` AND `cargo build --release`. Skipping the second ships stale JS.
 - No per-frame React state in voice UI components.
 

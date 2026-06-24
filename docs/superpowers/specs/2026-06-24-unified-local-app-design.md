@@ -11,7 +11,7 @@ The user is standing up a VPS that will host **only the web app**. The voice-age
 desktop UI both run **only on the main computer** (the box with the mic, speakers, GPU, and
 X11). They are already tightly coupled:
 
-- `src/desktop-tauri/src-tauri/src/main.rs` already **spawns processes** and already
+- `src/voice-agent/desktop-tauri/src-tauri/src/main.rs` already **spawns processes** and already
   **controls the voice-agent via `systemctl --user restart jarvis-voice-agent.service`**
   (36 spawn/systemctl references; `kiosk.rs` has 6 more). It already honours the
   "don't restart within 60 s of the last turn" rule in code.
@@ -72,11 +72,11 @@ SFU, then the brain, waits for health, then reveals the UI. On quit it stops wha
 
 ### 2.2 Components & responsibilities
 
-- **Process supervisor** (`src/desktop-tauri/src-tauri/src/supervisor.rs`, NEW) — owns the
+- **Process supervisor** (`src/voice-agent/desktop-tauri/src-tauri/src/supervisor.rs`, NEW) — owns the
   lifecycle of child processes: ordered start (SFU → brain), readiness/health polling, restart
   on crash (bounded), graceful shutdown, and the existing "don't restart within 60 s of last
   turn" guard (lifted from `main.rs`). One clear responsibility: child-process lifecycle.
-- **Run manifest** (`src/desktop-tauri/src-tauri/resources/run-manifest.json`, NEW) — declares
+- **Run manifest** (`src/voice-agent/desktop-tauri/src-tauri/resources/run-manifest.json`, NEW) — declares
   each managed process: command, args, working dir, env file, health URL, start order, restart
   policy. Keeps the supervisor data-driven instead of hard-coding paths.
 - **Brain** — unchanged. Invoked as `<resource>/venv/bin/python <resource>/voice-agent/jarvis_agent.py start`.
@@ -179,9 +179,9 @@ app code) are required. The brain's *code* is tiny; the *weight* is CUDA + model
 ## 9. Scope (per `.claude/rules/regression-prevention.md`)
 
 ```
-SCOPE:  src/desktop-tauri/src-tauri/src/   (NEW supervisor.rs; main.rs/kiosk.rs spawn refactor)
-        src/desktop-tauri/src-tauri/tauri.conf.json   (+externalBin, +resources)
-        src/desktop-tauri/src-tauri/resources/         (NEW run-manifest + bundled assets)
+SCOPE:  src/voice-agent/desktop-tauri/src-tauri/src/   (NEW supervisor.rs; main.rs/kiosk.rs spawn refactor)
+        src/voice-agent/desktop-tauri/src-tauri/tauri.conf.json   (+externalBin, +resources)
+        src/voice-agent/desktop-tauri/src-tauri/resources/         (NEW run-manifest + bundled assets)
         setup/systemd/                                  (kept parallel; demoted in Phase 2)
         scripts/ or bin/                                (NEW packaging/build helper)
         docs/superpowers/specs/, docs/superpowers/plans/

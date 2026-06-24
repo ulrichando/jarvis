@@ -17,7 +17,7 @@
 | `src/voice-agent/jarvis_computer_use.py` | Modify | Add `ScreenBuffer` class + `recent_screen()` `@function_tool`. Reuses existing `_take_screenshot()` and `_gemini_describe()`. |
 | `src/voice-agent/jarvis_agent.py` | Modify | Start `ScreenBuffer` after `session.start()`, stop on shutdown. Register `recent_screen` in `tools=[]`. Update system prompt. |
 | `src/voice-agent/tests/test_computer_use.py` | Modify | Add `TestScreenBuffer` and `TestRecentScreen` test classes. |
-| `src/desktop-tauri/src-tauri/src/main.rs` | Modify | Replace "Start Screen Sharing" tray item with a "Watch Screen" toggle that writes/removes a sentinel file. Add eye-state icon. |
+| `src/voice-agent/desktop-tauri/src-tauri/src/main.rs` | Modify | Replace "Start Screen Sharing" tray item with a "Watch Screen" toggle that writes/removes a sentinel file. Add eye-state icon. |
 | `src/voice-agent/jarvis_agent.py` (lock detection) | Modify | DBus listener on `org.freedesktop.ScreenSaver` → pause buffer on lock. |
 
 No changes to the LiveKit transport, no changes to the existing `live_screen` / `screenshot` / `watch_screen` tools (only the system-prompt language describing them shifts).
@@ -654,14 +654,14 @@ becomes the off-buffer fallback."
 
 ## Task 5: Tray "Watch Screen" toggle (Tauri/Rust)
 
-> **Note:** This task touches `src/desktop-tauri/`. Per the user's project conventions, after editing JS/Rust under that path, the Tauri binary needs `cargo build --release` for changes to ship in the installed app. (See [project_tauri_release_rebuild memory](memory/project_tauri_release_rebuild.md).)
+> **Note:** This task touches `src/voice-agent/desktop-tauri/`. Per the user's project conventions, after editing JS/Rust under that path, the Tauri binary needs `cargo build --release` for changes to ship in the installed app. (See [project_tauri_release_rebuild memory](memory/project_tauri_release_rebuild.md).)
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/main.rs`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/main.rs`
 
 - [ ] **Step 1: Find the existing "Start Screen Sharing" tray code**
 
-Run: `grep -n "start-screen-share\|Start Screen Sharing" /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri/src-tauri/src/main.rs`
+Run: `grep -n "start-screen-share\|Start Screen Sharing" /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri/src-tauri/src/main.rs`
 
 Read 30 lines around each match to understand the existing menu-item registration and the file-write pattern (`~/.jarvis/start-screen-share`).
 
@@ -702,7 +702,7 @@ let watch_item = CustomMenuItem::new("watch_screen", "Watch Screen");
 Reuse the existing `tray.png` as a base and produce `tray-watching.png`. Quickest path with ImageMagick:
 
 ```bash
-cd src/desktop-tauri/src-tauri/icons
+cd src/voice-agent/desktop-tauri/src-tauri/icons
 convert tray.png -gravity center -fill '#22c55e' -draw "circle 200,200 220,220" tray-watching.png
 ```
 
@@ -753,7 +753,7 @@ Per the spec, default is **always on**. Remove the `if not WATCH_TOGGLE.exists()
 - [ ] **Step 5: Build the Tauri binary**
 
 ```bash
-cd src/desktop-tauri
+cd src/voice-agent/desktop-tauri
 npm run build
 cargo tauri build --release
 ```
@@ -771,9 +771,9 @@ Restart the voice agent and the desktop app. Verify:
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/main.rs \
-        src/desktop-tauri/src-tauri/icons/tray-watching.png \
-        src/desktop-tauri/src-tauri/tauri.conf.json \
+git add src/voice-agent/desktop-tauri/src-tauri/src/main.rs \
+        src/voice-agent/desktop-tauri/src-tauri/icons/tray-watching.png \
+        src/voice-agent/desktop-tauri/src-tauri/tauri.conf.json \
         src/voice-agent/jarvis_agent.py
 git commit -m "feat(tray): Watch Screen toggle pauses/resumes ScreenBuffer
 
@@ -863,11 +863,11 @@ toggle remains the user-facing fallback."
 ## Task 7: Privacy hotkey `Super+Shift+P`
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/main.rs` — register a global shortcut that toggles the same `~/.jarvis/screen-watch-on` file used by the tray.
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/main.rs` — register a global shortcut that toggles the same `~/.jarvis/screen-watch-on` file used by the tray.
 
 - [ ] **Step 1: Find existing global-shortcut registrations in main.rs**
 
-Run: `grep -n "global_shortcut\|globalShortcut\|register_global_shortcut" /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri/src-tauri/src/main.rs`
+Run: `grep -n "global_shortcut\|globalShortcut\|register_global_shortcut" /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri/src-tauri/src/main.rs`
 
 If shortcuts are already registered, follow the same pattern. If not, add the `tauri-plugin-global-shortcut` plugin (Tauri 2) — check `tauri.conf.json` and `Cargo.toml` first.
 
@@ -904,7 +904,7 @@ The voice agent's existing toggle watcher (Task 5 step 4) handles the actual pau
 - [ ] **Step 3: Rebuild + hand-test**
 
 ```bash
-cd src/desktop-tauri
+cd src/voice-agent/desktop-tauri
 cargo tauri build --release
 ```
 
@@ -916,9 +916,9 @@ Restart the desktop app. Press `Super+Shift+P` while a voice session is active. 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/main.rs \
-        src/desktop-tauri/src-tauri/Cargo.toml \
-        src/desktop-tauri/src-tauri/tauri.conf.json
+git add src/voice-agent/desktop-tauri/src-tauri/src/main.rs \
+        src/voice-agent/desktop-tauri/src-tauri/Cargo.toml \
+        src/voice-agent/desktop-tauri/src-tauri/tauri.conf.json
 git commit -m "feat(tray): Super+Shift+P privacy hotkey toggles screen watching
 
 Registers a global shortcut via tauri-plugin-global-shortcut. Flips

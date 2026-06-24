@@ -82,7 +82,7 @@ After Spec B ships, the following scenarios work:
   `bin/jarvis-automod merge <id>` from you. No silent merges, no
   scheduled merges.
 - **Edits outside `src/voice-agent/`.** The CLI spawner enforces a hard
-  blocklist; any artifact that touches `src/desktop-tauri/`,
+  blocklist; any artifact that touches `src/voice-agent/desktop-tauri/`,
   `src/cli/`, `src/web/`, `setup/`, or `docs/` outside Spec-B's
   whitelist is rejected before review.
 - **Edits to safety surfaces.** Blocked files (always): `sanitizers/`,
@@ -722,7 +722,7 @@ Each step is independently reversible. Kill switches at every layer.
 ## Future work (out of scope here)
 
 - **Cross-repo self-mod.** Currently scoped to `src/voice-agent/`. Could
-  extend to `src/desktop-tauri/` or `src/cli/` later — but each tree
+  extend to `src/voice-agent/desktop-tauri/` or `src/cli/` later — but each tree
   would need its own test gate + blocklist.
 - **GitHub PR integration.** Currently the artifact is a local branch
   + JSON; could open a real GitHub PR via `gh pr create`. Trade-off:

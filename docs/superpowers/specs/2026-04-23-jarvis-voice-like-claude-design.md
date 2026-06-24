@@ -38,8 +38,8 @@ mic → webview → /turn (speech sidecar :8766)
                               └─ MP3 back → webview <audio>
 ```
 
-- Speech sidecar: `src/desktop-tauri/server/speech.ts`
-- Launcher: `src/desktop-tauri/scripts/launch.sh` — ensures kokoro-tts
+- Speech sidecar: `src/voice-agent/desktop-tauri/server/speech.ts`
+- Launcher: `src/voice-agent/desktop-tauri/scripts/launch.sh` — ensures kokoro-tts
   container is running before the sidecar starts.
 - Container: `docker run -d --name kokoro-tts --restart unless-stopped -p 127.0.0.1:8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest`
 
@@ -58,7 +58,7 @@ All tunable via env vars; defaults match the shipped setup so nothing in
 
 ## Code changes
 
-- [`src/desktop-tauri/server/speech.ts`](../../../src/desktop-tauri/server/speech.ts)
+- [`src/voice-agent/desktop-tauri/server/speech.ts`](../../../src/voice-agent/desktop-tauri/server/speech.ts)
   - Split TTS config from STT (new `TTS_BASE` / `TTS_KEY` / `TTS_FORMAT`
     constants). Voice default changed from `daniel` → `bm_george`, model
     `canopylabs/orpheus-v1-english` → `kokoro`.
@@ -68,7 +68,7 @@ All tunable via env vars; defaults match the shipped setup so nothing in
     path to Groq).
   - Startup log shows actual provider endpoints for both STT and TTS.
 
-- [`src/desktop-tauri/scripts/launch.sh`](../../../src/desktop-tauri/scripts/launch.sh)
+- [`src/voice-agent/desktop-tauri/scripts/launch.sh`](../../../src/voice-agent/desktop-tauri/scripts/launch.sh)
   - New block before speech-sidecar start: if the kokoro-tts container
     exists but isn't responding, `docker start` it and wait on /health.
   - No auto-create — the `docker run` is a one-shot setup step done by

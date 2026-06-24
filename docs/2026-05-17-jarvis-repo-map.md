@@ -64,7 +64,7 @@ Completeness sweep of `/home/ulrich/Documents/Projects/jarvis`. Companion to [`2
 - **Stranded:** `livekit-server.bin` (49 MB tracked), `livekit.yaml` (38 LoC), `cli_voice_prompt.md` (135), `pyrightconfig.json`, `pytest.ini`, `requirements.txt` (81), `requirements-test.txt` (17), `LICENSE`.
 - **Health:** active. Covered exhaustively by [`docs/reviews/2026-05-16/`](reviews/2026-05-16/).
 
-### `src/desktop-tauri/` — 1.3 GB on disk
+### `src/voice-agent/desktop-tauri/` — 1.3 GB on disk
 
 - Frontend: `src/{App,main,KeysSettings}.jsx + components/{ChatPanel,ContextBar,TodoBlock,ToolProgress}.jsx + hooks/useVoiceClient.js`. ~600 JSX LoC.
 - Backend: `src-tauri/src/main.rs` (2,090 LoC, one Rust file — split planned [2026-05-16 §Q2]).
@@ -165,16 +165,16 @@ Completeness sweep of `/home/ulrich/Documents/Projects/jarvis`. Companion to [`2
 | Path | Size | Tracked? | Notes |
 |---|---:|---|---|
 | `src/voice-agent/.venv/` | 1.2 GB | gitignored | Python venv |
-| `src/desktop-tauri/src-tauri/target/` | 1.2 GB | gitignored | Rust release+debug |
+| `src/voice-agent/desktop-tauri/src-tauri/target/` | 1.2 GB | gitignored | Rust release+debug |
 | `src/web/node_modules/` | 1.1 GB | gitignored | |
 | `src/web/.next/` | 15 MB | gitignored | Next build cache |
 | `src/cli/node_modules/` | 222 MB | gitignored | |
-| `src/desktop-tauri/node_modules/` | 144 MB | gitignored | |
+| `src/voice-agent/desktop-tauri/node_modules/` | 144 MB | gitignored | |
 | `node_modules/` (top-level) | 9.3 MB | gitignored | From the 6-line `package.json` |
 | `src/android/app/.cxx/` | 354 MB | gitignored | NDK build cache |
 | `src/android/.gradle/` | 56 KB | gitignored | |
-| `src/desktop-tauri/dist/` | 256 KB | gitignored | Vite output (re-embedded into Tauri binary per CLAUDE.md two-step) |
-| `src/desktop-tauri/src-tauri/gen/` | 340 KB | tracked | Tauri capability schemas — fine |
+| `src/voice-agent/desktop-tauri/dist/` | 256 KB | gitignored | Vite output (re-embedded into Tauri binary per CLAUDE.md two-step) |
+| `src/voice-agent/desktop-tauri/src-tauri/gen/` | 340 KB | tracked | Tauri capability schemas — fine |
 | `src/voice-agent/.pytest_cache/` | 160 KB | tracked (oops — `.gitignore` should exclude) | Inspect; minor bloat |
 | `src/voice-agent/__pycache__/`, `src/hub/__pycache__/` | small | untracked, gitignored | OK |
 | `src/voice-agent/livekit-server.bin` | **49 MB** | **TRACKED** | **Should be moved out of git; verify-via-checksum from release URL** [2026-05-17 §P1-SEC-4 partial] |
@@ -195,7 +195,7 @@ Completeness sweep of `/home/ulrich/Documents/Projects/jarvis`. Companion to [`2
 | `src/web/public/jarvis-shadcn.mjs` | Standalone shadcn helper served from `/public` — unusual location. |
 | `src/web/docs/superpowers/` | Own copy of plans+specs (1+1 from 2026-04-27); confirm not stale. |
 | `src/voice-agent/cli_voice_prompt.md`, `livekit.yaml` | Ownership + fingerprint; not in CLAUDE.md. |
-| `src/desktop-tauri/src-tauri/{capabilities/default.json, gen/schemas/}` | Read once for permission surface. |
+| `src/voice-agent/desktop-tauri/src-tauri/{capabilities/default.json, gen/schemas/}` | Read once for permission surface. |
 | `scripts/{audit-hallucinations.py, render-canned-phrases.py}` | Verify cron-status. |
 | `bin/{jarvis-rules-migrate-v2.py, jarvis-backfill-null-routes.py}` | One-shot migrations; archive once run. |
 | `.jarvis/agents/voice-log-analyzer.md` | Project-scoped Claude subagent definition. |

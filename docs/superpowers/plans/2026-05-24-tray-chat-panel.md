@@ -16,11 +16,11 @@
 - `src/voice-agent/jarvis_agent.py` — extend `conversation_item_added` handler at line ~4974 (add ~15 lines: idempotent publish_data of `assistant_says`)
 - `src/voice-agent/voice_client_http_api.py` — add `_sse_subscribers` set + `GET /events` route + `enqueue_event(event)` method (~60 lines)
 - `src/voice-agent/jarvis_voice_client.py` — register `room.on("data_received")` handler near the existing `room.on(...)` decorators at lines 607-660 (~20 lines)
-- `src/desktop-tauri/src/App.jsx` — add `voiceChatOpen` state, `<VoiceChatPanel>` mount, event listeners (~25 lines)
-- `src/desktop-tauri/src-tauri/src/main.rs` — restore tray menu entry + match arm emitting `tray-toggle-voice-chat` (~12 lines)
+- `src/voice-agent/desktop-tauri/src/App.jsx` — add `voiceChatOpen` state, `<VoiceChatPanel>` mount, event listeners (~25 lines)
+- `src/voice-agent/desktop-tauri/src-tauri/src/main.rs` — restore tray menu entry + match arm emitting `tray-toggle-voice-chat` (~12 lines)
 
 **Create (3 files):**
-- `src/desktop-tauri/src/components/VoiceChatPanel.jsx` — minimal floating panel (~220 lines)
+- `src/voice-agent/desktop-tauri/src/components/VoiceChatPanel.jsx` — minimal floating panel (~220 lines)
 - `src/voice-agent/tests/test_assistant_says_publish.py` — pytest for the publish hook (~110 lines)
 - `src/voice-agent/tests/test_voice_client_events_sse.py` — pytest for SSE route + subscriber set + enqueue_event (~140 lines)
 
@@ -761,7 +761,7 @@ If everything passed, proceed to Task 5. If something failed, fix it in the appr
 ## Task 5: New `VoiceChatPanel.jsx` React component
 
 **Files:**
-- Create: `src/desktop-tauri/src/components/VoiceChatPanel.jsx`
+- Create: `src/voice-agent/desktop-tauri/src/components/VoiceChatPanel.jsx`
 
 **What this task does:** A minimal floating chat overlay — header, message list (user + jarvis bubbles), text input, send button. Sends via `POST /user-input` directly; subscribes to `EventSource('/events')` for `assistant_says` events. No streaming, no tool-call UI, no history sidebar. No bridge. Uses the same dark-theme palette + drag/resize patterns as the existing `ChatPanel.jsx`.
 
@@ -769,7 +769,7 @@ If everything passed, proceed to Task 5. If something failed, fix it in the appr
 
 - [ ] **Step 5.1: Create the component file**
 
-Create `src/desktop-tauri/src/components/VoiceChatPanel.jsx`:
+Create `src/voice-agent/desktop-tauri/src/components/VoiceChatPanel.jsx`:
 
 ```jsx
 import { useState, useRef, useEffect, useCallback } from 'react'
@@ -1089,7 +1089,7 @@ function HeaderButton({ children, onClick, title, active }) {
 
 Run:
 ```bash
-cd /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri
+cd /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri
 npm run build 2>&1 | tail -20
 ```
 
@@ -1100,7 +1100,7 @@ Expected: vite build completes without errors (note: the component is NOT import
 Run:
 ```bash
 cd /home/ulrich/Documents/Projects/jarvis
-git add src/desktop-tauri/src/components/VoiceChatPanel.jsx
+git add src/voice-agent/desktop-tauri/src/components/VoiceChatPanel.jsx
 git commit -m "$(cat <<'EOF'
 feat(desktop): new VoiceChatPanel component (voice-agent direct)
 
@@ -1118,7 +1118,7 @@ EOF
 ## Task 6: Wire `VoiceChatPanel` into `App.jsx`
 
 **Files:**
-- Modify: `src/desktop-tauri/src/App.jsx` (add `voiceChatOpen` state, render the component, add tray-event listeners)
+- Modify: `src/voice-agent/desktop-tauri/src/App.jsx` (add `voiceChatOpen` state, render the component, add tray-event listeners)
 
 ### Sub-tasks
 
@@ -1126,14 +1126,14 @@ EOF
 
 Run:
 ```bash
-grep -n "ChatPanel\|chatOpen\|setChatOpen\|tray-toggle-chat\|tray-open-chat\|tray-close-chat\|import.*from './components" /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri/src/App.jsx | head -30
+grep -n "ChatPanel\|chatOpen\|setChatOpen\|tray-toggle-chat\|tray-open-chat\|tray-close-chat\|import.*from './components" /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri/src/App.jsx | head -30
 ```
 
 Note the existing `chatOpen` state at line 80, the existing `<ChatPanel>` render at line ~297, the existing tray-event listeners at lines 186-194.
 
 - [ ] **Step 6.2: Add the VoiceChatPanel import**
 
-In `src/desktop-tauri/src/App.jsx`, find the existing `import ChatPanel from './components/ChatPanel.jsx'` line and add directly below it:
+In `src/voice-agent/desktop-tauri/src/App.jsx`, find the existing `import ChatPanel from './components/ChatPanel.jsx'` line and add directly below it:
 
 ```jsx
 import VoiceChatPanel from './components/VoiceChatPanel.jsx'
@@ -1229,7 +1229,7 @@ Find the existing `<ChatPanel ... />` JSX (around line 297). Directly after the 
 
 Run:
 ```bash
-cd /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri
+cd /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri
 npm run build 2>&1 | tail -20
 ```
 
@@ -1240,7 +1240,7 @@ Expected: vite build completes; the component is now reachable from `App.jsx`, s
 Run:
 ```bash
 cd /home/ulrich/Documents/Projects/jarvis
-git add src/desktop-tauri/src/App.jsx
+git add src/voice-agent/desktop-tauri/src/App.jsx
 git commit -m "$(cat <<'EOF'
 feat(desktop): wire VoiceChatPanel into App.jsx via tray events
 
@@ -1259,7 +1259,7 @@ EOF
 ## Task 7: Restore the tray menu entry
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/main.rs` (add the `MenuItemBuilder::with_id("open_voice_chat", "Open Chat Panel")` + the match arm)
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/main.rs` (add the `MenuItemBuilder::with_id("open_voice_chat", "Open Chat Panel")` + the match arm)
 
 ### Sub-tasks
 
@@ -1267,12 +1267,12 @@ EOF
 
 Run:
 ```bash
-sed -n '1494,1530p' /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri/src-tauri/src/main.rs
+sed -n '1494,1530p' /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri/src-tauri/src/main.rs
 ```
 
 And the match-arm region:
 ```bash
-sed -n '1685,1730p' /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri/src-tauri/src/main.rs
+sed -n '1685,1730p' /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri/src-tauri/src/main.rs
 ```
 
 Confirm the comment at line ~1495 documenting how to restore "Open Chat Panel". The existing `open_chat` match arm emits `tray-toggle-chat` (the OLD event for the existing ChatPanel) — DO NOT reuse that id. The new entry uses `open_voice_chat` and emits `tray-toggle-voice-chat`.
@@ -1302,7 +1302,7 @@ Find the MenuBuilder construction (look near where `mute_item`, `share_item`, et
 Match the existing indentation + chaining style. If you can't easily find the chain, run:
 
 ```bash
-grep -n "\.item(&mute_item)\|MenuBuilder::new" /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri/src-tauri/src/main.rs | head -5
+grep -n "\.item(&mute_item)\|MenuBuilder::new" /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri/src-tauri/src/main.rs | head -5
 ```
 
 - [ ] **Step 7.4: Add the match arm**
@@ -1324,7 +1324,7 @@ The exact `app_handle.get_webview_window("main")` shape should match what the ex
 
 Run:
 ```bash
-cd /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri
+cd /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri
 cargo build --release 2>&1 | tail -25
 ```
 
@@ -1336,7 +1336,7 @@ The desktop binary is launched by the user separately (it's not a systemd unit).
 1. Close the current JARVIS desktop window (or quit from the tray menu).
 2. Re-launch from `bin/jarvis-desktop` or however they normally start it.
 
-The new binary is at `src/desktop-tauri/src-tauri/target/release/jarvis-desktop` (or similar — check `tauri.conf.json`'s `productName` for the actual name).
+The new binary is at `src/voice-agent/desktop-tauri/src-tauri/target/release/jarvis-desktop` (or similar — check `tauri.conf.json`'s `productName` for the actual name).
 
 - [ ] **Step 7.7: Smoke test — open the panel from the tray**
 
@@ -1349,7 +1349,7 @@ If two "Open Chat Panel" entries appear or the wrong one opens, the existing com
 Run:
 ```bash
 cd /home/ulrich/Documents/Projects/jarvis
-git add src/desktop-tauri/src-tauri/src/main.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/main.rs
 git commit -m "$(cat <<'EOF'
 feat(desktop): restore "Open Chat Panel" tray menu entry
 
@@ -1567,22 +1567,22 @@ CHANGED:
   - src/voice-agent/jarvis_voice_client.py — data_received hook → enqueue_event
   - src/voice-agent/tests/test_assistant_says_publish.py — new
   - src/voice-agent/tests/test_voice_client_events_sse.py — new
-  - src/desktop-tauri/src/components/VoiceChatPanel.jsx — new
-  - src/desktop-tauri/src/App.jsx — voiceChatOpen state + listener + render
-  - src/desktop-tauri/src-tauri/src/main.rs — "Open Chat Panel" tray entry
+  - src/voice-agent/desktop-tauri/src/components/VoiceChatPanel.jsx — new
+  - src/voice-agent/desktop-tauri/src/App.jsx — voiceChatOpen state + listener + render
+  - src/voice-agent/desktop-tauri/src-tauri/src/main.rs — "Open Chat Panel" tray entry
   - docs/superpowers/specs/2026-05-24-tray-chat-panel-design.md — spec (committed earlier)
   - docs/superpowers/plans/2026-05-24-tray-chat-panel.md — this plan
 
 NOT CHANGED:
   - src/cli/ — bridge + CLI agent untouched per CLAUDE.md
-  - src/desktop-tauri/src/components/ChatPanel.jsx — existing rich panel left alone
+  - src/voice-agent/desktop-tauri/src/components/ChatPanel.jsx — existing rich panel left alone
   - Tray indicator (colors / ring / states / poll / icon) — FROZEN per .claude/rules/desktop-tauri.md
   - Voice mode end-to-end audio path — additive publish only
   - Ctrl+H + Ctrl+Shift+Space hotkeys — still open the existing ChatPanel
 
 VERIFY:
   - pytest src/voice-agent/tests/ — full suite passes (incl. 5 new in test_assistant_says_publish.py, 5 new in test_voice_client_events_sse.py)
-  - npm run build (src/desktop-tauri) — vite build green
-  - cargo build --release (src/desktop-tauri/src-tauri) — Rust build green
+  - npm run build (src/voice-agent/desktop-tauri) — vite build green
+  - cargo build --release (src/voice-agent/desktop-tauri/src-tauri) — Rust build green
   - Manual smoke (Task 8) — round-trip + offline + ChatPanel parity all green
 ```

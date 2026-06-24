@@ -1,6 +1,6 @@
 # JARVIS desktop-tauri review — 2026-05-16
 
-Scope: `src/desktop-tauri/` after today's realtime-mode tray removal.
+Scope: `src/voice-agent/desktop-tauri/` after today's realtime-mode tray removal.
 Read-only. Cross-checked against `.claude/rules/desktop-tauri.md`,
 `.claude/rules/regression-prevention.md`, and `CLAUDE.md`.
 
@@ -627,6 +627,6 @@ plumbed through from useVoiceClient.js → App.jsx → main.rs without
 duplication.
 
 CHANGED: nothing — read-only review.
-NOT CHANGED: all of `src/desktop-tauri/**` confirmed untouched.
+NOT CHANGED: all of `src/voice-agent/desktop-tauri/**` confirmed untouched.
 VERIFY: no commands run; review is observational against the files
 read above.

@@ -6,7 +6,7 @@
 
 **Architecture:** Two complementary artifacts. The rule (markdown) is process guidance Claude reads before/during work — soft enforcement of "declare scope, don't delete in-use code, don't claim done without evidence." The hook (bash script) is a mechanical gate at turn-end — hard enforcement that runs the right suite per edited subtree (voice-agent → pytest, desktop-tauri → vite build, web → vitest, cli → warn-only) and emits a block-decision JSON when any fail.
 
-**Tech Stack:** Bash, jq, the existing per-subtree test infrastructure (pytest in `src/voice-agent/.venv/`, vite/npm in `src/desktop-tauri/`, vitest in `src/web/`).
+**Tech Stack:** Bash, jq, the existing per-subtree test infrastructure (pytest in `src/voice-agent/.venv/`, vite/npm in `src/voice-agent/desktop-tauri/`, vitest in `src/web/`).
 
 **Spec:** [docs/superpowers/specs/2026-05-07-regression-prevention-design.md](../specs/2026-05-07-regression-prevention-design.md)
 
@@ -241,7 +241,7 @@ Run:
 cat > /tmp/fixture-transcript.jsonl <<'EOF'
 {"type":"user","message":{"role":"user","content":"hi"}}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working"},{"type":"tool_use","name":"Edit","id":"t1","input":{"file_path":"/repo/src/voice-agent/jarvis_agent.py","old_string":"a","new_string":"b"}}]}}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","id":"t2","input":{"file_path":"/repo/src/desktop-tauri/src/App.jsx","content":"x"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","id":"t2","input":{"file_path":"/repo/src/voice-agent/desktop-tauri/src/App.jsx","content":"x"}}]}}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"MultiEdit","id":"t3","input":{"file_path":"/repo/src/web/components/Foo.tsx"}}]}}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","id":"t4","input":{"command":"ls"}}]}}
 EOF
@@ -258,7 +258,7 @@ echo "{\"transcript_path\":\"/tmp/fixture-transcript.jsonl\",\"stop_hook_active\
 Expected stderr output (order may vary due to `sort -u`):
 ```
 [verify-before-done] DEBUG edits:
-  /repo/src/desktop-tauri/src/App.jsx
+  /repo/src/voice-agent/desktop-tauri/src/App.jsx
   /repo/src/voice-agent/jarvis_agent.py
   /repo/src/web/components/Foo.tsx
 ```
@@ -305,7 +305,7 @@ WARN_CLI=0
 while IFS= read -r f; do
   case "$f" in
     */src/voice-agent/*) SUITES["voice-agent"]=1 ;;
-    */src/desktop-tauri/*) SUITES["desktop-tauri"]=1 ;;
+    */src/voice-agent/desktop-tauri/*) SUITES["desktop-tauri"]=1 ;;
     */src/web/*) SUITES["web"]=1 ;;
     */src/cli/*) WARN_CLI=1 ;;
   esac
@@ -341,8 +341,8 @@ if [[ -n "${SUITES[voice-agent]:-}" ]]; then
 fi
 if [[ -n "${SUITES[desktop-tauri]:-}" ]]; then
   run_suite "desktop-tauri" \
-    "cd src/desktop-tauri && npm run build" \
-    test -d src/desktop-tauri/node_modules
+    "cd src/voice-agent/desktop-tauri && npm run build" \
+    test -d src/voice-agent/desktop-tauri/node_modules
 fi
 if [[ -n "${SUITES[web]:-}" ]]; then
   run_suite "web" \

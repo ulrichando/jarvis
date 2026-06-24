@@ -310,7 +310,7 @@ fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Comman
 }
 
 /// Repo checkout root. Derived from the running exe when possible
-/// (`<repo>/src/desktop-tauri/src-tauri/target/release/jarvis-desktop[.exe]`,
+/// (`<repo>/src/voice-agent/desktop-tauri/src-tauri/target/release/jarvis-desktop[.exe]`,
 /// 6 ancestors up), else the platform-conventional Documents location (the
 /// Linux dev box uses `~/Documents/Projects/jarvis`; the Windows installer
 /// clones to `~/Documents/jarvis`).
@@ -1847,7 +1847,7 @@ fn open_in_browser(app: &AppHandle, url: &str) {
 }
 
 /// Walk up from the running binary's path to find the project root.
-/// Binary lives at `<project>/src/desktop-tauri/src-tauri/target/release/jarvis-desktop`,
+/// Binary lives at `<project>/src/voice-agent/desktop-tauri/src-tauri/target/release/jarvis-desktop`,
 /// so 5 ancestors up = `<project>`. Honored override:
 /// `JARVIS_PROJECT_ROOT=/path/to/jarvis` (useful for testing).
 fn find_project_root() -> Option<std::path::PathBuf> {
@@ -2243,7 +2243,7 @@ fn main() {
                 // run-manifest resolves in both contexts. Dev: the repo tree.
                 // Prefer whichever actually has the manifest.
                 const MANIFEST_REL: &str =
-                    "src/desktop-tauri/src-tauri/resources/run-manifest.json";
+                    "src/voice-agent/desktop-tauri/src-tauri/resources/run-manifest.json";
                 let (root, manifest, is_bundled) = match app
                     .path()
                     .resolve(MANIFEST_REL, tauri::path::BaseDirectory::Resource)

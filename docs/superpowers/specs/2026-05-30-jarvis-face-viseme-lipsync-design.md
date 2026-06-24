@@ -141,8 +141,8 @@ kiosk (FaceWebGL.jsx / KioskHUD.jsx):
 **Modified**
 - `src/voice-agent/jarvis_voice_client.py` — feed transcription text → engine; call `engine.frame` in the playback loop; store `state.face_weights`.
 - `src/voice-agent/voice_client_http_api.py` — add `state.face_weights` + `GET /face`.
-- `src/desktop-tauri/src/components/KioskHUD.jsx` — poll `/face`, write weights ref.
-- `src/desktop-tauri/src/components/FaceWebGL.jsx` — apply multi-morph weights in `useFrame`; idle blink + head sway; `/level`-only fallback.
-- `src/desktop-tauri/src/App.jsx` — `FaceOnlyDev` polls `/face` (dev verification).
+- `src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx` — poll `/face`, write weights ref.
+- `src/voice-agent/desktop-tauri/src/components/FaceWebGL.jsx` — apply multi-morph weights in `useFrame`; idle blink + head sway; `/level`-only fallback.
+- `src/voice-agent/desktop-tauri/src/App.jsx` — `FaceOnlyDev` polls `/face` (dev verification).
 
 **Untouched (OUT):** `jarvis_agent.py` and the rest of the voice-agent brain (the engine is voice-client-only); the production-hardening WIP; `src/cli/` (run-only).

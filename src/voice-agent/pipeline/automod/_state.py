@@ -103,6 +103,10 @@ def evolution_log_path() -> Path:
 # diffs touching them, merge CLI refuses to merge artifacts that touch
 # them. The list itself is on the blocklist (no self-referential edit).
 HARD_BLOCKLIST_PATHS = (
+    # 2026-06-24: desktop-tauri moved UNDER src/voice-agent/, bringing the Rust/UI
+    # shell inside the auto-mod editable prefix. Keep it off-limits — the
+    # self-evolution loop is for the Python brain, not the desktop app.
+    "src/voice-agent/desktop-tauri/",
     "src/voice-agent/sanitizers/",
     "src/voice-agent/confab_detector.py",
     "src/voice-agent/pipeline/automod/",

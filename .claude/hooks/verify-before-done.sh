@@ -37,7 +37,7 @@ WARN_CLI=0
 while IFS= read -r f; do
   case "$f" in
     */src/voice-agent/*) SUITES["voice-agent"]=1 ;;
-    */src/desktop-tauri/*) SUITES["desktop-tauri"]=1 ;;
+    */src/voice-agent/desktop-tauri/*) SUITES["desktop-tauri"]=1 ;;
     */src/web/*) SUITES["web"]=1 ;;
     */src/cli/*) WARN_CLI=1 ;;
   esac
@@ -78,8 +78,8 @@ if [[ -n "${SUITES[desktop-tauri]:-}" ]]; then
   # catches cfg drift, Rust-side syntax errors, and the embed step's
   # codegen, in ~30s incrementally without the full link cost.
   run_suite "desktop-tauri" \
-    "cd src/desktop-tauri && npm run build && cd src-tauri && cargo check --release" \
-    test -d src/desktop-tauri/node_modules
+    "cd src/voice-agent/desktop-tauri && npm run build && cd src-tauri && cargo check --release" \
+    test -d src/voice-agent/desktop-tauri/node_modules
 fi
 if [[ -n "${SUITES[web]:-}" ]]; then
   run_suite "web" \

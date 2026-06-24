@@ -3,7 +3,7 @@
 **Date:** 2026-05-24
 **Status:** spec, pre-implementation
 **Author:** Ulrich + Claude
-**Scope:** `src/desktop-tauri/src-tauri/src/main.rs`, `src/desktop-tauri/src/App.jsx`, `src/desktop-tauri/src/components/VoiceChatPanel.jsx` (new), `src/voice-agent/voice_client_http_api.py`, `src/voice-agent/jarvis_agent.py`, new pytest coverage in `src/voice-agent/tests/`.
+**Scope:** `src/voice-agent/desktop-tauri/src-tauri/src/main.rs`, `src/voice-agent/desktop-tauri/src/App.jsx`, `src/voice-agent/desktop-tauri/src/components/VoiceChatPanel.jsx` (new), `src/voice-agent/voice_client_http_api.py`, `src/voice-agent/jarvis_agent.py`, new pytest coverage in `src/voice-agent/tests/`.
 
 ## TL;DR
 
@@ -41,14 +41,14 @@ The existing `ChatPanel.jsx` is reachable via Ctrl+H, but it routes through the 
 
 ### Tauri / desktop
 
-`src/desktop-tauri/src-tauri/src/main.rs` — restore the "Open Chat Panel" menu item that was removed 2026-05-10. The `open_chat` click handler at line ~1700 is still wired and emits `tray-toggle-chat`, but we want this new entry to emit a **new** event `tray-toggle-voice-chat` so the bridge-flavored `ChatPanel.jsx` (which listens for `tray-toggle-chat`) is left alone. One new `MenuItemBuilder::with_id("open_voice_chat", "Open Chat Panel")` line, inserted near the other tray entries, plus a small match-arm beside `open_chat` that emits `tray-toggle-voice-chat`. Total: ~10 lines of Rust.
+`src/voice-agent/desktop-tauri/src-tauri/src/main.rs` — restore the "Open Chat Panel" menu item that was removed 2026-05-10. The `open_chat` click handler at line ~1700 is still wired and emits `tray-toggle-chat`, but we want this new entry to emit a **new** event `tray-toggle-voice-chat` so the bridge-flavored `ChatPanel.jsx` (which listens for `tray-toggle-chat`) is left alone. One new `MenuItemBuilder::with_id("open_voice_chat", "Open Chat Panel")` line, inserted near the other tray entries, plus a small match-arm beside `open_chat` that emits `tray-toggle-voice-chat`. Total: ~10 lines of Rust.
 
-`src/desktop-tauri/src/App.jsx` — add a `voiceChatOpen` state and a `<VoiceChatPanel>` mount, with listeners for `tray-toggle-voice-chat` / `tray-open-voice-chat` / `tray-close-voice-chat`. The existing `chatOpen` state and `<ChatPanel>` mount are not changed. Hotkey routing:
+`src/voice-agent/desktop-tauri/src/App.jsx` — add a `voiceChatOpen` state and a `<VoiceChatPanel>` mount, with listeners for `tray-toggle-voice-chat` / `tray-open-voice-chat` / `tray-close-voice-chat`. The existing `chatOpen` state and `<ChatPanel>` mount are not changed. Hotkey routing:
 - Tray menu item → opens `VoiceChatPanel` (new).
 - Ctrl+H → opens existing `ChatPanel` (unchanged).
 - Ctrl+Shift+Space — left pointing at the existing panel for now (no change). The user can rebind later if they want; tray-menu discoverability is the main goal of this work.
 
-`src/desktop-tauri/src/components/VoiceChatPanel.jsx` — NEW. Minimal footprint:
+`src/voice-agent/desktop-tauri/src/components/VoiceChatPanel.jsx` — NEW. Minimal footprint:
 - Floating overlay, draggable header, resize handle (mirrors `ChatPanel.jsx`'s patterns so it feels native — share the same drag/resize helpers via copy-paste, not extraction, since the existing patterns are working and risk-frozen).
 - Message list with two bubble shapes: `user` (right-aligned, accent-colored) and `jarvis` (left-aligned, neutral).
 - One-line text input + send button.
@@ -296,7 +296,7 @@ The Tauri panel runs in the same user session as the voice client, so the loopba
 
 Per [.claude/rules/regression-prevention.md]:
 - Voice-agent edits → `cd src/voice-agent && .venv/bin/python -m pytest tests/` must pass.
-- Desktop-tauri edits → `cd src/desktop-tauri && npm run build` must pass, then `cargo build --release` to re-embed the new `dist/`.
+- Desktop-tauri edits → `cd src/voice-agent/desktop-tauri && npm run build` must pass, then `cargo build --release` to re-embed the new `dist/`.
 - Live behavior verification: restart the voice agent (after checking `turn_telemetry.db` for in-flight session per CLAUDE.md), exercise the panel manually with the steps above.
 
 ## Out of scope (explicit)
@@ -343,9 +343,9 @@ Each step is independently testable and additive — the previous behavior is un
 | `src/voice-agent/jarvis_voice_client.py` | edit | +20 (data-channel hook → subscriber enqueue) |
 | `src/voice-agent/tests/test_voice_client_events_sse.py` | new | ~100 |
 | `src/voice-agent/tests/test_assistant_says_publish.py` | new | ~80 |
-| `src/desktop-tauri/src-tauri/src/main.rs` | edit | +12 (menu item + match arm) |
-| `src/desktop-tauri/src/App.jsx` | edit | +25 (state, mount, listeners) |
-| `src/desktop-tauri/src/components/VoiceChatPanel.jsx` | new | ~200 |
+| `src/voice-agent/desktop-tauri/src-tauri/src/main.rs` | edit | +12 (menu item + match arm) |
+| `src/voice-agent/desktop-tauri/src/App.jsx` | edit | +25 (state, mount, listeners) |
+| `src/voice-agent/desktop-tauri/src/components/VoiceChatPanel.jsx` | new | ~200 |
 | `docs/superpowers/specs/2026-05-24-tray-chat-panel-design.md` | new | this file |
 
 Total new code: ~520 LOC including tests. Net deletions: zero — everything is additive.
@@ -358,5 +358,5 @@ Total new code: ~520 LOC including tests. Net deletions: zero — everything is 
 - `src/voice-agent/voice_client_http_api.py:246` — existing `/user-input` handler this design hangs off of.
 - `src/voice-agent/jarvis_agent.py:4974` — existing `conversation_item_added` handler the publish hook is added to.
 - `src/voice-agent/jarvis_agent.py:5564` — existing `_on_data` dispatch this design reuses.
-- `src/desktop-tauri/src-tauri/src/main.rs:1495` — comment from the 2026-05-10 menu trim explaining how to restore an "Open Chat Panel" entry.
-- `src/desktop-tauri/src/components/ChatPanel.jsx` — the existing bridge-backed rich panel; not modified, used as a structural reference for drag/resize patterns.
+- `src/voice-agent/desktop-tauri/src-tauri/src/main.rs:1495` — comment from the 2026-05-10 menu trim explaining how to restore an "Open Chat Panel" entry.
+- `src/voice-agent/desktop-tauri/src/components/ChatPanel.jsx` — the existing bridge-backed rich panel; not modified, used as a structural reference for drag/resize patterns.

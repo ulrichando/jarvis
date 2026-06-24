@@ -31,13 +31,13 @@ Layering fixes on v1 (transitioning flag + better monitor picker + AppState-reta
 
 **In scope:**
 
-- `src/desktop-tauri/src-tauri/src/kiosk.rs` — rewritten module (lifecycle commands, KIOSK_STATE, `WmctrlAdapter` trait carried forward from v1)
-- `src/desktop-tauri/src-tauri/src/tray_kiosk.rs` — new module for tray submenu construction + dispatch
-- `src/desktop-tauri/src-tauri/src/main.rs` — modified (revert v1 kiosk wiring, add tray_kiosk module hookup, single delegated `on_menu_event` arm)
-- `src/desktop-tauri/src/components/KioskHUD.jsx` — rewritten as the arc-reactor surface (replaces v1's transcript-HUD)
-- `src/desktop-tauri/src/components/KioskArcReactor.jsx` — new component (SVG + CSS arc reactor)
-- `src/desktop-tauri/src/main.jsx` — modified (add `?route=kiosk` → KioskHUD branch)
-- `src/desktop-tauri/src/App.jsx` — modified (revert v1 kiosk wiring entirely: drop kioskMode state, drop kiosk-changed listener, drop conditional render)
+- `src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs` — rewritten module (lifecycle commands, KIOSK_STATE, `WmctrlAdapter` trait carried forward from v1)
+- `src/voice-agent/desktop-tauri/src-tauri/src/tray_kiosk.rs` — new module for tray submenu construction + dispatch
+- `src/voice-agent/desktop-tauri/src-tauri/src/main.rs` — modified (revert v1 kiosk wiring, add tray_kiosk module hookup, single delegated `on_menu_event` arm)
+- `src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx` — rewritten as the arc-reactor surface (replaces v1's transcript-HUD)
+- `src/voice-agent/desktop-tauri/src/components/KioskArcReactor.jsx` — new component (SVG + CSS arc reactor)
+- `src/voice-agent/desktop-tauri/src/main.jsx` — modified (add `?route=kiosk` → KioskHUD branch)
+- `src/voice-agent/desktop-tauri/src/App.jsx` — modified (revert v1 kiosk wiring entirely: drop kioskMode state, drop kiosk-changed listener, drop conditional render)
 - `src/cli/src/bridge/server.ts` — modified (update `/api/kiosk` route schema to require monitor when state=on; same broadcast pattern)
 - `src/voice-agent/tools/kiosk_tool.py` — modified (schema requires monitor parameter when state=on)
 - `src/voice-agent/prompts/supervisor.md` — modified (one-paragraph update: ask user which screen if not specified)

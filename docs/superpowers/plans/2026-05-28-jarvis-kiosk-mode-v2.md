@@ -16,16 +16,16 @@
 
 **New:**
 
-- `src/desktop-tauri/src-tauri/src/kiosk.rs` — v2 module replacing v1 (lifecycle commands, snapshot state, WmctrlAdapter trait)
-- `src/desktop-tauri/src-tauri/src/tray_kiosk.rs` — submenu construction + dispatch + per-monitor CheckMenuItem state retention
-- `src/desktop-tauri/src/components/KioskArcReactor.jsx` — SVG arc reactor with state-driven CSS keyframes
-- `src/desktop-tauri/src/components/KioskHUD.jsx` — root component for `?route=kiosk` (replaces v1's transcript HUD)
+- `src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs` — v2 module replacing v1 (lifecycle commands, snapshot state, WmctrlAdapter trait)
+- `src/voice-agent/desktop-tauri/src-tauri/src/tray_kiosk.rs` — submenu construction + dispatch + per-monitor CheckMenuItem state retention
+- `src/voice-agent/desktop-tauri/src/components/KioskArcReactor.jsx` — SVG arc reactor with state-driven CSS keyframes
+- `src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx` — root component for `?route=kiosk` (replaces v1's transcript HUD)
 
 **Modified:**
 
-- `src/desktop-tauri/src-tauri/src/main.rs` — revert v1 inline kiosk wiring; hook up `tray_kiosk` module; register v2 Tauri commands
-- `src/desktop-tauri/src/main.jsx` — add `?route=kiosk` → `<KioskHUD/>` branch
-- `src/desktop-tauri/src/App.jsx` — drop v1 kioskMode state + listener + render branch; keep slim `{type:'kiosk'}` WS handler that routes to Tauri commands
+- `src/voice-agent/desktop-tauri/src-tauri/src/main.rs` — revert v1 inline kiosk wiring; hook up `tray_kiosk` module; register v2 Tauri commands
+- `src/voice-agent/desktop-tauri/src/main.jsx` — add `?route=kiosk` → `<KioskHUD/>` branch
+- `src/voice-agent/desktop-tauri/src/App.jsx` — drop v1 kioskMode state + listener + render branch; keep slim `{type:'kiosk'}` WS handler that routes to Tauri commands
 - `src/cli/src/bridge/server.ts` — update `/api/kiosk` to require monitor when state=on
 - `src/voice-agent/tools/kiosk_tool.py` — schema requires `monitor: int` when `state="on"`
 - `src/voice-agent/tests/test_kiosk_tool.py` — extend tests for new schema
@@ -34,9 +34,9 @@
 
 **Deleted (v1 orphans):**
 
-- `src/desktop-tauri/src/components/KioskClock.jsx`
-- `src/desktop-tauri/src/components/KioskVoiceWaveform.jsx`
-- `src/desktop-tauri/src/components/KioskTranscript.jsx`
+- `src/voice-agent/desktop-tauri/src/components/KioskClock.jsx`
+- `src/voice-agent/desktop-tauri/src/components/KioskVoiceWaveform.jsx`
+- `src/voice-agent/desktop-tauri/src/components/KioskTranscript.jsx`
 
 If those v1 component files are not on the current branch, the deletion steps are no-ops — proceed.
 
@@ -52,7 +52,7 @@ Run:
 ```bash
 cd /home/ulrich/Documents/Projects/jarvis
 git branch --show-current
-ls src/desktop-tauri/node_modules > /dev/null && echo "node_modules ok" || echo "MISSING: npm install"
+ls src/voice-agent/desktop-tauri/node_modules > /dev/null && echo "node_modules ok" || echo "MISSING: npm install"
 ls src/voice-agent/.venv/bin/python > /dev/null && echo "venv ok" || echo "MISSING: voice-agent venv"
 which wmctrl > /dev/null && echo "wmctrl ok" || echo "MISSING: apt install wmctrl"
 which cargo > /dev/null && echo "cargo ok" || echo "MISSING: cargo"
@@ -65,8 +65,8 @@ Expected: all "ok" lines. If any "MISSING" — install before proceeding.
 
 ```bash
 git log --oneline -5 docs/superpowers/specs/2026-05-28-jarvis-kiosk-mode-v2-design.md 2>&1 | head -3
-ls src/desktop-tauri/src-tauri/src/kiosk.rs 2>&1
-ls src/desktop-tauri/src/components/Kiosk*.jsx 2>&1
+ls src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs 2>&1
+ls src/voice-agent/desktop-tauri/src/components/Kiosk*.jsx 2>&1
 ```
 
 Output identifies whether v1 files exist on this branch. The plan handles both cases (rewrite or write-fresh).
@@ -76,12 +76,12 @@ Output identifies whether v1 files exist on this branch. The plan handles both c
 ## Task 1 — Rust: kiosk module skeleton (v2)
 
 **Files:**
-- Create or rewrite: `src/desktop-tauri/src-tauri/src/kiosk.rs`
-- Modify: `src/desktop-tauri/src-tauri/src/main.rs` (ensure `pub mod kiosk;` exists; usually already present from v1)
+- Create or rewrite: `src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/main.rs` (ensure `pub mod kiosk;` exists; usually already present from v1)
 
 - [ ] **Step 1.1: Write the new kiosk.rs**
 
-Use the Write tool to overwrite (or create) `src/desktop-tauri/src-tauri/src/kiosk.rs` with this exact content:
+Use the Write tool to overwrite (or create) `src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs` with this exact content:
 
 ```rust
 //! Kiosk mode v2 — owner-focus posture as a separate Tauri WebviewWindow.
@@ -520,7 +520,7 @@ mod tests {
 - [ ] **Step 1.2: Ensure `pub mod kiosk;` exists in main.rs**
 
 ```bash
-grep -n "^pub mod kiosk" src/desktop-tauri/src-tauri/src/main.rs
+grep -n "^pub mod kiosk" src/voice-agent/desktop-tauri/src-tauri/src/main.rs
 ```
 
 If missing, add `pub mod kiosk;` near the top of main.rs (right after the `use` block). Most likely already present from v1.
@@ -528,7 +528,7 @@ If missing, add `pub mod kiosk;` near the top of main.rs (right after the `use` 
 - [ ] **Step 1.3: Run unit tests**
 
 ```bash
-cd src/desktop-tauri/src-tauri
+cd src/voice-agent/desktop-tauri/src-tauri
 cargo test --bin jarvis-desktop kiosk 2>&1 | tail -15
 ```
 
@@ -546,7 +546,7 @@ Expected: builds. Warnings about unused `tauri::PhysicalPosition` / `PhysicalSiz
 
 ```bash
 cd /home/ulrich/Documents/Projects/jarvis
-git add src/desktop-tauri/src-tauri/src/kiosk.rs src/desktop-tauri/src-tauri/src/main.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs src/voice-agent/desktop-tauri/src-tauri/src/main.rs
 git commit -m "kiosk(v2): rewrite kiosk.rs — two-window architecture, explicit monitor"
 ```
 
@@ -555,11 +555,11 @@ git commit -m "kiosk(v2): rewrite kiosk.rs — two-window architecture, explicit
 ## Task 2 — Rust: new `tray_kiosk.rs` module
 
 **Files:**
-- Create: `src/desktop-tauri/src-tauri/src/tray_kiosk.rs`
+- Create: `src/voice-agent/desktop-tauri/src-tauri/src/tray_kiosk.rs`
 
 - [ ] **Step 2.1: Write the module**
 
-Create `src/desktop-tauri/src-tauri/src/tray_kiosk.rs` with this exact content:
+Create `src/voice-agent/desktop-tauri/src-tauri/src/tray_kiosk.rs` with this exact content:
 
 ```rust
 //! Kiosk-related tray submenu construction + dispatch.
@@ -697,7 +697,7 @@ pub fn install_kiosk_changed_listener(app: &AppHandle) {
 
 - [ ] **Step 2.2: Add the module to main.rs**
 
-In `src/desktop-tauri/src-tauri/src/main.rs`, near the top alongside other `pub mod` declarations, add:
+In `src/voice-agent/desktop-tauri/src-tauri/src/main.rs`, near the top alongside other `pub mod` declarations, add:
 
 ```rust
 pub mod tray_kiosk;
@@ -708,7 +708,7 @@ If `pub mod kiosk;` already exists, put `pub mod tray_kiosk;` directly after it.
 - [ ] **Step 2.3: Build to confirm tray_kiosk compiles**
 
 ```bash
-cd /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri/src-tauri
+cd /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri/src-tauri
 cargo build 2>&1 | tail -10
 ```
 
@@ -718,7 +718,7 @@ Expected: builds.
 
 ```bash
 cd /home/ulrich/Documents/Projects/jarvis
-git add src/desktop-tauri/src-tauri/src/tray_kiosk.rs src/desktop-tauri/src-tauri/src/main.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/tray_kiosk.rs src/voice-agent/desktop-tauri/src-tauri/src/main.rs
 git commit -m "kiosk(v2): new tray_kiosk module — submenu construction + dispatch + state sync"
 ```
 
@@ -727,7 +727,7 @@ git commit -m "kiosk(v2): new tray_kiosk module — submenu construction + dispa
 ## Task 3 — Wire kiosk v2 into `main.rs`
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/main.rs`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/main.rs`
 
 This task replaces the v1 inline kiosk wiring with the v2 module hookup.
 
@@ -735,7 +735,7 @@ This task replaces the v1 inline kiosk wiring with the v2 module hookup.
 
 ```bash
 cd /home/ulrich/Documents/Projects/jarvis
-grep -n "focus_mode\|kiosk\|FocusModeItem" src/desktop-tauri/src-tauri/src/main.rs | head -30
+grep -n "focus_mode\|kiosk\|FocusModeItem" src/voice-agent/desktop-tauri/src-tauri/src/main.rs | head -30
 ```
 
 Note the line numbers. Expect to find:
@@ -754,7 +754,7 @@ Delete the struct definition (it's been moved into tray_kiosk.rs as `KioskMonito
 
 ```bash
 # Search for FocusModeItem definitions/uses and remove them
-grep -n "FocusModeItem" src/desktop-tauri/src-tauri/src/main.rs
+grep -n "FocusModeItem" src/voice-agent/desktop-tauri/src-tauri/src/main.rs
 ```
 
 Remove every line matching `FocusModeItem`. The places are:
@@ -883,7 +883,7 @@ kiosk::kiosk_state,
 - [ ] **Step 3.7: Build + verify no v1 references remain**
 
 ```bash
-cd /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri/src-tauri
+cd /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri/src-tauri
 cargo build 2>&1 | tail -15
 grep -n "focus_mode\|FocusModeItem\|toggle_kiosk\|kiosk::enter_kiosk\b" src/main.rs | head -10
 ```
@@ -902,7 +902,7 @@ Expected: still 5 passed.
 
 ```bash
 cd /home/ulrich/Documents/Projects/jarvis
-git add src/desktop-tauri/src-tauri/src/main.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/main.rs
 git commit -m "kiosk(v2): main.rs — drop v1 inline wiring, delegate to tray_kiosk module"
 ```
 
@@ -911,11 +911,11 @@ git commit -m "kiosk(v2): main.rs — drop v1 inline wiring, delegate to tray_ki
 ## Task 4 — React: `KioskArcReactor` component
 
 **Files:**
-- Create: `src/desktop-tauri/src/components/KioskArcReactor.jsx`
+- Create: `src/voice-agent/desktop-tauri/src/components/KioskArcReactor.jsx`
 
 - [ ] **Step 4.1: Write the component**
 
-Create `src/desktop-tauri/src/components/KioskArcReactor.jsx` with this content:
+Create `src/voice-agent/desktop-tauri/src/components/KioskArcReactor.jsx` with this content:
 
 ```jsx
 import React from 'react'
@@ -1058,7 +1058,7 @@ export default function KioskArcReactor({ state = 'idle', size = 320 }) {
 - [ ] **Step 4.2: Verify it builds**
 
 ```bash
-cd /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri
+cd /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri
 npm run build 2>&1 | tail -8
 ```
 
@@ -1068,7 +1068,7 @@ Expected: vite builds cleanly (the component isn't used yet — that's the next 
 
 ```bash
 cd /home/ulrich/Documents/Projects/jarvis
-git add src/desktop-tauri/src/components/KioskArcReactor.jsx
+git add src/voice-agent/desktop-tauri/src/components/KioskArcReactor.jsx
 git commit -m "kiosk(v2): KioskArcReactor — pure SVG + CSS-keyframe state-driven animations"
 ```
 
@@ -1077,11 +1077,11 @@ git commit -m "kiosk(v2): KioskArcReactor — pure SVG + CSS-keyframe state-driv
 ## Task 5 — React: `KioskHUD` root (rewrite)
 
 **Files:**
-- Create or rewrite: `src/desktop-tauri/src/components/KioskHUD.jsx`
+- Create or rewrite: `src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx`
 
 - [ ] **Step 5.1: Write KioskHUD**
 
-Overwrite `src/desktop-tauri/src/components/KioskHUD.jsx` with this content (the v1 KioskHUD with transcript / waveform / clock is replaced — iteration 1 is intentionally minimal):
+Overwrite `src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx` with this content (the v1 KioskHUD with transcript / waveform / clock is replaced — iteration 1 is intentionally minimal):
 
 ```jsx
 import React, { useEffect, useState } from 'react'
@@ -1161,7 +1161,7 @@ export default function KioskHUD() {
 - [ ] **Step 5.2: Verify build**
 
 ```bash
-cd /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri
+cd /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri
 npm run build 2>&1 | tail -8
 ```
 
@@ -1171,7 +1171,7 @@ Expected: builds.
 
 ```bash
 cd /home/ulrich/Documents/Projects/jarvis
-git add src/desktop-tauri/src/components/KioskHUD.jsx
+git add src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx
 git commit -m "kiosk(v2): KioskHUD — black bg + centered arc reactor + ESC handler + status poll"
 ```
 
@@ -1180,12 +1180,12 @@ git commit -m "kiosk(v2): KioskHUD — black bg + centered arc reactor + ESC han
 ## Task 6 — React: route the `?route=kiosk` URL
 
 **Files:**
-- Modify: `src/desktop-tauri/src/main.jsx`
+- Modify: `src/voice-agent/desktop-tauri/src/main.jsx`
 
 - [ ] **Step 6.1: Read current main.jsx**
 
 ```bash
-cat /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri/src/main.jsx
+cat /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri/src/main.jsx
 ```
 
 Expected to be a tiny file (~10 lines) that mounts `<App/>` on the root div. If there's already a `?route=keys` branch in `App.jsx` (not main.jsx) — that's the precedent: App.jsx itself routes inside its function body.
@@ -1203,7 +1203,7 @@ The kiosk route follows the same pattern *in App.jsx*, NOT main.jsx. Apologies i
 
 - [ ] **Step 6.2: Add the kiosk route branch in App.jsx**
 
-Open `src/desktop-tauri/src/App.jsx`. Find the existing `route=keys` branch at the top of `App()`. Add a kiosk import at the top of the file (next to other component imports):
+Open `src/voice-agent/desktop-tauri/src/App.jsx`. Find the existing `route=keys` branch at the top of `App()`. Add a kiosk import at the top of the file (next to other component imports):
 
 ```jsx
 import KioskHUD     from './components/KioskHUD.jsx'
@@ -1221,7 +1221,7 @@ Then add the kiosk route branch immediately after the `route=keys` branch:
 - [ ] **Step 6.3: Verify build**
 
 ```bash
-cd /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri
+cd /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri
 npm run build 2>&1 | tail -5
 ```
 
@@ -1231,7 +1231,7 @@ Expected: builds. KioskHUD is now reachable when the URL has `?route=kiosk`.
 
 ```bash
 cd /home/ulrich/Documents/Projects/jarvis
-git add src/desktop-tauri/src/App.jsx
+git add src/voice-agent/desktop-tauri/src/App.jsx
 git commit -m "kiosk(v2): App.jsx — add ?route=kiosk → <KioskHUD/> branch"
 ```
 
@@ -1240,14 +1240,14 @@ git commit -m "kiosk(v2): App.jsx — add ?route=kiosk → <KioskHUD/> branch"
 ## Task 7 — App.jsx: revert v1 kiosk wiring (keep WS routing slot)
 
 **Files:**
-- Modify: `src/desktop-tauri/src/App.jsx`
+- Modify: `src/voice-agent/desktop-tauri/src/App.jsx`
 
 This task drops the v1 kioskMode state, the v1 Tauri kiosk-changed listener, and the v1 conditional render branch. It KEEPS a slim `{type:'kiosk'}` WS handler.
 
 - [ ] **Step 7.1: Locate v1 kiosk code in App.jsx**
 
 ```bash
-grep -n "kiosk\|KioskHUD" /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri/src/App.jsx
+grep -n "kiosk\|KioskHUD" /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri/src/App.jsx
 ```
 
 Expected hits:
@@ -1339,7 +1339,7 @@ Delete the entire block. Task 6's `route=kiosk` branch handles kiosk now; this c
 - [ ] **Step 7.6: Verify build**
 
 ```bash
-cd /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri
+cd /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri
 npm run build 2>&1 | tail -5
 ```
 
@@ -1349,7 +1349,7 @@ Expected: builds.
 
 ```bash
 cd /home/ulrich/Documents/Projects/jarvis
-git add src/desktop-tauri/src/App.jsx
+git add src/voice-agent/desktop-tauri/src/App.jsx
 git commit -m "kiosk(v2): App.jsx — drop v1 single-window wiring, keep slim WS→Tauri router"
 ```
 
@@ -1358,17 +1358,17 @@ git commit -m "kiosk(v2): App.jsx — drop v1 single-window wiring, keep slim WS
 ## Task 8 — Delete v1 orphan React components
 
 **Files:**
-- Delete: `src/desktop-tauri/src/components/KioskClock.jsx`
-- Delete: `src/desktop-tauri/src/components/KioskVoiceWaveform.jsx`
-- Delete: `src/desktop-tauri/src/components/KioskTranscript.jsx`
+- Delete: `src/voice-agent/desktop-tauri/src/components/KioskClock.jsx`
+- Delete: `src/voice-agent/desktop-tauri/src/components/KioskVoiceWaveform.jsx`
+- Delete: `src/voice-agent/desktop-tauri/src/components/KioskTranscript.jsx`
 
 - [ ] **Step 8.1: Check which exist and delete**
 
 ```bash
 cd /home/ulrich/Documents/Projects/jarvis
 for f in KioskClock.jsx KioskVoiceWaveform.jsx KioskTranscript.jsx; do
-  if [ -f "src/desktop-tauri/src/components/$f" ]; then
-    git rm "src/desktop-tauri/src/components/$f"
+  if [ -f "src/voice-agent/desktop-tauri/src/components/$f" ]; then
+    git rm "src/voice-agent/desktop-tauri/src/components/$f"
   fi
 done
 ```
@@ -1378,7 +1378,7 @@ If none exist, the loop is a no-op. That's fine — proceed.
 - [ ] **Step 8.2: Verify nothing imports the deleted files**
 
 ```bash
-grep -rn "KioskClock\|KioskVoiceWaveform\|KioskTranscript" src/desktop-tauri/src/ 2>&1 | head -5
+grep -rn "KioskClock\|KioskVoiceWaveform\|KioskTranscript" src/voice-agent/desktop-tauri/src/ 2>&1 | head -5
 ```
 
 Expected: empty output. If anything still imports them, those imports must be removed too (most likely from the v1 KioskHUD.jsx, which Task 5 already rewrote).
@@ -1386,7 +1386,7 @@ Expected: empty output. If anything still imports them, those imports must be re
 - [ ] **Step 8.3: Verify build**
 
 ```bash
-cd /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri
+cd /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri
 npm run build 2>&1 | tail -5
 ```
 
@@ -1868,7 +1868,7 @@ git commit -m "kiosk(v2)(cli): bin/jarvis-kiosk — required monitor index; usag
 - [ ] **Step 13.1: Rust unit tests**
 
 ```bash
-cd /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri/src-tauri
+cd /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri/src-tauri
 cargo test --bin jarvis-desktop kiosk 2>&1 | tail -10
 ```
 
@@ -1887,7 +1887,7 @@ Expected: 6 kiosk_tool tests pass; full suite passes (modulo pre-existing unrela
 - [ ] **Step 13.3: Vite (desktop frontend) build**
 
 ```bash
-cd /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri
+cd /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri
 npm run build 2>&1 | tail -8
 ```
 
@@ -1896,7 +1896,7 @@ Expected: vite builds cleanly.
 - [ ] **Step 13.4: Cargo release build (per `.claude/rules/desktop-tauri.md`)**
 
 ```bash
-cd /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri/src-tauri
+cd /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri/src-tauri
 cargo build --release 2>&1 | tail -6
 ```
 
@@ -1934,7 +1934,7 @@ Per the spec's testing section. Do NOT commit anything from this task; it's veri
 Verify JARVIS overlay is running with the production (pre-kiosk-v2) binary, OR start a fresh dev instance:
 
 ```bash
-cd /home/ulrich/Documents/Projects/jarvis/src/desktop-tauri
+cd /home/ulrich/Documents/Projects/jarvis/src/voice-agent/desktop-tauri
 npm run tauri dev 2>&1 | head -50 &
 sleep 8
 ```

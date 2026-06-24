@@ -29,13 +29,13 @@ The overlay is designed to sit *over* the user's work as a transparent HUD. Some
 
 **In scope:**
 
-- `src/desktop-tauri/src/components/KioskHUD.jsx` (new)
-- `src/desktop-tauri/src/components/KioskVoiceWaveform.jsx` (new)
-- `src/desktop-tauri/src/components/KioskClock.jsx` (new)
-- `src/desktop-tauri/src/components/KioskTranscript.jsx` (new)
-- `src/desktop-tauri/src/App.jsx` (modified — add `kioskMode` state, listener, conditional render)
-- `src/desktop-tauri/src-tauri/src/kiosk.rs` (new — module with `enter_kiosk` / `exit_kiosk` / `kiosk_state` commands + snapshot struct + WM helpers)
-- `src/desktop-tauri/src-tauri/src/main.rs` (modified — register kiosk commands, add "Focus mode" tray check item, wire event)
+- `src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx` (new)
+- `src/voice-agent/desktop-tauri/src/components/KioskVoiceWaveform.jsx` (new)
+- `src/voice-agent/desktop-tauri/src/components/KioskClock.jsx` (new)
+- `src/voice-agent/desktop-tauri/src/components/KioskTranscript.jsx` (new)
+- `src/voice-agent/desktop-tauri/src/App.jsx` (modified — add `kioskMode` state, listener, conditional render)
+- `src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs` (new — module with `enter_kiosk` / `exit_kiosk` / `kiosk_state` commands + snapshot struct + WM helpers)
+- `src/voice-agent/desktop-tauri/src-tauri/src/main.rs` (modified — register kiosk commands, add "Focus mode" tray check item, wire event)
 - `src/cli/src/bridge/server.ts` (modified — add `POST /api/kiosk` route; deliberate exception, see note below)
 - `src/voice-agent/tools/kiosk_tool.py` (new — self-registering `toggle_kiosk` tool)
 - `src/voice-agent/prompts/supervisor.md` (modified — one paragraph routing kiosk-related phrases to the tool)
@@ -194,7 +194,7 @@ JARVIS is X11-only (no Wayland — verified in CLAUDE.md). `xdotool` is already 
 - Log line: `WARN: wmctrl not found; other windows not minimized`.
 - No crash, no rollback, no error to the trigger.
 
-The README for `src/desktop-tauri/` gets a small note about the dependency.
+The README for `src/voice-agent/desktop-tauri/` gets a small note about the dependency.
 
 **Identifying our own window:** match WM_CLASS containing `J.A.R.V.I.S.` (set by Tauri from `productName` in `tauri.conf.json`). Fallback: match window title `J.A.R.V.I.S.`. Both are paranoid-checked before any minimization.
 
@@ -304,7 +304,7 @@ All failures are LOG + CONTINUE in Rust. The kiosk module never panics.
 
 ## Testing
 
-**Rust unit tests** (`src/desktop-tauri/src-tauri/src/kiosk.rs`):
+**Rust unit tests** (`src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs`):
 
 - `test_enter_idempotent` — call enter twice; assert state is `Some` after both; assert event fires twice.
 - `test_exit_idempotent` — call exit when off; assert state stays `None`; event fires.
@@ -327,7 +327,7 @@ To make this testable, the wmctrl shell-out is behind a small `WmctrlAdapter` tr
 
 **Manual E2E** (recorded in PR description, run before merge per `.claude/rules/regression-prevention.md` rule 5):
 
-1. Start desktop (`cd src/desktop-tauri && npm run tauri dev`). Open Firefox, a terminal, VSCode.
+1. Start desktop (`cd src/voice-agent/desktop-tauri && npm run tauri dev`). Open Firefox, a terminal, VSCode.
 2. Click tray → "Focus mode". Verify: all other windows minimize, overlay flips dark, transcript visible, clock shown, status dot reads listening/idle.
 3. Speak "Jarvis, exit focus mode". Verify: overlay reverts to transparent, tray check clears, windows restore.
 4. `bin/jarvis-kiosk on`. Verify same as tray. `bin/jarvis-kiosk off` same as exit.

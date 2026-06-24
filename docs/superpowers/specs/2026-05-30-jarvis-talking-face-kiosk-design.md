@@ -10,7 +10,7 @@
 ## 1. Problem & intent
 
 The kiosk (`?route=kiosk`) currently shows a WebGL shader "ring"
-([`AgentAudioVisualizerAura`](../../../src/desktop-tauri/src/components/agents-ui/agent-audio-visualizer-aura.tsx))
+([`AgentAudioVisualizerAura`](../../../src/voice-agent/desktop-tauri/src/components/agents-ui/agent-audio-visualizer-aura.tsx))
 that pulses with JARVIS's voice. Ulrich wants JARVIS to have a **face**: a 3D head
 that opens its mouth when JARVIS speaks, shown in the kiosk in place of the ring.
 
@@ -147,10 +147,10 @@ Evolves `src/voice-agent/animators/blender_face.py`. Keeps its `BlenderConnectio
     `127.0.0.1:8770`. The HTTP thread only reads the shared bytes; all GPU work stays on the
     timer/main thread.
   - Target 30 fps; drop to 24 fps / 384² if GPU-bound (env-tunable).
-- **Kiosk-side** (`src/desktop-tauri`):
+- **Kiosk-side** (`src/voice-agent/desktop-tauri`):
   - New `FaceStream` component rendering `<img src="http://127.0.0.1:8770/stream.mjpg">` sized to
     the existing `AURA_SIZE` (448) slot in
-    [`KioskHUD.jsx`](../../../src/desktop-tauri/src/components/KioskHUD.jsx).
+    [`KioskHUD.jsx`](../../../src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx).
   - **Fallback:** watch `<img>` `onerror` + a frame-staleness timeout; on failure render the
     existing `<AgentAudioVisualizerAura>` instead. A flag (`VITE_JARVIS_FACE_KIOSK`, default on)
     can force ring-only.
@@ -226,14 +226,14 @@ SCOPE:
   src/voice-agent/animators/loudness_monitor.py    (new: PipeWire RMS)
   src/voice-agent/animators/blender_frame_server.py (new: offscreen render + MJPEG; installed into Blender)
   src/voice-agent/tests/test_face_animator.py       (new: unit tests)
-  src/desktop-tauri/src/components/KioskHUD.jsx      (swap ring → FaceStream + fallback)
-  src/desktop-tauri/src/components/FaceStream.jsx    (new)
-  src/desktop-tauri/src-tauri/tauri.conf.json        (CSP img-src += :8770)
+  src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx      (swap ring → FaceStream + fallback)
+  src/voice-agent/desktop-tauri/src/components/FaceStream.jsx    (new)
+  src/voice-agent/desktop-tauri/src-tauri/tauri.conf.json        (CSP img-src += :8770)
   bin/jarvis-face-animator (or similar)              (launcher, optional)
 
 OUT:
   src/voice-agent/jarvis_agent.py and voice-agent core (no PCM tap)
-  src/desktop-tauri/src/components/agents-ui/* (ring shader left intact for fallback)
+  src/voice-agent/desktop-tauri/src/components/agents-ui/* (ring shader left intact for fallback)
   src/cli/**
   female-head-sculpt rig
   viseme / full-ARKit motion

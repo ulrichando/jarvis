@@ -11,7 +11,7 @@ on direction.
 | Subtree | Path |
 |---|---|
 | Voice agent (Python) | `src/voice-agent/` |
-| Desktop UI (Tauri/Rust + React) | `src/desktop-tauri/` |
+| Desktop UI (Tauri/Rust + React) | `src/voice-agent/desktop-tauri/` |
 | Web app (Next.js) | `src/web/` |
 | CLI agent (TypeScript/Bun) | `src/cli/` |
 | Android app (Kotlin/Compose + NDK) | `src/android/` |
@@ -45,10 +45,10 @@ systemctl --user restart jarvis-voice-agent.service
 
 Tests live under `src/voice-agent/tests/` (~200 files, ~3,000 tests, ~70s full run).
 
-### Desktop UI (`src/desktop-tauri/`)
+### Desktop UI (`src/voice-agent/desktop-tauri/`)
 
 ```sh
-cd src/desktop-tauri
+cd src/voice-agent/desktop-tauri
 
 # Install JS deps
 npm install

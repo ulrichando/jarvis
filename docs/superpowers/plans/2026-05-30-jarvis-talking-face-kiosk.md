@@ -17,7 +17,7 @@
 - **Voice-agent core is OUT of scope.** No edits to `jarvis_agent.py` or `jarvis_voice_client.py`. Loudness comes from a PipeWire monitor, not a PCM tap.
 - **Static visualization only in the kiosk** (`.claude/rules/desktop-tauri.md`): the MJPEG `<img>` refreshes natively — do NOT introduce per-frame React `setState`. `faceOk` flips only on stream failure/recovery.
 - **System-tray indicator is FROZEN** — untouched here.
-- **Tests:** `cd src/voice-agent && .venv/bin/python -m pytest tests/`. Desktop: `cd src/desktop-tauri && npm run build`; installed kiosk needs `cargo build --release` to re-embed `dist/`.
+- **Tests:** `cd src/voice-agent && .venv/bin/python -m pytest tests/`. Desktop: `cd src/voice-agent/desktop-tauri && npm run build`; installed kiosk needs `cargo build --release` to re-embed `dist/`.
 - **No Co-Authored-By / attribution trailers** on commits.
 - The animator's ARKit indices are **hints**; resolve by shape-key **name** against the live `key_blocks` (spec R1).
 
@@ -35,9 +35,9 @@
 | `src/voice-agent/tests/test_face_anim_core.py` | **New** | Unit tests for the pure math. |
 | `src/voice-agent/tests/test_loudness_monitor.py` | **New** | Unit tests for `rms_level` + `LoudnessMonitor` with a fake frame source. |
 | `bin/jarvis-face-animator` | **New** | Launcher: runs the animator in the voice-agent `.venv`. |
-| `src/desktop-tauri/src/components/FaceStream.jsx` | **New** | MJPEG `<img>` + health callback. |
-| `src/desktop-tauri/src/components/KioskHUD.jsx` | **Mod** | Render `<FaceStream>`; ring fallback when `!faceOk`. |
-| `src/desktop-tauri/src-tauri/tauri.conf.json` | **Mod** | CSP `img-src` += `http://127.0.0.1:8770`. |
+| `src/voice-agent/desktop-tauri/src/components/FaceStream.jsx` | **New** | MJPEG `<img>` + health callback. |
+| `src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx` | **Mod** | Render `<FaceStream>`; ring fallback when `!faceOk`. |
+| `src/voice-agent/desktop-tauri/src-tauri/tauri.conf.json` | **Mod** | CSP `img-src` += `http://127.0.0.1:8770`. |
 
 **Phasing:** Phase 1 (Tasks 1–2) pure TDD, no Blender needed. Phase 2 (Tasks 3–4) Blender-injected code, verified live via the MCP connection + curl. Phase 3 (Task 5) wires the orchestrator end-to-end. Phase 4 (Tasks 6–7) kiosk + final verification.
 
@@ -874,13 +874,13 @@ git commit -m "feat(face): drive jaw from real loudness; auto-install scene+fram
 ## Task 6: Kiosk FaceStream + ring fallback
 
 **Files:**
-- Create: `src/desktop-tauri/src/components/FaceStream.jsx`
-- Modify: `src/desktop-tauri/src/components/KioskHUD.jsx`
-- Modify: `src/desktop-tauri/src-tauri/tauri.conf.json`
+- Create: `src/voice-agent/desktop-tauri/src/components/FaceStream.jsx`
+- Modify: `src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/tauri.conf.json`
 
 - [ ] **Step 1: Extend the CSP**
 
-In `src/desktop-tauri/src-tauri/tauri.conf.json`, find the `img-src` directive in the `csp` string:
+In `src/voice-agent/desktop-tauri/src-tauri/tauri.conf.json`, find the `img-src` directive in the `csp` string:
 
 ```
 img-src 'self' data: blob: asset:;
@@ -896,7 +896,7 @@ img-src 'self' data: blob: asset: http://127.0.0.1:8770;
 
 - [ ] **Step 2: Create the FaceStream component**
 
-Create `src/desktop-tauri/src/components/FaceStream.jsx`:
+Create `src/voice-agent/desktop-tauri/src/components/FaceStream.jsx`:
 
 ```jsx
 import React, { useEffect, useRef } from 'react'
@@ -942,7 +942,7 @@ export function FaceStream({ size, onHealth }) {
 
 - [ ] **Step 3: Wire FaceStream into KioskHUD with ring fallback**
 
-In `src/desktop-tauri/src/components/KioskHUD.jsx`:
+In `src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx`:
 
 Add the import after line 5:
 
@@ -1007,15 +1007,15 @@ to:
 
 - [ ] **Step 4: Build the front-end (catches syntax/import errors)**
 
-Run: `cd src/desktop-tauri && npm run build`
+Run: `cd src/voice-agent/desktop-tauri && npm run build`
 Expected: build succeeds, no errors.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/desktop-tauri/src/components/FaceStream.jsx \
-        src/desktop-tauri/src/components/KioskHUD.jsx \
-        src/desktop-tauri/src-tauri/tauri.conf.json
+git add src/voice-agent/desktop-tauri/src/components/FaceStream.jsx \
+        src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx \
+        src/voice-agent/desktop-tauri/src-tauri/tauri.conf.json
 git commit -m "feat(kiosk): swap ring for live Blender FaceStream, ring fallback"
 ```
 
@@ -1039,7 +1039,7 @@ Expected: all pass (no regressions from the new modules).
 - [ ] **Step 3: Kiosk visual + fallback test**
 
 Rebuild & re-embed for the installed kiosk:
-`cd src/desktop-tauri && npm run build && cargo build --release`
+`cd src/voice-agent/desktop-tauri && npm run build && cargo build --release`
 Launch the kiosk (`?route=kiosk`). Verify:
 - The **face** appears in the ring's slot and its mouth tracks JARVIS's voice.
 - Kill `bin/jarvis-face-animator` / stop the frame server → kiosk **falls back to the ring** within ~2.5 s (diagnostic shows `ring`).

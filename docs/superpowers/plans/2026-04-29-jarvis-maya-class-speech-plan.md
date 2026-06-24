@@ -26,7 +26,7 @@
 | `src/voice-agent/tests/test_dispatching_llm.py` (NEW) | Unit tests for LLM dispatcher (mocked inner LLMs) |
 | `src/voice-agent/tests/test_dispatching_tts.py` (NEW) | Unit tests for TTS dispatcher (mocked inner TTSs) |
 | `src/voice-agent/tests/test_pipeline_integration.py` (NEW) | 30-fixture end-to-end happy-path |
-| `src/desktop-tauri/scripts/launch.sh` (MODIFY) | Default env vars for new flags |
+| `src/voice-agent/desktop-tauri/scripts/launch.sh` (MODIFY) | Default env vars for new flags |
 
 All edits stay within `src/voice-agent/` and one launcher line. The `JARVIS_INSTRUCTIONS` body is **not** edited; only the per-turn message prefix changes.
 
@@ -1120,12 +1120,12 @@ git commit -m "voice: write turn telemetry on agent_speech_committed"
 ## Task 9: Launcher env defaults + rollback path
 
 **Files:**
-- Modify: `src/desktop-tauri/scripts/launch.sh`
+- Modify: `src/voice-agent/desktop-tauri/scripts/launch.sh`
 
 - [ ] **Step 9.1: Read the current launcher**
 
 ```bash
-cat src/desktop-tauri/scripts/launch.sh | head -50
+cat src/voice-agent/desktop-tauri/scripts/launch.sh | head -50
 ```
 
 Identify where env vars are exported (typically near the top, before service starts).
@@ -1152,7 +1152,7 @@ export JARVIS_DISPATCH_DISABLED JARVIS_ROUTER_ENABLED JARVIS_ROUTER_TIMEOUT_MS \
 - [ ] **Step 9.3: Verify launcher still parses**
 
 ```bash
-bash -n src/desktop-tauri/scripts/launch.sh
+bash -n src/voice-agent/desktop-tauri/scripts/launch.sh
 ```
 
 Expected: no syntax errors.
@@ -1160,7 +1160,7 @@ Expected: no syntax errors.
 - [ ] **Step 9.4: Commit**
 
 ```bash
-git add src/desktop-tauri/scripts/launch.sh
+git add src/voice-agent/desktop-tauri/scripts/launch.sh
 git commit -m "voice: launcher env defaults for Maya-class speech"
 ```
 

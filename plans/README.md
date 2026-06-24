@@ -7,7 +7,7 @@ starting, honor its STOP conditions, and update your row when done.
 Scope of the audit that produced these: `src/voice-agent/` + `src/web/` +
 cross-cutting ops (`bin/`, `setup/`, `scripts/`, `.github/workflows/`, docs).
 **Not audited:** `src/cli/` (off-limits, separate codebase), `src/android/` and
-`src/desktop-tauri/` (lower churn), and the `direction`/features category.
+`src/voice-agent/desktop-tauri/` (lower churn), and the `direction`/features category.
 
 ## Execution order & status
 

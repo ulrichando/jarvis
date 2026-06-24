@@ -88,7 +88,7 @@ def test_reject_path_outside_allowed_prefix(tmp_path, monkeypatch):
     monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
     from pipeline.automod import throttle
     intent = _intent()
-    intent["proposed_paths_hint"] = ["src/desktop-tauri/src/App.jsx"]
+    intent["proposed_paths_hint"] = ["src/voice-agent/desktop-tauri/src/App.jsx"]
     ok, reason = throttle.admit_intent(intent)
     assert not ok
 

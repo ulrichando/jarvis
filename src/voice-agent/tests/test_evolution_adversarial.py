@@ -90,7 +90,6 @@ def test_every_blocklist_entry_is_rejected(entry):
 
 _OTHER_TREE_PATHS = [
     "src/web/app/page.tsx",
-    "src/desktop-tauri/src-tauri/src/main.rs",
     "src/cli/src/cli.tsx",
     "src/android/app/build.gradle.kts",
     "README.md",

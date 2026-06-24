@@ -78,14 +78,14 @@ JARVIS ships [`src/voice-agent/acp_registry/agent.json`](src/voice-agent/acp_reg
 
 ## Architecture
 
-JARVIS is a multi-process system: a Python LiveKit Agents worker (`src/voice-agent/`) runs the supervisor LLM (Anthropic Sonnet 4.6, with Groq/DeepSeek/OpenAI fallbacks), a VAD/STT/TTS pipeline, and a self-registering tool registry (computer use, browser control, terminal, file/code tools, memory, web search, and more). The Tauri desktop (`src/desktop-tauri/`) and Next.js web app (`src/web/`) connect to the voice agent over LiveKit. The TypeScript/Bun CLI (`src/cli/`) is a separate Claude-Code-shaped coding agent. A local bridge (`127.0.0.1:8765`) brokers requests between the desktop and a Chrome extension. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full diagram and data-flow description.
+JARVIS is a multi-process system: a Python LiveKit Agents worker (`src/voice-agent/`) runs the supervisor LLM (Anthropic Sonnet 4.6, with Groq/DeepSeek/OpenAI fallbacks), a VAD/STT/TTS pipeline, and a self-registering tool registry (computer use, browser control, terminal, file/code tools, memory, web search, and more). The Tauri desktop (`src/voice-agent/desktop-tauri/`) and Next.js web app (`src/web/`) connect to the voice agent over LiveKit. The TypeScript/Bun CLI (`src/cli/`) is a separate Claude-Code-shaped coding agent. A local bridge (`127.0.0.1:8765`) brokers requests between the desktop and a Chrome extension. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full diagram and data-flow description.
 
 ## Repository layout
 
 | Path | What it is |
 |---|---|
 | `src/voice-agent/` | Python LiveKit Agents brain — supervisor LLM, VAD/STT/TTS pipeline, tool registry, memory, sanitizers, resilience |
-| `src/desktop-tauri/` | Tauri (Rust + React/TS) desktop UI — system tray, voice controls, Blender face animator |
+| `src/voice-agent/desktop-tauri/` | Tauri (Rust + React/TS) desktop UI — system tray, voice controls, Blender face animator |
 | `src/web/` | Next.js / React web app — 3-column chat UI, workbench, ACP interface |
 | `src/cli/` | TypeScript/Bun CLI agent — Claude-Code-shaped, multi-provider, bridge server |
 | `src/android/` | Kotlin/Compose + NDK on-device Android app |

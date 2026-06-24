@@ -680,12 +680,12 @@ git commit -m "feat(lipsync): GET /face endpoint serving per-frame viseme morph 
 ## Task 6: Apply multi-morph weights in the kiosk
 
 **Files:**
-- Modify: `src/desktop-tauri/src/components/FaceWebGL.jsx`
-- Modify: `src/desktop-tauri/src/components/KioskHUD.jsx`
+- Modify: `src/voice-agent/desktop-tauri/src/components/FaceWebGL.jsx`
+- Modify: `src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx`
 
 - [ ] **Step 1: Poll `/face` in KioskHUD and pass a weights getter**
 
-In `src/desktop-tauri/src/components/KioskHUD.jsx`: add a `FACE_URL`, change the jaw ref to a weights ref, and swap the poll. Replace the `LEVEL_URL` const (line 21) region with:
+In `src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx`: add a `FACE_URL`, change the jaw ref to a weights ref, and swap the poll. Replace the `LEVEL_URL` const (line 21) region with:
 ```javascript
 const STATUS_URL = 'http://127.0.0.1:8767/status'
 const FACE_URL   = 'http://127.0.0.1:8767/face'
@@ -728,7 +728,7 @@ Change the `<FaceWebGL .../>` usage (line 142) to pass the weights getter:
 
 - [ ] **Step 2: Apply the weights to named morphs in FaceWebGL**
 
-In `src/desktop-tauri/src/components/FaceWebGL.jsx`, replace the `Head` component's jaw bookkeeping with a generic name→index map and multi-morph easing. Replace the `Head` function (lines 17–64) with:
+In `src/voice-agent/desktop-tauri/src/components/FaceWebGL.jsx`, replace the `Head` component's jaw bookkeeping with a generic name→index map and multi-morph easing. Replace the `Head` function (lines 17–64) with:
 ```javascript
 function Head({ getWeights }) {
   const { scene } = useGLTF(MODEL_URL)
@@ -796,13 +796,13 @@ export function FaceWebGL({ size, getWeights }) {
 
 - [ ] **Step 3: Build to verify it compiles**
 
-Run: `cd src/desktop-tauri && npm run build 2>&1 | grep -iE "built in|error"`
+Run: `cd src/voice-agent/desktop-tauri && npm run build 2>&1 | grep -iE "built in|error"`
 Expected: `✓ built in ...` with no errors.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/desktop-tauri/src/components/FaceWebGL.jsx src/desktop-tauri/src/components/KioskHUD.jsx
+git add src/voice-agent/desktop-tauri/src/components/FaceWebGL.jsx src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx
 git commit -m "feat(lipsync): kiosk applies per-frame viseme morph weights from /face (jaw fallback kept)"
 ```
 
@@ -811,7 +811,7 @@ git commit -m "feat(lipsync): kiosk applies per-frame viseme morph weights from 
 ## Task 7: Idle life — blinks + head sway
 
 **Files:**
-- Modify: `src/desktop-tauri/src/components/FaceWebGL.jsx`
+- Modify: `src/voice-agent/desktop-tauri/src/components/FaceWebGL.jsx`
 
 - [ ] **Step 1: Add blink + sway state to `Head`**
 
@@ -886,13 +886,13 @@ Extend the `useFrame` callback in `Head` (append inside it, after the mouth loop
 
 - [ ] **Step 4: Build to verify it compiles**
 
-Run: `cd src/desktop-tauri && npm run build 2>&1 | grep -iE "built in|error"`
+Run: `cd src/voice-agent/desktop-tauri && npm run build 2>&1 | grep -iE "built in|error"`
 Expected: `✓ built in ...` no errors.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/desktop-tauri/src/components/FaceWebGL.jsx
+git add src/voice-agent/desktop-tauri/src/components/FaceWebGL.jsx
 git commit -m "feat(lipsync): idle life — randomized blinks + subtle head sway"
 ```
 
@@ -901,11 +901,11 @@ git commit -m "feat(lipsync): idle life — randomized blinks + subtle head sway
 ## Task 8: Dev preview on `/face`, end-to-end verify, deploy
 
 **Files:**
-- Modify: `src/desktop-tauri/src/App.jsx` (`FaceOnlyDev` polls `/face`, passes `getWeights`)
+- Modify: `src/voice-agent/desktop-tauri/src/App.jsx` (`FaceOnlyDev` polls `/face`, passes `getWeights`)
 
 - [ ] **Step 1: Point the dev preview at `/face`**
 
-In `src/desktop-tauri/src/App.jsx`, update `FaceOnlyDev` to poll `/face` and pass weights (mirror the kiosk). Replace the poll effect + render:
+In `src/voice-agent/desktop-tauri/src/App.jsx`, update `FaceOnlyDev` to poll `/face` and pass weights (mirror the kiosk). Replace the poll effect + render:
 ```javascript
   const weightsRef = useRef({})
   useEffect(() => {
@@ -931,7 +931,7 @@ In `src/desktop-tauri/src/App.jsx`, update `FaceOnlyDev` to poll `/face` and pas
 
 - [ ] **Step 2: Build**
 
-Run: `cd src/desktop-tauri && npm run build 2>&1 | grep -iE "built in|error"`
+Run: `cd src/voice-agent/desktop-tauri && npm run build 2>&1 | grep -iE "built in|error"`
 Expected: `✓ built in ...` no errors.
 
 - [ ] **Step 3: Full voice-agent regression**
@@ -954,7 +954,7 @@ systemctl --user restart jarvis-voice-client.service
 
 Stand up a preview server + a throwaway browser window on the dev route, fire a `/speak`, sample `/face` + screenshot mid-utterance:
 ```bash
-cd src/desktop-tauri && nohup npx vite preview --port 4178 --strictPort >/tmp/jv.log 2>&1 &
+cd src/voice-agent/desktop-tauri && nohup npx vite preview --port 4178 --strictPort >/tmp/jv.log 2>&1 &
 sleep 2
 DISPLAY=:0 nohup google-chrome --app='http://localhost:4178/?route=faceonly' \
   --window-size=480,520 --user-data-dir=/tmp/jv-chrome --no-first-run >/tmp/jvc.log 2>&1 &
@@ -973,7 +973,7 @@ Read several `/tmp/jv-*.png` frames (silence vs mid-speech): the mouth must form
 - [ ] **Step 6: Deploy to the kiosk binary**
 
 ```bash
-cd src/desktop-tauri/src-tauri && cargo build --release
+cd src/voice-agent/desktop-tauri/src-tauri && cargo build --release
 ```
 Then SIGKILL the running desktop binary (uncatchable → skips the tray Quit handler that stops voice) and re-launch via the launcher (its voice block is `is-active`-guarded). Find the PID with `pgrep -af 'jarvis-deskto[p]'`, `kill -9 <pid>`, then `setsid nohup bash src/cli/scripts/start-desktop.sh >/tmp/relaunch.log 2>&1 </dev/null &`. Confirm `nvidia-smi`-style: desktop back up, bridge `:8765` 200, voice services still `active`.
 
@@ -984,7 +984,7 @@ Ask the user to enter kiosk from the tray and confirm the mouth forms word shape
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/desktop-tauri/src/App.jsx
+git add src/voice-agent/desktop-tauri/src/App.jsx
 git commit -m "feat(lipsync): dev face preview polls /face; end-to-end viseme verification"
 ```
 

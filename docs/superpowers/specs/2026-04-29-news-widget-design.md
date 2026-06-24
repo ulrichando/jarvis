@@ -30,9 +30,9 @@ All new Rust code lives in `src-tauri/src/news.rs` (separate module, not inline 
 
 ### New Web components
 
-The widget gets its own HTML entry point: `src/desktop-tauri/news.html` (alongside existing `index.html`). Tauri loads it as a separate window with its own Vite build target. This keeps the widget bundle small and independent from the main overlay app.
+The widget gets its own HTML entry point: `src/voice-agent/desktop-tauri/news.html` (alongside existing `index.html`). Tauri loads it as a separate window with its own Vite build target. This keeps the widget bundle small and independent from the main overlay app.
 
-Components live in `src/desktop-tauri/src/news/`:
+Components live in `src/voice-agent/desktop-tauri/src/news/`:
 
 - `NewsWidget` — main container, fetches headlines, listens for `news-updated`, renders in chosen layout
 - `NewsSettings` — feed management, appearance, layout, refresh controls

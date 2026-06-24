@@ -9,7 +9,7 @@ JARVIS is Ulrich's voice-first AI assistant. Real-time speech in, real-time spee
 | Layer | Tech | Where |
 |---|---|---|
 | Voice agent (the brain) | Python 3.13, LiveKit Agents framework | [src/voice-agent/](src/voice-agent/) |
-| Desktop UI | Tauri (Rust + React/TS) | [src/desktop-tauri/](src/desktop-tauri/) |
+| Desktop UI | Tauri (Rust + React/TS) | [src/voice-agent/desktop-tauri/](src/voice-agent/desktop-tauri/) |
 | Web app | Next.js / React | [src/web/](src/web/) |
 | CLI agent (`jarvis`) | TypeScript / Bun, Claude Code shape | [src/cli/](src/cli/) |
 | Android app | Kotlin/Compose + NDK on-device app | [src/android/](src/android/) |
@@ -58,7 +58,7 @@ JARVIS's `bash` tool runs as the local user (`ulrich`). **As of 2026-05-16 there
 
 **`/loop`, `/schedule`, follow-up agent offers**: don't end JARVIS replies with "want me to schedule a follow-up agent?" — the user finds it noisy.
 
-**For desktop Tauri release builds:** `npm run build` alone does NOT ship JS changes. You must `cargo build --release` afterward to re-embed `dist/` into the binary. ([src/desktop-tauri/](src/desktop-tauri/))
+**For desktop Tauri release builds:** `npm run build` alone does NOT ship JS changes. You must `cargo build --release` afterward to re-embed `dist/` into the binary. ([src/voice-agent/desktop-tauri/](src/voice-agent/desktop-tauri/))
 
 **Voice reactor sphere is intentionally removed.** Don't re-add per-frame React state in voice UI — latency cost was too high.
 
@@ -108,7 +108,7 @@ JARVIS's `bash` tool runs as the local user (`ulrich`). **As of 2026-05-16 there
 | Voice agent test suite | `cd src/voice-agent && .venv/bin/python -m pytest tests/` |
 | Telemetry inspection | `sqlite3 ~/.local/share/jarvis/turn_telemetry.db` (tables: `turns`, `launch_attempts`) |
 | Periodic re-scoring | `bin/jarvis-soak-rescore.sh` |
-| Desktop dev (Tauri) | `cd src/desktop-tauri && npm run tauri dev` |
+| Desktop dev (Tauri) | `cd src/voice-agent/desktop-tauri && npm run tauri dev` |
 | Desktop release | `npm run build && cargo build --release` (BOTH steps) |
 | Run jarvis CLI | `bin/jarvis` (Claude-Code-shaped, has gstack skill access) |
 | Bridge status | `pgrep -fa 'bridge/server.ts'` (Bun process, no systemd unit) |

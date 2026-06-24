@@ -44,7 +44,7 @@ Before removing/renaming any symbol, grep the WHOLE repo including:
 - setup/systemd/ (unit files reference Python paths, env files, scripts)
 - scripts/ (timer payloads: backup, retention prune, dep check/update)
 - src/cli/src/bridge/ (HTTP+WS routes the desktop + Chrome extension call)
-- src/desktop-tauri/src-tauri/ (tray/invoke handlers hit voice-client HTTP)
+- src/voice-agent/desktop-tauri/src-tauri/ (tray/invoke handlers hit voice-client HTTP)
 
 If still unsure: ask. The bridge + Tauri side call into voice-agent
 paths via HTTP/IPC and don't show up in a Python-only search.

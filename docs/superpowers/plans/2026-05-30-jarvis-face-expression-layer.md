@@ -293,7 +293,7 @@ git commit -m "feat(expression): merge expression morphs into /face alongside vi
 ## Task 4: Kiosk — apply expression morphs + idle micro-expressions
 
 **Files:**
-- Modify: `src/desktop-tauri/src/components/FaceWebGL.jsx`
+- Modify: `src/voice-agent/desktop-tauri/src/components/FaceWebGL.jsx`
 
 - [ ] **Step 1: Add the expression morph set (module const).** After the `MOUTH` const (L20), add:
 ```javascript
@@ -366,11 +366,11 @@ Then, INSIDE the `// ── idle life ──` section, after the head-sway block
 ```
 (The `useFrame` eyeWide easing from 0 toward the 0.55 baseline replaces the static set; the eyes settle to wide within ~1 s of first render.)
 
-- [ ] **Step 5: Build** — `cd src/desktop-tauri && npm run build 2>&1 | grep -iE "built in|error"` → `✓ built`, no errors. Confirm exactly ONE `useFrame(` remains: `grep -c "useFrame(" src/desktop-tauri/src/components/FaceWebGL.jsx` → `1`.
+- [ ] **Step 5: Build** — `cd src/voice-agent/desktop-tauri && npm run build 2>&1 | grep -iE "built in|error"` → `✓ built`, no errors. Confirm exactly ONE `useFrame(` remains: `grep -c "useFrame(" src/voice-agent/desktop-tauri/src/components/FaceWebGL.jsx` → `1`.
 
 - [ ] **Step 6: Commit**
 ```bash
-git add src/desktop-tauri/src/components/FaceWebGL.jsx
+git add src/voice-agent/desktop-tauri/src/components/FaceWebGL.jsx
 git commit -m "feat(expression): kiosk applies brow/cheek/frown + eyeWide baseline + idle brow-flick/eye-dart"
 ```
 
@@ -379,9 +379,9 @@ git commit -m "feat(expression): kiosk applies brow/cheek/frown + eyeWide baseli
 ## Task 5: Size bump + live verify + deploy
 
 **Files:**
-- Modify: `src/desktop-tauri/src/components/KioskHUD.jsx`
+- Modify: `src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx`
 
-- [ ] **Step 1: Bump the face size.** In `src/desktop-tauri/src/components/KioskHUD.jsx`, change:
+- [ ] **Step 1: Bump the face size.** In `src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx`, change:
 ```javascript
 const AURA_SIZE = 448
 ```
@@ -390,7 +390,7 @@ to:
 const AURA_SIZE = 576
 ```
 
-- [ ] **Step 2: Build** — `cd src/desktop-tauri && npm run build 2>&1 | grep -iE "built in|error"` → `✓ built`, no errors.
+- [ ] **Step 2: Build** — `cd src/voice-agent/desktop-tauri && npm run build 2>&1 | grep -iE "built in|error"` → `✓ built`, no errors.
 
 - [ ] **Step 3: Full voice-agent regression** — `cd src/voice-agent && .venv/bin/python -m pytest tests/ -q` → all pass (prior total + the new expression/table tests, 0 failures).
 
@@ -405,7 +405,7 @@ systemctl --user restart jarvis-voice-client.service
 
 - [ ] **Step 5: Live visual verify** (same method as the visemes). Serve the dev route + browser; speak an emotive line vs a flat line; sample `/face`; screenshot:
 ```bash
-cd src/desktop-tauri && nohup npx vite preview --port 4180 --strictPort >/tmp/jx-vite.log 2>&1 &
+cd src/voice-agent/desktop-tauri && nohup npx vite preview --port 4180 --strictPort >/tmp/jx-vite.log 2>&1 &
 sleep 2
 DISPLAY=:0 nohup google-chrome --app='http://localhost:4180/?route=faceonly' --window-size=560,600 --user-data-dir=/tmp/jx-chrome --no-first-run >/tmp/jx-chrome.log 2>&1 &
 sleep 5
@@ -418,7 +418,7 @@ Expect the positive line's `/face` to carry brow/smile morphs (`target_0/3/4/37/
 
 - [ ] **Step 6: Deploy to the kiosk binary.**
 ```bash
-cd src/desktop-tauri/src-tauri && cargo build --release
+cd src/voice-agent/desktop-tauri/src-tauri && cargo build --release
 ```
 Then SIGKILL the running desktop binary (skips the tray Quit handler that stops voice) and relaunch: find PID via `pgrep -f 'jarvis-deskto[p]'`, `kill -9 <pid>` (+ any stragglers), then `setsid nohup bash src/cli/scripts/start-desktop.sh >/tmp/jx-redeploy.log 2>&1 </dev/null &`. Confirm desktop up, bridge `:8765` → 200, voice services `active`.
 
@@ -426,7 +426,7 @@ Then SIGKILL the running desktop binary (skips the tray Quit handler that stops 
 
 - [ ] **Step 8: Commit**
 ```bash
-git add src/desktop-tauri/src/components/KioskHUD.jsx
+git add src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx
 git commit -m "feat(expression): bump kiosk face size 448->576"
 ```
 

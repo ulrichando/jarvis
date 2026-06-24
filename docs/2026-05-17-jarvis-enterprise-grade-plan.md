@@ -168,7 +168,7 @@ Material risk reductions, big modularization wins, or productivity multipliers. 
 | P1-VOICE-6 | **Property tests for sanitizers + token-pruning + classifier** using hypothesis. Highest payoff on `pycall`, `dsml`, `internal_phrase` — they're load-bearing per CLAUDE.md and currently example-based only. ~5-6 days for 5 highest-value targets | `tests/property/` (new dir) | 5d | G |
 | P1-VOICE-7 | **Memory TTL pruner** — `JARVIS_MEMORY_TTL_DAYS=90`; on consolidator run, drop memories with `last_used_ts < now - TTL` AND `use_count < 5`. With 99 rows growing, garbage compounds | `src/voice-agent/pipeline/memory_consolidator.py` | 4h | G |
 | P1-VOICE-8 | **Expand `denial_detector` patterns** — add "I don't keep track of", "I don't preserve conversation history", "Each session starts fresh". Add unit tests | `src/voice-agent/sanitizers/denial_detector.py` | 2h | G |
-| P1-VOICE-9 | **Memory pane in desktop-tauri** — read-only list grouped by category with delete-this-row button. Calls `forget()` via hub bus. Eliminates the "voice-only memory editing" cliff | `src/desktop-tauri/src/components/MemoryPanel.jsx` (new), Rust IPC | 2d | G |
+| P1-VOICE-9 | **Memory pane in desktop-tauri** — read-only list grouped by category with delete-this-row button. Calls `forget()` via hub bus. Eliminates the "voice-only memory editing" cliff | `src/voice-agent/desktop-tauri/src/components/MemoryPanel.jsx` (new), Rust IPC | 2d | G |
 | P1-VOICE-10 | **EMOTIONAL classifier over-firing fix** — `_EMOTION_LEX["excited"]` triggers on "nice"/"perfect"/"cool" with no length floor; add `len(transcript.split()) >= 3` precondition | `src/voice-agent/pipeline/turn_router.py:28-80` | 2h | G |
 | P1-VOICE-11 | **Refactor `_handler` closure** — extract `_inject_route_prefix`, `_swap_llm_tts`, move hot-reload-prompt-state to its own listener. Closure drops from 485 → ~200 lines; `# noqa: C901` goes away | `src/voice-agent/pipeline/turn_dispatcher.py` | 2d | G |
 | P1-VOICE-12 | **Delete `_pick_supervisor_llm` dead function** — 7-line function whose docstring says it's dead | `src/voice-agent/jarvis_agent.py:3692-3699` | 10m | G |
@@ -178,9 +178,9 @@ Material risk reductions, big modularization wins, or productivity multipliers. 
 | ID | Title | Evidence | Effort | Src |
 |---|---|---|---|---|
 | P1-CODE-1 | **`jarvis_agent.py` extraction** — move ~1,750 lines of `@function_tool` defs to `tools/voice_tools.py`, ~400 lines of TTS text-transform filters to `pipeline/tts_filters.py`, ~170 lines of silent-mode/mute/wake to `pipeline/silent_mode.py`. Net: 5,478 → ~2,800 lines | `src/voice-agent/jarvis_agent.py` | 3-4d | G |
-| P1-CODE-2 | **`main.rs` module split** — 2,090 lines → `tray_icon.rs` / `keys.rs` / `web_probe.rs` / `tray_menu.rs` / `hotspot_poll.rs` + thin `main.rs` (~300 lines) | `src/desktop-tauri/src-tauri/src/main.rs` | 1d | G |
+| P1-CODE-2 | **`main.rs` module split** — 2,090 lines → `tray_icon.rs` / `keys.rs` / `web_probe.rs` / `tray_menu.rs` / `hotspot_poll.rs` + thin `main.rs` (~300 lines) | `src/voice-agent/desktop-tauri/src-tauri/src/main.rs` | 1d | G |
 | P1-CODE-3 | **Orphan `asyncio.create_task` fixes** — 5 sites in `jarvis_agent.py` (lines 3505, 3539, 4010, 5357, 5362) missing the `_bg_tasks.add(t); t.add_done_callback(_bg_tasks.discard)` pattern that 3 of 8 sites already use | listed | 1h | G |
-| P1-CODE-4 | **Tray ✓-markers on Speech & Tool submenus** — mirror the TTS pattern. 17-item submenus need this for usability | `src/desktop-tauri/src-tauri/src/main.rs:741, 829, 1620-1632` | 4h | G |
+| P1-CODE-4 | **Tray ✓-markers on Speech & Tool submenus** — mirror the TTS pattern. 17-item submenus need this for usability | `src/voice-agent/desktop-tauri/src-tauri/src/main.rs:741, 829, 1620-1632` | 4h | G |
 | P1-CODE-5 | **Drop orphan `tray-toggle-screen-share` emit** — Rust fires it, nothing listens | `main.rs:1830` | 10m | G |
 
 #### Security (5)
@@ -235,7 +235,7 @@ Material risk reductions, big modularization wins, or productivity multipliers. 
 | P1-CFG-1 | **`jarvis config show` / `jarvis config edit`** — single CLI entry point that dumps every JARVIS-related file + value + last-modified-by-whom. Today config is 8+ scattered files | new `bin/jarvis-config` | 4h | **NEW** |
 | P1-CFG-2 | **Document config precedence** — `~/.jarvis/keys.env` > repo `.env` > `src/<x>/.env.local`; document in CLAUDE.md + `docs/runbook/config-precedence.md` | docs | 1h | **NEW** |
 | P1-CFG-3 | **Versioned hot-reload for subagent prompts** — `JARVIS_PROMPT_HOT_RELOAD=1` checks mtime on subagent specs before each handoff. Today only supervisor.md + learned_rules.md hot-reload | `src/voice-agent/subagents/agent.py`, registry | 4h | **NEW** |
-| P1-CFG-4 | **README per subtree** — `src/voice-agent/README.md`, `src/hub/README.md`, `src/desktop-tauri/README.md` covering venv location, env vars, test command, gotchas | 3 docs | 2h | **NEW** |
+| P1-CFG-4 | **README per subtree** — `src/voice-agent/README.md`, `src/hub/README.md`, `src/voice-agent/desktop-tauri/README.md` covering venv location, env vars, test command, gotchas | 3 docs | 2h | **NEW** |
 | P1-CFG-5 | **Define RPO/RTO targets in `docs/runbook/disaster-recovery.md`** — memories + rules = RPO 1h / RTO 5min, telemetry = RPO 24h / RTO best-effort, API keys = RPO 7d / RTO "go log into each portal" so dump to password manager | new doc | 1h | **NEW** |
 
 **P1 total: 47 items. Effort: ~38 person-days. Sprint 2-3.**

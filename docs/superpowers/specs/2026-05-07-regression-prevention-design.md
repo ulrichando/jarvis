@@ -168,7 +168,7 @@ Stop-event hook. Bash script. Receives JSON on stdin, decides whether to block, 
    | Path prefix | Suite |
    |---|---|
    | `src/voice-agent/` | `cd src/voice-agent && .venv/bin/python -m pytest tests/ -x --tb=line --no-header` |
-   | `src/desktop-tauri/` | `cd src/desktop-tauri && npm run build` — vite build, ~7s on this repo. desktop-tauri is JSX/JS (no TS, no eslint config); vite build catches syntax errors, broken imports, missing exports. Side effect: rewrites `dist/` (gitignored). If the user is mid-manual-dist-test, they use the escape hatch |
+   | `src/voice-agent/desktop-tauri/` | `cd src/voice-agent/desktop-tauri && npm run build` — vite build, ~7s on this repo. desktop-tauri is JSX/JS (no TS, no eslint config); vite build catches syntax errors, broken imports, missing exports. Side effect: rewrites `dist/` (gitignored). If the user is mid-manual-dist-test, they use the escape hatch |
    | `src/web/` | `cd src/web && npm run test` — vitest. Web has no standalone typecheck script; vitest is the real regression gate that exists |
    | `src/cli/` | **warn-only.** No suite to run (placeholder `test` script). Per CLAUDE.md, CLI is off-limits without asking; if hook sees a CLI edit, emit a non-blocking warning ("CLAUDE.md says CLI is off-limits without asking — was this intentional?") but exit 0 |
    | `src/hub/` | no-op (verified: hub has no test files) |
@@ -178,7 +178,7 @@ Stop-event hook. Bash script. Receives JSON on stdin, decides whether to block, 
 
 6. **Prerequisite check.** For each suite to run, check the prerequisites exist:
    - voice-agent: `src/voice-agent/.venv/bin/python` is executable (verified: present in repo)
-   - desktop-tauri: `src/desktop-tauri/node_modules/` exists (npm install has been run)
+   - desktop-tauri: `src/voice-agent/desktop-tauri/node_modules/` exists (npm install has been run)
    - web: `src/web/node_modules/.bin/vitest` exists
    If a prerequisite is missing, log a one-line warning to stderr and skip that suite. **Never block on a missing prerequisite** — broken hook is worse than no hook.
 7. **Run suites.** Run sequentially. Capture combined stdout+stderr. Track which (if any) fail.
@@ -228,7 +228,7 @@ The hook script needs `chmod +x` after creation.
 - ✅ JSONL transcript shape — `jq` filter returns the right (name, file_path) pairs against an actual transcript.
 - ✅ `src/voice-agent/.venv/bin/python` exists.
 - ✅ `src/web/` has no `typecheck` script — `test` (vitest) is the regression gate that exists. Mapping updated.
-- ✅ `src/desktop-tauri/` is JSX/JS (no TypeScript, no eslint config) — `npm run build` (vite, ~7s) is the realistic regression gate. No package.json changes needed.
+- ✅ `src/voice-agent/desktop-tauri/` is JSX/JS (no TypeScript, no eslint config) — `npm run build` (vite, ~7s) is the realistic regression gate. No package.json changes needed.
 - ✅ `src/cli/` has no real test command — hook downgrades to warn-only on CLI edits.
 - ✅ `src/hub/` has no test files — confirmed no-op.
 - ✅ Sub-agent stops use a separate `SubagentStop` event in Claude Code; registering on `Stop` only avoids the issue.

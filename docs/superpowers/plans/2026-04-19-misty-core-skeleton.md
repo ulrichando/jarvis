@@ -4,7 +4,7 @@
 
 **Goal:** A standalone Bun daemon at `src/os/desktop/` that accepts an HTTP query, calls Groq via a minimal agent loop, executes a `bash` tool call gated by a risk-tier classifier, and returns the result. This is the "skeleton" that Plans 3-7 (Hyprland, voice, HUD, etc.) extend.
 
-**Architecture:** Clean-room implementation. `src/cli/` and `src/desktop-tauri/` are **reference material** — read them to learn patterns, but do not bulk-copy the ~8,000 lines (they carry tight couplings to the cli's broader architecture that aren't wanted here). Instead, implement the minimum viable versions of bridge, provider client, agent loop, bash tool, and risk gate as new code. Target: under 800 lines of new TypeScript total. When Plans 3+ need features currently in cli (streaming, session storage, complex tools), copy them selectively then.
+**Architecture:** Clean-room implementation. `src/cli/` and `src/voice-agent/desktop-tauri/` are **reference material** — read them to learn patterns, but do not bulk-copy the ~8,000 lines (they carry tight couplings to the cli's broader architecture that aren't wanted here). Instead, implement the minimum viable versions of bridge, provider client, agent loop, bash tool, and risk gate as new code. Target: under 800 lines of new TypeScript total. When Plans 3+ need features currently in cli (streaming, session storage, complex tools), copy them selectively then.
 
 **Tech Stack:** Bun 1.x runtime + TypeScript, `@anthropic-ai/sdk` (for Groq via its Anthropic-compatible endpoint), Bun's built-in HTTP server, Bun's `bun:test` for integration tests. No external deps beyond Anthropic SDK.
 
@@ -70,7 +70,7 @@ These existing jarvis files are useful to read (not copy wholesale) while implem
 | `agent/tools/bash.ts` | [src/cli/src/tools/BashTool/BashTool.tsx](src/cli/src/tools/BashTool/BashTool.tsx) — argument schema, output shape |
 | `risk/tiers.ts` | [src/cli/src/tools/BashTool/bashPermissions.ts](src/cli/src/tools/BashTool/bashPermissions.ts) — pattern categories; *not* the classification algorithm itself, which we simplify |
 
-Do not import from any `src/cli/` or `src/desktop-tauri/` path. Read for patterns, then write fresh.
+Do not import from any `src/cli/` or `src/voice-agent/desktop-tauri/` path. Read for patterns, then write fresh.
 
 ---
 

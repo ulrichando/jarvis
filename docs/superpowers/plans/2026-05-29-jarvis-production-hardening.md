@@ -33,7 +33,7 @@
 - [ ] **Step 1: Confirm clean-ish tree & stash the stray edit**
 
 Run: `git -C /home/ulrich/Documents/Projects/jarvis status --short`
-Expected: only `M src/desktop-tauri/src/App.jsx` (the in-flight chat rewire — handled in Task 5.4). Note it; do not discard.
+Expected: only `M src/voice-agent/desktop-tauri/src/App.jsx` (the in-flight chat rewire — handled in Task 5.4). Note it; do not discard.
 
 - [ ] **Step 2: Branch off master**
 
@@ -404,11 +404,11 @@ if os.environ.get("JARVIS_RUN_INTEGRATION", "").strip() != "1":
 ### Task 5.4: Desktop — App.jsx stuck loading spinner
 
 **Files:**
-- Modify: `src/desktop-tauri/src/components/ChatPanelVscode.jsx` (~line 443 setIsLoading)
+- Modify: `src/voice-agent/desktop-tauri/src/components/ChatPanelVscode.jsx` (~line 443 setIsLoading)
 
 - [ ] **Step 1: Read the in-flight diff first**
 
-Run: `git diff -- src/desktop-tauri/src/App.jsx`
+Run: `git diff -- src/voice-agent/desktop-tauri/src/App.jsx`
 Decide: complete it or revert. The bug is in ChatPanelVscode: `isLoading` set true on send, cleared only on SSE `assistant_says`. A dropped SSE leaves it stuck.
 
 - [ ] **Step 2: Add a safety timeout** that clears `isLoading` after N seconds if no response arrives (clear it in the SSE handler too, so the timer is cancelled on success):
@@ -421,13 +421,13 @@ const t = setTimeout(() => setIsLoading(false), 60000);
 
 - [ ] **Step 3: Verify build**
 
-Run: `cd src/desktop-tauri && npm run build 2>&1 | tail -3`
+Run: `cd src/voice-agent/desktop-tauri && npm run build 2>&1 | tail -3`
 Expected: vite build OK (~7s). (Release rebuild `cargo build --release` deferred to a release task.)
 
 - [ ] **Step 4: Commit** (include the App.jsx in-flight edit if completing it)
 
 ```bash
-git add src/desktop-tauri/src
+git add src/voice-agent/desktop-tauri/src
 git commit -m "fix(desktop): clear chat loading spinner on timeout (stuck 'thinking' on dropped SSE)"
 ```
 
@@ -465,9 +465,9 @@ Expected: `pkg_resources OK`, suite green. If anything breaks, revert the pin an
 
 ### Task 6.4: Tauri 2.10.3 → 2.11.2
 
-**Files:** `src/desktop-tauri/src-tauri/Cargo.lock`
+**Files:** `src/voice-agent/desktop-tauri/src-tauri/Cargo.lock`
 
-- [ ] **Step 1:** `cd src/desktop-tauri/src-tauri && cargo update -p tauri --precise 2.11.2` (pulls wry 0.55 transitively).
+- [ ] **Step 1:** `cd src/voice-agent/desktop-tauri/src-tauri && cargo update -p tauri --precise 2.11.2` (pulls wry 0.55 transitively).
 - [ ] **Step 2:** `cargo check` then a release rebuild + smoke per the desktop release rule: `cd .. && npm run build && cargo build --release`. Launch + verify the WebKitGTK ghost-frame fix and the tray indicator still behave.
 - [ ] **Step 3:** Commit `Cargo.lock`.
 
@@ -621,7 +621,7 @@ cd /home/ulrich/Documents/Projects/jarvis
 git filter-repo --force \
   --path 'docs/API keys' --invert-paths \
   --path-glob 'src/android/app/.cxx/*' --invert-paths \
-  --path-glob 'src/desktop-tauri/public/*.wasm' --invert-paths \
+  --path-glob 'src/voice-agent/desktop-tauri/public/*.wasm' --invert-paths \
   --path src/voice-agent/livekit-server.bin --invert-paths
 ```
 (Plus `--replace-text` for the two literal keys embedded in `docs/runbook/*.md`, using a replacements file → `REDACTED`.)

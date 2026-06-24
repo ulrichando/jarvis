@@ -13,8 +13,8 @@
 
 **Scope:**
 ```
-SCOPE: src/desktop-tauri/src-tauri/src/main.rs   (asset_root resolution in the setup hook)
-       src/desktop-tauri/src-tauri/tauri.conf.json (bundle.active+targets+resources)
+SCOPE: src/voice-agent/desktop-tauri/src-tauri/src/main.rs   (asset_root resolution in the setup hook)
+       src/voice-agent/desktop-tauri/src-tauri/tauri.conf.json (bundle.active+targets+resources)
        bin/_internal/stage-bundle-assets.sh        (NEW staging script)
 OUT:   supervisor.rs core logic (unchanged — it already takes a root path),
        src/voice-agent/** source (unchanged), src/cli/**, the folder-fusion (task #5)
@@ -25,7 +25,7 @@ WHY OUT: Phase 2 is packaging; the brain + supervisor logic don't change.
 
 ### Task 1: `asset_root` resolution (resource-dir-aware), default still OFF
 
-**Files:** Modify `src/desktop-tauri/src-tauri/src/main.rs` (the Phase 0/1 setup hook).
+**Files:** Modify `src/voice-agent/desktop-tauri/src-tauri/src/main.rs` (the Phase 0/1 setup hook).
 
 - [ ] **Step 1:** In the setup hook, replace the hard `repo_root()` manifest resolution with resource-dir-aware logic. Add `use tauri::path::BaseDirectory;` (or fully-qualify). New block:
 
@@ -34,7 +34,7 @@ WHY OUT: Phase 2 is packaging; the brain + supervisor logic don't change.
     // Bundled install: assets are staged under the Tauri resource dir, mirroring
     // the repo's `src/...` layout, so the SAME run-manifest resolves in both
     // contexts. Dev: the repo tree. Prefer whichever actually has the manifest.
-    const MANIFEST_REL: &str = "src/desktop-tauri/src-tauri/resources/run-manifest.json";
+    const MANIFEST_REL: &str = "src/voice-agent/desktop-tauri/src-tauri/resources/run-manifest.json";
     let (root, manifest) = match app
         .path()
         .resolve(MANIFEST_REL, tauri::path::BaseDirectory::Resource)
@@ -59,9 +59,9 @@ WHY OUT: Phase 2 is packaging; the brain + supervisor logic don't change.
 }
 ```
 
-- [ ] **Step 2:** `cd src/desktop-tauri/src-tauri && cargo build` — expect clean compile (the dev path: `resolve(...Resource)` returns a non-existent path → falls back to `repo_root()`, identical to today).
+- [ ] **Step 2:** `cd src/voice-agent/desktop-tauri/src-tauri && cargo build` — expect clean compile (the dev path: `resolve(...Resource)` returns a non-existent path → falls back to `repo_root()`, identical to today).
 - [ ] **Step 3:** `cargo test` — all existing tests still green (supervisor unit tests unaffected; this is caller-only).
-- [ ] **Step 4:** Commit: `git add src/desktop-tauri/src-tauri/src/main.rs && git commit -m "feat(desktop): resource-dir-aware asset_root for bundled installs"`
+- [ ] **Step 4:** Commit: `git add src/voice-agent/desktop-tauri/src-tauri/src/main.rs && git commit -m "feat(desktop): resource-dir-aware asset_root for bundled installs"`
 
 ---
 
@@ -69,7 +69,7 @@ WHY OUT: Phase 2 is packaging; the brain + supervisor logic don't change.
 
 **Files:** Create `bin/_internal/stage-bundle-assets.sh`.
 
-- [ ] **Step 1:** Write the script. It stages, into `src/desktop-tauri/src-tauri/bundle-assets/` (gitignored), a tree mirroring the repo so the manifest's `./src/voice-agent/...` paths resolve:
+- [ ] **Step 1:** Write the script. It stages, into `src/voice-agent/desktop-tauri/src-tauri/bundle-assets/` (gitignored), a tree mirroring the repo so the manifest's `./src/voice-agent/...` paths resolve:
 
 ```bash
 #!/usr/bin/env bash
@@ -79,16 +79,16 @@ WHY OUT: Phase 2 is packaging; the brain + supervisor logic don't change.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-STAGE="$ROOT/src/desktop-tauri/src-tauri/bundle-assets"
+STAGE="$ROOT/src/voice-agent/desktop-tauri/src-tauri/bundle-assets"
 VA="$ROOT/src/voice-agent"
 rm -rf "$STAGE"
-mkdir -p "$STAGE/src/voice-agent" "$STAGE/src/desktop-tauri/src-tauri/resources"
+mkdir -p "$STAGE/src/voice-agent" "$STAGE/src/voice-agent/desktop-tauri/src-tauri/resources"
 # venv (symlinks preserved), SFU binary + config, run-manifest.
 cp -a "$VA/.venv"                "$STAGE/src/voice-agent/.venv"
 cp -a "$VA/livekit-server.bin"   "$STAGE/src/voice-agent/livekit-server.bin"
 cp -a "$VA/livekit.yaml"         "$STAGE/src/voice-agent/livekit.yaml"
-cp "$ROOT/src/desktop-tauri/src-tauri/resources/run-manifest.json" \
-   "$STAGE/src/desktop-tauri/src-tauri/resources/run-manifest.json"
+cp "$ROOT/src/voice-agent/desktop-tauri/src-tauri/resources/run-manifest.json" \
+   "$STAGE/src/voice-agent/desktop-tauri/src-tauri/resources/run-manifest.json"
 # voice-agent python source (exclude the venv [copied above], caches, tests).
 rsync -a --exclude '.venv' --exclude '__pycache__' --exclude 'tests' \
       --exclude '*.pyc' --include '*/' --include '*.py' --include '*.md' \
@@ -97,7 +97,7 @@ rsync -a --exclude '.venv' --exclude '__pycache__' --exclude 'tests' \
 echo "[stage] bundle-assets ready: $(du -sh "$STAGE" | cut -f1)"
 ```
 
-- [ ] **Step 2:** Add `src/desktop-tauri/src-tauri/bundle-assets/` to `.gitignore` (it's a build artifact, ~3.7 GB — never commit). Verify it's ignored: `git check-ignore src/desktop-tauri/src-tauri/bundle-assets/`.
+- [ ] **Step 2:** Add `src/voice-agent/desktop-tauri/src-tauri/bundle-assets/` to `.gitignore` (it's a build artifact, ~3.7 GB — never commit). Verify it's ignored: `git check-ignore src/voice-agent/desktop-tauri/src-tauri/bundle-assets/`.
 - [ ] **Step 3:** Run it: `bash bin/_internal/stage-bundle-assets.sh` — expect "bundle-assets ready: ~3.7G", and confirm `bundle-assets/src/voice-agent/.venv/bin/python` is still a symlink to `/usr/bin/python3.13`.
 - [ ] **Step 4:** Commit the script + gitignore: `git add bin/_internal/stage-bundle-assets.sh .gitignore && git commit -m "feat(desktop): bundle-asset staging script for the voice stack"`
 
@@ -105,7 +105,7 @@ echo "[stage] bundle-assets ready: $(du -sh "$STAGE" | cut -f1)"
 
 ### Task 3: enable bundling + point resources at the staged tree
 
-**Files:** Modify `src/desktop-tauri/src-tauri/tauri.conf.json`.
+**Files:** Modify `src/voice-agent/desktop-tauri/src-tauri/tauri.conf.json`.
 
 - [ ] **Step 1:** Flip `bundle.active` to `true`, keep `targets`, and add `resources` (map form) staging the mirrored tree into the bundle root:
 
@@ -120,7 +120,7 @@ echo "[stage] bundle-assets ready: $(du -sh "$STAGE" | cut -f1)"
   }
 ```
 
-(The `"bundle-assets/": ""` map copies the staged tree to the resource-dir root, so `<resource>/src/voice-agent/...` + `<resource>/src/desktop-tauri/src-tauri/resources/run-manifest.json` exist — matching `asset_root` + the manifest's repo-relative paths.)
+(The `"bundle-assets/": ""` map copies the staged tree to the resource-dir root, so `<resource>/src/voice-agent/...` + `<resource>/src/voice-agent/desktop-tauri/src-tauri/resources/run-manifest.json` exist — matching `asset_root` + the manifest's repo-relative paths.)
 
 - [ ] **Step 2:** Add a `beforeBundleCommand` so staging always runs before a bundle:
 
@@ -132,13 +132,13 @@ echo "[stage] bundle-assets ready: $(du -sh "$STAGE" | cut -f1)"
   }
 ```
 
-- [ ] **Step 3:** `cargo build` (no bundle) still compiles. Commit: `git add src/desktop-tauri/src-tauri/tauri.conf.json && git commit -m "feat(desktop): enable bundling with the staged voice stack as resources"`
+- [ ] **Step 3:** `cargo build` (no bundle) still compiles. Commit: `git add src/voice-agent/desktop-tauri/src-tauri/tauri.conf.json && git commit -m "feat(desktop): enable bundling with the staged voice stack as resources"`
 
 ---
 
 ### Task 4: build the installer + verify (the long pole)
 
-- [ ] **Step 1:** `cd src/desktop-tauri && npm run build && npx tauri build` — **HEAVY**: LTO release + copying ~3.7 GB of resources → a ~4 GB `.deb`/AppImage. Expect 15-40 min. Run in background; watch for "Finished" + the artifact path under `src-tauri/target/release/bundle/`.
+- [ ] **Step 1:** `cd src/voice-agent/desktop-tauri && npm run build && npx tauri build` — **HEAVY**: LTO release + copying ~3.7 GB of resources → a ~4 GB `.deb`/AppImage. Expect 15-40 min. Run in background; watch for "Finished" + the artifact path under `src-tauri/target/release/bundle/`.
 - [ ] **Step 2:** Install/extract the artifact to a scratch location and verify the layout: `<install>/.../resources/src/voice-agent/.venv/bin/python` exists, the manifest is at the mirrored path.
 - [ ] **Step 3:** Live-prove (USER-run, like Phase 0/1, since it spawns the stack): launch the *installed* binary with `JARVIS_DESKTOP_OWNS_AGENT=1`, confirm `asset_root` resolves to the resource dir and the supervisor spawns the bundled SFU + brain (check `<resource>/.../.venv/bin/python` is the running brain's exe). Stop it; systemd unaffected.
 - [ ] **Step 4 (flip default — separate decision):** Decide how the *installed* app enables ownership by default while the dev binary stays OFF. Lean: when `asset_root == resource_dir` (i.e., bundled), default the flag ON; dev stays OFF. Implement as a follow-up once Step 3 proves the spawn.

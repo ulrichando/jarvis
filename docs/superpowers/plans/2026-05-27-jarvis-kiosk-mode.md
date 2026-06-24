@@ -14,19 +14,19 @@
 
 **New:**
 
-- `src/desktop-tauri/src-tauri/src/kiosk.rs` — Rust module: `KioskSnapshot`, `WmctrlAdapter` trait, `RealWmctrl` + `MockWmctrl`, `enter_kiosk_impl` / `exit_kiosk_impl` pure functions, `enter_kiosk` / `exit_kiosk` / `kiosk_state` Tauri commands.
-- `src/desktop-tauri/src/components/KioskClock.jsx` — clock component (HH:MM 24h, 1 s interval).
-- `src/desktop-tauri/src/components/KioskVoiceWaveform.jsx` — CSS-keyframe 8-bar waveform, idle/active states.
-- `src/desktop-tauri/src/components/KioskTranscript.jsx` — recent chat lines, scroll-pinned bottom.
-- `src/desktop-tauri/src/components/KioskHUD.jsx` — composition + Escape handler + text input strip.
+- `src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs` — Rust module: `KioskSnapshot`, `WmctrlAdapter` trait, `RealWmctrl` + `MockWmctrl`, `enter_kiosk_impl` / `exit_kiosk_impl` pure functions, `enter_kiosk` / `exit_kiosk` / `kiosk_state` Tauri commands.
+- `src/voice-agent/desktop-tauri/src/components/KioskClock.jsx` — clock component (HH:MM 24h, 1 s interval).
+- `src/voice-agent/desktop-tauri/src/components/KioskVoiceWaveform.jsx` — CSS-keyframe 8-bar waveform, idle/active states.
+- `src/voice-agent/desktop-tauri/src/components/KioskTranscript.jsx` — recent chat lines, scroll-pinned bottom.
+- `src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx` — composition + Escape handler + text input strip.
 - `src/voice-agent/tools/kiosk_tool.py` — self-registering `toggle_kiosk` tool.
 - `src/voice-agent/tests/test_kiosk_tool.py` — unit tests for the tool.
 - `bin/jarvis-kiosk` — curl wrapper around `POST /api/kiosk`.
 
 **Modified:**
 
-- `src/desktop-tauri/src-tauri/src/main.rs` — `mod kiosk`, register 3 commands in `invoke_handler!`, add "Focus mode" `CheckMenuItem` to tray, wire its event + sync from `kiosk-changed`.
-- `src/desktop-tauri/src/App.jsx` — `kioskMode` state, `listen('kiosk-changed', …)`, WS handler for `{type:'kiosk', state}`, conditional render swap.
+- `src/voice-agent/desktop-tauri/src-tauri/src/main.rs` — `mod kiosk`, register 3 commands in `invoke_handler!`, add "Focus mode" `CheckMenuItem` to tray, wire its event + sync from `kiosk-changed`.
+- `src/voice-agent/desktop-tauri/src/App.jsx` — `kioskMode` state, `listen('kiosk-changed', …)`, WS handler for `{type:'kiosk', state}`, conditional render swap.
 - `src/cli/src/bridge/server.ts` — one new route `POST /api/kiosk` modelled on `/api/mute`.
 - `src/voice-agent/prompts/supervisor.md` — one paragraph in the routing section.
 
@@ -35,7 +35,7 @@
 ## Task 1: Rust — kiosk module skeleton + WmctrlAdapter trait
 
 **Files:**
-- Create: `src/desktop-tauri/src-tauri/src/kiosk.rs`
+- Create: `src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs`
 - Test: same file (inline `#[cfg(test)]` module)
 
 - [ ] **Step 1.1: Write the failing tests at the bottom of the new module**
@@ -158,10 +158,10 @@ mod tests {
 
 - [ ] **Step 1.2: Add `once_cell` to Cargo.toml if not already present**
 
-Run: `grep -E "^once_cell\b" src/desktop-tauri/src-tauri/Cargo.toml`. If empty:
+Run: `grep -E "^once_cell\b" src/voice-agent/desktop-tauri/src-tauri/Cargo.toml`. If empty:
 
 ```bash
-cd src/desktop-tauri/src-tauri
+cd src/voice-agent/desktop-tauri/src-tauri
 cargo add once_cell
 ```
 
@@ -170,7 +170,7 @@ Expected: `once_cell = "1.x"` appears under `[dependencies]`.
 - [ ] **Step 1.3: Run the new test**
 
 ```bash
-cd src/desktop-tauri/src-tauri
+cd src/voice-agent/desktop-tauri/src-tauri
 cargo test --lib kiosk
 ```
 
@@ -179,7 +179,7 @@ Expected: 1 passed (`mock_records_minimize_calls`). If compilation fails because
 - [ ] **Step 1.4: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/Cargo.toml src/desktop-tauri/src-tauri/src/kiosk.rs src/desktop-tauri/src-tauri/src/main.rs
+git add src/voice-agent/desktop-tauri/src-tauri/Cargo.toml src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs src/voice-agent/desktop-tauri/src-tauri/src/main.rs
 git commit -m "kiosk(rust): scaffold module + WmctrlAdapter trait"
 ```
 
@@ -188,7 +188,7 @@ git commit -m "kiosk(rust): scaffold module + WmctrlAdapter trait"
 ## Task 2: Rust — pure `enter_kiosk_impl` with idempotency
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/kiosk.rs`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs`
 
 - [ ] **Step 2.1: Add `enter_kiosk_impl` failing tests**
 
@@ -241,7 +241,7 @@ In the `#[cfg(test)] mod tests` block at the bottom of `kiosk.rs`, append:
 - [ ] **Step 2.2: Run tests to verify they fail**
 
 ```bash
-cd src/desktop-tauri/src-tauri
+cd src/voice-agent/desktop-tauri/src-tauri
 cargo test --lib kiosk 2>&1 | head -40
 ```
 
@@ -299,7 +299,7 @@ fn is_jarvis_window(w: &WindowInfo) -> bool {
 - [ ] **Step 2.4: Run tests — all three should pass**
 
 ```bash
-cd src/desktop-tauri/src-tauri
+cd src/voice-agent/desktop-tauri/src-tauri
 cargo test --lib kiosk
 ```
 
@@ -308,7 +308,7 @@ Expected: 3 passed.
 - [ ] **Step 2.5: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/kiosk.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs
 git commit -m "kiosk(rust): enter_kiosk_impl + idempotency"
 ```
 
@@ -317,7 +317,7 @@ git commit -m "kiosk(rust): enter_kiosk_impl + idempotency"
 ## Task 3: Rust — `exit_kiosk_impl` with restore
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/kiosk.rs`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs`
 
 - [ ] **Step 3.1: Add `exit_kiosk_impl` failing tests**
 
@@ -353,7 +353,7 @@ Append to the test module:
 - [ ] **Step 3.2: Run tests — they fail because `exit_kiosk_impl` undefined**
 
 ```bash
-cd src/desktop-tauri/src-tauri
+cd src/voice-agent/desktop-tauri/src-tauri
 cargo test --lib kiosk 2>&1 | head -20
 ```
 
@@ -388,7 +388,7 @@ pub fn exit_kiosk_impl<A: WmctrlAdapter>(
 - [ ] **Step 3.4: Run tests — all five pass**
 
 ```bash
-cd src/desktop-tauri/src-tauri
+cd src/voice-agent/desktop-tauri/src-tauri
 cargo test --lib kiosk
 ```
 
@@ -397,7 +397,7 @@ Expected: 5 passed.
 - [ ] **Step 3.5: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/kiosk.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs
 git commit -m "kiosk(rust): exit_kiosk_impl + restore"
 ```
 
@@ -406,7 +406,7 @@ git commit -m "kiosk(rust): exit_kiosk_impl + restore"
 ## Task 4: Rust — `RealWmctrl` shell-out implementation + graceful missing test
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/kiosk.rs`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs`
 
 - [ ] **Step 4.1: Add a graceful-missing test**
 
@@ -431,7 +431,7 @@ Append to the test module:
 - [ ] **Step 4.2: Run tests to confirm it passes** (the impl from Task 2 already handles NotFound):
 
 ```bash
-cd src/desktop-tauri/src-tauri
+cd src/voice-agent/desktop-tauri/src-tauri
 cargo test --lib kiosk
 ```
 
@@ -506,7 +506,7 @@ impl WmctrlAdapter for RealWmctrl {
 - [ ] **Step 4.4: Confirm crate still builds**
 
 ```bash
-cd src/desktop-tauri/src-tauri
+cd src/voice-agent/desktop-tauri/src-tauri
 cargo build 2>&1 | tail -20
 ```
 
@@ -523,7 +523,7 @@ Expected: 6 passed.
 - [ ] **Step 4.6: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/kiosk.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs
 git commit -m "kiosk(rust): RealWmctrl shell-out + graceful when missing"
 ```
 
@@ -532,7 +532,7 @@ git commit -m "kiosk(rust): RealWmctrl shell-out + graceful when missing"
 ## Task 5: Rust — Tauri command wrappers + `kiosk_state` getter
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/kiosk.rs`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs`
 
 - [ ] **Step 5.1: Append the Tauri command wrappers at the bottom of `kiosk.rs`** (before the `#[cfg(test)]` block):
 
@@ -598,7 +598,7 @@ pub fn kiosk_state() -> Result<bool, String> {
 - [ ] **Step 5.2: Confirm build**
 
 ```bash
-cd src/desktop-tauri/src-tauri
+cd src/voice-agent/desktop-tauri/src-tauri
 cargo build 2>&1 | tail -10
 ```
 
@@ -615,7 +615,7 @@ Expected: 6 passed.
 - [ ] **Step 5.4: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/kiosk.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/kiosk.rs
 git commit -m "kiosk(rust): Tauri command wrappers (enter/exit/toggle/state)"
 ```
 
@@ -624,7 +624,7 @@ git commit -m "kiosk(rust): Tauri command wrappers (enter/exit/toggle/state)"
 ## Task 6: Rust — wire kiosk into `main.rs` (invoke_handler + tray menu)
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/main.rs`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/main.rs`
 
 - [ ] **Step 6.1: Confirm `pub mod kiosk;` is at the top of main.rs**
 
@@ -653,7 +653,7 @@ The `Wry` type used in the new `FocusModeItem` state struct is already imported 
 - [ ] **Step 6.2: Locate the `invoke_handler` macro call in main.rs**
 
 ```bash
-grep -n "invoke_handler\\!\\|generate_handler\\!" src/desktop-tauri/src-tauri/src/main.rs
+grep -n "invoke_handler\\!\\|generate_handler\\!" src/voice-agent/desktop-tauri/src-tauri/src/main.rs
 ```
 
 You should find a `tauri::generate_handler![...]` call. Add the four kiosk commands to its argument list:
@@ -751,7 +751,7 @@ After the tray is built, register a window listener:
 - [ ] **Step 6.6: Build and verify**
 
 ```bash
-cd src/desktop-tauri
+cd src/voice-agent/desktop-tauri
 npm run build               # vite ~7s; catches syntax errors first
 cd src-tauri
 cargo build 2>&1 | tail -20
@@ -762,7 +762,7 @@ Expected: builds cleanly. Warnings OK.
 - [ ] **Step 6.7: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/main.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/main.rs
 git commit -m "kiosk(desktop): register commands + Focus mode tray item"
 ```
 
@@ -771,7 +771,7 @@ git commit -m "kiosk(desktop): register commands + Focus mode tray item"
 ## Task 7: React — `KioskClock` component
 
 **Files:**
-- Create: `src/desktop-tauri/src/components/KioskClock.jsx`
+- Create: `src/voice-agent/desktop-tauri/src/components/KioskClock.jsx`
 
 - [ ] **Step 7.1: Create the file**
 
@@ -795,7 +795,7 @@ export default function KioskClock() {
 - [ ] **Step 7.2: Confirm the build picks it up**
 
 ```bash
-cd src/desktop-tauri
+cd src/voice-agent/desktop-tauri
 npm run build 2>&1 | tail -10
 ```
 
@@ -804,7 +804,7 @@ Expected: build succeeds (the component isn't yet used; that comes in Task 10).
 - [ ] **Step 7.3: Commit**
 
 ```bash
-git add src/desktop-tauri/src/components/KioskClock.jsx
+git add src/voice-agent/desktop-tauri/src/components/KioskClock.jsx
 git commit -m "kiosk(desktop): KioskClock component"
 ```
 
@@ -813,7 +813,7 @@ git commit -m "kiosk(desktop): KioskClock component"
 ## Task 8: React — `KioskVoiceWaveform` component (CSS-keyframe bars)
 
 **Files:**
-- Create: `src/desktop-tauri/src/components/KioskVoiceWaveform.jsx`
+- Create: `src/voice-agent/desktop-tauri/src/components/KioskVoiceWaveform.jsx`
 
 - [ ] **Step 8.1: Create the file**
 
@@ -872,7 +872,7 @@ export default function KioskVoiceWaveform({ active }) {
 - [ ] **Step 8.2: Confirm build**
 
 ```bash
-cd src/desktop-tauri
+cd src/voice-agent/desktop-tauri
 npm run build 2>&1 | tail -10
 ```
 
@@ -881,7 +881,7 @@ Expected: build succeeds.
 - [ ] **Step 8.3: Commit**
 
 ```bash
-git add src/desktop-tauri/src/components/KioskVoiceWaveform.jsx
+git add src/voice-agent/desktop-tauri/src/components/KioskVoiceWaveform.jsx
 git commit -m "kiosk(desktop): KioskVoiceWaveform (CSS-keyframe, no per-frame React)"
 ```
 
@@ -890,7 +890,7 @@ git commit -m "kiosk(desktop): KioskVoiceWaveform (CSS-keyframe, no per-frame Re
 ## Task 9: React — `KioskTranscript` component
 
 **Files:**
-- Create: `src/desktop-tauri/src/components/KioskTranscript.jsx`
+- Create: `src/voice-agent/desktop-tauri/src/components/KioskTranscript.jsx`
 
 - [ ] **Step 9.1: Create the file**
 
@@ -951,7 +951,7 @@ export default function KioskTranscript({ wsMessages }) {
 - [ ] **Step 9.2: Build**
 
 ```bash
-cd src/desktop-tauri
+cd src/voice-agent/desktop-tauri
 npm run build 2>&1 | tail -10
 ```
 
@@ -960,7 +960,7 @@ Expected: succeeds.
 - [ ] **Step 9.3: Commit**
 
 ```bash
-git add src/desktop-tauri/src/components/KioskTranscript.jsx
+git add src/voice-agent/desktop-tauri/src/components/KioskTranscript.jsx
 git commit -m "kiosk(desktop): KioskTranscript component"
 ```
 
@@ -969,7 +969,7 @@ git commit -m "kiosk(desktop): KioskTranscript component"
 ## Task 10: React — `KioskHUD` composition + Escape handler + text input
 
 **Files:**
-- Create: `src/desktop-tauri/src/components/KioskHUD.jsx`
+- Create: `src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx`
 
 - [ ] **Step 10.1: Create the file**
 
@@ -1138,7 +1138,7 @@ export default function KioskHUD({ wsMessages, speech, voiceMuted, wsSendMessage
 - [ ] **Step 10.2: Build**
 
 ```bash
-cd src/desktop-tauri
+cd src/voice-agent/desktop-tauri
 npm run build 2>&1 | tail -10
 ```
 
@@ -1147,7 +1147,7 @@ Expected: succeeds.
 - [ ] **Step 10.3: Commit**
 
 ```bash
-git add src/desktop-tauri/src/components/KioskHUD.jsx
+git add src/voice-agent/desktop-tauri/src/components/KioskHUD.jsx
 git commit -m "kiosk(desktop): KioskHUD composition + Escape handler"
 ```
 
@@ -1156,7 +1156,7 @@ git commit -m "kiosk(desktop): KioskHUD composition + Escape handler"
 ## Task 11: React — wire `App.jsx` (state + listener + WS + render swap)
 
 **Files:**
-- Modify: `src/desktop-tauri/src/App.jsx`
+- Modify: `src/voice-agent/desktop-tauri/src/App.jsx`
 
 - [ ] **Step 11.1: Import KioskHUD**
 
@@ -1224,7 +1224,7 @@ The existing return follows unchanged.
 - [ ] **Step 11.6: Build + dev-smoke**
 
 ```bash
-cd src/desktop-tauri
+cd src/voice-agent/desktop-tauri
 npm run build 2>&1 | tail -10
 ```
 
@@ -1233,7 +1233,7 @@ Expected: succeeds.
 - [ ] **Step 11.7: Commit**
 
 ```bash
-git add src/desktop-tauri/src/App.jsx
+git add src/voice-agent/desktop-tauri/src/App.jsx
 git commit -m "kiosk(desktop): App.jsx wires kiosk state + listener + WS handler"
 ```
 
@@ -1585,7 +1585,7 @@ git commit -m "kiosk(cli): bin/jarvis-kiosk curl wrapper"
 - [ ] **Step 16.1: Rust kiosk tests**
 
 ```bash
-cd src/desktop-tauri/src-tauri
+cd src/voice-agent/desktop-tauri/src-tauri
 cargo test --lib kiosk
 ```
 
@@ -1603,7 +1603,7 @@ Expected: full suite passes (~804 tests).
 - [ ] **Step 16.3: Tauri vite build**
 
 ```bash
-cd src/desktop-tauri
+cd src/voice-agent/desktop-tauri
 npm run build 2>&1 | tail -10
 ```
 
@@ -1612,7 +1612,7 @@ Expected: vite finishes without errors.
 - [ ] **Step 16.4: Tauri Rust release build** (per `.claude/rules/desktop-tauri.md`)
 
 ```bash
-cd src/desktop-tauri/src-tauri
+cd src/voice-agent/desktop-tauri/src-tauri
 cargo build --release 2>&1 | tail -15
 ```
 
@@ -1637,7 +1637,7 @@ Per the spec's testing section. Do NOT commit anything from this task; it's veri
 - [ ] **Step 17.1: Start the desktop in dev mode**
 
 ```bash
-cd src/desktop-tauri
+cd src/voice-agent/desktop-tauri
 npm run tauri dev
 ```
 

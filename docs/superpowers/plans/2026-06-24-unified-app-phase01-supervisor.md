@@ -10,23 +10,23 @@
 
 **Scope (per `.claude/rules/regression-prevention.md`):**
 ```
-SCOPE:  src/desktop-tauri/src-tauri/src/supervisor.rs        (NEW)
-        src/desktop-tauri/src-tauri/src/main.rs              (mod decl + one setup hook + shutdown)
-        src/desktop-tauri/src-tauri/resources/run-manifest.json (NEW)
+SCOPE:  src/voice-agent/desktop-tauri/src-tauri/src/supervisor.rs        (NEW)
+        src/voice-agent/desktop-tauri/src-tauri/src/main.rs              (mod decl + one setup hook + shutdown)
+        src/voice-agent/desktop-tauri/src-tauri/resources/run-manifest.json (NEW)
 OUT:    src/voice-agent/** (brain UNCHANGED), src/cli/** (off-limits),
         the frozen tray indicator in main.rs (tray_image_for / ring / poll / states / icon),
         setup/systemd/** (kept as-is; still the default)
 WHY OUT: the safety premise is the brain's behaviour doesn't change; the tray is locked (desktop-tauri.md).
 ```
 
-**Verification baseline:** `cd src/desktop-tauri/src-tauri && cargo test` is the per-task gate. Release re-embed (`npm run build && cargo build --release`) is only needed for the Phase-0 live run in Task 8, not per-task.
+**Verification baseline:** `cd src/voice-agent/desktop-tauri/src-tauri && cargo test` is the per-task gate. Release re-embed (`npm run build && cargo build --release`) is only needed for the Phase-0 live run in Task 8, not per-task.
 
 ---
 
 ### Task 1: Run-manifest types + ordering
 
 **Files:**
-- Create: `src/desktop-tauri/src-tauri/src/supervisor.rs`
+- Create: `src/voice-agent/desktop-tauri/src-tauri/src/supervisor.rs`
 
 - [ ] **Step 1: Write the module with the manifest types + a failing test**
 
@@ -93,7 +93,7 @@ mod tests {
 
 - [ ] **Step 2: Make the module compile by declaring it in main.rs**
 
-Add this line near the other `mod` declarations at the top of `src/desktop-tauri/src-tauri/src/main.rs` (read the file to place it next to existing `mod` lines, e.g. above `fn main`):
+Add this line near the other `mod` declarations at the top of `src/voice-agent/desktop-tauri/src-tauri/src/main.rs` (read the file to place it next to existing `mod` lines, e.g. above `fn main`):
 
 ```rust
 mod supervisor;
@@ -101,13 +101,13 @@ mod supervisor;
 
 - [ ] **Step 3: Run the test — expect PASS (types compile, parse works)**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo test supervisor::tests::manifest_parses_and_orders`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo test supervisor::tests::manifest_parses_and_orders`
 Expected: `test result: ok. 1 passed`
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/supervisor.rs src/desktop-tauri/src-tauri/src/main.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/supervisor.rs src/voice-agent/desktop-tauri/src-tauri/src/main.rs
 git commit -m "feat(desktop): run-manifest types for the process supervisor"
 ```
 
@@ -116,7 +116,7 @@ git commit -m "feat(desktop): run-manifest types for the process supervisor"
 ### Task 2: Env-file loader
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/supervisor.rs`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/supervisor.rs`
 
 - [ ] **Step 1: Write the failing test (append inside `mod tests`)**
 
@@ -139,7 +139,7 @@ git commit -m "feat(desktop): run-manifest types for the process supervisor"
 
 - [ ] **Step 2: Run it to confirm it fails**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo test supervisor::tests::load_env_files`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo test supervisor::tests::load_env_files`
 Expected: FAIL — `cannot find function load_env_files`
 
 - [ ] **Step 3: Implement `load_env_files` (add to supervisor.rs, above `mod tests`)**
@@ -171,13 +171,13 @@ pub fn load_env_files(paths: &[std::path::PathBuf]) -> Vec<(String, String)> {
 
 - [ ] **Step 4: Run the test — expect PASS**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo test supervisor::tests::load_env_files`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo test supervisor::tests::load_env_files`
 Expected: `ok. 1 passed`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/supervisor.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/supervisor.rs
 git commit -m "feat(desktop): env-file loader for supervised processes"
 ```
 
@@ -186,7 +186,7 @@ git commit -m "feat(desktop): env-file loader for supervised processes"
 ### Task 3: TCP health-check (`wait_for_port`)
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/supervisor.rs`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/supervisor.rs`
 
 - [ ] **Step 1: Write the failing test (append inside `mod tests`)**
 
@@ -206,7 +206,7 @@ git commit -m "feat(desktop): env-file loader for supervised processes"
 
 - [ ] **Step 2: Run it to confirm it fails**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo test supervisor::tests::wait_for_port`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo test supervisor::tests::wait_for_port`
 Expected: FAIL — `cannot find function wait_for_port`
 
 - [ ] **Step 3: Implement `wait_for_port`**
@@ -238,13 +238,13 @@ pub fn wait_for_port(addr: &str, timeout: Duration) -> bool {
 
 - [ ] **Step 4: Run the test — expect PASS**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo test supervisor::tests::wait_for_port`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo test supervisor::tests::wait_for_port`
 Expected: `ok. 1 passed`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/supervisor.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/supervisor.rs
 git commit -m "feat(desktop): TCP health-gate for supervised process start order"
 ```
 
@@ -253,7 +253,7 @@ git commit -m "feat(desktop): TCP health-gate for supervised process start order
 ### Task 4: Bounded restart policy (pure)
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/supervisor.rs`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/supervisor.rs`
 
 - [ ] **Step 1: Write the failing test (append inside `mod tests`)**
 
@@ -279,7 +279,7 @@ git commit -m "feat(desktop): TCP health-gate for supervised process start order
 
 - [ ] **Step 2: Run it to confirm it fails**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo test supervisor::tests::restart_allowed`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo test supervisor::tests::restart_allowed`
 Expected: FAIL — `cannot find type RestartPolicy`
 
 - [ ] **Step 3: Implement the policy**
@@ -314,13 +314,13 @@ pub fn restart_allowed(history: &[Instant], now: Instant, policy: &RestartPolicy
 
 - [ ] **Step 4: Run the test — expect PASS**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo test supervisor::tests::restart_allowed`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo test supervisor::tests::restart_allowed`
 Expected: `ok. 1 passed`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/supervisor.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/supervisor.rs
 git commit -m "feat(desktop): bounded restart policy for the supervisor"
 ```
 
@@ -329,7 +329,7 @@ git commit -m "feat(desktop): bounded restart policy for the supervisor"
 ### Task 5: Supervisor spawn / stop / track
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/supervisor.rs`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/supervisor.rs`
 
 - [ ] **Step 1: Write the failing test (append inside `mod tests`) — unix-only (dev/CI is Linux)**
 
@@ -356,7 +356,7 @@ git commit -m "feat(desktop): bounded restart policy for the supervisor"
 
 - [ ] **Step 2: Run it to confirm it fails**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo test supervisor::tests::spawn_tracks_child`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo test supervisor::tests::spawn_tracks_child`
 Expected: FAIL — `cannot find type Supervisor`
 
 - [ ] **Step 3: Implement the `Supervisor`**
@@ -430,13 +430,13 @@ impl Default for Supervisor {
 
 - [ ] **Step 4: Run the test — expect PASS**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo test supervisor::tests::spawn_tracks_child`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo test supervisor::tests::spawn_tracks_child`
 Expected: `ok. 1 passed`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/supervisor.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/supervisor.rs
 git commit -m "feat(desktop): Supervisor spawn/stop/track for managed processes"
 ```
 
@@ -445,7 +445,7 @@ git commit -m "feat(desktop): Supervisor spawn/stop/track for managed processes"
 ### Task 6: Flag-gated entrypoint `maybe_start_managed_stack`
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/supervisor.rs`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/supervisor.rs`
 
 - [ ] **Step 1: Write the failing test (append inside `mod tests`)**
 
@@ -467,7 +467,7 @@ git commit -m "feat(desktop): Supervisor spawn/stop/track for managed processes"
 
 - [ ] **Step 2: Run it to confirm it fails**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo test supervisor::tests::maybe_start_returns_none`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo test supervisor::tests::maybe_start_returns_none`
 Expected: FAIL — `cannot find function maybe_start_managed_stack`
 
 - [ ] **Step 3: Implement the entrypoint**
@@ -510,13 +510,13 @@ pub fn maybe_start_managed_stack(
 
 - [ ] **Step 4: Run the test — expect PASS, then run the whole supervisor suite**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo test supervisor`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo test supervisor`
 Expected: all supervisor tests pass (6 tests: manifest, env, port, restart, spawn, maybe_start)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/supervisor.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/supervisor.rs
 git commit -m "feat(desktop): flag-gated maybe_start_managed_stack entrypoint (default OFF)"
 ```
 
@@ -525,11 +525,11 @@ git commit -m "feat(desktop): flag-gated maybe_start_managed_stack entrypoint (d
 ### Task 7: Wire into `main.rs` (one setup hook + shutdown), default OFF
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/main.rs`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/main.rs`
 
 - [ ] **Step 1: Read the Tauri builder/setup region**
 
-Run: `grep -n "tauri::Builder\|\.setup(\|\.run(\|on_window_event\|RunEvent\|ExitRequested" src/desktop-tauri/src-tauri/src/main.rs`
+Run: `grep -n "tauri::Builder\|\.setup(\|\.run(\|on_window_event\|RunEvent\|ExitRequested" src/voice-agent/desktop-tauri/src-tauri/src/main.rs`
 Note the line numbers of the `.setup(|app| {` closure and the run/exit handling — that's where the two hooks go.
 
 - [ ] **Step 2: Add the start hook inside the `.setup(...)` closure**
@@ -541,7 +541,7 @@ Inside the `setup` closure (use the line from Step 1), add — storing the Super
 // supervises the voice stack itself; otherwise the systemd service stays in
 // charge (default). See docs/superpowers/specs/2026-06-24-unified-local-app-design.md
 {
-    let manifest = repo_root().join("src/desktop-tauri/src-tauri/resources/run-manifest.json");
+    let manifest = repo_root().join("src/voice-agent/desktop-tauri/src-tauri/resources/run-manifest.json");
     let env_files = {
         let mut v = _repo_env_files();
         v.push(_keys_file()); // keys.env last = highest priority
@@ -571,18 +571,18 @@ if let Some(state) = app_handle.try_state::<std::sync::Mutex<Option<supervisor::
 
 - [ ] **Step 4: Build to confirm the wiring compiles**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo build`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo build`
 Expected: compiles clean (warnings ok). If `app.manage`/`try_state` types mismatch, align the `Mutex<Option<Supervisor>>` type between Step 2 and Step 3.
 
 - [ ] **Step 5: Run the full desktop test suite (no regressions)**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo test`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo test`
 Expected: all tests pass, including the pre-existing `voice_session_within_60s` tests.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/main.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/main.rs
 git commit -m "feat(desktop): wire flag-gated process supervisor into app lifecycle (default OFF)"
 ```
 
@@ -591,7 +591,7 @@ git commit -m "feat(desktop): wire flag-gated process supervisor into app lifecy
 ### Task 8: Run-manifest resource + Phase-0/1 live verification
 
 **Files:**
-- Create: `src/desktop-tauri/src-tauri/resources/run-manifest.json`
+- Create: `src/voice-agent/desktop-tauri/src-tauri/resources/run-manifest.json`
 
 - [ ] **Step 1: Derive the real SFU config path + confirm the venv/entrypoint**
 
@@ -604,7 +604,7 @@ ss -ltnp | grep 7880             # confirm the SFU port
 
 - [ ] **Step 2: Write the manifest with the derived values**
 
-Create `src/desktop-tauri/src-tauri/resources/run-manifest.json` (replace `<CONFIG_PATH>` with the `--config` value from Step 1; if the SFU takes no `--config`, drop the `args`):
+Create `src/voice-agent/desktop-tauri/src-tauri/resources/run-manifest.json` (replace `<CONFIG_PATH>` with the `--config` value from Step 1; if the SFU takes no `--config`, drop the `args`):
 
 ```json
 {
@@ -632,7 +632,7 @@ Create `src/desktop-tauri/src-tauri/resources/run-manifest.json` (replace `<CONF
 - [ ] **Step 3: Commit the manifest**
 
 ```bash
-git add src/desktop-tauri/src-tauri/resources/run-manifest.json
+git add src/voice-agent/desktop-tauri/src-tauri/resources/run-manifest.json
 git commit -m "feat(desktop): run-manifest for the supervised voice stack"
 ```
 
@@ -641,7 +641,7 @@ git commit -m "feat(desktop): run-manifest for the supervised voice stack"
 Stop the systemd service so the desktop is the only owner, then launch the desktop with the flag on:
 ```bash
 systemctl --user stop jarvis-voice-agent.service
-cd src/desktop-tauri && npm run build && cargo build --release
+cd src/voice-agent/desktop-tauri && npm run build && cargo build --release
 JARVIS_DESKTOP_OWNS_AGENT=1 ./src-tauri/target/release/jarvis-desktop &
 ```
 Verify (within ~60s) — the required gate is the startup log, which is definitively correct:

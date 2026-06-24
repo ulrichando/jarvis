@@ -82,7 +82,7 @@ Round 1's "no CI" claim is **wrong**. Three workflows live in `.github/workflows
 | Workflow | Trigger | What it runs | Time | Issues |
 |---|---|---|---|---|
 | `voice-agent-tests.yml` | push/PR touching `src/voice-agent/**` | pytest with 3 hard ignores | ~2 min incl. setup | Stale ignore list (2 files don't exist); no lint; no coverage; passes when local fails |
-| `desktop-tauri-smoke.yml` | push/PR touching `src/desktop-tauri/**` | `npm ci`, `npm run build`, verify `dist/index.html`, `cargo check --locked`, conditional `cargo test` | ~5-8 min | Does `cargo check`, NOT `cargo build --release` — won't catch link-time or codegen regressions on release profile. The conditional `cargo test` is good. |
+| `desktop-tauri-smoke.yml` | push/PR touching `src/voice-agent/desktop-tauri/**` | `npm ci`, `npm run build`, verify `dist/index.html`, `cargo check --locked`, conditional `cargo test` | ~5-8 min | Does `cargo check`, NOT `cargo build --release` — won't catch link-time or codegen regressions on release profile. The conditional `cargo test` is good. |
 | `security-audit.yml` | push/PR + Mon 14:00 UTC | `pip-audit`, `npm audit cli`, `npm audit web`, `cargo audit` | ~3 min | Solid. Pin exception (`PYSEC-2025-49`/`CVE-2024-6345`) is justified and documented inline. |
 
 ### What's genuinely missing
@@ -156,7 +156,7 @@ jobs:
 ```yaml
 # Edit .github/workflows/desktop-tauri-smoke.yml — add release build
 - name: cargo build --release (release-profile drift check)
-  working-directory: src/desktop-tauri/src-tauri
+  working-directory: src/voice-agent/desktop-tauri/src-tauri
   run: cargo build --release --locked
   timeout-minutes: 20
 ```
@@ -172,7 +172,7 @@ Read at `/home/ulrich/Documents/Projects/jarvis/.claude/hooks/verify-before-done
 | Behavior | Status |
 |---|---|
 | Reads transcript JSONL, extracts Edit/Write/MultiEdit file paths | OK |
-| Classifies by subtree (`/src/voice-agent/`, `/src/desktop-tauri/`, `/src/web/`, `/src/cli/`) | OK |
+| Classifies by subtree (`/src/voice-agent/`, `/src/voice-agent/desktop-tauri/`, `/src/web/`, `/src/cli/`) | OK |
 | Voice-agent: `pytest tests/ -x --tb=line --no-header` | OK |
 | Desktop-tauri: **`npm run build` ONLY — NO `cargo build --release`** | **GAP** |
 | Web: `npm run test` (vitest) | OK |

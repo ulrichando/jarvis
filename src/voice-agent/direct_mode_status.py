@@ -60,7 +60,7 @@ class StatusServer:
     """Tiny aiohttp server that mirrors voice-client's `/status` shape.
 
     Only the fields the tray's React poller reads (see
-    `src/desktop-tauri/src/hooks/useVoiceClient.js`) are reported:
+    `src/voice-agent/desktop-tauri/src/hooks/useVoiceClient.js`) are reported:
 
       connected, agent_present, muted, listening, speaking, silent_mode,
       tool_running, agent_thinking, sharing_screen, cli_model,

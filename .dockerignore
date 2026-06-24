@@ -19,8 +19,8 @@ node_modules
 bun.lock
 
 # Build outputs
-src/desktop-tauri/src-tauri/target
-src/desktop-tauri/dist
+src/voice-agent/desktop-tauri/src-tauri/target
+src/voice-agent/desktop-tauri/dist
 src/web/.next
 src/web/out
 src/cli/dist

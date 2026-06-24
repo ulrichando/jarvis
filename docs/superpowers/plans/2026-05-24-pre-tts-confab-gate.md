@@ -1887,7 +1887,7 @@ NOT CHANGED:
   - src/voice-agent/confab_detector.py (looks_like_completion_claim landed in commit 976749de)
   - src/voice-agent/pipeline/skill_review.py (already updated for the new labels in Task 2's downstream-caller update)
   - src/cli/ — CLI agent + bridge untouched
-  - src/desktop-tauri/ — desktop UI untouched
+  - src/voice-agent/desktop-tauri/ — desktop UI untouched
   - Voice-agent subagent layer — NO restoration (per spec hygiene rule)
   - The tray indicator — FROZEN
 

@@ -145,7 +145,7 @@ supervisor model at runtime (written to `~/.jarvis/voice-model`).
 | Subtree | Path | Primary language |
 |---|---|---|
 | Voice agent | `src/voice-agent/` | Python 3.13 |
-| Desktop UI | `src/desktop-tauri/` | Rust + React/JSX |
+| Desktop UI | `src/voice-agent/desktop-tauri/` | Rust + React/JSX |
 | Web app | `src/web/` | TypeScript / Next.js |
 | CLI agent | `src/cli/` | TypeScript / Bun |
 | Chrome extension | `src/cli/src/utils/claudeInChrome/` (reserved for future work) | JavaScript (MV3) |

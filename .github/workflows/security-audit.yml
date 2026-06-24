@@ -61,5 +61,5 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo install --locked cargo-audit
-      - working-directory: src/desktop-tauri/src-tauri
+      - working-directory: src/voice-agent/desktop-tauri/src-tauri
         run: cargo audit

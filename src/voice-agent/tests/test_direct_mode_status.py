@@ -1,6 +1,6 @@
 """StatusServer — shape parity with voice-client `/status` + state transitions.
 
-The tray's React poller at `src/desktop-tauri/src/hooks/useVoiceClient.js`
+The tray's React poller at `src/voice-agent/desktop-tauri/src/hooks/useVoiceClient.js`
 reads a specific subset of fields. If any field name drifts, the tray
 icon stops reacting to direct-mode state and silently goes idle. This
 test pins the shape so a future refactor can't break the indicator

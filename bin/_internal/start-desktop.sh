@@ -13,8 +13,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"   # bin/_internal/../.. = repo root
 CLI_ROOT="$PROJECT_ROOT/src/cli"                  # the CLI tree this launcher drives
 BUN="$CLI_ROOT/scripts/bunw.sh"
-DESKTOP_BIN_RELEASE="$PROJECT_ROOT/src/desktop-tauri/src-tauri/target/release/jarvis-desktop"
-DESKTOP_BIN_DEBUG="$PROJECT_ROOT/src/desktop-tauri/src-tauri/target/debug/jarvis-desktop"
+DESKTOP_BIN_RELEASE="$PROJECT_ROOT/src/voice-agent/desktop-tauri/src-tauri/target/release/jarvis-desktop"
+DESKTOP_BIN_DEBUG="$PROJECT_ROOT/src/voice-agent/desktop-tauri/src-tauri/target/debug/jarvis-desktop"
 if [ -x "$DESKTOP_BIN_RELEASE" ]; then
   DESKTOP_BIN="$DESKTOP_BIN_RELEASE"
 else
@@ -228,7 +228,7 @@ echo "[jarvis] bridge up on :8765"
 # ── Launch desktop ────────────────────────────────────────────────────
 if [ ! -x "$DESKTOP_BIN" ]; then
   echo "[jarvis] desktop binary not found at $DESKTOP_BIN"
-  echo "[jarvis] build it with: cd $PROJECT_ROOT/src/desktop-tauri && npm run tauri build"
+  echo "[jarvis] build it with: cd $PROJECT_ROOT/src/voice-agent/desktop-tauri && npm run tauri build"
   kill $PROXY_SUP_PID $BRIDGE_PID 2>/dev/null || true
   exit 1
 fi

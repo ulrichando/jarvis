@@ -115,7 +115,7 @@ Reloading `specialists.agent` mid-test invalidates the `RegistrySpecialist` clas
 | 🟡 Nit | `src-tauri/src/main.rs:756-770` + `:198,203-208` | `find_project_root` walks 6 hardcoded ancestors; `_keys_file()` hardcodes `$HOME/Documents/Projects/jarvis/` — brittle for packaged installs |
 | 🟡 Nit | `src-tauri/src/main.rs:881-888` | `handle_open_browser` sleeps 500 ms × 60 = 30 s on a worker thread; double-clicking spawns two threads |
 | 🟡 Nit | `src-tauri/Cargo.toml:7` + `package.json:14` | `tauri-plugin-shell` and `@tauri-apps/plugin-shell` listed but JS never invokes shell commands directly |
-| 🟣 Pre-existing | `src/desktop-tauri/` (no test files) | 0 frontend tests, 0 `cargo test` modules — risk concentrated in Rust IPC handlers |
+| 🟣 Pre-existing | `src/voice-agent/desktop-tauri/` (no test files) | 0 frontend tests, 0 `cargo test` modules — risk concentrated in Rust IPC handlers |
 | 🟣 Pre-existing | `.github/workflows/` (only `security-audit.yml`) | No CI for desktop build/dist consistency; "must `cargo build --release` after `npm run build`" is enforced only by human memory |
 | 🟣 Pre-existing | `src-tauri/tauri.conf.json:11` | `"bundle.active": false` — no installers, no codesigning, no auto-update (likely by-design but worth confirming) |
 | 🟣 Pre-existing | `package.json` (no `engines`, no `tsconfig.json`) | Node version unpinned; `@types/bun` devDep with zero `.tsx` files in tree |

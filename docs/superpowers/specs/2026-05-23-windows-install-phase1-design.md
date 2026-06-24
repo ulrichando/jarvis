@@ -111,7 +111,7 @@ The installer is organised into 21 stages. Each is a thin wrapper around a worke
 | `voice-agent` | `Install-VoiceAgent` | Replaced | `uv venv .venv --python 3.13` + `uv pip install -r requirements.txt`. Playwright Chromium gated under `-SkipCdp`. Service registration deferred (`Install-WindowsVoiceServices` is a no-op with a clear log). |
 | `cli` | `Install-Cli` | Ported | `bun install` in src/cli. Write `.cmd` shims for `jarvis` + `jarvis-desktop` to `%LOCALAPPDATA%\jarvis\bin`, add to user PATH. |
 | `web` | `Install-Web` | Ported | `bun install` in src/web. |
-| `desktop` | `Install-Desktop` | Ported | `npm install` + `npm run build` + `cargo build --release` in src/desktop-tauri. Start Menu shortcut via WScript.Shell COM. |
+| `desktop` | `Install-Desktop` | Ported | `npm install` + `npm run build` + `cargo build --release` in src/voice-agent/desktop-tauri. Start Menu shortcut via WScript.Shell COM. |
 | `bash-sandbox` | `Install-BashSandbox` | Deferred | Linux user-namespace sandbox (bwrap) has no Windows analogue today. Phase 2 will design + ship an AppContainer / Job Object equivalent. |
 | `bridge-token` | `New-BridgeToken` | Ported | Crypto-random 43 url-safe chars to `~/.jarvis/local-api-token.env` with user-only NTFS ACL. Plumb into `src/web/.env.local` when it exists. |
 | `livekit-keys` | `Set-LiveKitKeys` | Ported (partial) | Reads `LIVEKIT_API_KEY/SECRET` from `voice-agent/.env`; writes the YAML. Cannot generate fresh keys (bundled `livekit-server.bin` is a Linux ELF) — falls through to instructions. |
@@ -213,7 +213,7 @@ Five things flagged during the port that warrant a second look before Phase 2:
 - `pytest src/voice-agent/tests/test_windows_footguns_checker.py` → 21 passed.
 - Reference-project token grep across all shipping files → 0 hits.
 - README install section updated with PowerShell + CMD + bash one-liners side-by-side and a Phase-1 status note.
-- No edits to `src/cli/**`, `src/voice-agent/**` (except the new test file), `src/desktop-tauri/**`, `src/web/**`, or the reference checkout.
+- No edits to `src/cli/**`, `src/voice-agent/**` (except the new test file), `src/voice-agent/desktop-tauri/**`, `src/web/**`, or the reference checkout.
 
 ## Out of scope (deliberately)
 

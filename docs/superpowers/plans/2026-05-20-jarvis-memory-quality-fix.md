@@ -33,7 +33,7 @@ SCOPE:   src/hub/client.py (ranking SQL)
 OUT:     STT / AEC / hot-mic / VAD ingestion path (Layer 0)
          the supervisor reply path (what JARVIS responds to)
          state.db schema (NO trust_score column in this plan)
-         the memory consolidator, src/cli/, src/desktop-tauri/ UI, the hermes/ checkout
+         the memory consolidator, src/cli/, src/voice-agent/desktop-tauri/ UI, the hermes/ checkout
 WHY OUT: Ingesting ambient audio at the mic is the true root but it is the
          subject of ACTIVE AEC work in the git log (_HOT_MIC_SET=l1) — fixing
          memory at the write gate does not require touching it, and colliding

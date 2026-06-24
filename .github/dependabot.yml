@@ -45,7 +45,7 @@ updates:
     open-pull-requests-limit: 0   # security-only
 
   - package-ecosystem: "cargo"
-    directory: "/src/desktop-tauri/src-tauri"
+    directory: "/src/voice-agent/desktop-tauri/src-tauri"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 0   # security-only

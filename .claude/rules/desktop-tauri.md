@@ -1,7 +1,7 @@
 ---
 description: Desktop-Tauri release-build invariants and voice-UI constraints
 paths:
-  - src/desktop-tauri/**
+  - src/voice-agent/desktop-tauri/**
 ---
 
 # Desktop-Tauri rules
@@ -9,7 +9,7 @@ paths:
 **`npm run build` alone does NOT ship JS changes.** Tauri embeds `dist/` into the Rust binary at compile time. Release flow:
 
 ```bash
-cd src/desktop-tauri
+cd src/voice-agent/desktop-tauri
 npm run build           # rebuilds dist/
 cargo build --release   # re-embeds dist/ into the binary
 ```

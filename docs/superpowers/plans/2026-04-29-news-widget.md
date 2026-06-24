@@ -13,7 +13,7 @@
 ### Task 1: Add Rust dependencies
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/Cargo.toml`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/Cargo.toml`
 
 - [ ] **Step 1: Add rss and ureq crates**
 
@@ -25,13 +25,13 @@ ureq = "2"
 
 - [ ] **Step 2: Build to verify dependencies resolve**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo check`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo check`
 Expected: dependencies download and compile, no errors.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/Cargo.toml src/desktop-tauri/src-tauri/Cargo.lock
+git add src/voice-agent/desktop-tauri/src-tauri/Cargo.toml src/voice-agent/desktop-tauri/src-tauri/Cargo.lock
 git commit -m "feat: add rss and ureq crates for news widget"
 ```
 
@@ -40,7 +40,7 @@ git commit -m "feat: add rss and ureq crates for news widget"
 ### Task 2: Create news.rs — Config and cache data structures
 
 **Files:**
-- Create: `src/desktop-tauri/src-tauri/src/news.rs`
+- Create: `src/voice-agent/desktop-tauri/src-tauri/src/news.rs`
 
 - [ ] **Step 1: Write the module with structs and serialization**
 
@@ -176,7 +176,7 @@ mod tests {
 
 - [ ] **Step 3: Run test to see it fail (merge_entries not defined yet)**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo test news::tests::test_cache_dedup`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo test news::tests::test_cache_dedup`
 Expected: compile error — `merge_entries` not found.
 
 - [ ] **Step 4: Add `use` imports and implement merge_entries + load/save**
@@ -247,18 +247,18 @@ pub fn merge_entries(existing: &[NewsEntry], incoming: &[NewsEntry]) -> Vec<News
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo test news::tests`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo test news::tests`
 Expected: both tests PASS.
 
 - [ ] **Step 6: Run test for default config**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo test news::tests::test_default_config_serialization_roundtrip`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo test news::tests::test_default_config_serialization_roundtrip`
 Expected: PASS
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/news.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/news.rs
 git commit -m "feat: add news config and cache data structures with tests"
 ```
 
@@ -267,7 +267,7 @@ git commit -m "feat: add news config and cache data structures with tests"
 ### Task 3: Create news.rs — RSS fetching
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/news.rs`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/news.rs`
 
 - [ ] **Step 1: Add fetch_feeds function**
 
@@ -401,13 +401,13 @@ fn test_keyword_filter() {
 
 - [ ] **Step 3: Run tests**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo test news::tests`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo test news::tests`
 Expected: all 4 tests PASS.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/news.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/news.rs
 git commit -m "feat: add RSS feed fetching with keyword filtering"
 ```
 
@@ -416,7 +416,7 @@ git commit -m "feat: add RSS feed fetching with keyword filtering"
 ### Task 4: Create news.rs — Tauri commands and poll thread
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/news.rs`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/news.rs`
 
 - [ ] **Step 1: Add Tauri command functions**
 
@@ -541,13 +541,13 @@ pub fn spawn_poll_thread(app: AppHandle) {
 
 - [ ] **Step 2: Run cargo check to verify compilation**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo check`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo check`
 Expected: compiles successfully (will have warnings about unused functions until main.rs wires them).
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/news.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/news.rs
 git commit -m "feat: add Tauri commands and poll thread for news widget"
 ```
 
@@ -556,7 +556,7 @@ git commit -m "feat: add Tauri commands and poll thread for news widget"
 ### Task 5: Wire news module into main.rs
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/main.rs`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/main.rs`
 
 - [ ] **Step 1: Add module declaration at top of main.rs**
 
@@ -614,13 +614,13 @@ news::open_url,
 
 - [ ] **Step 4: Run cargo check to verify**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo check`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo check`
 Expected: compiles successfully.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/main.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/main.rs
 git commit -m "feat: wire news module into main.rs with commands and poll thread"
 ```
 
@@ -629,7 +629,7 @@ git commit -m "feat: wire news module into main.rs with commands and poll thread
 ### Task 6: Add news-widget window to Tauri config
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/tauri.conf.json`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/tauri.conf.json`
 
 - [ ] **Step 1: Add news-widget window entry**
 
@@ -658,7 +658,7 @@ Note: place after the existing `"main"` window object (after its closing `}`), s
 - [ ] **Step 2: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/tauri.conf.json
+git add src/voice-agent/desktop-tauri/src-tauri/tauri.conf.json
 git commit -m "feat: add news-widget window config to tauri.conf.json"
 ```
 
@@ -667,8 +667,8 @@ git commit -m "feat: add news-widget window config to tauri.conf.json"
 ### Task 7: Add multi-page Vite config and news HTML entry point
 
 **Files:**
-- Create: `src/desktop-tauri/news.html`
-- Modify: `src/desktop-tauri/vite.config.js`
+- Create: `src/voice-agent/desktop-tauri/news.html`
+- Modify: `src/voice-agent/desktop-tauri/vite.config.js`
 
 - [ ] **Step 1: Update vite.config.js for multi-page build**
 
@@ -715,13 +715,13 @@ build: {
 
 - [ ] **Step 3: Verify build**
 
-Run: `cd src/desktop-tauri && npm run build`
+Run: `cd src/voice-agent/desktop-tauri && npm run build`
 Expected: build succeeds, `dist/news.html` and `dist/assets/news-*.js` exist.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/desktop-tauri/vite.config.js src/desktop-tauri/news.html
+git add src/voice-agent/desktop-tauri/vite.config.js src/voice-agent/desktop-tauri/news.html
 git commit -m "feat: add multi-page Vite config and news.html entry point"
 ```
 
@@ -730,11 +730,11 @@ git commit -m "feat: add multi-page Vite config and news.html entry point"
 ### Task 8: Create news widget React components
 
 **Files:**
-- Create: `src/desktop-tauri/src/news/main.jsx`
-- Create: `src/desktop-tauri/src/news/index.css`
-- Create: `src/desktop-tauri/src/news/NewsWidget.jsx`
-- Create: `src/desktop-tauri/src/news/NewsItem.jsx`
-- Create: `src/desktop-tauri/src/news/NewsSettings.jsx`
+- Create: `src/voice-agent/desktop-tauri/src/news/main.jsx`
+- Create: `src/voice-agent/desktop-tauri/src/news/index.css`
+- Create: `src/voice-agent/desktop-tauri/src/news/NewsWidget.jsx`
+- Create: `src/voice-agent/desktop-tauri/src/news/NewsItem.jsx`
+- Create: `src/voice-agent/desktop-tauri/src/news/NewsSettings.jsx`
 
 - [ ] **Step 1: Create news/index.css**
 
@@ -1179,13 +1179,13 @@ export default function NewsWidget() {
 
 - [ ] **Step 6: Verify build compiles the news bundle**
 
-Run: `cd src/desktop-tauri && npm run build`
+Run: `cd src/voice-agent/desktop-tauri && npm run build`
 Expected: build succeeds, `dist/assets/news-*.js` exists alongside `dist/assets/main-*.js`.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/desktop-tauri/src/news/
+git add src/voice-agent/desktop-tauri/src/news/
 git commit -m "feat: add news widget React components (list, grid, ticker layouts)"
 ```
 
@@ -1194,7 +1194,7 @@ git commit -m "feat: add news widget React components (list, grid, ticker layout
 ### Task 9: Add tray menu toggle and window positioning
 
 **Files:**
-- Modify: `src/desktop-tauri/src-tauri/src/main.rs`
+- Modify: `src/voice-agent/desktop-tauri/src-tauri/src/main.rs`
 
 - [ ] **Step 1: Add tray menu item for news widget toggle**
 
@@ -1260,13 +1260,13 @@ Inside the `on_menu_event` closure, add a new match arm alongside the existing o
 
 - [ ] **Step 3: Verify compilation**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo check`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo check`
 Expected: compiles successfully.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/desktop-tauri/src-tauri/src/main.rs
+git add src/voice-agent/desktop-tauri/src-tauri/src/main.rs
 git commit -m "feat: add tray menu toggle for news widget with window positioning"
 ```
 
@@ -1279,12 +1279,12 @@ git commit -m "feat: add tray menu toggle for news widget with window positionin
 
 - [ ] **Step 1: Run full cargo check + tests**
 
-Run: `cd src/desktop-tauri/src-tauri && cargo test`
+Run: `cd src/voice-agent/desktop-tauri/src-tauri && cargo test`
 Expected: all Rust tests PASS.
 
 - [ ] **Step 2: Run full frontend build**
 
-Run: `cd src/desktop-tauri && npm run build`
+Run: `cd src/voice-agent/desktop-tauri && npm run build`
 Expected: build succeeds, `dist/` contains `index.html`, `news.html`, and asset bundles for both.
 
 - [ ] **Step 3: Final commit (if any changes)**

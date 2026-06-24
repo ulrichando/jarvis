@@ -620,7 +620,7 @@ install_desktop() {
   if [ "${JARVIS_SKIP_DESKTOP:-0}" = "1" ]; then warn "skipping Desktop (JARVIS_SKIP_DESKTOP=1)"; return; fi
   section "Installing Desktop (Tauri) — first build takes 5–10 min"
 
-  local dt="$INSTALL_DIR/src/desktop-tauri"
+  local dt="$INSTALL_DIR/src/voice-agent/desktop-tauri"
   (cd "$dt" && npm install --silent)
   ok "frontend deps installed"
 
@@ -649,13 +649,13 @@ install_desktop() {
 install_desktop_entry() {
   local apps_dir="$HOME/.local/share/applications"
   local entry="$apps_dir/jarvis.desktop"
-  local exec_path="$INSTALL_DIR/src/desktop-tauri/src-tauri/target/release/jarvis-desktop"
+  local exec_path="$INSTALL_DIR/src/voice-agent/desktop-tauri/src-tauri/target/release/jarvis-desktop"
   # The Tauri default icons (src-tauri/icons/{32x32,128x128,tray}.png)
   # are placeholder Tauri logos from `tauri init` (cyan circle, ~500 B).
   # The actual JARVIS branding is the concentric-rings logo at
   # src-tauri/icons/jarvis-rings-128.png. Reuse it so the app-menu entry
   # matches what JARVIS looks like everywhere else.
-  local icon_path="$INSTALL_DIR/src/desktop-tauri/src-tauri/icons/jarvis-rings-128.png"
+  local icon_path="$INSTALL_DIR/src/voice-agent/desktop-tauri/src-tauri/icons/jarvis-rings-128.png"
 
   mkdir -p "$apps_dir"
   cat > "$entry" <<EOF
@@ -678,7 +678,7 @@ EOF
 
   if [ ! -x "$exec_path" ]; then
     warn "Tauri binary not yet built — launcher will fail until cargo build --release completes"
-    sub "Build now: (cd $INSTALL_DIR/src/desktop-tauri/src-tauri && cargo build --release)"
+    sub "Build now: (cd $INSTALL_DIR/src/voice-agent/desktop-tauri/src-tauri && cargo build --release)"
   fi
 
   # Refresh GNOME/KDE/XFCE app cache so the entry appears without logout.
@@ -981,7 +981,7 @@ print_summary() {
     4. Start the web app (optional):
          cd $INSTALL_DIR/src/web && bun dev
     5. Run the desktop app (Tauri):
-         $INSTALL_DIR/src/desktop-tauri/src-tauri/target/release/jarvis-desktop
+         $INSTALL_DIR/src/voice-agent/desktop-tauri/src-tauri/target/release/jarvis-desktop
        (or click 'JARVIS' in your app launcher — Ctrl+Shift+Space toggles
        click-through once it's running)
 

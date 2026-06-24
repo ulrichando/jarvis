@@ -1,5 +1,14 @@
 # Hermes Plugin Port Implementation Plan
 
+> **⚠️ PARTIALLY OBSOLETE (2026-06-23).** The 48 *inert* mirror plugins this plan
+> created — 29 `model-providers`, 5 `platforms`, the 7 stub `memory` backends, and
+> `context_engine`/`disk-cleanup`/`teams_pipeline`/`observability`/`achievements`/
+> `kanban`/`example-dashboard` — were **removed** (no consumer; redundant with
+> `providers/llm.py` for LLMs and honcho for memory). The "the user wants them
+> present" rationale no longer holds. What REMAINS functional + live: the 4
+> capability plugins (`web`, `image_gen`, `video_gen`, `browser`), `memory/honcho`,
+> plus `spotify`/`google_meet` and the `example` test fixture.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Port all 16 Hermes plugins into `src/voice-agent/plugins/` as JARVIS-native plugins — the 4 capability-adders (`web`, `image_gen`, `video_gen`, `browser`) and `memory` made functional, the other 9 subsystem/dashboard plugins present as honest 1:1 mirrors that import cleanly but are inert in JARVIS's voice substrate.
@@ -17,7 +26,7 @@
 - Full suite green: `cd src/voice-agent && .venv/bin/python -m pytest tests/ -q`.
 - Credentialed providers are INERT without their key (gated via `is_available()`), exactly like the existing `image_generate` tool.
 
-**Out of scope (do NOT touch):** `src/cli/` (separate functional codebase), `src/desktop-tauri/`, `src/web/`, and `jarvis_agent.py`'s turn loop / barge-in / TTS path. Memory work may touch `pipeline/file_memory.py` and (if restructure is needed) the `_build_memory_block()` wiring only — surface that before doing it.
+**Out of scope (do NOT touch):** `src/cli/` (separate functional codebase), `src/voice-agent/desktop-tauri/`, `src/web/`, and `jarvis_agent.py`'s turn loop / barge-in / TTS path. Memory work may touch `pipeline/file_memory.py` and (if restructure is needed) the `_build_memory_block()` wiring only — surface that before doing it.
 
 ---
 

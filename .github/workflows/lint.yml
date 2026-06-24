@@ -85,11 +85,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src/desktop-tauri/src-tauri
+          workspaces: src/voice-agent/desktop-tauri/src-tauri
           shared-key: desktop-tauri-clippy
 
       - name: cargo clippy
-        working-directory: src/desktop-tauri/src-tauri
+        working-directory: src/voice-agent/desktop-tauri/src-tauri
         run: cargo clippy --locked -- -D warnings
         continue-on-error: true  # explicit: warnings-as-errors once clean
 
