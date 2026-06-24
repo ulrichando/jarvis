@@ -36,7 +36,7 @@ jobs:
           # (credential-rotation.md prefixes; git-history-scrub.md a FULL
           # live key as a replace-rule example, caught 2026-06-11). Docs
           # must reference keys by env-var name only. Patterns cover
-          # Groq / OpenAI-style / Anthropic / LangSmith / Google keys.
+          # Groq / OpenAI-style / Anthropic / Google keys.
           ! grep -rnE 'gsk_[A-Za-z0-9]{16}|sk-[A-Za-z0-9]{20,}|sk-ant-[A-Za-z0-9]{10,}|lsv2_pt_[a-f0-9]{8,}|AIza[A-Za-z0-9_-]{20,}' \
             README.md ARCHITECTURE.md CONTRIBUTING.md SECURITY.md CHANGELOG.md docs/
 

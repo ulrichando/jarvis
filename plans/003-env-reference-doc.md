@@ -90,8 +90,8 @@ Build a deduped list. Group vars by subsystem:
 
 One section per subsystem. For each var: a one-line purpose, allowed values /
 default, and which subsystem(s) read it. **Placeholders only for any secret.**
-Open with a short note: "Secrets (provider API keys, `JARVIS_PG_DSN`,
-`LANGCHAIN_API_KEY`) live in `~/.jarvis/keys.env`, not in a committed `.env`. This
+Open with a short note: "Secrets (provider API keys, `JARVIS_PG_DSN`)
+live in `~/.jarvis/keys.env`, not in a committed `.env`. This
 file documents what each variable does — never put real values here."
 
 **Verify (docs-truth gate)**:

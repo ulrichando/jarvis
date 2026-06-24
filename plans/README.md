@@ -84,7 +84,7 @@ So these aren't re-audited next run:
 ## Related: items already tracked in `docs/decisions-pending.md`
 
 Not planned here (they're maintainer-decision items), but **several are overdue**
-as of 2026-06-22 and worth a look: **#11** (confirm old LangSmith key revoked +
-re-scrub git history — the stated blocker for the public-repo flip; the maintainer
-asked to skip a plan for this), **#2** (CLAUDE.md `computer_use` description stale),
+as of 2026-06-22 and worth a look: **#11** (LangSmith now removed + PG rotated, so
+the leaked values are dead; only the *optional* history re-scrub remains before any
+public-repo flip), **#2** (CLAUDE.md `computer_use` description stale),
 **#9** (clock skew on `Moon`).

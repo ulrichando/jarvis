@@ -21,7 +21,7 @@ are clean, but the *values* are still recoverable from history, and per the
 dead — do this before anything is reachable:
 
 Run **`docs/runbook/credential-rotation.md`** — rotate at each provider
-dashboard (Groq, DeepSeek, LangSmith, Google) + the Postgres password (its §6).
+dashboard (Groq, DeepSeek, Google) + the Postgres password (its §6).
 Then (optional cleanup, only with a clean tree / no concurrent agent sessions):
 `docs/runbook/git-history-scrub.md`.
 

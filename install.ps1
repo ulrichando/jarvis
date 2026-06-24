@@ -1840,9 +1840,6 @@ KIMI_API_KEY=
 # Optional knobs (uncomment + set if you use these)
 # JARVIS_PROVIDER=deepseek
 # OLLAMA_HOST=http://127.0.0.1:11434
-# LANGCHAIN_TRACING_V2=true
-# LANGCHAIN_API_KEY=
-# LANGCHAIN_PROJECT=jarvis
 
 # Sandbox / safety knobs (uncomment to override defaults)
 # JARVIS_BASH_BWRAP=0           # disable bash-tool sandbox (Linux-only effect)

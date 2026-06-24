@@ -108,7 +108,13 @@ Flagged 2026-06-10: telemetry timestamps vs sqlite `now` disagreed by
 skew corrupts telemetry-based decisions (recency checks, retention prune).
 **Revisit by:** 2026-06-15.
 
-## 11. ROTATE: LangSmith key + Postgres password; re-scrub history before public flip
+## 11. Re-scrub history before public flip (secrets now DEAD: PG rotated, LangSmith removed)
+
+**UPDATE 2026-06-24:** LangSmith **removed entirely** (unused — no code refs, no SDK,
+tracing never on; stripped from `keys.env` + all config; revoke any stale console key).
+Postgres password already rotated (item 1 below). So both leaked values in git history
+are now **dead** — the only remaining work is the *optional* history re-scrub (cosmetic
+cleanup of dead values) before any public-repo flip.
 
 Found 2026-06-11: pre-sanitization revisions of `docs/runbook/credential-rotation.md`
 and `docs/runbook/git-history-scrub.md` embedded real secret values; two were

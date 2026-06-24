@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { config as loadDotenv } from "dotenv";
 
 // Load the repo-root .env first for non-secret shared config (model ids,
-// JARVIS_PG_DSN, LANGCHAIN_*, etc.). Next.js auto-loads .env files only from
+// JARVIS_PG_DSN, etc.). Next.js auto-loads .env files only from
 // the project dir (src/web/), so we bring root in manually.
 const __here = dirname(fileURLToPath(import.meta.url));
 const repoRootEnv = resolve(__here, "../../.env");

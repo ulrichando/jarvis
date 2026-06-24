@@ -36,21 +36,15 @@ Already rotated automatically (2026-05-04). New keys live in `~/.jarvis/livekit-
 5. Restart: `systemctl --user restart jarvis-voice-agent.service` and
    relaunch the desktop app.
 
-## 4. LangSmith / LangChain
+## 4. LangSmith / LangChain — REMOVED (2026-06-24)
 
-1. Open <https://smith.langchain.com/o/-/settings/apikeys>
-2. Find the key matching `LANGCHAIN_API_KEY` in your `.env`. Revoke.
-3. **Create API Key**, copy value.
-4. Paste into `.env`:
-   ```
-   LANGCHAIN_API_KEY=lsv2_pt_<new value>
-   ```
+LangSmith was unused (no code references, no SDK dependency, tracing never
+enabled) and has been stripped from `keys.env` and all config — there is
+nothing left to rotate. If an old `LANGCHAIN_API_KEY` is still active in the
+LangSmith console, revoke it; otherwise no action.
 
-> **Never paste real key material (even prefixes) into this file** — it is
-> tracked in git. Pre-2026-06-11 revisions of this runbook contained real
-> prefixes; one (LangChain) matched a then-live key. If you need to identify
-> a key, grep your local `.env` instead.
-5. No restart needed (used only for tracing, picked up on next process start).
+> **General rule:** never paste real key material (even prefixes) into tracked
+> files — to identify a key, grep your local `keys.env` instead.
 
 ## 5. Google API key
 

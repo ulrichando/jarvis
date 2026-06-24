@@ -918,7 +918,6 @@ GOOGLE_API_KEY=
 KIMI_API_KEY=
 
 # Other secrets (uncomment + set if you use these)
-# LANGCHAIN_API_KEY=
 # JARVIS_PG_DSN=postgresql://jarvis:PASSWORD@localhost:5432/jarvis
 EOF
     # Lock to 0600 so other local users / containers / web pages can't read the
@@ -942,8 +941,6 @@ EOF
 # Optional knobs (uncomment + set if you use these)
 # JARVIS_PROVIDER=deepseek
 # OLLAMA_HOST=http://127.0.0.1:11434
-# LANGCHAIN_TRACING_V2=true
-# LANGCHAIN_PROJECT=jarvis
 
 # Sandbox / safety knobs (uncomment to override defaults)
 # JARVIS_BASH_BWRAP=0           # disable bash-tool bubblewrap sandbox
