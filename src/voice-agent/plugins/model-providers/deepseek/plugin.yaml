@@ -1,4 +1,0 @@
-name: deepseek-provider
-version: "1.0.0"
-description: "DeepSeek"
-kind: model-provider

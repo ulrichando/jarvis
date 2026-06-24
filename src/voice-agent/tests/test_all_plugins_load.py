@@ -14,8 +14,9 @@ def test_all_bundled_plugins_load_without_error():
 def test_expected_plugin_families_present():
     from tools.plugin_system import discover_plugins
     keys = {p["key"] for p in discover_plugins(force=True).list_plugins()}
-    # at least one leaf from each mirrored family + the dashboard flats
+    # the functional capability plugins JARVIS actually consumes (the inert
+    # upstream-mirror families were removed 2026-06-23 — see ponytail-audit cut)
     families = {k.split("/")[0] for k in keys}
-    for fam in ["context_engine", "model-providers", "platforms", "observability",
-                "disk-cleanup", "teams_pipeline", "example-dashboard", "achievements", "kanban"]:
+    for fam in ["web", "browser", "image_gen", "video_gen", "memory",
+                "spotify", "google_meet"]:
         assert fam in families or fam in keys, f"missing family: {fam} (have {sorted(families)})"

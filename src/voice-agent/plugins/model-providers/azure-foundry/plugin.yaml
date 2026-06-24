@@ -1,4 +1,0 @@
-name: azure-foundry-provider
-version: "1.0.0"
-description: "Microsoft Foundry"
-kind: model-provider

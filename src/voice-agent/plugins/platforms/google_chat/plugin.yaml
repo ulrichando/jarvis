@@ -1,8 +1,0 @@
-name: google_chat-platform
-version: "1.0.0"
-description: "Google Chat gateway adapter — Cloud Pub/Sub inbound + Chat REST outbound."
-kind: platform
-requires_env:
-  - GOOGLE_CHAT_PROJECT_ID
-  - GOOGLE_CHAT_SUBSCRIPTION_NAME
-  - GOOGLE_CHAT_SERVICE_ACCOUNT_JSON

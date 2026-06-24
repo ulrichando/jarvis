@@ -1,4 +1,0 @@
-name: minimax-provider
-version: "1.0.0"
-description: "MiniMax M-series (global + China + OAuth)"
-kind: model-provider

@@ -1,4 +1,0 @@
-name: openrouter-provider
-version: "1.0.0"
-description: "OpenRouter aggregator"
-kind: model-provider

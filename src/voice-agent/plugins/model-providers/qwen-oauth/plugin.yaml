@@ -1,4 +1,0 @@
-name: qwen-oauth-provider
-version: "1.0.0"
-description: "Qwen Portal (OAuth)"
-kind: model-provider

@@ -1,4 +1,0 @@
-name: bedrock-provider
-version: "1.0.0"
-description: "AWS Bedrock"
-kind: model-provider

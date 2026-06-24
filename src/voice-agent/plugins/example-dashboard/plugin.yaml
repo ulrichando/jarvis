@@ -1,4 +1,0 @@
-name: example-dashboard
-version: "1.0.0"
-description: "Example dashboard widget — UI-only reference plugin."
-kind: dashboard

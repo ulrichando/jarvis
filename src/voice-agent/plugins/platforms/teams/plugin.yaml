@@ -1,8 +1,0 @@
-name: teams-platform
-version: "1.0.0"
-description: "Microsoft Teams gateway adapter — Bot Framework relay with Adaptive Card approval prompts."
-kind: platform
-requires_env:
-  - TEAMS_CLIENT_ID
-  - TEAMS_CLIENT_SECRET
-  - TEAMS_TENANT_ID

@@ -1,4 +1,0 @@
-name: nvidia-provider
-version: "1.0.0"
-description: "NVIDIA NIM"
-kind: model-provider

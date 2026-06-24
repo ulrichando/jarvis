@@ -1,7 +1,0 @@
-name: line-platform
-version: "1.0.0"
-description: "LINE Messaging API gateway adapter — aiohttp webhook with HMAC-SHA256 verification; reply-token then Push API fallback."
-kind: platform
-requires_env:
-  - LINE_CHANNEL_ACCESS_TOKEN
-  - LINE_CHANNEL_SECRET

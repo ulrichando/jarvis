@@ -1,4 +1,0 @@
-name: openai-codex-provider
-version: "1.0.0"
-description: "OpenAI Codex (Responses API)"
-kind: model-provider

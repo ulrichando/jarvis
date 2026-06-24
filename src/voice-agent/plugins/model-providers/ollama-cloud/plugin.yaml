@@ -1,4 +1,0 @@
-name: ollama-cloud-provider
-version: "1.0.0"
-description: "Ollama Cloud"
-kind: model-provider

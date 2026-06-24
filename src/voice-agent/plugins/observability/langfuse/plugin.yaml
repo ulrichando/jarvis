@@ -1,7 +1,0 @@
-name: langfuse
-version: "1.0.0"
-description: "Optional Langfuse observability — traces conversations, LLM calls, and tool usage. Opt-in."
-kind: standalone
-requires_env:
-  - JARVIS_LANGFUSE_PUBLIC_KEY
-  - JARVIS_LANGFUSE_SECRET_KEY

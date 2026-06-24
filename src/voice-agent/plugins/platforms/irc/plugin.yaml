@@ -1,8 +1,0 @@
-name: irc-platform
-version: "1.0.0"
-description: "IRC gateway adapter — relays messages between an IRC channel/DMs and the agent over stdlib asyncio."
-kind: platform
-requires_env:
-  - IRC_SERVER
-  - IRC_CHANNEL
-  - IRC_NICKNAME

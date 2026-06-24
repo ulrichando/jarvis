@@ -1,6 +1,0 @@
-name: simplex-platform
-version: "1.0.0"
-description: "SimpleX Chat gateway adapter — connects to a local simplex-chat daemon over WebSocket."
-kind: platform
-requires_env:
-  - SIMPLEX_WS_URL

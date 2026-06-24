@@ -1,4 +1,0 @@
-name: anthropic-provider
-version: "1.0.0"
-description: "Anthropic (Claude)"
-kind: model-provider

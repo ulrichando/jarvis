@@ -1,4 +1,0 @@
-name: custom-provider
-version: "1.0.0"
-description: "Custom / Ollama / local OpenAI-compatible endpoint"
-kind: model-provider

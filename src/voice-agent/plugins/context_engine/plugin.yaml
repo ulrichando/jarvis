@@ -1,4 +1,0 @@
-name: context_engine
-version: "1.0.0"
-description: "Context engine subsystem (prompt compression). Selects one active engine at a time upstream."
-kind: context_engine
