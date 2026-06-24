@@ -8,9 +8,12 @@
     "beforeBuildCommand": "npm run build"
   },
   "bundle": {
-    "active": false,
-    "targets": "all",
-    "icon": ["icons/32x32.png", "icons/128x128.png"]
+    "active": true,
+    "targets": ["deb", "appimage"],
+    "icon": ["icons/32x32.png", "icons/128x128.png"],
+    "resources": {
+      "bundle-assets/": ""
+    }
   },
   "app": {
     "withGlobalTauri": true,

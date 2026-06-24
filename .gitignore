@@ -23,6 +23,8 @@ node_modules/
 
 # Rust/Tauri build cache
 src/desktop-tauri/src-tauri/target/
+# Phase 2 bundle staging (~3.7 GB: staged venv + voice-agent source); build artifact, never commit
+src/desktop-tauri/src-tauri/bundle-assets/
 
 # Runtime data
 *.db
