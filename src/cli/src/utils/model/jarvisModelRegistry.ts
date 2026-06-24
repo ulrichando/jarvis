@@ -503,6 +503,19 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     supportsVision: true,
     visibleInPicker: true,
   },
+  {
+    // K2.7 code model (verified live via Moonshot /v1/models, 2026-06-23).
+    // The K2.7 line is code-focused; this is the strong build/coding pick.
+    id: 'kimi-k2.7-code',
+    label: 'Kimi K2.7 Code',
+    description: 'Latest K2.7 coding model — strong for code + agentic tool use.',
+    provider: 'kimi',
+    upstreamModel: 'kimi-k2.7-code',
+    tiers: ['balanced'],
+    capabilities: [],
+    supportsVision: false,
+    visibleInPicker: true,
+  },
   // Anthropic Claude — added 2026-05-11. Three tiers mirroring the
   // Claude Code /model picker shape: Opus (most capable, complex work),
   // Sonnet (everyday workhorse), Haiku (fastest, simple tasks). All

@@ -1983,7 +1983,7 @@ function PromptInput({
       key: 'effort-level',
       text: effortNotificationText,
       priority: 'high',
-      timeoutMs: 12_000
+      timeoutMs: Infinity
     });
   }, [effortNotificationText, addNotification, removeNotification]);
   useBuddyNotification();

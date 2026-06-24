@@ -9,18 +9,19 @@ import {
   type EffortLevel,
   type EffortValue,
   getDisplayedEffortLevel,
-  modelSupportsEffort,
 } from '../utils/effort.js'
 
 /**
- * Build the text for the effort-changed notification, e.g. "◐ medium · /effort".
- * Returns undefined if the model doesn't support effort.
+ * Build the text for the effort notification, e.g. "◐ medium · /effort".
+ * Does NOT gate on modelSupportsEffort — the notification serves as persistent
+ * user feedback about the effort setting and is actionable (points to /effort).
+ * getDisplayedEffortLevel handles unsupported models by returning a sensible
+ * default ('high').
  */
 export function getEffortNotificationText(
   effortValue: EffortValue | undefined,
   model: string,
-): string | undefined {
-  if (!modelSupportsEffort(model)) return undefined
+): string {
   const level = getDisplayedEffortLevel(model, effortValue)
   return `${effortLevelToSymbol(level)} ${level} · /effort`
 }

@@ -71,13 +71,45 @@ case "${1:-}" in
   *)
     SELECTED_PROVIDER=""
     SELECTED_MODEL=""
+    # Evolution build-model override: bin/jarvis-automod-impl exports
+    # JARVIS_AUTOMOD_BUILD_MODEL (from ~/.jarvis/auto-mods/build-model) so
+    # autonomous evolution builds can run on a DIFFERENT model than the
+    # interactive CLI / tray pick. Takes precedence over cli-model below.
+    if [ -n "${JARVIS_AUTOMOD_BUILD_MODEL:-}" ]; then
+      case "$JARVIS_AUTOMOD_BUILD_MODEL" in
+        deepseek-chat|deepseek-reasoner|deepseek-v4-flash|deepseek-v4-pro)
+          SELECTED_PROVIDER="deepseek"
+          SELECTED_MODEL="$JARVIS_AUTOMOD_BUILD_MODEL"
+          ;;
+        claude-opus-4-8|claude-sonnet-4-6|claude-haiku-4-5)
+          SELECTED_PROVIDER="anthropic"
+          SELECTED_MODEL="$JARVIS_AUTOMOD_BUILD_MODEL"
+          ;;
+        kimi-k2.7-code|kimi-k2.7-code-highspeed|kimi-k2.6|kimi-k2.6-instant|kimi-k2.6-thinking|kimi-k2.6-agent|kimi-k2.6-swarm)
+          SELECTED_PROVIDER="kimi"
+          SELECTED_MODEL="$JARVIS_AUTOMOD_BUILD_MODEL"
+          ;;
+        qwen/qwen3-32b|llama-3.3-70b-versatile|meta-llama/llama-4-scout-17b-16e-instruct|openai/gpt-oss-120b)
+          SELECTED_PROVIDER="groq"
+          SELECTED_MODEL="$JARVIS_AUTOMOD_BUILD_MODEL"
+          ;;
+      esac
+    fi
     # Tray pick wins over .env.local's JARVIS_PROVIDER so the desktop
     # menu is the source of truth for "what model is JARVIS using".
-    if [ -r "$HOME/.jarvis/cli-model" ]; then
+    if [ -z "$SELECTED_MODEL" ] && [ -r "$HOME/.jarvis/cli-model" ]; then
       _cli_model="$(tr -d '[:space:]' < "$HOME/.jarvis/cli-model")"
       case "$_cli_model" in
         deepseek-chat|deepseek-reasoner|deepseek-v4-flash|deepseek-v4-pro)
           SELECTED_PROVIDER="deepseek"
+          SELECTED_MODEL="$_cli_model"
+          ;;
+        claude-opus-4-8|claude-sonnet-4-6|claude-haiku-4-5)
+          SELECTED_PROVIDER="anthropic"
+          SELECTED_MODEL="$_cli_model"
+          ;;
+        kimi-k2.7-code|kimi-k2.7-code-highspeed|kimi-k2.6|kimi-k2.6-instant|kimi-k2.6-thinking|kimi-k2.6-agent|kimi-k2.6-swarm)
+          SELECTED_PROVIDER="kimi"
           SELECTED_MODEL="$_cli_model"
           ;;
         qwen/qwen3-32b|llama-3.3-70b-versatile|meta-llama/llama-4-scout-17b-16e-instruct|openai/gpt-oss-120b)
