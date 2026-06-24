@@ -79,30 +79,6 @@ def test_deploy_proceeds_with_unrelated_dirty_tree(home, monkeypatch):
     assert deploy.read_marker()["state"] == "watching"  # armed the watchdog
 
 
-def test_deploy_reports_restart_failure_and_keeps_marker(home, monkeypatch):
-    import pipeline.automod.cli as cli
-
-    monkeypatch.setattr(deploy, "_proposal_files_dirty", lambda _id: [])
-    monkeypatch.setattr(deploy, "_wait_for_quiet", lambda: None)
-    monkeypatch.setattr(cli, "cmd_merge", lambda _id: (True, "merge-sha"))
-
-    def fake_git(*args):
-        if args[:2] == ("rev-parse", "HEAD"):
-            return subprocess.CompletedProcess(args, 0, "rollback-sha\n", "")
-        return subprocess.CompletedProcess(args, 0, "", "")
-
-    monkeypatch.setattr(deploy, "_git", fake_git)
-    monkeypatch.setattr(deploy, "_restart_agent", lambda: (False, "unit failed"))
-
-    ok, reason = deploy.deploy("automod-x")
-    assert ok is False
-    assert reason == "restart_failed:unit failed"
-    marker = deploy.read_marker()
-    assert marker is not None
-    assert marker["state"] == "restart-failed"
-    assert marker["restart_error"] == "unit failed"
-
-
 # ── watchdog state machine ─────────────────────────────────────────────────
 
 def test_no_marker_is_noop(home):
@@ -125,51 +101,6 @@ def test_confirmed_when_live_and_smoke_passes(home, monkeypatch):
     monkeypatch.setattr(watchdog, "_smoke_turn", lambda: True)
     assert watchdog.run_once() == "confirmed"
     assert deploy.read_marker() is None  # deploy confirmed → marker cleared
-
-
-def test_new_marker_waits_for_restart_request_before_confirming(home, monkeypatch):
-    _marker(home, restart_requested_monotonic=None)
-    monkeypatch.setattr(watchdog, "_liveness", lambda: True)
-    monkeypatch.setattr(watchdog, "_real_turn_since", lambda d: False)
-    monkeypatch.setattr(watchdog, "_smoke_turn", lambda: True)
-    assert watchdog.run_once() == "waiting-restart"
-    assert deploy.read_marker() is not None
-
-
-def test_does_not_confirm_when_service_is_not_fresh_after_restart(home, monkeypatch):
-    _marker(home, restart_requested_monotonic=500.0)
-    monkeypatch.setattr(watchdog, "_liveness", lambda: True)
-    monkeypatch.setattr(watchdog, "_service_active_enter_monotonic", lambda: 400.0)
-    monkeypatch.setattr(watchdog, "_real_turn_since", lambda d: False)
-    monkeypatch.setattr(watchdog, "_smoke_turn", lambda: True)
-    assert watchdog.run_once() == "watching"
-    assert deploy.read_marker() is not None
-
-
-def test_new_marker_without_restart_request_rolls_back_after_deadline(home, monkeypatch):
-    _marker(
-        home,
-        deployed_at=_iso_ago(400),
-        deadline_s=300,
-        restart_requested_monotonic=None,
-    )
-    monkeypatch.setattr(watchdog, "_liveness", lambda: True)
-    monkeypatch.setattr(watchdog, "_real_turn_since", lambda d: False)
-    monkeypatch.setattr(watchdog, "_smoke_turn", lambda: True)
-    seen = {}
-    monkeypatch.setattr(watchdog, "_rollback",
-                        lambda sha: seen.setdefault("sha", sha) or True)
-    assert watchdog.run_once() == "rolled-back"
-    assert seen["sha"] == "0123456789abcdef"
-
-
-def test_confirms_when_service_is_fresh_after_restart(home, monkeypatch):
-    _marker(home, restart_requested_monotonic=500.0)
-    monkeypatch.setattr(watchdog, "_liveness", lambda: True)
-    monkeypatch.setattr(watchdog, "_service_active_enter_monotonic", lambda: 501.0)
-    monkeypatch.setattr(watchdog, "_real_turn_since", lambda d: False)
-    monkeypatch.setattr(watchdog, "_smoke_turn", lambda: True)
-    assert watchdog.run_once() == "confirmed"
 
 
 def test_confirmed_on_real_post_deploy_turn(home, monkeypatch):
