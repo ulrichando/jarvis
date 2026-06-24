@@ -2244,7 +2244,7 @@ fn main() {
                 // Prefer whichever actually has the manifest.
                 const MANIFEST_REL: &str =
                     "src/desktop-tauri/src-tauri/resources/run-manifest.json";
-                let (root, manifest) = match app
+                let (root, manifest, is_bundled) = match app
                     .path()
                     .resolve(MANIFEST_REL, tauri::path::BaseDirectory::Resource)
                 {
@@ -2253,17 +2253,20 @@ fn main() {
                             .path()
                             .resolve(".", tauri::path::BaseDirectory::Resource)
                             .unwrap_or_else(|_| repo_root());
-                        (res_root, m)
+                        (res_root, m, true)
                     }
                     _ => {
                         let r = repo_root();
                         let m = r.join(MANIFEST_REL);
-                        (r, m)
+                        (r, m, false)
                     }
                 };
                 let mut env_files = _repo_env_files();
                 env_files.push(_keys_file()); // keys.env (~/.jarvis) — present even when installed
-                let sup = supervisor::maybe_start_managed_stack(&root, &manifest, &env_files);
+                // Bundled install defaults the supervisor ON (owns the voice stack);
+                // the dev binary defaults OFF (systemd keeps running it).
+                let sup =
+                    supervisor::maybe_start_managed_stack(&root, &manifest, &env_files, is_bundled);
                 app.manage(Mutex::new(sup));
             }
 

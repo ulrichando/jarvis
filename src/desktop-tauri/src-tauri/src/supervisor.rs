@@ -190,8 +190,17 @@ pub fn maybe_start_managed_stack(
     repo_root: &std::path::Path,
     manifest_path: &std::path::Path,
     env_files: &[std::path::PathBuf],
+    default_on: bool,
 ) -> Option<Supervisor> {
-    if std::env::var("JARVIS_DESKTOP_OWNS_AGENT").as_deref() != Ok("1") {
+    // Explicit env wins; otherwise default ON when bundled (the installed .deb)
+    // and OFF in dev. So the installed app owns the voice stack out of the box,
+    // while the dev binary stays hands-off (systemd keeps running it).
+    let enabled = match std::env::var("JARVIS_DESKTOP_OWNS_AGENT").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => default_on,
+    };
+    if !enabled {
         return None;
     }
     let text = std::fs::read_to_string(manifest_path).ok()?;
@@ -296,13 +305,19 @@ mod tests {
     }
 
     #[test]
-    fn maybe_start_returns_none_when_flag_unset() {
+    fn maybe_start_gate_respects_flag_and_default() {
+        // dev (default_on=false) + flag unset → stays off
         std::env::remove_var("JARVIS_DESKTOP_OWNS_AGENT");
-        let none = maybe_start_managed_stack(
+        assert!(maybe_start_managed_stack(
             std::path::Path::new("/nonexistent-repo"),
             std::path::Path::new("/nonexistent-manifest.json"),
-            &[],
-        );
-        assert!(none.is_none());
+            &[], false).is_none());
+        // bundled (default_on=true) but explicit "0" → explicit wins, stays off
+        std::env::set_var("JARVIS_DESKTOP_OWNS_AGENT", "0");
+        assert!(maybe_start_managed_stack(
+            std::path::Path::new("/nonexistent-repo"),
+            std::path::Path::new("/nonexistent-manifest.json"),
+            &[], true).is_none());
+        std::env::remove_var("JARVIS_DESKTOP_OWNS_AGENT");
     }
 }
