@@ -17,6 +17,7 @@
     "start": "concurrently -n next,pty -c blue,magenta \"next start -H 127.0.0.1\" \"node scripts/pty-server.mjs\"",
     "start:container": "concurrently -k -n next,pty -c blue,magenta \"next start -H 0.0.0.0\" \"node scripts/pty-server.mjs\"",
     "lint": "eslint",
+    "postinstall": "npm rebuild better-sqlite3",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:ui": "vitest --ui"
