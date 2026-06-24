@@ -66,12 +66,13 @@ def cmd_show(automod_id: str) -> dict:
 
 
 def cmd_merge(automod_id: str) -> tuple[bool, str]:
-    """git merge --ff-only the automod branch into master.
+    """Cherry-pick the automod branch's commit(s) onto master.
 
-    Third defence layer: re-validates the diff at merge time (after
-    spawner prompt + finalize check). Aborts on non-ff so there are
-    never merge commits from auto-mod. On success: updates artifact
-    status to "merged" and writes an audit record.
+    Third defence layer: re-validates the diff at merge time (against the
+    proposal's pinned base, after spawner prompt + finalize check). Cherry-picks
+    rather than ff-merges so a proposal still deploys after master advances past
+    its base (concurrent commits) — linear history, no merge commit. On success:
+    updates artifact status to "merged" and writes an audit record.
 
     Returns (True, merge_sha) or (False, reason_str).
     Refuses to merge if artifact status != "pending".
@@ -84,8 +85,12 @@ def cmd_merge(automod_id: str) -> tuple[bool, str]:
 
     branch = art["branch"]
 
-    # Re-validate the diff (3rd defence layer).
-    diff = _git("diff", f"master..{branch}").stdout
+    # Re-validate the diff (3rd defence layer). THREE-dot (master...branch) =
+    # the branch's changes since its merge-base with master — i.e. ONLY the
+    # proposal's own changes, immune to master advancing between build and deploy.
+    # (Two-dot master..branch would sweep in master's later commits and bogusly
+    # fail the gate — the moving-base bug also fixed in finalize/spawner.)
+    diff = _git("diff", f"master...{branch}").stdout
     ok, reason = test_gate.validate_diff(diff)
     if not ok:
         return False, f"diff_validation_failed:{reason}"
@@ -94,9 +99,16 @@ def cmd_merge(automod_id: str) -> tuple[bool, str]:
     if co.returncode != 0:
         return False, f"checkout_failed:{co.stderr.strip()}"
 
-    merge = _git("merge", "--ff-only", branch)
-    if merge.returncode != 0:
-        return False, f"ff_only_aborted: {merge.stderr.strip()}"
+    # Apply the proposal's commits (those unique to the branch, master..branch)
+    # onto CURRENT master via cherry-pick. ff-only cannot fast-forward once master
+    # has moved past the proposal's base (the "merge failed" seen live); cherry-
+    # pick replays just the proposal's commits on top — linear history, no merge
+    # commit, tolerant of an unrelated-dirty tree (verified 2026-06-23). Aborts
+    # cleanly if master changed the proposal's OWN files (a real conflict).
+    cp = _git("cherry-pick", f"master..{branch}")
+    if cp.returncode != 0:
+        _git("cherry-pick", "--abort")
+        return False, f"cherry_pick_aborted: {cp.stderr.strip()}"
 
     merge_sha = _git("rev-parse", "HEAD").stdout.strip()
     artifact.update_status(
@@ -129,6 +141,24 @@ def cmd_reject(automod_id: str, reason: str) -> None:
         rejection_reason=reason,
     )
     artifact.audit("automod_rejected", id=automod_id, reason=reason)
+
+
+def cmd_dismiss(automod_id: str) -> bool:
+    """Drop a not-yet-built intent from the queue. Returns True if removed.
+
+    For intents still in queue.jsonl (never spawned into a branch/artifact) —
+    the queued-stage counterpart to `reject`. Reuses the spawner's locked
+    read/write so it can't race a concurrent drain.
+    """
+    from pipeline.automod.spawner import _global_lock, _read_queue, _write_queue
+    with _global_lock():
+        queue = _read_queue()
+        remaining = [r for r in queue if r.get("id") != automod_id]
+        if len(remaining) == len(queue):
+            return False
+        _write_queue(remaining)
+    artifact.audit("automod_dismissed", id=automod_id, reason="dismissed from review UI")
+    return True
 
 
 def cmd_revert(commit_sha: str) -> tuple[bool, str]:
@@ -271,6 +301,7 @@ def main(argv: list[str]) -> int:
       show <id>
       merge <id>
       reject <id> <reason...>
+      dismiss <id>
       revert <sha>
 
     Returns 0 on success, 1 on operational error, 2 on usage error.
@@ -278,7 +309,7 @@ def main(argv: list[str]) -> int:
     if len(argv) < 2:
         print(
             "usage: jarvis-automod "
-            "<list|show|merge|deploy|publish|reject|revert> [args]",
+            "<list|show|merge|deploy|publish|reject|dismiss|revert> [args]",
             file=sys.stderr,
         )
         return 2
@@ -357,6 +388,16 @@ def main(argv: list[str]) -> int:
         cmd_reject(argv[2], " ".join(argv[3:]))
         print("Rejected.")
         return 0
+
+    if cmd == "dismiss":
+        if len(argv) < 3:
+            print("usage: jarvis-automod dismiss <id>", file=sys.stderr)
+            return 2
+        if cmd_dismiss(argv[2]):
+            print("Dismissed.")
+            return 0
+        print("Not found in queue.", file=sys.stderr)
+        return 1
 
     if cmd == "revert":
         if len(argv) < 3:

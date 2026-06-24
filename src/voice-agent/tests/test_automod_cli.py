@@ -126,7 +126,9 @@ def test_merge_ff_only_succeeds_on_clean_branch(tmp_path, monkeypatch):
     assert art["merge_sha"]
 
 
-def test_merge_aborts_on_non_ff(tmp_path, monkeypatch):
+def test_merge_succeeds_on_divergent_master(tmp_path, monkeypatch):
+    """master advancing on UNRELATED files no longer blocks the merge — the
+    proposal is cherry-picked on top (was ff-only → aborted). 2026-06-23."""
     monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -143,7 +145,7 @@ def test_merge_aborts_on_non_ff(tmp_path, monkeypatch):
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-qm", "branch"], cwd=repo, check=True)
     subprocess.run(["git", "checkout", "master"], cwd=repo, check=True)
-    # Diverge master
+    # Diverge master on an UNRELATED file (ff-only would abort here).
     (repo / "src" / "voice-agent" / "other.md").write_text("c\n")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-qm", "diverge"], cwd=repo, check=True)
@@ -151,9 +153,46 @@ def test_merge_aborts_on_non_ff(tmp_path, monkeypatch):
     _seed_artifact(tmp_path, "automod-2026-05-24-id1")
 
     from pipeline.automod import cli
+    ok, info = cli.cmd_merge("automod-2026-05-24-id1")
+    assert ok, info                                  # cherry-pick handles divergence
+    assert f.read_text() == "b\n"                    # proposal applied
+    assert (repo / "src" / "voice-agent" / "other.md").read_text() == "c\n"  # master's move kept
+
+
+def test_merge_aborts_on_conflict(tmp_path, monkeypatch):
+    """If master changed the proposal's OWN file, the cherry-pick conflicts and
+    aborts cleanly (a real conflict that needs a human)."""
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "master"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "src" / "voice-agent" / "prompts").mkdir(parents=True)
+    f = repo / "src" / "voice-agent" / "prompts" / "supervisor.md"
+    f.write_text("a\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    subprocess.run(["git", "checkout", "-qb", "automod/automod-2026-05-24-id1"], cwd=repo, check=True)
+    f.write_text("b\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "branch"], cwd=repo, check=True)
+    subprocess.run(["git", "checkout", "master"], cwd=repo, check=True)
+    # Master changes the SAME file → cherry-pick conflict.
+    f.write_text("z\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "conflict"], cwd=repo, check=True)
+    monkeypatch.chdir(repo)
+    _seed_artifact(tmp_path, "automod-2026-05-24-id1")
+
+    from pipeline.automod import cli
     ok, reason = cli.cmd_merge("automod-2026-05-24-id1")
     assert not ok
-    assert "ff" in reason.lower() or "fast" in reason.lower()
+    assert "cherry" in reason.lower() or "conflict" in reason.lower()
+    # the abort must leave the tree clean (no half-applied cherry-pick)
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=repo,
+                            capture_output=True, text=True).stdout
+    assert "UU" not in status and "AA" not in status
 
 
 def test_merge_refuses_non_pending_artifact(tmp_path, monkeypatch):
