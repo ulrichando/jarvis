@@ -2238,11 +2238,31 @@ fn main() {
             // managed state so the RunEvent::ExitRequested handler can stop it.
             // Spec: docs/superpowers/specs/2026-06-24-unified-local-app-design.md
             {
-                let root = repo_root();
-                let manifest =
-                    root.join("src/desktop-tauri/src-tauri/resources/run-manifest.json");
+                // Phase 2: when installed, assets are staged under the Tauri
+                // resource dir mirroring the repo's `src/...` layout, so the SAME
+                // run-manifest resolves in both contexts. Dev: the repo tree.
+                // Prefer whichever actually has the manifest.
+                const MANIFEST_REL: &str =
+                    "src/desktop-tauri/src-tauri/resources/run-manifest.json";
+                let (root, manifest) = match app
+                    .path()
+                    .resolve(MANIFEST_REL, tauri::path::BaseDirectory::Resource)
+                {
+                    Ok(m) if m.exists() => {
+                        let res_root = app
+                            .path()
+                            .resolve(".", tauri::path::BaseDirectory::Resource)
+                            .unwrap_or_else(|_| repo_root());
+                        (res_root, m)
+                    }
+                    _ => {
+                        let r = repo_root();
+                        let m = r.join(MANIFEST_REL);
+                        (r, m)
+                    }
+                };
                 let mut env_files = _repo_env_files();
-                env_files.push(_keys_file()); // keys.env last = highest priority
+                env_files.push(_keys_file()); // keys.env (~/.jarvis) — present even when installed
                 let sup = supervisor::maybe_start_managed_stack(&root, &manifest, &env_files);
                 app.manage(Mutex::new(sup));
             }
