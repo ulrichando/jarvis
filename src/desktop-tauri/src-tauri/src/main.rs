@@ -12,6 +12,7 @@ use tauri_plugin_opener::OpenerExt;
 
 pub mod kiosk;
 pub mod tray_kiosk;
+mod supervisor;
 
 /// Shared chat-open state between the tray menu and JS. React calls
 /// `set_chat_state` from `openChat`/`closeChat` so the Rust-side toggle
@@ -2231,6 +2232,21 @@ fn main() {
             let window = app.get_webview_window("main").unwrap();
             let window_for_poll = window.clone();
 
+            // Unified-app Phase 0/1: spawn + supervise the voice stack ourselves
+            // when JARVIS_DESKTOP_OWNS_AGENT=1; otherwise the systemd service
+            // stays in charge (default OFF). The returned Supervisor is held in
+            // managed state so the RunEvent::ExitRequested handler can stop it.
+            // Spec: docs/superpowers/specs/2026-06-24-unified-local-app-design.md
+            {
+                let root = repo_root();
+                let manifest =
+                    root.join("src/desktop-tauri/src-tauri/resources/run-manifest.json");
+                let mut env_files = _repo_env_files();
+                env_files.push(_keys_file()); // keys.env last = highest priority
+                let sup = supervisor::maybe_start_managed_stack(&root, &manifest, &env_files);
+                app.manage(Mutex::new(sup));
+            }
+
             // Inject the local API bearer token into the webview as a
             // global. ChatPanel.jsx reads window.__JARVIS_LOCAL_API_TOKEN
             // and adds it to fetch() Authorization headers + WS query
@@ -3194,6 +3210,21 @@ fn main() {
             kiosk::close_chat_window,
             get_active_mode,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // Unified-app Phase 0/1: stop any processes the supervisor started
+            // (no-op when JARVIS_DESKTOP_OWNS_AGENT was OFF — state holds None).
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                if let Some(state) =
+                    app_handle.try_state::<Mutex<Option<supervisor::Supervisor>>>()
+                {
+                    if let Ok(mut guard) = state.lock() {
+                        if let Some(sup) = guard.as_mut() {
+                            sup.stop_all();
+                        }
+                    }
+                }
+            }
+        });
 }
