@@ -70,6 +70,17 @@ def test_rejects_blocked_path_confab_detector():
     assert not ok
 
 
+def test_rejects_evolution_fitness_gate_edits():
+    from pipeline.automod.test_gate import validate_diff
+    diff = (
+        "diff --git a/src/voice-agent/evolution/fitness.py b/src/voice-agent/evolution/fitness.py\n"
+        "--- a/x\n+++ b/x\n@@\n-WEIGHTS = {}\n+WEIGHTS = {'latency': 1.0}\n"
+    )
+    ok, reason = validate_diff(diff)
+    assert not ok
+    assert "evolution" in reason
+
+
 def test_rejects_test_deletion():
     from pipeline.automod.test_gate import validate_diff
     diff = (

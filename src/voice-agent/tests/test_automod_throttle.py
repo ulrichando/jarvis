@@ -26,6 +26,13 @@ def test_admit_clean_intent(tmp_path, monkeypatch):
     assert ok, reason
 
 
+def test_default_daily_cap_is_five(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    monkeypatch.delenv("JARVIS_AUTOMOD_DAILY_CAP", raising=False)
+    from pipeline.automod import throttle
+    assert throttle.daily_cap() == 5
+
+
 def test_reject_empty_intent(tmp_path, monkeypatch):
     monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
     from pipeline.automod import throttle
