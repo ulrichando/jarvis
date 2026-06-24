@@ -195,12 +195,8 @@ pub fn maybe_start_managed_stack(
     // Explicit env wins; otherwise default ON when bundled (the installed .deb)
     // and OFF in dev. So the installed app owns the voice stack out of the box,
     // while the dev binary stays hands-off (systemd keeps running it).
-    let enabled = match std::env::var("JARVIS_DESKTOP_OWNS_AGENT").as_deref() {
-        Ok("1") => true,
-        Ok("0") => false,
-        _ => default_on,
-    };
-    if !enabled {
+    let flag = std::env::var("JARVIS_DESKTOP_OWNS_AGENT").ok();
+    if !gate_enabled(flag.as_deref(), default_on) {
         return None;
     }
     let text = std::fs::read_to_string(manifest_path).ok()?;
@@ -222,6 +218,17 @@ pub fn maybe_start_managed_stack(
         }
     }
     Some(sup)
+}
+
+/// Decide whether the supervisor should run: an explicit `JARVIS_DESKTOP_OWNS_AGENT`
+/// value ("1"/"0") wins; otherwise fall back to `default_on` (ON for a bundled
+/// install, OFF in dev). Pure → unit-tested without touching the environment.
+pub(crate) fn gate_enabled(env_val: Option<&str>, default_on: bool) -> bool {
+    match env_val {
+        Some("1") => true,
+        Some("0") => false,
+        _ => default_on,
+    }
 }
 
 #[cfg(test)]
@@ -305,19 +312,11 @@ mod tests {
     }
 
     #[test]
-    fn maybe_start_gate_respects_flag_and_default() {
-        // dev (default_on=false) + flag unset → stays off
-        std::env::remove_var("JARVIS_DESKTOP_OWNS_AGENT");
-        assert!(maybe_start_managed_stack(
-            std::path::Path::new("/nonexistent-repo"),
-            std::path::Path::new("/nonexistent-manifest.json"),
-            &[], false).is_none());
-        // bundled (default_on=true) but explicit "0" → explicit wins, stays off
-        std::env::set_var("JARVIS_DESKTOP_OWNS_AGENT", "0");
-        assert!(maybe_start_managed_stack(
-            std::path::Path::new("/nonexistent-repo"),
-            std::path::Path::new("/nonexistent-manifest.json"),
-            &[], true).is_none());
-        std::env::remove_var("JARVIS_DESKTOP_OWNS_AGENT");
+    fn gate_enabled_logic() {
+        assert!(gate_enabled(Some("1"), false)); // explicit ON
+        assert!(!gate_enabled(Some("0"), true)); // explicit OFF beats bundled-default
+        assert!(gate_enabled(None, true)); // bundled install → default ON (the ship-polish behavior)
+        assert!(!gate_enabled(None, false)); // dev → default OFF
+        assert!(gate_enabled(Some("yes"), true)); // unknown value → falls back to default
     }
 }
