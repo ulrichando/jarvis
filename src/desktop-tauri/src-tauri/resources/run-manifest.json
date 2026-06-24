@@ -1,0 +1,20 @@
+{
+  "_comment": "Managed processes the desktop spawns when JARVIS_DESKTOP_OWNS_AGENT=1 (Phase 0/1 of the unified-app design). command/cwd are repo-root-relative (resolved by supervisor::maybe_start_managed_stack); args are NOT resolved, so paths in args are relative to the process cwd. The SFU declares a health_addr (port gate); the voice-agent has none — its real health is a smoke turn, proven manually.",
+  "processes": [
+    {
+      "name": "livekit-sfu",
+      "command": "./src/voice-agent/livekit-server.bin",
+      "args": ["--config", "livekit.yaml"],
+      "cwd": "src/voice-agent",
+      "health_addr": "127.0.0.1:7880",
+      "order": 1
+    },
+    {
+      "name": "voice-agent",
+      "command": "./src/voice-agent/.venv/bin/python",
+      "args": ["jarvis_agent.py", "start"],
+      "cwd": "src/voice-agent",
+      "order": 2
+    }
+  ]
+}
