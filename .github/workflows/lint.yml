@@ -109,6 +109,17 @@ jobs:
         working-directory: src/web
         run: bun install
 
+      # Next 16 emits the global RouteContext/PageProps types into .next/types
+      # during build/dev. A bare `tsc` in CI lacks them → ~15 false TS2304
+      # "Cannot find name 'RouteContext'/'PageProps'" errors across routes/pages.
+      # Generate them first. Dummy DATABASE_URL so any module-load auth.ts
+      # construction during typegen doesn't throw (the client is lazy — no connect).
+      - name: generate Next route types
+        working-directory: src/web
+        env:
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+        run: bunx next typegen
+
       - name: tsc --noEmit
         working-directory: src/web
         run: bunx tsc --noEmit
