@@ -6,9 +6,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$SCRIPT_DIR/.."
-PROJECT_ROOT="$(cd "$ROOT/../.." && pwd)"
-BUN="$SCRIPT_DIR/bunw.sh"
+# Relocated out of src/cli/scripts/ → bin/_internal/ (2026-06-24). This is a
+# whole-stack launcher (proxy + bridge + voice + desktop), so it belongs in
+# top-level bin/, not buried in the CLI tree. It still DRIVES the CLI tree
+# (its proxy + bridge + bun wrapper), now reached via $CLI_ROOT.
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"   # bin/_internal/../.. = repo root
+CLI_ROOT="$PROJECT_ROOT/src/cli"                  # the CLI tree this launcher drives
+BUN="$CLI_ROOT/scripts/bunw.sh"
 DESKTOP_BIN_RELEASE="$PROJECT_ROOT/src/desktop-tauri/src-tauri/target/release/jarvis-desktop"
 DESKTOP_BIN_DEBUG="$PROJECT_ROOT/src/desktop-tauri/src-tauri/target/debug/jarvis-desktop"
 if [ -x "$DESKTOP_BIN_RELEASE" ]; then
@@ -21,7 +25,7 @@ fi
 #   1) repo-root .env       — centralized LLM provider keys
 #                             (consolidated 2026-05-15)
 #   2) .env.local            — per-machine overlay (proxy flags etc.)
-for envfile in "$PROJECT_ROOT/.env" "$ROOT/.env.local"; do
+for envfile in "$PROJECT_ROOT/.env" "$CLI_ROOT/.env.local"; do
   if [ -f "$envfile" ]; then
     set -a
     source "$envfile"
@@ -179,7 +183,7 @@ done
   PROXY_RESTARTS=0
   PROXY_WINDOW_START=$(date +%s)
   while true; do
-    "$BUN" "$ROOT/src/proxy/server.ts" >>/tmp/jarvis-proxy.log 2>&1 &
+    "$BUN" "$CLI_ROOT/src/proxy/server.ts" >>/tmp/jarvis-proxy.log 2>&1 &
     PROXY_CHILD=$!
     # Forward SIGTERM/SIGINT from the parent's EXIT trap to the bun
     # child so the tree dies cleanly on Quit. `wait` is signal-
@@ -212,7 +216,7 @@ done
 echo "[jarvis] proxy up on :4000 (provider: $JARVIS_PROVIDER, supervised pid=$PROXY_SUP_PID)"
 
 # ── Start bridge (8765) ───────────────────────────────────────────────
-"$BUN" "$ROOT/src/bridge/server.ts" &>/tmp/jarvis-bridge.log &
+"$BUN" "$CLI_ROOT/src/bridge/server.ts" &>/tmp/jarvis-bridge.log &
 BRIDGE_PID=$!
 
 for i in $(seq 1 15); do

@@ -2,4 +2,5 @@
 # Global launcher for Jarvis Desktop
 # Usage: jarvis-desktop [deepseek|groq|openai|gemini|ollama]
 
-exec bash /home/ulrich/Documents/Projects/jarvis/src/cli/scripts/start-desktop.sh "$@"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bash "$HERE/_internal/start-desktop.sh" "$@"
