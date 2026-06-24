@@ -58,6 +58,7 @@ import {
   ArtifactSidePanel,
   type PanelArtifact,
 } from "@/components/artifacts/artifact-side-panel";
+import { ArtifactChatCard } from "@/components/artifacts/artifact-chat-card";
 import { useConversationArtifacts } from "@/hooks/use-artifacts";
 import { ScaffoldPicker } from "@/components/workbench/scaffold-picker";
 
@@ -440,6 +441,7 @@ export function Chat({
         kind: ArtifactKind;
         language?: string | null;
         content: string;
+        messageId: string;
       }
     >
   >(() => new Map());
@@ -917,6 +919,7 @@ export function Chat({
           kind: a.kind,
           language: a.language,
           content: "",
+          messageId: a.messageId,
         });
         setActiveArtifactSlug(a.slug);
         setArtifactPanelOpen(true);
@@ -929,6 +932,7 @@ export function Chat({
           kind: a.kind,
           language: a.language,
           content: a.content,
+          messageId: a.messageId,
         });
         scheduleJarvisFlush();
       },
@@ -939,6 +943,7 @@ export function Chat({
           kind: a.kind,
           language: a.language,
           content: a.content,
+          messageId: a.messageId,
         });
         scheduleJarvisFlush();
       },
@@ -1023,6 +1028,13 @@ export function Chat({
       });
     };
 
+    // Conversation id for THIS submit. Starts as the prop, but once the first
+    // turn returns X-Conversation-Id we pin it locally so auto-continue turns
+    // extend the SAME conversation. Without this, a new chat (chatId starts
+    // undefined) re-sent id:undefined on the continuation → a second
+    // "Continue your previous output" chat appeared (the "two chats" bug).
+    let convId = chatId;
+
     // One pass through fetch + stream-consume. Returns whether the stream
     // ended with finishReason="length" (= the model hit its token cap and
     // we should fire a continuation). Returns null on hard error / abort,
@@ -1047,7 +1059,7 @@ export function Chat({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          id: chatId,
+          id: convId,
           // DeepThink → DeepSeek's reasoning model (the exa-deepseek-chat pattern).
           model:
             turnTogglesRef.current.deepthink && model.startsWith("deepseek")
@@ -1069,7 +1081,10 @@ export function Chat({
       // Capture the server-assigned conversation ID so the parent can
       // persist it (per-workspace) and reload on refresh.
       const cid = res.headers.get("X-Conversation-Id");
-      if (cid && onConversationId) onConversationId(cid);
+      if (cid) {
+        convId = cid; // pin so auto-continue turns extend THIS conversation
+        if (onConversationId) onConversationId(cid);
+      }
       // Standalone /chat: sync the URL to /chat/<id> after the first
       // message so refresh / back / share keep the open thread. Uses
       // replaceState (not a Next navigation) so the in-flight stream
@@ -1888,6 +1903,50 @@ export function Chat({
   const showReopenPill =
     !embedded && !artifactPanelOpen && panelArtifacts.length > 0;
 
+  // claude.ai-style inline cards: which artifacts each assistant turn
+  // produced/updated, so Thread can render a clickable card under that
+  // message (live this session, or from the persisted version's messageId).
+  const jarvisCardsByMessage = useMemo(() => {
+    const out = new Map<
+      string,
+      { slug: string; title: string; kind: ArtifactKind }[]
+    >();
+    const add = (
+      mid: string | null | undefined,
+      card: { slug: string; title: string; kind: ArtifactKind },
+    ) => {
+      if (!mid) return;
+      const arr = out.get(mid) ?? [];
+      if (!arr.some((c) => c.slug === card.slug)) arr.push(card);
+      out.set(mid, arr);
+    };
+    for (const a of persistedArtifacts ?? [])
+      add(a.versions.at(-1)?.messageId, {
+        slug: a.slug,
+        title: a.title,
+        kind: a.kind,
+      });
+    for (const [, l] of liveArtifacts)
+      add(l.messageId, { slug: l.slug, title: l.title, kind: l.kind });
+    return out;
+  }, [persistedArtifacts, liveArtifacts]);
+
+  const renderJarvisCards = (messageId: string) => {
+    const cards = jarvisCardsByMessage.get(messageId);
+    if (!cards || cards.length === 0) return null;
+    return cards.map((c) => (
+      <ArtifactChatCard
+        key={c.slug}
+        title={c.title}
+        kind={c.kind}
+        onOpen={() => {
+          setActiveArtifactSlug(c.slug);
+          setArtifactPanelOpen(true);
+        }}
+      />
+    ));
+  };
+
   // Follow ASYNC height growth to the bottom while the user is stuck. Thread's
   // auto-scroll only fires on `messages` changes — so content that grows the
   // height WITHOUT a messages change (a generated <img> finishing its load, a
@@ -2160,6 +2219,7 @@ export function Chat({
               embedded={embedded}
             />
           )}
+          renderJarvisCards={embedded ? undefined : renderJarvisCards}
         />
         <ScrollToBottomPill visible={!isAtBottom} onClick={scrollToBottom} />
       </div>

@@ -91,6 +91,7 @@ export function Thread({
   isStreaming,
   artifacts,
   renderArtifacts,
+  renderJarvisCards,
   reasoningById,
   planById,
   usageById,
@@ -113,6 +114,9 @@ export function Thread({
   // chat.tsx inject the workspace-level props (workspaceId, name,
   // previewPort, embedded) once; Thread provides the filtered cards.
   renderArtifacts?: (cards: Map<string, ArtifactCard>) => React.ReactNode;
+  // claude.ai-style inline card(s) for System B (<jarvisArtifact>) artifacts
+  // a turn produced — clickable to open the side panel. Keyed by message id.
+  renderJarvisCards?: (messageId: string) => React.ReactNode;
   reasoningById?: Map<string, string>;
   planById?: Map<string, { content: string; complete: boolean }>;
   usageById?: Map<
@@ -267,6 +271,9 @@ export function Thread({
             />
             {cards && cards.size > 0 && renderArtifacts
               ? renderArtifacts(cards)
+              : null}
+            {m.role === "assistant" && renderJarvisCards
+              ? renderJarvisCards(m.id)
               : null}
             {verifyOutcome && m.role === "assistant" && (
               <VerifyPill

@@ -33,6 +33,23 @@ export const ARTIFACT_IMPORT_MAP = {
     clsx: "https://esm.sh/clsx@2",
     "date-fns": "https://esm.sh/date-fns@4",
     zustand: "https://esm.sh/zustand@5?deps=react@18.3.1",
+    // Common app stacks (Framer Motion above). Pinned to our React where
+    // relevant. NOTE: any other bare import the model writes still resolves —
+    // the React bundler rewrites ALL bare specifiers to esm.sh; these entries
+    // are for HTML artifacts + version pinning.
+    "@base-ui/react": "https://esm.sh/@base-ui-components/react?deps=react@18.3.1",
+    "@base-ui/react/": "https://esm.sh/@base-ui-components/react/",
+    "@base-ui-components/react":
+      "https://esm.sh/@base-ui-components/react?deps=react@18.3.1",
+    "swagger-ui-react": "https://esm.sh/swagger-ui-react?deps=react@18.3.1",
+    "@monaco-editor/react":
+      "https://esm.sh/@monaco-editor/react@4?deps=react@18.3.1",
+    "monaco-editor": "https://esm.sh/monaco-editor@0.52",
+    "monaco-editor/": "https://esm.sh/monaco-editor@0.52/",
+    "core-js": "https://esm.sh/core-js@3",
+    "core-js/": "https://esm.sh/core-js@3/",
+    "@datadog/browser-rum": "https://esm.sh/@datadog/browser-rum@5",
+    "@segment/analytics-next": "https://esm.sh/@segment/analytics-next@1",
   },
 } as const;
 
@@ -130,5 +147,12 @@ export function buildSvgDoc(svg: string): string {
 </head><body>${svg}</body></html>`;
 }
 
+// SECURITY: deliberately NO `allow-same-origin`. A srcdoc iframe with
+// allow-scripts + allow-same-origin runs in the PARENT's origin and could
+// read JARVIS cookies / call authed APIs (XSS / account takeover). Without
+// it the iframe gets a unique opaque origin — isolated from the app. The
+// window.jarvis bridge works over postMessage (cross-origin), esm.sh/Tailwind
+// load fine (CORS), so nothing here needs same-origin. Trade-off: artifacts
+// can't use localStorage/cookies (acceptable; would need a dedicated origin).
 export const ARTIFACT_IFRAME_SANDBOX =
-  "allow-scripts allow-same-origin allow-forms allow-popups";
+  "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox";

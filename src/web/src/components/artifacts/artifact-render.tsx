@@ -141,31 +141,47 @@ function ReactPreview({
       return;
     }
     let alive = true;
-    setLoading(true);
     setError(null);
-    fetch("/api/artifacts/bundle", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ source }),
-    })
-      .then(async (r) => {
-        if (!r.ok) throw new Error((await r.text()) || `bundle ${r.status}`);
-        return r.text();
+    // Debounce: while the artifact streams, `source` changes on every chunk
+    // and is usually mid-write (an unterminated string/regex). Bundling that
+    // flickered build errors. Wait ~500ms for the source to settle, then
+    // bundle once. We DON'T flip back to the spinner here, so an already-
+    // rendered preview keeps showing while a revision re-bundles.
+    const timer = setTimeout(() => {
+      fetch("/api/artifacts/bundle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source }),
       })
-      .then((text) => {
-        if (alive) {
-          setJs(text);
-          setLoading(false);
-        }
-      })
-      .catch((e) => {
-        if (alive) {
-          setError(String(e?.message ?? e));
-          setLoading(false);
-        }
-      });
+        .then(async (r) => {
+          if (!r.ok) throw new Error((await r.text()) || `bundle ${r.status}`);
+          return r.text();
+        })
+        .then((text) => {
+          if (alive) {
+            setJs(text);
+            setError(null);
+            setLoading(false);
+          }
+        })
+        .catch((e) => {
+          if (!alive) return;
+          const msg = String(e?.message ?? e);
+          // "Unterminated string/regexp", "unexpected end of file" → the
+          // source is still mid-stream (or was truncated). Keep showing
+          // "Building…" instead of flashing a red error; the next settled
+          // bundle renders it. Only surface genuine errors.
+          if (/unterminated|unexpected end|end of (file|input)/i.test(msg)) {
+            setLoading(true);
+          } else {
+            setError(msg);
+            setLoading(false);
+          }
+        });
+    }, 500);
     return () => {
       alive = false;
+      clearTimeout(timer);
     };
   }, [source, bundledJs]);
 

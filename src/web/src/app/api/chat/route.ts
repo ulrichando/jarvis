@@ -687,7 +687,11 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
   };
   const meta = MODELS_META[modelId];
   const providerCap = meta ? PROVIDER_MAX_OUTPUT[meta.provider] : undefined;
-  const desired = workspaceId ? 32768 : 4096;
+  // Plain chat raised from 4096 → 16384: artifacts (React apps, docs) routinely
+  // exceed 4096 output tokens and were truncating mid-string ("unterminated
+  // string literal" on bundle). The cap is a ceiling, not a target — short
+  // replies are unaffected. Workspace builds keep the larger 32768.
+  const desired = workspaceId ? 32768 : 16384;
   const maxOutputTokens = providerCap ? Math.min(desired, providerCap) : desired;
 
   // eslint-disable-next-line no-console
