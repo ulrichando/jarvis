@@ -93,13 +93,17 @@ def test_blocklist_includes_automod_wrappers():
     from pipeline.automod._state import HARD_BLOCKLIST_PATHS
     assert "bin/jarvis-automod-impl" in HARD_BLOCKLIST_PATHS
     assert "bin/jarvis-automod" in HARD_BLOCKLIST_PATHS
+    assert "bin/jarvis-evolution-ondemand" in HARD_BLOCKLIST_PATHS
+    assert "src/voice-agent/evolution/" in HARD_BLOCKLIST_PATHS
 
 
 def test_is_blocked_path_rejects_wrapper_edits():
-    """The is_blocked_path helper should return True for the wrappers."""
+    """The is_blocked_path helper should return True for protected machinery."""
     from pipeline.automod._state import is_blocked_path
     assert is_blocked_path("bin/jarvis-automod-impl") is True
     assert is_blocked_path("bin/jarvis-automod") is True
+    assert is_blocked_path("bin/jarvis-evolution-ondemand") is True
+    assert is_blocked_path("src/voice-agent/evolution/fitness.py") is True
 
 
 def test_revert_by_automod_id_reads_rollback_ref(automod_home):

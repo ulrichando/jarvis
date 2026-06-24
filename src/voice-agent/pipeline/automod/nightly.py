@@ -1,36 +1,34 @@
-"""Nightly self-evolution trigger — JARVIS proposes improvements while you sleep.
+"""Self-evolution trigger — JARVIS proposes improvements when there is work.
 
-Drives the existing pipeline in a quiet window, **proposal-only** (never merges,
-never deploys, never restarts anything):
+Drives the existing pipeline periodically in AUTO mode, **proposal-only** (never
+merges, never deploys, never restarts anything):
 
-    detector (patterns.scan_and_emit)            → queue.jsonl
-    → spawner.drain_queue (gated SPAWN_LIVE)      → proposal branches + artifacts
-    → publish (gated AUTOPUBLISH)                 → GitHub PRs for review
+    evolution cycle (detect -> self-assess -> priority queue -> build/retry)
+    -> publish (gated AUTOPUBLISH)                -> GitHub PRs for review
 
 Deploy happens ONLY later, when you approve a proposal in /evolution — and even
 then the Phase-1 watchdog auto-rolls-back anything unhealthy.
 
 Guards (skip the run):
+  * manual mode is active (AUTO flag absent),
   * an active-deploy marker exists (a deploy is mid-verification), or
   * you were recently active (a turn within JARVIS_EVOLUTION_NIGHTLY_TURN_GUARD_S)
-    — the nightly is for when you're away.
+    — proposal generation is for quiet gaps.
 
-Conservative by default — SHADOW mode:
-  * the detector always runs (harmless: just records candidate intents), but
-  * the coding-agent spawn is OFF unless ``JARVIS_AUTOMOD_SPAWN_LIVE=1``, and
-  * auto-opening PRs is OFF unless ``JARVIS_EVOLUTION_AUTOPUBLISH=1``.
-So installing/enabling the timer does nothing risky until you flip those.
+Conservative by default: installing/enabling the timer does nothing beyond
+logging "manual-mode" until the web /evolution page or state file enables AUTO.
 
-Run by ``jarvis-evolution-nightly.timer``; safe to run by hand.
+Run by ``jarvis-evolution-nightly.timer`` (historical name); safe to run by hand.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from typing import Any, Dict
 
 from pipeline.automod import deploy as _deploy
+from pipeline.automod import _state
+from pipeline.automod import fault_boundary
 
 logger = logging.getLogger("jarvis.automod.nightly")
 
@@ -47,6 +45,7 @@ def _autopublish() -> bool:
     return os.environ.get("JARVIS_EVOLUTION_AUTOPUBLISH", "0") == "1"
 
 
+@fault_boundary.supervised("nightly_run", fallback=lambda: {"crashed": True})
 def run() -> Dict[str, Any]:
     """One nightly pass. Returns a small summary dict (also for logs/tests).
 
@@ -57,72 +56,33 @@ def run() -> Dict[str, Any]:
         logger.info("[nightly] active-deploy marker present — skipping")
         return {"skipped": "deploy-in-flight"}
 
-    # Guard 2: only run when you're away.
+    # Guard 2: manual mode is the default. The timer may be enabled, but it
+    # only builds proposals when AUTO mode is explicitly selected.
+    if not _state.is_auto_mode():
+        logger.info("[nightly] manual mode — skipping automatic cycle")
+        return {"skipped": "manual-mode", "mode": "manual"}
+
+    # Guard 3: only run when you're away.
     if _user_recently_active():
         logger.info("[nightly] a turn fired within %ds — user active, skipping", TURN_GUARD_S)
         return {"skipped": "user-active"}
 
-    summary: Dict[str, Any] = {"detected": 0, "spawned": 0, "published": 0}
+    summary: Dict[str, Any] = {"mode": "auto", "detected": 0, "spawned": 0, "published": 0}
 
-    # 1. Detector → queue. Always safe; in shadow mode this is the only effect
-    #    (candidate intents accumulate for inspection).
+    # 1. Run the same evolution cycle the web "Run now" button uses. It detects,
+    #    self-assesses, builds P0->P3, retries failures until functional, and
+    #    stops at the shared daily budget.
     try:
-        from pipeline.automod.patterns import scan_and_emit
-        summary["detected"] = scan_and_emit()
+        from pipeline.automod import cycle
+        cycle_summary = cycle.run_cycle(detect_first=True, assess_first=True)
+        summary.update(cycle_summary)
+        summary["spawned"] = int(cycle_summary.get("spawned", 0) or 0)
+        summary["detected"] = int(cycle_summary.get("detected", 0) or 0)
     except Exception as e:  # noqa: BLE001
-        logger.warning("[nightly] detector failed: %s", e)
-        summary["detect_error"] = str(e)
+        logger.warning("[nightly] cycle failed: %s", e)
+        summary["cycle_error"] = str(e)
 
-    # 2. Spawn proposals (no-op unless JARVIS_AUTOMOD_SPAWN_LIVE=1).
-    #    SAFETY: the coding-agent wrapper (bin/jarvis-automod-impl) does
-    #    `git checkout master` + branches to automod/<id> and does NOT restore
-    #    the branch. The live agent runs from this working tree, so leaving it on
-    #    a proposal branch (built off origin/master) would make the NEXT restart
-    #    load stale code + lose unpushed work. We snapshot the branch and restore
-    #    it after spawning, so the live tree always returns to where it was.
-    orig_branch = _deploy._git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-    # SAFETY: the coding-agent wrapper runs `git reset --hard origin/master`,
-    # which would DESTROY any uncommitted work in the live tree (e.g. a feature
-    # you're mid-edit on). Stash it first, restore it after. The stash is a safe
-    # holding pen — even if the pop conflicts, the work survives in `git stash`.
-    dirty = bool(_deploy._git("status", "--porcelain").stdout.strip())
-    stashed = False
-    if dirty:
-        sr = _deploy._git("stash", "push", "-u", "-m", "evolution-nightly-autostash")
-        stashed = sr.returncode == 0 and "No local changes" not in (sr.stdout or "")
-        if not stashed:
-            logger.error("[nightly] could not stash a dirty tree — aborting to avoid data loss")
-            summary["skipped"] = "dirty-tree-unstashable"
-            return summary
-    try:
-        from pipeline.automod.spawner import drain_queue
-        summary["spawned"] = asyncio.run(drain_queue())
-    except Exception as e:  # noqa: BLE001
-        logger.warning("[nightly] spawn failed: %s", e)
-        summary["spawn_error"] = str(e)
-    finally:
-        # 1. Restore the branch the live tree was on.
-        if orig_branch and orig_branch != "HEAD":
-            cur = _deploy._git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-            if cur != orig_branch:
-                r = _deploy._git("checkout", orig_branch)
-                if r.returncode == 0:
-                    logger.info("[nightly] restored working tree: %s → %s", cur, orig_branch)
-                else:
-                    logger.error("[nightly] FAILED to restore branch %s (on %s): %s",
-                                 orig_branch, cur, r.stderr.strip())
-                    summary["branch_restore_error"] = r.stderr.strip()
-        # 2. Restore the stashed uncommitted work.
-        if stashed:
-            pr = _deploy._git("stash", "pop")
-            if pr.returncode == 0:
-                logger.info("[nightly] restored stashed uncommitted work")
-            else:
-                logger.error("[nightly] stash pop FAILED — your work is safe in "
-                             "`git stash list`: %s", pr.stderr.strip())
-                summary["stash_pop_error"] = pr.stderr.strip()
-
-    # 3. Publish freshly-spawned, not-yet-published proposals (gated).
+    # 2. Publish freshly-spawned, not-yet-published proposals (gated).
     if summary["spawned"] and _autopublish():
         try:
             from pipeline.automod import cli, publish
@@ -139,9 +99,17 @@ def run() -> Dict[str, Any]:
             logger.warning("[nightly] publish step failed: %s", e)
             summary["publish_error"] = str(e)
 
+    # 3. Clean up old artifacts so the auto-mods dir doesn't grow unbounded.
+    try:
+        from pipeline.automod.artifact import cleanup_artifacts
+        summary["cleaned"] = cleanup_artifacts()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[nightly] artifact cleanup failed: %s", e)
+
     logger.info(
-        "[nightly] done: detected=%s spawned=%s published=%s",
-        summary["detected"], summary["spawned"], summary["published"],
+        "[nightly] done: detected=%s spawned=%s published=%s cleaned=%s",
+        summary["detected"], summary["spawned"],
+        summary["published"], summary.get("cleaned", 0),
     )
     return summary
 

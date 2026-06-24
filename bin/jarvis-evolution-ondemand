@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# jarvis-evolution-ondemand — process one queued self-evolution intent now.
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+VA="$REPO_ROOT/src/voice-agent"
+
+cd "$VA" || exit 1
+exec "$VA/.venv/bin/python" -m pipeline.automod.ondemand "$@"

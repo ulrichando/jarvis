@@ -26,16 +26,27 @@ SELFTEST_TIMEOUT_S = 30
 
 
 def _load_keys() -> None:
-    """Load LLM provider keys the way jarvis_agent does (repo/.env +
-    ~/.jarvis/keys.env), so the smoke-turn works when the watchdog runs it as a
-    bare subprocess — its systemd unit does NOT load the agent's EnvironmentFile,
-    so without this the LLM build fails for "no GROQ_API_KEY" and false-rolls-back
-    a perfectly good deploy."""
+    """Load the voice-agent env stack for a bare watchdog subprocess.
+
+    The real service gets EnvironmentFile entries before jarvis_agent imports.
+    The watchdog's unit intentionally does not, so the smoke turn has to recreate
+    that stack itself or it can test a different provider/model setup than the
+    deployed agent. Values already supplied by systemd or the caller still win;
+    otherwise later files in this local load override earlier files, matching
+    systemd's EnvironmentFile order.
+    """
     import os
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parents[4]
-    for src in (repo_root / ".env", Path.home() / ".jarvis" / "keys.env"):
+    original_env = set(os.environ)
+    for src in (
+        repo_root / "src" / "voice-agent" / ".env",
+        repo_root / ".env",
+        repo_root / "src" / "cli" / ".env.local",
+        Path.home() / ".jarvis" / "local-api-token.env",
+        Path.home() / ".jarvis" / "keys.env",
+    ):
         try:
             if not src.exists():
                 continue
@@ -45,8 +56,10 @@ def _load_keys() -> None:
                     continue
                 k, v = line.split("=", 1)
                 k, v = k.strip(), v.strip().strip('"').strip("'")
-                # Don't clobber an already-set value (the systemd env wins).
-                if k and v and k not in os.environ:
+                # Don't clobber an already-set external value (systemd/caller
+                # wins), but do let later files override earlier files loaded
+                # by this helper.
+                if k and v and k not in original_env:
                     os.environ[k] = v
         except Exception:  # noqa: BLE001 - best effort
             continue

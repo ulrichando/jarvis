@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from pipeline.automod import deploy, nightly
+from pipeline.automod import _state, deploy, nightly
 
 
 @pytest.fixture
@@ -27,15 +27,19 @@ def home(tmp_path, monkeypatch):
     return tmp_path
 
 
+def _enable_auto():
+    _state.set_auto_mode(True)
+
+
 def _patch_pipeline(monkeypatch, *, detected=0, spawned=0):
-    import pipeline.automod.patterns as patterns
-    import pipeline.automod.spawner as spawner
-    monkeypatch.setattr(patterns, "scan_and_emit", lambda: detected)
-
-    async def _drain():
-        return spawned
-
-    monkeypatch.setattr(spawner, "drain_queue", _drain)
+    import pipeline.automod.cycle as cycle
+    monkeypatch.setattr(cycle, "run_cycle", lambda **_kwargs: {
+        "mode": "auto",
+        "detected": detected,
+        "spawned": spawned,
+        "built": [{"id": "automod-x", "status": "pending", "attempts": spawned}] if spawned else [],
+        "budget": {"cap": 5, "admitted_today": spawned, "remaining": max(0, 5 - spawned)},
+    })
 
 
 def test_skips_when_deploy_in_flight(home, monkeypatch):
@@ -43,19 +47,25 @@ def test_skips_when_deploy_in_flight(home, monkeypatch):
     assert nightly.run() == {"skipped": "deploy-in-flight"}
 
 
+def test_skips_in_manual_mode_by_default(home, monkeypatch):
+    assert nightly.run() == {"skipped": "manual-mode", "mode": "manual"}
+
+
 def test_skips_when_user_active(home, monkeypatch):
+    _enable_auto()
     monkeypatch.setattr(nightly, "_user_recently_active", lambda: True)
     assert nightly.run() == {"skipped": "user-active"}
 
 
-def test_shadow_mode_detector_only(home, monkeypatch):
-    # Detector finds intents; spawn is shadow (drain returns 0); no publish.
+def test_auto_mode_runs_cycle_without_publish(home, monkeypatch):
+    _enable_auto()
     _patch_pipeline(monkeypatch, detected=3, spawned=0)
     out = nightly.run()
     assert out["detected"] == 3 and out["spawned"] == 0 and out["published"] == 0
 
 
 def test_no_publish_without_autopublish(home, monkeypatch):
+    _enable_auto()
     monkeypatch.delenv("JARVIS_EVOLUTION_AUTOPUBLISH", raising=False)
     _patch_pipeline(monkeypatch, detected=1, spawned=2)
     out = nightly.run()
@@ -63,6 +73,7 @@ def test_no_publish_without_autopublish(home, monkeypatch):
 
 
 def test_publishes_when_spawned_and_autopublish(home, monkeypatch):
+    _enable_auto()
     monkeypatch.setenv("JARVIS_EVOLUTION_AUTOPUBLISH", "1")
     _patch_pipeline(monkeypatch, detected=1, spawned=1)
     import pipeline.automod.cli as cli
@@ -82,6 +93,7 @@ def test_publishes_when_spawned_and_autopublish(home, monkeypatch):
 
 
 def test_publish_skips_already_published(home, monkeypatch):
+    _enable_auto()
     monkeypatch.setenv("JARVIS_EVOLUTION_AUTOPUBLISH", "1")
     _patch_pipeline(monkeypatch, detected=0, spawned=1)
     import pipeline.automod.cli as cli
@@ -99,10 +111,11 @@ def test_publish_skips_already_published(home, monkeypatch):
     assert out["published"] == 1
 
 
-def test_stash_guards_a_dirty_tree(home, monkeypatch):
-    """A dirty live tree is stashed BEFORE the spawn + popped AFTER, so the
-    impl's `git reset --hard origin/master` can't destroy uncommitted work."""
+def test_dirty_tree_is_not_touched_by_scheduler(home, monkeypatch):
+    """Spawning now happens in disposable worktrees, so a dirty live tree does
+    not need to be stashed, reset, or restored by the scheduler."""
     import subprocess
+    _enable_auto()
     _patch_pipeline(monkeypatch, detected=0, spawned=1)
     calls = []
 
@@ -117,42 +130,38 @@ def test_stash_guards_a_dirty_tree(home, monkeypatch):
     monkeypatch.setattr(deploy, "_git", tracking_git)
     out = nightly.run()
     stash = [a for a in calls if a and a[0] == "stash"]
-    assert any(a[:2] == ("stash", "push") for a in stash), "dirty tree must be stashed"
-    assert any(a[:2] == ("stash", "pop") for a in stash), "stash must be popped after"
+    reset = [a for a in calls if a and a[:2] == ("reset", "--hard")]
+    assert stash == []
+    assert reset == []
     assert out["spawned"] == 1
 
 
-def test_aborts_if_dirty_tree_cannot_be_stashed(home, monkeypatch):
-    """If stashing a dirty tree fails, abort rather than let the impl wipe it."""
+def test_spawn_still_runs_when_live_tree_is_dirty(home, monkeypatch):
+    """A dirty checkout is safe because the spawner isolates generated edits."""
     import subprocess
-    _patch_pipeline(monkeypatch, detected=0, spawned=0)
+    _enable_auto()
+    _patch_pipeline(monkeypatch, detected=0, spawned=1)
 
-    def failing_stash_git(*args):
+    def dirty_git(*args):
         if args[:1] == ("status",):
             return subprocess.CompletedProcess(args, 0, " M live_edit.py\n", "")
-        if args[:2] == ("stash", "push"):
-            return subprocess.CompletedProcess(args, 1, "", "stash failed")
         if args[:1] == ("rev-parse",):
             return subprocess.CompletedProcess(args, 0, "feat/test\n", "")
         return subprocess.CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr(deploy, "_git", failing_stash_git)
+    monkeypatch.setattr(deploy, "_git", dirty_git)
     out = nightly.run()
-    assert out.get("skipped") == "dirty-tree-unstashable"
+    assert out["spawned"] == 1
+    assert "skipped" not in out
 
 
 def test_run_never_raises_on_detector_error(home, monkeypatch):
-    import pipeline.automod.patterns as patterns
-    import pipeline.automod.spawner as spawner
+    _enable_auto()
+    import pipeline.automod.cycle as cycle
 
     def _boom():
         raise RuntimeError("telemetry locked")
 
-    monkeypatch.setattr(patterns, "scan_and_emit", _boom)
-
-    async def _drain():
-        return 0
-
-    monkeypatch.setattr(spawner, "drain_queue", _drain)
+    monkeypatch.setattr(cycle, "run_cycle", lambda **_kwargs: _boom())
     out = nightly.run()   # must not raise
-    assert out["detected"] == 0 and "detect_error" in out
+    assert out["detected"] == 0 and "cycle_error" in out

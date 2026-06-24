@@ -53,6 +53,8 @@ def test_green_diff_writes_pending_artifact(tmp_path, monkeypatch):
     assert art["parent_sha"]
     assert art["head_sha"]
     assert art["parent_sha"] != art["head_sha"]
+    assert art["evolution"]["criteria_version"]
+    assert "selection" in art["evolution"]["satisfied"]
 
 
 def test_diff_with_blocked_path_marks_failed(tmp_path, monkeypatch):
@@ -150,3 +152,26 @@ def test_intent_text_threaded_into_artifact(tmp_path, monkeypatch):
     from pipeline.automod import finalize
     art = finalize.finalize_branch("test-001", "automod/test-001", skip_test_rerun=True)
     assert art["intent"] == "my-specific-test-intent" or "my-specific-test-intent" in art["intent"]
+
+
+def test_rerun_pytest_uses_tooling_root_python(tmp_path, monkeypatch):
+    from pipeline.automod import finalize
+
+    tooling_root = tmp_path / "tooling"
+    monkeypatch.setenv("JARVIS_AUTOMOD_TOOLING_ROOT", str(tooling_root))
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, "1 passed\n", "")
+
+    monkeypatch.setattr(finalize.subprocess, "run", fake_run)
+    ok, tail = finalize._rerun_pytest()
+
+    assert ok is True
+    assert "1 passed" in tail
+    assert calls
+    assert calls[0][0][0] == str(
+        tooling_root / "src" / "voice-agent" / ".venv" / "bin" / "python"
+    )
+    assert calls[0][1]["cwd"] == Path(finalize.__file__).resolve().parents[2]

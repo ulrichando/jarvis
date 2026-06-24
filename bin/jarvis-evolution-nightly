@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# jarvis-evolution-nightly — generate self-evolution proposals while you're away.
+# jarvis-evolution-nightly — run the bounded self-evolution cycle in AUTO mode.
 #
-# PROPOSAL-ONLY: runs the detector + (gated) coding-agent spawn + (gated) PR
-# publish. It NEVER merges, deploys, or restarts anything — deploy only happens
-# when you approve a proposal in /evolution. Driven by
-# jarvis-evolution-nightly.timer in the small hours; safe to run by hand.
+# PROPOSAL-ONLY: runs detect -> self-assess -> priority queue -> build/retry and
+# optional PR publish. It NEVER merges, deploys, or restarts anything — deploy
+# only happens when you approve a proposal in /evolution. Driven by
+# jarvis-evolution-nightly.timer on a periodic cadence; safe to run by hand.
 #
-# SHADOW by default (detector-only). To go live:
-#   JARVIS_AUTOMOD_SPAWN_LIVE=1     — let it actually write proposals
-#   JARVIS_EVOLUTION_AUTOPUBLISH=1  — auto-open a PR per new proposal
+# MANUAL by default: the Python entrypoint skips unless
+# ~/.jarvis/auto-mods/.evolution-auto exists. AUTO mode still honors pause,
+# recent-user-activity, deploy-in-flight, and the 5/day build budget.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

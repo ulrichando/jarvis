@@ -1,15 +1,16 @@
 [Unit]
-Description=JARVIS nightly self-evolution proposals (proposal-only; never deploys)
+Description=JARVIS self-evolution auto cycle (proposal-only; never deploys)
 Documentation=file:%h/Documents/Projects/jarvis/bin/jarvis-evolution-nightly
 After=jarvis-voice-agent.service
 
 [Service]
 Type=oneshot
 ExecStartPre=/bin/mkdir -p %h/.local/share/jarvis/logs
-# Load the same env the agent uses, so the (gated) coding-agent spawn has the
-# LLM keys + any JARVIS_AUTOMOD_* flags. '-' = optional, never fail on absence.
+# Load the same env the agent uses, so the coding-agent spawn has LLM keys and
+# the shared 5/day cap. AUTO mode itself is gated by ~/.jarvis/auto-mods/.evolution-auto.
 EnvironmentFile=-%h/Documents/Projects/jarvis/src/voice-agent/.env
 EnvironmentFile=-%h/.jarvis/keys.env
+Environment=JARVIS_AUTOMOD_SPAWN_LIVE=1
 ExecStart=%h/Documents/Projects/jarvis/bin/jarvis-evolution-nightly
 # The coding-agent spawn (when SPAWN_LIVE) can take many minutes.
 TimeoutStartSec=2400

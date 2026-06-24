@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 from pipeline.automod import deploy as _deploy
+from pipeline.automod import fault_boundary
 from pipeline.automod._state import evolution_log_path
 
 logger = logging.getLogger("jarvis.automod.watchdog")
@@ -61,6 +62,42 @@ def _service_active() -> bool:
         capture_output=True, text=True, check=False,
     )
     return r.stdout.strip() == "active"
+
+
+def _service_active_enter_monotonic() -> Optional[float]:
+    """systemd ActiveEnterTimestampMonotonic in seconds, or None if absent."""
+    r = subprocess.run(
+        [
+            "systemctl", "--user", "show", "jarvis-voice-agent.service",
+            "-p", "ActiveEnterTimestampMonotonic", "--value",
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    if r.returncode != 0:
+        return None
+    try:
+        raw = int((r.stdout or "").strip() or "0")
+    except ValueError:
+        return None
+    if raw <= 0:
+        return None
+    return raw / 1_000_000.0
+
+
+def _fresh_service_after(restart_requested_monotonic: Optional[float]) -> bool:
+    """True when the service entered active state after deploy requested restart.
+
+    Legacy markers lack this field; keep those compatible by treating freshness as
+    satisfied. New deploy markers include it, preventing the watchdog from
+    confirming an old still-running agent after a failed restart.
+    """
+    if not restart_requested_monotonic:
+        return True
+    active_at = _service_active_enter_monotonic()
+    if active_at is None:
+        return False
+    # Allow a tiny clock/read-order tolerance around the restart request.
+    return active_at >= (float(restart_requested_monotonic) - 0.1)
 
 
 def _liveness() -> bool:
@@ -157,6 +194,7 @@ def _notify(event: str, **fields) -> None:
 
 # ── main tick ───────────────────────────────────────────────────────────
 
+@fault_boundary.supervised("watchdog_run_once", fallback="crashed")
 def run_once() -> str:
     """One watchdog tick. Returns a short status string (also for tests)."""
     marker = _deploy.read_marker()
@@ -167,13 +205,30 @@ def run_once() -> str:
     rollback_sha = marker.get("rollback_sha")
     deployed_at = _parse_iso(marker.get("deployed_at", "")) or time.time()
     deadline_s = int(marker.get("deadline_s", _deploy.DEFAULT_DEADLINE_S))
+    has_restart_field = "restart_requested_monotonic" in marker
+    restart_requested = marker.get("restart_requested_monotonic")
+    try:
+        restart_requested = float(restart_requested) if restart_requested else None
+    except (TypeError, ValueError):
+        restart_requested = None
     elapsed = time.time() - deployed_at
 
     if elapsed < BOOT_GRACE_S:
         return "boot-grace"
 
+    # New deploy markers are written before the quiet-wait + restart so the
+    # external watchdog knows a deploy is in flight. Do not confirm health
+    # against the old process during that pre-restart window.
+    if has_restart_field and restart_requested is None and elapsed <= deadline_s:
+        return "waiting-restart"
+
     # Health gate: liveness AND one successful turn.
-    if _liveness() and (_real_turn_since(deployed_at) or _smoke_turn()):
+    if (
+        not (has_restart_field and restart_requested is None)
+        and _liveness()
+        and _fresh_service_after(restart_requested)
+        and (_real_turn_since(deployed_at) or _smoke_turn())
+    ):
         _deploy.clear_marker()
         try:
             from pipeline.automod import artifact

@@ -14,6 +14,7 @@ import sys
 from typing import Any, Dict
 
 from pipeline.automod import deploy as _deploy
+from pipeline.automod import fault_boundary
 
 logger = logging.getLogger("jarvis.automod.ondemand")
 
@@ -26,6 +27,7 @@ def _autopublish() -> bool:
     return os.environ.get("JARVIS_EVOLUTION_AUTOPUBLISH", "0") == "1"
 
 
+@fault_boundary.supervised("ondemand_run", fallback=lambda: {"crashed": True})
 def run(intent_id: str) -> Dict[str, Any]:
     """Process one queued automod intent. Never raises."""
     summary: Dict[str, Any] = {
@@ -42,8 +44,8 @@ def run(intent_id: str) -> Dict[str, Any]:
 
     try:
         from pipeline.automod.spawner import drain_queue
-        # Explicit, user-clicked build → uncapped (force) per the no-build-limit ask.
-        summary["spawned"] = asyncio.run(drain_queue(only_id=intent_id, force=True))
+        # Manual and auto builds share the same daily evolution budget.
+        summary["spawned"] = asyncio.run(drain_queue(only_id=intent_id, force=False))
     except Exception as e:  # noqa: BLE001
         logger.warning("[ondemand] spawn failed for %s: %s", intent_id, e)
         summary["spawn_error"] = str(e)

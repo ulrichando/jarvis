@@ -36,10 +36,10 @@ THRESHOLD = 3
 CONFAB_WINDOW_DAYS = 7
 
 # Failure-driven retry: a failed build is re-queued with the failure lesson and
-# a directive to try a DIFFERENT, narrower approach — up to MAX_RETRY_ATTEMPTS
-# total attempts (initial + retries), so the loop learns instead of repeating
-# the same failing fix.
-MAX_RETRY_ATTEMPTS = 5
+# a directive to try a DIFFERENT, narrower approach. Retries are open-ended by
+# default; the 5/day evolution budget is the hard brake, so P0-P3 work keeps
+# coming back across days until it produces a functional, reviewable proposal.
+MAX_RETRY_ATTEMPTS = None
 RETRY_RECENCY_DAYS = 7
 
 # Light root-cause scaffold: collapse near-duplicate correction phrases onto a
@@ -400,7 +400,7 @@ def _retry_hint(reason: str) -> str:
 def build_retry_intent(art: dict) -> dict | None:
     """Build a learn-and-retry intent from a failed artifact, with the failure
     lesson + a directive to try a DIFFERENT, narrower approach. Returns None if
-    the artifact is ineligible (not failed / fixture / at the attempt cap).
+    the artifact is ineligible (not failed / fixture).
     Shared by the nightly scanner and the immediate build cycle."""
     if art.get("status") != "failed":
         return None
@@ -408,14 +408,12 @@ def build_retry_intent(art: dict) -> dict | None:
     if "test" in ident or "smoke" in ident:
         return None  # don't retry fixtures
     attempt = int(art.get("attempt", 1) or 1)
-    if attempt >= MAX_RETRY_ATTEMPTS:
-        return None
     reason = str(art.get("rejection_reason", ""))
     lineage = art.get("lineage") or art.get("id")
     original = str(art.get("intent", "")).split("\n\n")[0][:400]
     prior = list(art.get("prior_failures", [])) + [f"attempt {attempt}: {reason}"]
     new_intent = (
-        f"RETRY (attempt {attempt + 1} of {MAX_RETRY_ATTEMPTS}) of a self-evolution "
+        f"RETRY (attempt {attempt + 1}, continue until functional) of a self-evolution "
         f"change that FAILED.\n\n"
         f"GOAL:\n{original}\n\n"
         "PREVIOUS FAILURES — do NOT repeat these approaches:\n"
@@ -437,8 +435,9 @@ def build_retry_intent(art: dict) -> dict | None:
 
 
 def _scan_failed_retries() -> int:
-    """Re-queue recently-failed builds via build_retry_intent. Marks each failed
-    artifact `retried` so it is enqueued at most once. Skips stale failures.
+    """Re-queue failed builds via build_retry_intent. Marks each failed artifact
+    `retried` so it is enqueued at most once. Ranked P0-P3 work does not age
+    out; unranked stale artifacts are ignored to avoid reviving old fixtures.
     Never raises."""
     cutoff = time.time() - RETRY_RECENCY_DAYS * 86400
     emitted = 0
@@ -455,7 +454,9 @@ def _scan_failed_retries() -> int:
             continue
         created = str(art.get("created_at", ""))
         try:
-            if created and time.mktime(time.strptime(created[:19], "%Y-%m-%dT%H:%M:%S")) < cutoff:
+            priority = str(art.get("priority", "")).upper()
+            stale = created and time.mktime(time.strptime(created[:19], "%Y-%m-%dT%H:%M:%S")) < cutoff
+            if stale and priority not in {"P0", "P1", "P2", "P3"}:
                 continue  # too old to chase
         except (ValueError, TypeError):
             pass

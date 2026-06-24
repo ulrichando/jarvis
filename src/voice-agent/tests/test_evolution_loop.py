@@ -76,12 +76,14 @@ def test_scan_failed_retries_requeues_with_lesson(tmp_path, monkeypatch):
     assert patterns._scan_failed_retries() == 0
 
 
-def test_scan_failed_retries_caps_attempts(tmp_path, monkeypatch):
+def test_scan_failed_retries_does_not_cap_attempts(tmp_path, monkeypatch):
     monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
     from pipeline.automod import patterns
 
-    _write_failed(tmp_path, id="automod-2026-06-23-bbbbbb", attempt=patterns.MAX_RETRY_ATTEMPTS)
-    assert patterns._scan_failed_retries() == 0  # at cap → give up
+    _write_failed(tmp_path, id="automod-2026-06-23-bbbbbb", attempt=25)
+    assert patterns._scan_failed_retries() == 1
+    retry = _read_queue(tmp_path)[0]
+    assert retry["attempt"] == 26
 
 
 def test_scan_failed_retries_skips_fixtures_and_stale(tmp_path, monkeypatch):
@@ -91,3 +93,20 @@ def test_scan_failed_retries_skips_fixtures_and_stale(tmp_path, monkeypatch):
     _write_failed(tmp_path, id="automod-test-id", attempt=1)              # fixture
     _write_failed(tmp_path, id="automod-2020-01-01-old", attempt=1, recent=False)  # stale
     assert patterns._scan_failed_retries() == 0
+
+
+def test_scan_failed_retries_keeps_ranked_stale_work(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    from pipeline.automod import patterns
+
+    _write_failed(
+        tmp_path,
+        id="automod-2020-01-01-p0",
+        attempt=9,
+        recent=False,
+        extra={"priority": "P0"},
+    )
+    assert patterns._scan_failed_retries() == 1
+    retry = _read_queue(tmp_path)[0]
+    assert retry["priority"] == "P0"
+    assert retry["attempt"] == 10

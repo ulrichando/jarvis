@@ -4,7 +4,7 @@ admit_intent(intent) -> (admit: bool, reason: str). Three gates:
   1. content sanity (non-empty intent string after strip)
   2. path blocklist (proposed_paths_hint, if any, must not include
      blocked paths and must stay inside ALLOWED_PATH_PREFIX)
-  3. daily cap (default 3 PRs/day; configurable via JARVIS_AUTOMOD_DAILY_CAP)
+  3. daily cap (default 5 evolutions/day; configurable via JARVIS_AUTOMOD_DAILY_CAP)
 
 Per-topic in-flight cap (1) is enforced separately by the spawner's
 lockfile (B-T8), not here.
@@ -28,17 +28,22 @@ from pipeline.automod._state import (
 )
 
 logger = logging.getLogger("jarvis.automod.throttle")
+DEFAULT_DAILY_CAP = 5
 
 
 def _today() -> str:
     return time.strftime("%Y-%m-%d", time.gmtime())
 
 
-def _daily_cap() -> int:
+def daily_cap() -> int:
     try:
-        return max(1, int(os.environ.get("JARVIS_AUTOMOD_DAILY_CAP", "3")))
+        return max(1, int(os.environ.get("JARVIS_AUTOMOD_DAILY_CAP", str(DEFAULT_DAILY_CAP))))
     except ValueError:
-        return 3
+        return DEFAULT_DAILY_CAP
+
+
+def _daily_cap() -> int:
+    return daily_cap()
 
 
 def _read_state() -> dict:
@@ -53,6 +58,19 @@ def _read_state() -> dict:
         # New day — reset.
         return {"date": _today(), "admitted_today": 0}
     return data
+
+
+def read_state() -> dict:
+    """Return today's throttle state with date rollover applied."""
+    return dict(_read_state())
+
+
+def admitted_today() -> int:
+    return int(_read_state().get("admitted_today", 0) or 0)
+
+
+def remaining_today() -> int:
+    return max(0, daily_cap() - admitted_today())
 
 
 def _write_state(state: dict) -> None:
@@ -77,7 +95,7 @@ def admit_intent(intent: dict) -> tuple[bool, str]:
 
     # Daily cap.
     state = _read_state()
-    if state["admitted_today"] >= _daily_cap():
+    if state["admitted_today"] >= daily_cap():
         return False, "daily_cap_reached"
 
     return True, ""
@@ -88,4 +106,4 @@ def mark_admitted(intent_id: str) -> None:
     state["admitted_today"] = state.get("admitted_today", 0) + 1
     _write_state(state)
     logger.info("[automod] admitted: id=%s today=%d/%d",
-                intent_id, state["admitted_today"], _daily_cap())
+                intent_id, state["admitted_today"], daily_cap())

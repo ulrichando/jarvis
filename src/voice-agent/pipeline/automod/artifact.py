@@ -82,3 +82,47 @@ def audit(kind: str, **fields) -> None:
     line = json.dumps(record, ensure_ascii=False)
     with p.open("a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+def cleanup_artifacts(*, max_age_days: int = 30, max_log_bytes: int = 1_000_000) -> int:
+    """Remove artifact JSONs older than `max_age_days` and truncate logs
+    exceeding `max_log_bytes`. Called by the nightly pass so old proposals
+    don't accumulate indefinitely. Returns count of files removed.
+
+    Never raises — any failure logs and returns 0.
+    """
+    removed = 0
+    home = Path(str(artifact_path("_")))  # dummy to get the dir
+    home_dir = home.parent
+    if not home_dir.exists():
+        return 0
+    cutoff = time.time() - max_age_days * 86400
+    try:
+        for p in home_dir.glob("automod-*.json"):
+            try:
+                if p.stat().st_mtime < cutoff:
+                    # Also remove the companion log + intent files if present.
+                    stem = p.stem
+                    for suffix in (".log", ".intent.txt"):
+                        companion = home_dir / f"{stem}{suffix}"
+                        try:
+                            companion.unlink()
+                        except FileNotFoundError:
+                            pass
+                    p.unlink()
+                    removed += 1
+            except OSError:
+                continue
+        # Truncate oversized log files (keep last ~1MB).
+        for log_path in home_dir.glob("automod-*.log"):
+            try:
+                if log_path.stat().st_size > max_log_bytes:
+                    tail = log_path.read_bytes()[-max_log_bytes:]
+                    log_path.write_bytes(tail)
+            except OSError:
+                continue
+    except Exception:
+        logger.debug("[automod] artifact cleanup failed", exc_info=True)
+    if removed:
+        logger.info("[automod] artifact cleanup: removed %d old artifact(s)", removed)
+    return removed
