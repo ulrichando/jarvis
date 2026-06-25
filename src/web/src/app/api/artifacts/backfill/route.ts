@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { getUserId } from "@/lib/auth-helpers";
+import { requireUserId, Unauthenticated } from "@/lib/auth-helpers";
 import { backfillArtifactsForUser } from "@/lib/artifacts/store";
 
 export const runtime = "nodejs";
@@ -11,7 +11,13 @@ export const maxDuration = 120;
 // aggregates artifacts across all chats.
 export async function POST(req: Request) {
   if (!db) return new Response("Persistence disabled", { status: 503 });
-  const userId = await getUserId(req.headers);
+  let userId: string;
+  try {
+    userId = await requireUserId(req.headers);
+  } catch (e) {
+    if (e instanceof Unauthenticated) return new Response("Unauthorized", { status: 401 });
+    throw e;
+  }
   const result = await backfillArtifactsForUser(userId);
   return Response.json(result);
 }

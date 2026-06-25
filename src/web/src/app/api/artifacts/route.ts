@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { getUserId } from "@/lib/auth-helpers";
+import { requireUserId, Unauthenticated } from "@/lib/auth-helpers";
 import { listArtifacts, getConversationArtifacts } from "@/lib/artifacts/store";
 
 export const runtime = "nodejs";
@@ -9,7 +9,13 @@ export const runtime = "nodejs";
 //                                       versions (hydrates the in-chat panel)
 export async function GET(req: Request) {
   if (!db) return Response.json({ artifacts: [] });
-  const userId = await getUserId(req.headers);
+  let userId: string;
+  try {
+    userId = await requireUserId(req.headers);
+  } catch (e) {
+    if (e instanceof Unauthenticated) return new Response("Unauthorized", { status: 401 });
+    throw e;
+  }
   const conversationId = new URL(req.url).searchParams.get("conversationId");
   if (conversationId) {
     return Response.json({

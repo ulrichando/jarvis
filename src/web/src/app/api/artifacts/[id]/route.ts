@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { getUserId } from "@/lib/auth-helpers";
+import { requireUserId, Unauthenticated } from "@/lib/auth-helpers";
 import { getArtifact, renameArtifact, deleteArtifact } from "@/lib/artifacts/store";
 
 export const runtime = "nodejs";
@@ -10,7 +10,13 @@ export async function GET(
 ) {
   if (!db) return new Response("Persistence disabled", { status: 503 });
   const { id } = await ctx.params;
-  const userId = await getUserId(req.headers);
+  let userId: string;
+  try {
+    userId = await requireUserId(req.headers);
+  } catch (e) {
+    if (e instanceof Unauthenticated) return new Response("Unauthorized", { status: 401 });
+    throw e;
+  }
   const artifact = await getArtifact(id, userId);
   if (!artifact) return new Response("Not found", { status: 404 });
   return Response.json({ artifact });
@@ -22,7 +28,13 @@ export async function PATCH(
 ) {
   if (!db) return new Response("Persistence disabled", { status: 503 });
   const { id } = await ctx.params;
-  const userId = await getUserId(req.headers);
+  let userId: string;
+  try {
+    userId = await requireUserId(req.headers);
+  } catch (e) {
+    if (e instanceof Unauthenticated) return new Response("Unauthorized", { status: 401 });
+    throw e;
+  }
   const body = (await req.json().catch(() => ({}))) as { title?: unknown };
   if (typeof body.title !== "string" || !body.title.trim()) {
     return new Response("title required", { status: 400 });
@@ -38,7 +50,13 @@ export async function DELETE(
 ) {
   if (!db) return new Response("Persistence disabled", { status: 503 });
   const { id } = await ctx.params;
-  const userId = await getUserId(req.headers);
+  let userId: string;
+  try {
+    userId = await requireUserId(req.headers);
+  } catch (e) {
+    if (e instanceof Unauthenticated) return new Response("Unauthorized", { status: 401 });
+    throw e;
+  }
   const ok = await deleteArtifact(id, userId);
   return new Response(null, { status: ok ? 204 : 404 });
 }

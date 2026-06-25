@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { and, asc, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { toUIMessages } from "@/lib/chat/persist";
@@ -16,6 +16,7 @@ export default async function ChatByIdPage(props: PageProps<"/chat/[id]">) {
   if (!db) return <Chat chatId={id} seed={seed} />;
 
   const userId = await getUserId();
+  if (!userId) redirect("/login");
 
   const [conversation] = await db
     .select()

@@ -10,7 +10,7 @@ import {
   saveAssistantMessage,
   saveUserMessage,
 } from "@/lib/chat/persist";
-import { getUserId } from "@/lib/auth-helpers";
+import { requireUserId, Unauthenticated } from "@/lib/auth-helpers";
 import { listMcpServers } from "@/lib/mcp/store";
 import { loadMcpTools } from "@/lib/mcp/client";
 import { db, schema } from "@/lib/db";
@@ -237,7 +237,13 @@ type Body = {
 
 export async function POST(req: Request) {
   const { id, messages, model, system, workspaceId, mode, format, search, image }: Body = await req.json();
-  const userId = await getUserId(req.headers);
+  let userId: string;
+  try {
+    userId = await requireUserId(req.headers);
+  } catch (e) {
+    if (e instanceof Unauthenticated) return new Response("Unauthorized", { status: 401 });
+    throw e;
+  }
   const settings = await loadSettings();
   let modelId = model ?? settings.defaults.model;
 
