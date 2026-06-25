@@ -201,7 +201,7 @@ describe("POST /reset/verify", () => {
   it("unknown email returns the SAME 401 shape as a wrong code (no enumeration)", async () => {
     // Both verify paths fail (default mock = false). A real user with a wrong
     // code and an unknown email must be indistinguishable to the caller: same
-    // status, same body. (Different IPs so the rate-limiter doesn't interfere.)
+    // status, same body. (Different emails → separate rate-limit buckets.)
     const wrong = await verifyPost(
       jsonReq({ email: "owner@example.com", code: "000000" }, { "x-forwarded-for": "3.3.3.3" }),
     );
@@ -213,8 +213,8 @@ describe("POST /reset/verify", () => {
     expect(await unknown.json()).toEqual(await wrong.json());
   });
 
-  it("rate-limits after 5 attempts per (email+IP) → 429", async () => {
-    const ip = { "x-forwarded-for": "9.9.9.9" };
+  it("rate-limits after 5 attempts per email → 429", async () => {
+    const ip = { "x-forwarded-for": "9.9.9.9" }; // ignored now (kept to prove it's irrelevant)
     for (let i = 0; i < 5; i++) {
       const r = await verifyPost(jsonReq({ email: "owner@example.com", code: "000000" }, ip));
       expect(r.status).toBe(401); // wrong code, but within budget
@@ -223,13 +223,17 @@ describe("POST /reset/verify", () => {
     expect(sixth.status).toBe(429);
   });
 
-  it("rate-limit is per-IP: a different IP is NOT throttled", async () => {
-    for (let i = 0; i < 6; i++) {
+  it("rate-limit is per-EMAIL: rotating X-Forwarded-For does NOT bypass it (brute-force fix)", async () => {
+    // Exhaust the 5-attempt budget for this email from one forged IP...
+    for (let i = 0; i < 5; i++) {
       await verifyPost(jsonReq({ email: "owner@example.com", code: "000000" }, { "x-forwarded-for": "1.1.1.1" }));
     }
+    // ...then a request with a DIFFERENT forged IP (same email) must STILL be
+    // throttled — even with a now-correct code it can't get through. X-Forwarded-For
+    // is attacker-forgeable, so the limit is keyed per-account, not per-IP.
     verifyTotpForUser.mockResolvedValue(true);
-    const other = await verifyPost(jsonReq({ email: "owner@example.com", code: "123456" }, { "x-forwarded-for": "2.2.2.2" }));
-    expect(other.status).toBe(200);
+    const rotated = await verifyPost(jsonReq({ email: "owner@example.com", code: "123456" }, { "x-forwarded-for": "2.2.2.2" }));
+    expect(rotated.status).toBe(429);
   });
 });
 

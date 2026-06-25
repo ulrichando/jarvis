@@ -10,12 +10,6 @@ export const runtime = "nodejs";
 const FAIL = () =>
   Response.json({ error: "invalid code" }, { status: 401 });
 
-function clientIp(req: Request): string {
-  const xff = req.headers.get("x-forwarded-for");
-  if (xff) return xff.split(",")[0]!.trim();
-  return req.headers.get("x-real-ip")?.trim() || "unknown";
-}
-
 // POST /api/auth/reset/verify  — body: { email, code }
 //
 // Step 2: the user proves identity with a current 6-digit TOTP code OR a
@@ -24,8 +18,10 @@ function clientIp(req: Request): string {
 // /reset/complete redeems to set a new password. There is no email round-trip.
 //
 // Defenses:
-//   • Rate limit: max 5 attempts / 15 min per (email + IP) — blunts brute force
-//     of the 6-digit code (1e6 space) from a single origin.
+//   • Rate limit: max 5 attempts / 15 min per EMAIL (not IP — X-Forwarded-For
+//     is attacker-forgeable, and on a loopback app every request is 127.0.0.1).
+//     Per-account limiting blunts brute force of the 6-digit code (1e6 space)
+//     regardless of how many origins the attacker rotates through.
 //   • No enumeration: unknown email, no 2FA, and wrong code all return the same
 //     401 generic failure.
 //   • Token: random UUID, 10-minute expiry, single-use (enforced at /complete).
@@ -40,11 +36,13 @@ export async function POST(req: Request) {
 
   if (!db) return FAIL();
 
-  // Rate-limit FIRST (counts this attempt). Keyed by email+IP so neither a
-  // single IP nor a single targeted email can exceed the budget. 429 is a
-  // distinct status, but it leaks nothing about account existence (it's purely
-  // a function of this caller's own request rate).
-  const key = `${email}|${clientIp(req)}`;
+  // Rate-limit FIRST (counts this attempt). Keyed by EMAIL ALONE — deliberately
+  // NOT by client IP: X-Forwarded-For / X-Real-IP are attacker-forgeable, so an
+  // IP dimension would let a single attacker rotate the header to bypass the
+  // budget and brute-force the 6-digit code. Per-account limiting is the real
+  // defense: 5 attempts / 15 min for a given email, regardless of origin. 429
+  // leaks nothing about account existence (purely this email's own request rate).
+  const key = email || "unknown";
   if (!rateLimitAllow(key)) {
     return Response.json({ error: "too many attempts" }, { status: 429 });
   }
