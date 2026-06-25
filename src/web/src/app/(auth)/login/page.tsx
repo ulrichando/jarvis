@@ -10,6 +10,7 @@ function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
   const next = params.get("next") || "/chat";
+  const didReset = params.get("reset") === "1";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +33,11 @@ function LoginForm() {
           <Asterisk className="size-6 text-orange-500" strokeWidth={2.5} />
           <span className="font-serif text-[22px] font-bold text-foreground">Jarvis</span>
         </div>
+        {didReset && (
+          <div className="mb-3 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-[13px] text-green-600 dark:text-green-400">
+            Password reset — please sign in with your new password.
+          </div>
+        )}
         <div className="rounded-2xl border border-border/60 bg-card p-6">
           <h1 className="mb-1 text-[18px] font-semibold text-foreground">Welcome back</h1>
           <p className="mb-5 text-[13px] text-muted-foreground">Sign in to continue.</p>
@@ -50,7 +56,12 @@ function LoginForm() {
               />
             </div>
             <div>
-              <label className="mb-1 block text-[12px] text-foreground/70">Password</label>
+              <div className="mb-1 flex items-center justify-between">
+                <label className="block text-[12px] text-foreground/70">Password</label>
+                <Link href="/forgot-password" className="text-[12px] text-muted-foreground hover:text-primary transition-colors">
+                  Forgot password?
+                </Link>
+              </div>
               <input
                 type="password"
                 value={password}

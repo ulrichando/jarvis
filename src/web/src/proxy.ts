@@ -53,7 +53,7 @@ const AUTH_DISABLED = process.env.JARVIS_AUTH_DISABLED === '1'
 // NOTE: '/signup' is intentionally NOT listed here — public registration is
 // disabled (single-user install). Any navigation to /signup is blocked here
 // and falls through to the cookie check → redirect to /login.
-const LOGIN_PUBLIC_PREFIXES = ['/login', '/share', '/a']
+const LOGIN_PUBLIC_PREFIXES = ['/login', '/forgot-password', '/share', '/a']
 
 function hasSessionCookie(req: NextRequest): boolean {
   // http (dev) vs __Secure- prefix (https/prod).
