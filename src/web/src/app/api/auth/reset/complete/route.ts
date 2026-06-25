@@ -1,6 +1,6 @@
 import { and, eq, gt, isNull } from "drizzle-orm";
-import { hashPassword } from "better-auth/crypto";
 import { db, schema } from "@/lib/db";
+import { setCredentialPassword } from "@/lib/auth-password";
 
 export const runtime = "nodejs";
 
@@ -67,33 +67,7 @@ export async function POST(req: Request) {
     return Response.json({ error: "invalid token" }, { status: 400 });
   }
 
-  const hashed = await hashPassword(password);
-
-  // Update the credential account's password; create one if absent (same branch
-  // better-auth's resetPassword takes for password-less accounts).
-  const updated = await db
-    .update(schema.accounts)
-    .set({ password: hashed, updatedAt: new Date() })
-    .where(
-      and(
-        eq(schema.accounts.userId, reset.userId),
-        eq(schema.accounts.providerId, "credential"),
-      ),
-    )
-    .returning({ id: schema.accounts.id });
-  if (updated.length === 0) {
-    await db.insert(schema.accounts).values({
-      userId: reset.userId,
-      providerId: "credential",
-      accountId: reset.userId,
-      password: hashed,
-    });
-  }
-
-  // Revoke existing sessions so any stolen/stale cookie is dead.
-  await db
-    .delete(schema.sessions)
-    .where(eq(schema.sessions.userId, reset.userId));
+  await setCredentialPassword(reset.userId, password);
 
   return Response.json({ ok: true });
 }
