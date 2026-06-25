@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 logger = logging.getLogger("jarvis.output_language")
@@ -57,6 +58,35 @@ def _non_latin_alpha_ratio(text: str) -> float:
         return 0.0
     non_latin = sum(1 for c in alpha if not ("a" <= c.lower() <= "z"))
     return non_latin / len(alpha)
+
+
+# Script ranges that must never reach TTS for an English/French speaker.
+# DeepSeek v4-flash leaks a few of these mixed into otherwise-English replies
+# (e.g. "Done 是的"), which sit UNDER the majority-blank threshold — so rather
+# than blank the whole (mostly-English) reply, we STRIP these characters and let
+# the English through. Latin (incl. French accents é/à/ç) is preserved.
+_NON_LATIN_STRIP_RE = re.compile(
+    "["
+    "　-〿"   # CJK symbols & punctuation (、。「」…)
+    "぀-ヿ"   # Hiragana + Katakana
+    "㄀-ㄯ"   # Bopomofo
+    "㄰-㆏"   # Hangul compatibility Jamo
+    "㐀-䶿"   # CJK Unified Ideographs Ext-A
+    "一-鿿"   # CJK Unified Ideographs (Hanzi)
+    "가-힯"   # Hangul syllables
+    "豈-﫿"   # CJK compatibility ideographs
+    "Ѐ-ӿ"   # Cyrillic
+    "]+"
+)
+
+
+def strip_non_latin_scripts(text: str) -> str:
+    """Remove CJK / Kana / Hangul / Cyrillic characters, then collapse any
+    doubled space the removal leaves (so "Done 是的 now" → "Done now")."""
+    out = _NON_LATIN_STRIP_RE.sub("", text)
+    if out != text:
+        out = re.sub(r"  +", " ", out)
+    return out
 
 
 def is_non_latin_drift(buffer: str, recent_user_text: str = "") -> bool:
@@ -144,9 +174,30 @@ def install() -> None:
                         except Exception:
                             pass
                 else:
+                    user_text = _recent_user_text(self)
+                    # Strip stray CJK/Cyrillic chars DeepSeek leaks into otherwise-
+                    # English replies (they're under the majority-blank threshold, so
+                    # they'd otherwise reach TTS verbatim). Skip ONLY when the user
+                    # genuinely spoke a non-Latin language this turn (respect that).
+                    if _non_latin_alpha_ratio(user_text) <= _NON_LATIN_THRESHOLD:
+                        cleaned = strip_non_latin_scripts(content)
+                        if cleaned != content:
+                            logger.warning(
+                                f"[output-language] stripped non-Latin chars "
+                                f"(stream {id[:12] if id else '?'}): "
+                                f"{content[:80]!r} -> {cleaned[:80]!r}"
+                            )
+                            content = cleaned
+                            try:
+                                delta.content = cleaned
+                            except Exception:
+                                try:
+                                    object.__setattr__(delta, "content", cleaned)
+                                except Exception:
+                                    pass
                     buf = _STREAM_BUFFERS.get(id, "") + content
                     _STREAM_BUFFERS[id] = buf[-_BUFFER_CAP:]
-                    if is_non_latin_drift(buf, _recent_user_text(self)):
+                    if is_non_latin_drift(buf, user_text):
                         logger.warning(
                             f"[output-language] suppressed non-Latin drift "
                             f"(stream {id[:12] if id else '?'}): "

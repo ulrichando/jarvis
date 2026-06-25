@@ -6,7 +6,29 @@ import pytest
 from sanitizers.output_language import (
     _non_latin_alpha_ratio,
     is_non_latin_drift,
+    strip_non_latin_scripts,
 )
+
+
+# ── strip_non_latin_scripts (DeepSeek CJK-leak removal) ───────────────
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("Done 是的", "Done "),                       # trailing CJK stripped
+        ("Hello 你好 there", "Hello there"),          # mid CJK + space collapse
+        ("嗯, the answer is 42", ", the answer is 42"),  # leading CJK
+        ("集中", ""),                                  # all-CJK → empty
+        ("こんにちは ok", " ok"),                       # Japanese kana
+        ("안녕 hi", " hi"),                            # Hangul
+        ("Привет world", " world"),                   # Cyrillic
+        ("normal english", "normal english"),          # untouched
+        ("café résumé naïve", "café résumé naïve"),    # French accents PRESERVED
+    ],
+)
+def test_strip_non_latin_scripts(raw, expected):
+    assert strip_non_latin_scripts(raw) == expected
 
 
 # ── _non_latin_alpha_ratio ────────────────────────────────────────────
