@@ -357,11 +357,13 @@ export default function EvolutionPage() {
                   (() => {
                     const propCat = (p: Proposal) => categorize(p.files, p.intent);
                     const queuedCat = (q: Activity) => categorize([], q.detail || q.title);
-                    const present = CATEGORIES.filter(
-                      (c) =>
-                        data.proposals.some((p) => propCat(p) === c) ||
-                        data.queued.some((q) => queuedCat(q) === c),
-                    );
+                    const counts = Object.fromEntries(CATEGORIES.map((c) => [c, 0])) as Record<Category, number>;
+                    data.proposals.forEach((p) => {
+                      counts[propCat(p)] += 1;
+                    });
+                    data.queued.forEach((q) => {
+                      counts[queuedCat(q)] += 1;
+                    });
                     const proposals = catFilter
                       ? data.proposals.filter((p) => propCat(p) === catFilter)
                       : data.proposals;
@@ -370,8 +372,11 @@ export default function EvolutionPage() {
                       : data.queued;
                     return (
                       <>
-                        {present.length > 1 && (
-                          <CategoryFilterBar present={present} active={catFilter} onPick={setCatFilter} />
+                        <CategoryFilterBar counts={counts} active={catFilter} onPick={setCatFilter} />
+                        {catFilter && proposals.length === 0 && queued.length === 0 && (
+                          <p className="px-1 py-8 text-center text-[13px] text-muted-foreground">
+                            Nothing in review under {catFilter}.
+                          </p>
                         )}
                         <AnimatePresence initial={false}>
                           {proposals.map((p, i) => (
@@ -512,23 +517,26 @@ function CategoryChip({ category }: { category: Category }) {
 }
 
 function CategoryFilterBar({
-  present,
+  counts,
   active,
   onPick,
 }: {
-  present: Category[];
+  counts: Record<string, number>;
   active: Category | null;
   onPick: (c: Category | null) => void;
 }) {
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  // Always show all 7 categories so the taxonomy is visible; empty ones are dimmed.
   return (
     <div className="flex flex-wrap items-center gap-1.5 pb-1">
-      <FilterPill label="All" active={active === null} onClick={() => onPick(null)} />
-      {present.map((c) => (
+      <FilterPill label={total ? `All ${total}` : "All"} active={active === null} onClick={() => onPick(null)} />
+      {CATEGORIES.map((c) => (
         <FilterPill
           key={c}
-          label={c}
+          label={counts[c] ? `${c} ${counts[c]}` : c}
           tone={CATEGORY_TONE[c]}
           active={active === c}
+          dim={!counts[c]}
           onClick={() => onPick(active === c ? null : c)}
         />
       ))}
@@ -540,11 +548,13 @@ function FilterPill({
   label,
   tone,
   active,
+  dim,
   onClick,
 }: {
   label: string;
   tone?: string;
   active: boolean;
+  dim?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -556,6 +566,7 @@ function FilterPill({
         active
           ? "border-primary/40 bg-primary/10 text-foreground"
           : "border-border/60 bg-card/40 text-muted-foreground hover:text-foreground",
+        dim && !active && "opacity-45",
       )}
     >
       {tone && <span className={cn("size-1.5 rounded-full bg-current", tone)} />}
@@ -944,7 +955,10 @@ function DeployedRow({
   return (
     <div className="flex items-start justify-between gap-3 rounded-xl border border-border/60 bg-card/40 px-4 py-3">
       <div className="min-w-0">
-        <p className="truncate text-[13px] text-foreground">{d.title}</p>
+        <div className="flex items-center gap-2">
+          <p className="truncate text-[13px] text-foreground">{d.title}</p>
+          <CategoryChip category={categorize(d.files, d.intent)} />
+        </div>
         <p className="mt-0.5 flex items-center gap-2 text-[11.5px] text-muted-foreground">
           <CheckCircle2 className="size-3 text-emerald-500" />
           deployed {timeAgo(d.createdAt)}
@@ -983,7 +997,10 @@ function FailedRow({ f }: { f: Proposal }) {
       <div className="flex items-start gap-2">
         <XCircle className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
         <div className="min-w-0">
-          <p className="truncate text-[13px] text-foreground">{f.title}</p>
+          <div className="flex items-center gap-2">
+            <p className="truncate text-[13px] text-foreground">{f.title}</p>
+            <CategoryChip category={categorize(f.files, f.intent)} />
+          </div>
           {f.rejectionReason && (
             <p className="mt-0.5 font-mono text-[11.5px] text-amber-600/90">{f.rejectionReason}</p>
           )}
