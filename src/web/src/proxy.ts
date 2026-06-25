@@ -226,6 +226,18 @@ export function proxy(req: NextRequest) {
     return NextResponse.next()
   }
 
+  // Password-reset endpoints MUST be reachable without a session — the user is
+  // resetting precisely because they can't log in. They're under /api/auth/ so
+  // the same-origin carve-out below already exempts them from the cookie
+  // requirement, but reset is unauthenticated BY DESIGN, so allow it explicitly
+  // (independent of Sec-Fetch-Site) rather than relying on that header. The
+  // handlers are self-defended: anti-enumeration (uniform responses) +
+  // per-(email+IP) rate limiting + single-use 10-minute tokens. Note: this is
+  // NOT the signup path — POST /api/auth/sign-up* is already blocked above.
+  if (path.startsWith('/api/auth/reset/')) {
+    return NextResponse.next()
+  }
+
   // Same-origin browser carve-out: the web UI itself (pages served by
   // THIS server doing fetch()/EventSource against /api/*) has no way to
   // hold the bearer token — there is no client-side token wiring, and
