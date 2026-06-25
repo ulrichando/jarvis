@@ -83,6 +83,14 @@ _RUBRIC = (
     "the deploy. Keep findings concrete and few (max 5)."
 )
 
+# System instruction — Claude otherwise prepends a long step-by-step analysis
+# before the JSON (live 2026-06-25: that made the correctness lens unparseable /
+# truncated). A system turn forces JSON-only; applied to every provider.
+_SYSTEM = (
+    "You are a precise code reviewer. Respond with ONLY the JSON object the user "
+    "specifies — no preamble, no step-by-step analysis, no prose, no markdown fences."
+)
+
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -124,7 +132,8 @@ def _call_model(provider: str, model: str, prompt: str) -> str:
         client = anthropic.Anthropic(timeout=45.0, max_retries=1)
         resp = client.messages.create(
             model=model,
-            max_tokens=1200,
+            max_tokens=1500,
+            system=_SYSTEM,
             messages=[{"role": "user", "content": prompt}],
         )
         return "".join(getattr(b, "text", "") for b in resp.content).strip()
@@ -140,7 +149,10 @@ def _call_model(provider: str, model: str, prompt: str) -> str:
     client = openai.OpenAI(base_url=cfg["base_url"], api_key=key, timeout=45.0, max_retries=1)
     resp = client.chat.completions.create(
         model=model,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[
+            {"role": "system", "content": _SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
     )
     return (resp.choices[0].message.content or "").strip()
 
