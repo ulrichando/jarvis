@@ -114,8 +114,14 @@ export const auth = betterAuth({
     },
   },
   session: {
-    expiresIn: 60 * 60 * 24 * 7, // 7-day idle window (refreshed on use)
-    updateAge: 60 * 60 * 24, // refresh the expiry once a day of activity
+    // OWASP-aligned policy. 30-min IDLE timeout (sliding — resets on activity)
+    // so walking away logs you out; refreshed at most every 5 min while active.
+    // The 8-hour ABSOLUTE cap lives in auth-helpers.ts (isSessionWithinAbsoluteCap)
+    // — that is what forces a fresh login each work session regardless of
+    // activity, which a pure sliding window never does (active sessions renew
+    // forever — the reason JARVIS never re-prompted).
+    expiresIn: 60 * 30, // 30-minute idle window
+    updateAge: 60 * 5,  // refresh the expiry at most every 5 min of activity
   },
 });
 
