@@ -111,6 +111,67 @@ def test_no_commit_marks_failed(tmp_path, monkeypatch):
     assert "no_commit" in art.get("rejection_reason", "")
 
 
+def _setup_nocommit_repo(tmp_path, branch):
+    """Tmp git repo whose automod branch carries NO new commit (HEAD == base)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "master"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "x.txt").write_text("hi\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    subprocess.run(["git", "checkout", "-qb", branch], cwd=repo, check=True)
+    return repo
+
+
+def test_no_commit_with_red_base_flags_base_suite_red(tmp_path, monkeypatch):
+    """No commit landed AND the base suite is red → finalize records the distinct
+    reason `base_suite_red` and emits the loud `automod_base_suite_red` audit
+    event, so /evolution shows the loop is blocked at the ROOT, not failing
+    per-proposal (the silent ×7 churn of 2026-06-23)."""
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    repo = _setup_nocommit_repo(tmp_path, "automod/redbase-001")
+    monkeypatch.chdir(repo)
+    _seed_intent_file(tmp_path, "redbase-001", "INTENT: nothing\n")
+
+    from pipeline.automod import finalize
+    monkeypatch.setattr(finalize, "_rerun_pytest", lambda: (False, "1 failed in 2s"))
+    audited = []
+    monkeypatch.setattr(finalize.artifact, "audit",
+                        lambda kind, **f: audited.append(kind))
+
+    finalize.finalize_branch("redbase-001", "automod/redbase-001", skip_test_rerun=False)
+
+    art = json.loads((tmp_path / "auto-mods" / "redbase-001.json").read_text())
+    assert art["status"] == "failed"
+    assert art["rejection_reason"] == "base_suite_red"
+    assert "automod_base_suite_red" in audited      # the loud, dashboard-visible signal
+
+
+def test_no_commit_with_green_base_stays_no_commit_landed(tmp_path, monkeypatch):
+    """No commit landed but the base suite is GREEN → the agent refused for its
+    own reason; keep the generic no_commit_landed and do NOT raise the
+    base-suite alarm."""
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    repo = _setup_nocommit_repo(tmp_path, "automod/greenbase-001")
+    monkeypatch.chdir(repo)
+    _seed_intent_file(tmp_path, "greenbase-001", "INTENT: nothing\n")
+
+    from pipeline.automod import finalize
+    monkeypatch.setattr(finalize, "_rerun_pytest", lambda: (True, "100 passed"))
+    audited = []
+    monkeypatch.setattr(finalize.artifact, "audit",
+                        lambda kind, **f: audited.append(kind))
+
+    finalize.finalize_branch("greenbase-001", "automod/greenbase-001", skip_test_rerun=False)
+
+    art = json.loads((tmp_path / "auto-mods" / "greenbase-001.json").read_text())
+    assert art["status"] == "failed"
+    assert art["rejection_reason"] == "no_commit_landed"
+    assert "automod_base_suite_red" not in audited
+
+
 def test_test_deletion_in_diff_marks_failed(tmp_path, monkeypatch):
     """A diff that DELETES a test should be rejected even though it
     touches src/voice-agent/."""

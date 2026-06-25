@@ -161,6 +161,21 @@ def finalize_branch(automod_id: str, branch: str,
     parent = _git("rev-parse", base).stdout.strip()
     head = _git("rev-parse", "HEAD").stdout.strip()
     if not head or head == parent:
+        # No commit landed. HEAD == base here, so the worktree sits AT the base
+        # commit — re-running the suite now exercises the BASE, not the proposal.
+        # If the base is already RED, the coding agent correctly refused to build
+        # on a broken tree; that is NOT this proposal's fault. Filing it as a
+        # generic no_commit_landed is what hid the real problem on 2026-06-23:
+        # one pre-existing red test silently failed ×7 builds for a day. Detect
+        # it and surface a distinct, loud signal so /evolution shows the loop is
+        # blocked at the root, not failing per-proposal. (skip_test_rerun keeps
+        # the unit tests fast + base-suite check off the no-op path.)
+        reason = "no_commit_landed"
+        base_tail = ""
+        if not skip_test_rerun:
+            base_green, base_tail = _rerun_pytest()
+            if not base_green:
+                reason = "base_suite_red"
         art = {
             "id": automod_id,
             "intent": intent,
@@ -169,16 +184,22 @@ def finalize_branch(automod_id: str, branch: str,
             "head_sha": head or "(none)",
             "files_changed": [],
             "diff_summary": "",
-            "test_output_tail": "",
+            "test_output_tail": base_tail,
             "status": "failed",
-            "rejection_reason": "no_commit_landed",
+            "rejection_reason": reason,
             "evolution": evolution,
             **_lineage,
             "created_at": _now_iso(),
         }
         artifact.write(art)
-        artifact.audit("automod_failed", id=automod_id,
-                       reason="no_commit_landed")
+        artifact.audit("automod_failed", id=automod_id, reason=reason)
+        if reason == "base_suite_red":
+            # Distinct, dashboard-visible event (route.ts readAuditActivity
+            # surfaces automod_* kinds): the base suite is broken — fix it to
+            # unblock ALL builds. Without this the loop churns no_commit_landed
+            # silently and nobody knows why every proposal "fails".
+            artifact.audit("automod_base_suite_red", id=automod_id,
+                           detail=base_tail[-400:])
         _delete_branch(branch)
         return art
 

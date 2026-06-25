@@ -123,6 +123,78 @@ def _cleanup_worktree(wt: Path) -> None:
         logger.warning("[automod] worktree cleanup failed: %s", rm.stderr.strip())
 
 
+def _branch_name(rec_id: str) -> str:
+    return f"automod/{rec_id}"
+
+
+def _already_built(rec_id: str) -> bool:
+    """True when rec_id already produced a LANDABLE proposal: pending (awaiting
+    review) or merged (deployed). Such an id must never be rebuilt — its commit
+    lives on automod/<id> and rebuilding would wipe it."""
+    try:
+        return artifact.load(rec_id).get("status") in ("pending", "merged")
+    except (FileNotFoundError, json.JSONDecodeError):
+        return False
+
+
+def _delete_stale_branch(rec_id: str) -> None:
+    """Force-delete a leftover automod/<id> branch if it exists (no-op when it
+    doesn't). -D (not -d) because a failed build's branch may carry an un-merged
+    commit we are intentionally discarding.
+
+    Why this is needed: finalize deletes a failed branch via
+    `git checkout master; git branch -D` run INSIDE the disposable worktree,
+    where git refuses the master checkout (master is checked out in the main
+    tree), so its branch delete silently no-ops. The branch is then left behind
+    and the next build of that id dies `fatal: branch already exists`."""
+    branch = _branch_name(rec_id)
+    if _git("rev-parse", "--verify", "--quiet", branch).returncode != 0:
+        return  # branch doesn't exist — nothing to clean
+    rm = _git("branch", "-D", branch)
+    if rm.returncode != 0:
+        logger.warning("[automod] stale branch delete failed: %s — %s",
+                       branch, rm.stderr.strip())
+
+
+def prune_orphan_branches() -> int:
+    """Delete automod/* branches that hold no landable proposal — i.e. whose
+    artifact is failed/rejected/absent. KEEPS pending (awaiting review) + merged
+    (deployed; the branch is the rollback handle) branches, and any branch
+    checked out in a worktree (an in-flight build). Returns the count deleted.
+
+    Companion to `_delete_stale_branch` (which cleans the one id being
+    re-spawned): this sweeps the rest. Failed-build branches piled up (15+ by
+    2026-06-23) because finalize's in-worktree delete silently no-ops; wired
+    into the nightly pass so they can't accumulate into 'branch already exists'
+    collisions again. Always-safe; never raises (logs + returns count)."""
+    listed = _git("branch", "--list", "automod/*", "--format=%(refname:short)")
+    branches = [b.strip() for b in listed.stdout.splitlines() if b.strip()]
+    if not branches:
+        return 0
+    # Branches checked out in a worktree (an in-flight build) must not be touched.
+    checked_out: set[str] = set()
+    for line in _git("worktree", "list", "--porcelain").stdout.splitlines():
+        if line.startswith("branch "):
+            checked_out.add(line[len("branch "):].strip().replace("refs/heads/", ""))
+    deleted = 0
+    for branch in branches:
+        if branch in checked_out:
+            continue
+        rec_id = branch[len("automod/"):]
+        try:
+            status = artifact.load(rec_id).get("status")
+        except (FileNotFoundError, json.JSONDecodeError):
+            status = None
+        if status in ("pending", "merged"):
+            continue  # landable / deployed — keep the branch
+        if _git("branch", "-D", branch).returncode == 0:
+            deleted += 1
+    if deleted:
+        logger.info("[automod] pruned %d orphan automod branch(es)", deleted)
+        artifact.audit("automod_branches_pruned", count=deleted)
+    return deleted
+
+
 @contextlib.contextmanager
 def _global_lock():
     """Exclusive lockfile via fcntl.flock -- at most one spawn at a time."""
@@ -177,9 +249,28 @@ def _write_queue(records: list[dict]) -> None:
 
 async def _spawn_one(intent: dict) -> str:
     """Launch the wrapper script for a single intent. Returns
-    'spawned' / 'timeout' / 'error'."""
+    'spawned' / 'skipped' / 'timeout' / 'error'."""
     intent = criteria.enrich_record(intent)
     rec_id = intent["id"]
+
+    # Never rebuild an id that already produced a landable proposal. A PENDING
+    # artifact's commit lives on automod/<id> awaiting review; a MERGED one is
+    # deployed. Re-spawning wipes that branch, burns a build slot, and — because
+    # the branch still exists — makes the wrapper's `git checkout -b` die
+    # "branch already exists" (live 2026-06-25: the cycle re-spawned an
+    # already-built 59b830 → fatal). 'skipped' drains the queue entry without
+    # counting it as a build.
+    if _already_built(rec_id):
+        logger.info("[automod] skip rebuild — id=%s already has a landable proposal", rec_id)
+        artifact.audit("automod_skip_already_built", id=rec_id)
+        return "skipped"
+
+    # A prior FAILED/abandoned build can leave automod/<id> behind (finalize's
+    # in-worktree branch delete silently no-ops — see _delete_stale_branch).
+    # Clear it from the main repo before the wrapper's `checkout -b`. Safe: we
+    # only reach here when no pending/merged artifact exists for this id.
+    _delete_stale_branch(rec_id)
+
     intent_file = intent_file_path(rec_id)
     intent_file.parent.mkdir(parents=True, exist_ok=True)
     evolution_json = json.dumps(intent.get("evolution", {}), ensure_ascii=False)

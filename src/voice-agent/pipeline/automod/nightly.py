@@ -106,6 +106,15 @@ def run() -> Dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         logger.warning("[nightly] artifact cleanup failed: %s", e)
 
+    # 3b. Prune orphan automod/* branches (failed/abandoned builds whose
+    # in-worktree branch delete silently no-opped). Keeps the branch namespace
+    # from piling up into 'branch already exists' collisions on rebuild.
+    try:
+        from pipeline.automod.spawner import prune_orphan_branches
+        summary["branches_pruned"] = prune_orphan_branches()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[nightly] branch prune failed: %s", e)
+
     logger.info(
         "[nightly] done: detected=%s spawned=%s published=%s cleaned=%s",
         summary["detected"], summary["spawned"],

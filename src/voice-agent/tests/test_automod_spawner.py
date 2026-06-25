@@ -5,6 +5,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -228,3 +229,103 @@ def test_intent_file_written_before_spawn(tmp_path, monkeypatch):
     # master can't pollute the proposal's diff (the too_many_files bug). The
     # _stub_worktrees fixture returns "0"*40 as the stub base_sha.
     assert captured_env[0]["JARVIS_AUTOMOD_BASE_REF"] == "0" * 40
+
+
+# ── Loop-reliability hardening (2026-06-25) ───────────────────────────
+
+
+def test_skip_rebuild_when_already_pending(tmp_path, monkeypatch):
+    """An id that already has a pending (or merged) artifact is NEVER rebuilt:
+    its commit lives on automod/<id> awaiting review, and re-spawning both wipes
+    that branch and dies 'branch already exists' in the wrapper (live 2026-06-25:
+    the cycle re-spawned an already-built 59b830 → fatal)."""
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    monkeypatch.setenv("JARVIS_AUTOMOD_SPAWN_LIVE", "1")
+    monkeypatch.setenv("JARVIS_AUTOMOD_DAILY_CAP", "10")
+    from pipeline.automod import artifact, spawner
+    artifact.write({"id": "id1", "status": "pending"})
+    _seed_queue(tmp_path, [_make_intent("id1")])
+
+    calls = []
+
+    async def fake_exec(*args, **kwargs):
+        calls.append(args)
+        class _Fake:
+            returncode = 0
+            pid = 1
+            async def wait(self): return 0
+        return _Fake()
+
+    with patch.object(asyncio, "create_subprocess_exec", side_effect=fake_exec):
+        n = asyncio.run(spawner.drain_queue())
+
+    assert n == 0           # nothing built
+    assert calls == []      # the wrapper subprocess was never launched
+    qp = tmp_path / "auto-mods" / "queue.jsonl"
+    assert not (qp.read_text().strip() if qp.exists() else "")  # entry consumed
+
+
+def test_stale_branch_deleted_before_spawn(tmp_path, monkeypatch):
+    """A leftover automod/<id> branch from a prior failed build is force-deleted
+    before the rebuild so the wrapper's `checkout -b` can't die 'already exists'.
+    (_prepare_worktree is stubbed, so the only _git calls come from the cleanup.)"""
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    monkeypatch.setenv("JARVIS_AUTOMOD_SPAWN_LIVE", "1")
+    monkeypatch.setenv("JARVIS_AUTOMOD_DAILY_CAP", "10")
+    _seed_queue(tmp_path, [_make_intent("id1")])
+    from pipeline.automod import spawner
+
+    git_calls = []
+
+    def fake_git(*args):
+        git_calls.append(args)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")  # rev-parse 0 = exists
+
+    monkeypatch.setattr(spawner, "_git", fake_git)
+
+    async def fake_exec(*args, **kwargs):
+        class _Fake:
+            returncode = 0
+            pid = 1
+            async def wait(self): return 0
+        return _Fake()
+
+    with patch.object(asyncio, "create_subprocess_exec", side_effect=fake_exec):
+        asyncio.run(spawner.drain_queue())
+
+    assert ("rev-parse", "--verify", "--quiet", "automod/id1") in git_calls
+    assert ("branch", "-D", "automod/id1") in git_calls
+
+
+def test_prune_orphan_branches_keeps_landable(tmp_path, monkeypatch):
+    """Prune drops automod/* branches with no landable proposal (failed / no
+    artifact) but KEEPS pending (review) + merged (rollback handle), and never
+    touches a branch checked out in a worktree (an in-flight build)."""
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    from pipeline.automod import artifact, spawner
+    artifact.write({"id": "keep-pending", "status": "pending"})
+    artifact.write({"id": "keep-merged", "status": "merged"})
+    artifact.write({"id": "drop-failed", "status": "failed"})
+    # 'drop-orphan' has a branch but NO artifact; 'inflight' is checked out.
+    branches = ["automod/keep-pending", "automod/keep-merged",
+                "automod/drop-failed", "automod/drop-orphan", "automod/inflight"]
+    deleted = []
+
+    def fake_git(*args):
+        r = SimpleNamespace(returncode=0, stdout="", stderr="")
+        if args[:2] == ("branch", "--list"):
+            r.stdout = "\n".join(branches) + "\n"
+        elif args[:2] == ("worktree", "list"):
+            r.stdout = "worktree /x\nbranch refs/heads/automod/inflight\n"
+        elif args[:2] == ("branch", "-D"):
+            deleted.append(args[2])
+        return r
+
+    monkeypatch.setattr(spawner, "_git", fake_git)
+    n = spawner.prune_orphan_branches()
+
+    assert set(deleted) == {"automod/drop-failed", "automod/drop-orphan"}
+    assert n == 2
+    assert "automod/keep-pending" not in deleted   # awaiting review
+    assert "automod/keep-merged" not in deleted     # deployed / rollback handle
+    assert "automod/inflight" not in deleted         # in-flight build
