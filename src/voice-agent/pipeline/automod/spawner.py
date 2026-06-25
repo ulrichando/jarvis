@@ -275,6 +275,15 @@ async def _spawn_one(intent: dict) -> str:
     intent_file.parent.mkdir(parents=True, exist_ok=True)
     evolution_json = json.dumps(intent.get("evolution", {}), ensure_ascii=False)
     prior_json = json.dumps(intent.get("prior_failures", []), ensure_ascii=False)
+    # Guard: 'intent' is required. A queue entry that passed JSON decode but
+    # omits the key would cause an uncaught KeyError here (outside the
+    # try/except below), crashing the full drain loop and losing remaining
+    # queue entries. Treat it as a malformed entry and return 'error' cleanly.
+    intent_text = intent.get("intent")
+    if not intent_text:
+        logger.warning("[automod] malformed queue entry — missing 'intent': id=%s", rec_id)
+        artifact.audit("automod_spawn_error", id=rec_id, error="missing intent field")
+        return "error"
     # Retry-lineage fields first (single-line, parsed by finalize._read_intent);
     # INTENT last because it may be multi-line (retry bodies are). The wrapper
     # cat's the whole file, so order doesn't affect the coding-agent prompt.
@@ -286,7 +295,7 @@ async def _spawn_one(intent: dict) -> str:
         f"KIND: {intent.get('kind', 'unknown')}\n"
         f"RATIONALE: {intent.get('rationale', '')}\n"
         f"EVOLUTION: {evolution_json}\n"
-        f"INTENT: {intent['intent']}\n",
+        f"INTENT: {intent_text}\n",
         encoding="utf-8",
     )
 
