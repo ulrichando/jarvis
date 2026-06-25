@@ -177,7 +177,17 @@ export default function EvolutionPage() {
   const load = useCallback(async () => {
     try {
       const res = await fetch("/api/evolution", { cache: "no-store" });
-      setData((await res.json()) as EvolutionData);
+      if (res.status === 401) {
+        // Web session expired (e.g. the 8h absolute cap) — re-auth instead of
+        // rendering the {error:"auth required"} body as data (which crashed on
+        // data.status). A full nav lets proxy.ts gate us to the login page.
+        window.location.href = "/login";
+        return;
+      }
+      if (!res.ok) return; // transient error — keep prior state, never crash
+      const json = (await res.json()) as Partial<EvolutionData>;
+      // Only accept a well-formed payload (guards against a partial/error body).
+      if (json && typeof json.status === "object") setData(json as EvolutionData);
     } catch {
       /* keep prior state on a transient failure */
     }
