@@ -220,7 +220,7 @@ async function readArtifacts(): Promise<{
   let names: string[]
   try {
     names = (await fs.readdir(AUTOMOD_DIR)).filter(
-      (f) => f.startsWith('automod-') && f.endsWith('.json'),
+      (f) => f.startsWith('automod-') && f.endsWith('.json') && !f.endsWith('.review.json'),
     )
   } catch {
     return { proposals: [], failed: [], deployed: [], artifactActivity: [] }
@@ -572,6 +572,17 @@ async function readSelfAssessment(): Promise<unknown> {
   }
 }
 
+// The 3-lens review council's verdict for one proposal (correctness / security /
+// regression), written by pipeline/automod/review_council.py. Advisory only —
+// it never gates a deploy; it informs the human's approve/reject decision.
+async function readReview(id: string): Promise<unknown> {
+  try {
+    return JSON.parse(await fs.readFile(path.join(AUTOMOD_DIR, `${id}.review.json`), 'utf-8'))
+  } catch {
+    return null
+  }
+}
+
 type FitnessPoint = { ts: string; composite: number; passed: boolean }
 
 function readFitness(): {
@@ -691,6 +702,10 @@ export async function GET(): Promise<Response> {
       readInFlightBuilds(),
     ])
   const { proposals, failed, deployed, artifactActivity } = artifacts
+  // Attach each pending proposal's 3-lens review council verdict (if reviewed).
+  const proposalsReviewed = await Promise.all(
+    proposals.map(async (p) => ({ ...p, review: await readReview(p.id) })),
+  )
   const rollbackEvents = await readRollbackEvents(deployed)
   const rollbackCount = rollbackEvents.filter(actualRollbackEvent).length
   const fitness = readFitness()
@@ -739,7 +754,7 @@ export async function GET(): Promise<Response> {
     ))
     .slice(0, 24)
   return Response.json({
-    proposals,
+    proposals: proposalsReviewed,
     failed,
     deployed,
     queued,

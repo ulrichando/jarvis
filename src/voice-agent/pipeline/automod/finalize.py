@@ -338,6 +338,17 @@ def finalize_branch(automod_id: str, branch: str,
         artifact.audit("automod_proposal_ready", id=automod_id)
     except Exception:  # noqa: BLE001 — never break finalize on a notify failure
         pass
+    # 3-lens review council (2026-06-25): correctness / security / regression
+    # review the diff and write <id>.review.json, surfaced in the /evolution
+    # Review tab BEFORE the human decides to deploy. ADVISORY ONLY — it never
+    # gates; the human still approves. Best-effort; disable with
+    # JARVIS_AUTOMOD_REVIEW_COUNCIL=0.
+    if os.environ.get("JARVIS_AUTOMOD_REVIEW_COUNCIL", "1") != "0":
+        try:
+            from pipeline.automod import review_council
+            review_council.review_proposal(automod_id, diff_text, intent)
+        except Exception:  # noqa: BLE001 — advisory; must never break finalize
+            pass
     _git("checkout", "master")
     return art
 

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# jarvis-evolution-review — run the 3-lens review council on one proposal now.
+# Reviews the proposal's diff through correctness / security / regression lenses
+# and writes ~/.jarvis/auto-mods/<id>.review.json (surfaced in /evolution's
+# Review tab). ADVISORY ONLY — it never deploys. Prints the review JSON.
+# Usage: jarvis-evolution-review <automod-id>
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+VA="$REPO_ROOT/src/voice-agent"
+
+cd "$VA" || exit 1
+exec "$VA/.venv/bin/python" -m pipeline.automod.review_council "$@"

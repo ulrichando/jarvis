@@ -48,7 +48,22 @@ type Proposal = {
   testOutput: string;
   coverageGate: { status: string; score: number | null; covered: number; measurable: number };
   priority: string;
+  review?: Review | null;
 };
+
+type ReviewLens = { verdict: string; findings: string[]; summary: string };
+type Review = {
+  overall: { verdict: string; recommendation: string };
+  lenses: Record<string, ReviewLens>;
+  model?: string;
+  generated_at?: string;
+};
+
+const LENS_ORDER = ["correctness", "security", "regression"];
+const verdictDot = (v: string) =>
+  v === "pass" ? "bg-emerald-500" : v === "block" ? "bg-rose-500" : v === "concern" ? "bg-amber-500" : "bg-muted-foreground/40";
+const verdictText = (v: string) =>
+  v === "pass" ? "text-emerald-500" : v === "block" ? "text-rose-500" : v === "concern" ? "text-amber-500" : "text-muted-foreground";
 
 type Deployed = {
   id: string;
@@ -220,6 +235,8 @@ export default function EvolutionPage() {
   };
   const reject = (id: string) =>
     act(`reject:${id}`, `/api/evolution/${id}/reject`, {}, "Proposal rejected; its branch was deleted.");
+  const runReview = (id: string) =>
+    act(`review:${id}`, `/api/evolution/${id}/review`, undefined, "Review council finished — verdict is on the card.");
   const process = (id: string) =>
     act(`process:${id}`, `/api/evolution/${id}/process`, undefined, "Building — turning this into a reviewable diff.");
   const dismiss = (id: string) =>
@@ -350,10 +367,12 @@ export default function EvolutionPage() {
                             confirming={confirming === p.id}
                             deploying={busy === `approve:${p.id}`}
                             rejecting={busy === `reject:${p.id}`}
+                            reviewing={busy === `review:${p.id}`}
                             onAskConfirm={() => setConfirming(p.id)}
                             onCancel={() => setConfirming(null)}
                             onConfirm={() => approve(p.id)}
                             onReject={() => reject(p.id)}
+                            onReview={() => runReview(p.id)}
                           />
                         </motion.div>
                       ))}
@@ -563,19 +582,23 @@ function ProposalCard({
   confirming,
   deploying,
   rejecting,
+  reviewing,
   onAskConfirm,
   onCancel,
   onConfirm,
   onReject,
+  onReview,
 }: {
   p: Proposal;
   confirming: boolean;
   deploying: boolean;
   rejecting: boolean;
+  reviewing: boolean;
   onAskConfirm: () => void;
   onCancel: () => void;
   onConfirm: () => void;
   onReject: () => void;
+  onReview: () => void;
 }) {
   const cov = p.coverageGate;
   return (
@@ -611,6 +634,8 @@ function ProposalCard({
           )}
         </div>
       )}
+
+      <ReviewVerdict review={p.review} reviewing={reviewing} onReview={onReview} />
 
       <div className="mt-4 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
@@ -656,6 +681,106 @@ function ProposalCard({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function ReviewVerdict({
+  review,
+  reviewing,
+  onReview,
+}: {
+  review?: Review | null;
+  reviewing: boolean;
+  onReview: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!review) {
+    return (
+      <button
+        type="button"
+        onClick={onReview}
+        disabled={reviewing}
+        className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-background/40 px-2 py-1 text-[11.5px] text-muted-foreground transition-colors hover:text-foreground disabled:opacity-60"
+      >
+        {reviewing ? <Loader2 className="size-3 animate-spin" /> : <Radar className="size-3" />}
+        {reviewing ? "Reviewing…" : "Run review council"}
+      </button>
+    );
+  }
+  const rec = review.overall.recommendation;
+  const recTone =
+    rec === "approve"
+      ? "bg-emerald-500/10 text-emerald-500"
+      : rec === "reject"
+        ? "bg-rose-500/10 text-rose-500"
+        : rec === "caution"
+          ? "bg-amber-500/10 text-amber-500"
+          : "bg-muted/60 text-muted-foreground";
+  const recLabel =
+    rec === "approve"
+      ? "looks safe"
+      : rec === "reject"
+        ? "do not deploy"
+        : rec === "caution"
+          ? "needs a look"
+          : "inconclusive";
+  const hasFindings = LENS_ORDER.some((l) => review.lenses[l]?.findings?.length);
+  return (
+    <div className="mt-3 rounded-lg border border-border/50 bg-background/40 p-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Radar className="size-3.5 text-muted-foreground" />
+          <span className="text-[11.5px] font-medium text-foreground">Review council</span>
+          <span className={cn("rounded-full px-1.5 py-0.5 text-[10.5px] font-medium", recTone)}>{recLabel}</span>
+        </div>
+        <div className="flex items-center gap-2.5">
+          {LENS_ORDER.map((l) => {
+            const v = review.lenses[l]?.verdict ?? "skipped";
+            return (
+              <span
+                key={l}
+                className="inline-flex items-center gap-1 text-[10.5px] text-muted-foreground"
+                title={`${l}: ${v}`}
+              >
+                <span className={cn("size-1.5 rounded-full", verdictDot(v))} />
+                {l.slice(0, 4)}
+              </span>
+            );
+          })}
+          {hasFindings && (
+            <button
+              type="button"
+              onClick={() => setOpen(!open)}
+              className="text-[10.5px] text-muted-foreground hover:text-foreground"
+            >
+              {open ? "hide" : "details"}
+            </button>
+          )}
+        </div>
+      </div>
+      {open && hasFindings && (
+        <div className="mt-2 space-y-1.5 border-t border-border/40 pt-2">
+          {LENS_ORDER.map((l) => {
+            const lens = review.lenses[l];
+            if (!lens?.findings?.length) return null;
+            return (
+              <div key={l}>
+                <p className={cn("text-[10px] font-medium uppercase tracking-wide", verdictText(lens.verdict))}>
+                  {l}
+                </p>
+                <ul className="mt-0.5 space-y-0.5">
+                  {lens.findings.map((f, i) => (
+                    <li key={i} className="text-[11.5px] leading-4 text-muted-foreground">
+                      · {f}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
