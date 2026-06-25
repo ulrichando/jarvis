@@ -50,6 +50,12 @@ struct TtsLabel(Mutex<Option<MenuItem<Wry>>>);
 /// Ordered to match TTS_VOICES.
 struct TtsVoiceItems(Mutex<Vec<MenuItem<Wry>>>);
 
+/// Speech / Tool model menu items, stored as (model-id, plain label, item)
+/// so switch_speech_model / switch_cli_model can add/remove the "✓  " prefix
+/// to reflect the active pick — the same scheme TtsVoiceItems uses for voices.
+struct SpeechItems(Mutex<Vec<(&'static str, &'static str, MenuItem<Wry>)>>);
+struct ToolItems(Mutex<Vec<(&'static str, &'static str, MenuItem<Wry>)>>);
+
 /// Handle to the "Start / Stop Screen Share" tray entry. Stashed in
 /// state so the `set_share_label` command can rewrite it from the
 /// status poll — label flips to "Stop Screen Share ✓" when the
@@ -309,17 +315,28 @@ fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Comman
     cmd
 }
 
-/// Repo checkout root. Derived from the running exe when possible
-/// (`<repo>/src/voice-agent/desktop-tauri/src-tauri/target/release/jarvis-desktop[.exe]`,
-/// 6 ancestors up), else the platform-conventional Documents location (the
-/// Linux dev box uses `~/Documents/Projects/jarvis`; the Windows installer
-/// clones to `~/Documents/jarvis`).
+/// Walk up from `exe` and return the first ancestor containing the
+/// repo-root marker `CLAUDE.md`. Robust against the desktop-tauri crate
+/// being relocated within the tree — fixed-depth ancestor counting
+/// silently broke when it moved from `src/` to `src/voice-agent/`
+/// (f169bdd4), resolving one level short and producing paths like
+/// `<repo>/src/src/web`. Returns None when no ancestor has the marker
+/// (e.g. a bundled install with no checkout above the binary).
+fn repo_root_from_exe(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    exe.ancestors()
+        .find(|a| a.join("CLAUDE.md").is_file())
+        .map(std::path::Path::to_path_buf)
+}
+
+/// Repo checkout root. Derived from the running exe when possible (walk
+/// up to the `CLAUDE.md` marker via `repo_root_from_exe`), else the
+/// platform-conventional Documents location (the Linux dev box uses
+/// `~/Documents/Projects/jarvis`; the Windows installer clones to
+/// `~/Documents/jarvis`).
 fn repo_root() -> std::path::PathBuf {
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(root) = exe.ancestors().nth(6) {
-            if root.join("CLAUDE.md").exists() {
-                return root.to_path_buf();
-            }
+        if let Some(root) = repo_root_from_exe(&exe) {
+            return root;
         }
     }
     #[cfg(windows)]
@@ -445,6 +462,30 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::process::Command;
+
+    #[test]
+    fn repo_root_from_exe_finds_marker_regardless_of_depth() {
+        // Fake checkout: <tmp>/repo/CLAUDE.md with the binary nested at the
+        // real release layout. The resolver must land on `repo` no matter
+        // how deep the binary sits (this is what the f169bdd4 move broke).
+        let base = std::env::temp_dir().join(format!("jarvis_rrfe_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let repo = base.join("repo");
+        let nested = repo.join("src/voice-agent/desktop-tauri/src-tauri/target/release");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(repo.join("CLAUDE.md"), b"marker").unwrap();
+
+        let found = repo_root_from_exe(&nested.join("jarvis-desktop"));
+        assert_eq!(found.as_deref(), Some(repo.as_path()), "must resolve to the CLAUDE.md dir");
+
+        // No marker anywhere up the tree → None (caller shows diagnostic /
+        // falls back to the platform default).
+        let orphan = base.join("no-marker/a/b/c");
+        std::fs::create_dir_all(&orphan).unwrap();
+        assert!(repo_root_from_exe(&orphan.join("jarvis-desktop")).is_none());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     fn make_telemetry_db(dir: &std::path::Path, ts_iso: Option<&str>) -> PathBuf {
         let path = dir.join("telemetry.db");
@@ -1070,6 +1111,16 @@ fn ollama_has(installed: &std::collections::HashSet<String>, target: &str) -> bo
 /// Switch the active CLI model by POSTing to the voice-client. The
 /// voice-client persists the choice in `~/.jarvis/cli-model`; the
 /// next run_jarvis_cli call picks it up via env vars. No process
+/// Read a tray picker's current selection id from `~/.jarvis/<file>`
+/// (e.g. "voice-model" / "cli-model"). Empty string when unset/unreadable —
+/// used to pre-mark the active Speech/Tool item with ✓ at menu-build time.
+fn read_picker_current(file: &str) -> String {
+    std::fs::read_to_string(jarvis_home().join(".jarvis").join(file))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
 /// restarts needed. Spawned via curl to avoid pulling reqwest.
 fn switch_cli_model(app: &tauri::AppHandle, id: &'static str) {
     let body = format!(r#"{{"model":"{id}"}}"#);
@@ -1081,6 +1132,17 @@ fn switch_cli_model(app: &tauri::AppHandle, id: &'static str) {
             "-d", &body,
         ])
         .spawn();
+
+    // Repaint the ✓ on the Tool-model submenu items (mirrors switch_tts_provider).
+    {
+        let items_state: State<ToolItems> = app.state();
+        if let Ok(items) = items_state.0.lock() {
+            for (mid, label, item) in items.iter() {
+                let text = if *mid == id { format!("✓  {label}") } else { (*label).to_string() };
+                let _ = item.set_text(text);
+            }
+        };
+    }
 
     // Optimistic label update so the menu reflects the click without
     // waiting for the next /status poll.
@@ -1178,6 +1240,17 @@ fn switch_speech_model(app: &tauri::AppHandle, id: &'static str) {
     match std::fs::write(&file, format!("{id}\n")) {
         Ok(()) => eprintln!("[tray] wrote voice-model: {id}"),
         Err(e) => eprintln!("[tray] failed to write voice-model: {e}"),
+    }
+
+    // Repaint the ✓ on the Speech-model submenu items (mirrors switch_tts_provider).
+    {
+        let items_state: State<SpeechItems> = app.state();
+        if let Ok(items) = items_state.0.lock() {
+            for (mid, label, item) in items.iter() {
+                let text = if *mid == id { format!("✓  {label}") } else { (*label).to_string() };
+                let _ = item.set_text(text);
+            }
+        };
     }
 
     // 2. Restart the voice stack so it rebuilds the LLM with the new pick.
@@ -1846,10 +1919,11 @@ fn open_in_browser(app: &AppHandle, url: &str) {
     }
 }
 
-/// Walk up from the running binary's path to find the project root.
-/// Binary lives at `<project>/src/voice-agent/desktop-tauri/src-tauri/target/release/jarvis-desktop`,
-/// so 5 ancestors up = `<project>`. Honored override:
-/// `JARVIS_PROJECT_ROOT=/path/to/jarvis` (useful for testing).
+/// Project root for spawning `bun run dev` / `bin/jarvis-mode`. Honors
+/// `JARVIS_PROJECT_ROOT=/path/to/jarvis` (useful for testing), else
+/// walks up from the running binary to the `CLAUDE.md` marker — see
+/// `repo_root_from_exe` for why a marker walk replaced fixed-depth
+/// ancestor counting (which broke this on the f169bdd4 folder move).
 fn find_project_root() -> Option<std::path::PathBuf> {
     if let Ok(p) = std::env::var("JARVIS_PROJECT_ROOT") {
         let pb = std::path::PathBuf::from(p);
@@ -1857,13 +1931,7 @@ fn find_project_root() -> Option<std::path::PathBuf> {
             return Some(pb);
         }
     }
-    let exe = std::env::current_exe().ok()?;
-    // jarvis-desktop ← release ← target ← src-tauri ← desktop-tauri ← src ← <project>
-    let mut p = exe.as_path();
-    for _ in 0..6 {
-        p = p.parent()?;
-    }
-    Some(p.to_path_buf())
+    repo_root_from_exe(&std::env::current_exe().ok()?)
 }
 
 /// Locate the bun executable. Returns the first match from PATH, or
@@ -2223,6 +2291,8 @@ fn main() {
         .manage(SpeechLabel(Mutex::new(None)))
         .manage(TtsLabel(Mutex::new(None)))
         .manage(TtsVoiceItems(Mutex::new(Vec::new())))
+        .manage(SpeechItems(Mutex::new(Vec::new())))
+        .manage(ToolItems(Mutex::new(Vec::new())))
         .manage(ShareLabel(Mutex::new(None)))
         .manage(ModeLabel(Mutex::new(None)))
         .manage(ModeItems(Mutex::new(Vec::new())))
@@ -2583,33 +2653,40 @@ fn main() {
             // Opus for extended reasoning. gpt-5-mini / 5.1 are the
             // OpenAI alternatives when Anthropic credit is a concern.
             // qwen3-32b is the strongest Groq option (no API quota).
-            let v_claude_haiku  = MenuItemBuilder::with_id("speech_claude-haiku-4-5",  "Use Anthropic · Claude Haiku 4.5  (default, ~0.7s)").build(app)?;
-            let v_claude_sonnet = MenuItemBuilder::with_id("speech_claude-sonnet-4-6", "Use Anthropic · Claude Sonnet 4.6  (best tool calling)").build(app)?;
-            let v_claude_opus   = MenuItemBuilder::with_id("speech_claude-opus-4-7",   "Use Anthropic · Claude Opus 4.7  (most capable, slowest)").build(app)?;
-            let v_gpt_5_mini    = MenuItemBuilder::with_id("speech_gpt-5-mini",        "Use OpenAI · GPT-5 mini (alternative)").build(app)?;
-            let v_gpt_5_1       = MenuItemBuilder::with_id("speech_gpt-5.1",           "Use OpenAI · GPT-5.1 (best OpenAI tools)").build(app)?;
-            let v_qwen          = MenuItemBuilder::with_id("speech_qwen/qwen3-32b",    "Use Groq · qwen3-32b (no-API-quota option)").build(app)?;
-            // DeepSeek re-added 2026-06-23 per user request (daily-driver model).
-            // Speech uses v4-flash — the fast one, and the only v4 DeepSeek in
-            // providers/llm.py SPEECH_MODELS (v4-pro isn't a speech entry).
-            let v_deepseek      = MenuItemBuilder::with_id("speech_deepseek-v4-flash", "Use DeepSeek · V4 Flash (fast)").build(app)?;
-            // Local (Ollama) — runs the voice brain fully on-device. qwen3-30b-a3b
-            // is the CPU sweet spot (MoE, ~3B active, tool-calling verified);
-            // gpt-oss-120b is heavier + slower on CPU. Both are in SPEECH_MODELS.
-            let v_local_qwen3   = MenuItemBuilder::with_id("speech_ollama/qwen3:30b-a3b", "Use Local · Qwen3 30B-A3B (Ollama, on-device, fast)").build(app)?;
-            let v_local_gptoss  = MenuItemBuilder::with_id("speech_ollama/gpt-oss:120b",  "Use Local · gpt-oss 120B (Ollama, heavy, slow on CPU)").build(app)?;
-            let speech_sep_local = PredefinedMenuItem::separator(app)?;
-            let mut speech_sb = SubmenuBuilder::new(app, "Speech model ▸");
-            if have_anthropic { speech_sb = speech_sb.item(&v_claude_haiku).item(&v_claude_sonnet).item(&v_claude_opus); }
-            if have_openai    { speech_sb = speech_sb.item(&v_gpt_5_mini).item(&v_gpt_5_1); }
-            if have_groq      { speech_sb = speech_sb.item(&v_qwen); }
-            if have_deepseek  { speech_sb = speech_sb.item(&v_deepseek); }
-            // Local (Ollama) — only the supported models that are actually pulled.
+            // Speech model picker — (model-id, menu label, available). Order = display
+            // order. The active model (read from ~/.jarvis/voice-model) is pre-marked
+            // with ✓; items are stashed in SpeechItems so switch_speech_model repaints
+            // the ✓ on a pick without a desktop relaunch. DeepSeek uses v4-flash — the
+            // only v4 DeepSeek in providers/llm.py SPEECH_MODELS. Local (Ollama) entries
+            // show only when actually pulled, after a separator.
             let local_qwen3_ok  = ollama_has(&ollama_models, "qwen3:30b-a3b");
             let local_gptoss_ok = ollama_has(&ollama_models, "gpt-oss:120b");
-            if local_qwen3_ok || local_gptoss_ok { speech_sb = speech_sb.item(&speech_sep_local); }
-            if local_qwen3_ok  { speech_sb = speech_sb.item(&v_local_qwen3); }
-            if local_gptoss_ok { speech_sb = speech_sb.item(&v_local_gptoss); }
+            let cur_speech = read_picker_current("voice-model");
+            let speech_defs: &[(&'static str, &'static str, bool)] = &[
+                ("claude-haiku-4-5",     "Use Anthropic · Claude Haiku 4.5  (default, ~0.7s)",       have_anthropic),
+                ("claude-sonnet-4-6",    "Use Anthropic · Claude Sonnet 4.6  (best tool calling)",   have_anthropic),
+                ("claude-opus-4-7",      "Use Anthropic · Claude Opus 4.7  (most capable, slowest)", have_anthropic),
+                ("gpt-5-mini",           "Use OpenAI · GPT-5 mini (alternative)",                    have_openai),
+                ("gpt-5.1",              "Use OpenAI · GPT-5.1 (best OpenAI tools)",                 have_openai),
+                ("qwen/qwen3-32b",       "Use Groq · qwen3-32b (no-API-quota option)",               have_groq),
+                ("deepseek-v4-flash",    "Use DeepSeek · V4 Flash (fast)",                           have_deepseek),
+                ("ollama/qwen3:30b-a3b", "Use Local · Qwen3 30B-A3B (Ollama, on-device, fast)",      local_qwen3_ok),
+                ("ollama/gpt-oss:120b",  "Use Local · gpt-oss 120B (Ollama, heavy, slow on CPU)",    local_gptoss_ok),
+            ];
+            let mut speech_sb = SubmenuBuilder::new(app, "Speech model ▸");
+            let mut speech_store: Vec<(&'static str, &'static str, MenuItem<Wry>)> = Vec::new();
+            let mut speech_local_sep_done = false;
+            for (id, label, avail) in speech_defs.iter().copied() {
+                if !avail { continue; }
+                if id.starts_with("ollama/") && !speech_local_sep_done {
+                    speech_sb = speech_sb.item(&PredefinedMenuItem::separator(app)?);
+                    speech_local_sep_done = true;
+                }
+                let text = if id == cur_speech.as_str() { format!("✓  {label}") } else { label.to_string() };
+                let item = MenuItemBuilder::with_id(format!("speech_{id}"), text).build(app)?;
+                speech_sb = speech_sb.item(&item);
+                speech_store.push((id, label, item));
+            }
             let speech_submenu = speech_sb.build()?;
 
             // ── TTS VOICE submenu (nested under Models) ──
@@ -2671,18 +2748,28 @@ fn main() {
             // option. DeepSeek V4 Pro re-added 2026-06-23 per user
             // request — it's their daily-driver CLI model — despite the
             // documented hallucination rate (94% per Artificial Analysis).
-            let m_claude_sonnet = MenuItemBuilder::with_id("model_claude-sonnet-4-6", "Use Claude · Sonnet 4.6 (default, best tool calling)").build(app)?;
-            let m_claude_opus   = MenuItemBuilder::with_id("model_claude-opus-4-7",   "Use Claude · Opus 4.7  (1M ctx · most capable)").build(app)?;
-            let m_claude_haiku  = MenuItemBuilder::with_id("model_claude-haiku-4-5",  "Use Claude · Haiku 4.5  (fastest)").build(app)?;
-            let m_gpt_5_1       = MenuItemBuilder::with_id("model_gpt-5.1",           "Use OpenAI · GPT-5.1 (best OpenAI tools)").build(app)?;
-            let m_gpt_5_mini    = MenuItemBuilder::with_id("model_gpt-5-mini",        "Use OpenAI · GPT-5 mini (alternative)").build(app)?;
-            let m_qwen          = MenuItemBuilder::with_id("model_qwen/qwen3-32b",    "Use Groq · qwen3-32b (no-API-quota option)").build(app)?;
-            let m_deepseek      = MenuItemBuilder::with_id("model_deepseek-v4-pro",   "Use DeepSeek · V4 Pro (strong reasoning)").build(app)?;
+            // Tool model picker — (model-id, menu label, available). Order = display
+            // order. The active tool model (read from ~/.jarvis/cli-model) is pre-marked
+            // with ✓; items are stashed in ToolItems so switch_cli_model repaints on a pick.
+            let cur_tool = read_picker_current("cli-model");
+            let tool_defs: &[(&'static str, &'static str, bool)] = &[
+                ("claude-sonnet-4-6", "Use Claude · Sonnet 4.6 (default, best tool calling)", have_anthropic),
+                ("claude-opus-4-7",   "Use Claude · Opus 4.7  (1M ctx · most capable)",       have_anthropic),
+                ("claude-haiku-4-5",  "Use Claude · Haiku 4.5  (fastest)",                     have_anthropic),
+                ("gpt-5.1",           "Use OpenAI · GPT-5.1 (best OpenAI tools)",              have_openai),
+                ("gpt-5-mini",        "Use OpenAI · GPT-5 mini (alternative)",                 have_openai),
+                ("qwen/qwen3-32b",    "Use Groq · qwen3-32b (no-API-quota option)",            have_groq),
+                ("deepseek-v4-pro",   "Use DeepSeek · V4 Pro (strong reasoning)",              have_deepseek),
+            ];
             let mut tool_sb = SubmenuBuilder::new(app, "Tool model ▸");
-            if have_anthropic { tool_sb = tool_sb.item(&m_claude_sonnet).item(&m_claude_opus).item(&m_claude_haiku); }
-            if have_openai    { tool_sb = tool_sb.item(&m_gpt_5_1).item(&m_gpt_5_mini); }
-            if have_groq      { tool_sb = tool_sb.item(&m_qwen); }
-            if have_deepseek  { tool_sb = tool_sb.item(&m_deepseek); }
+            let mut tool_store: Vec<(&'static str, &'static str, MenuItem<Wry>)> = Vec::new();
+            for (id, label, avail) in tool_defs.iter().copied() {
+                if !avail { continue; }
+                let text = if id == cur_tool.as_str() { format!("✓  {label}") } else { label.to_string() };
+                let item = MenuItemBuilder::with_id(format!("model_{id}"), text).build(app)?;
+                tool_sb = tool_sb.item(&item);
+                tool_store.push((id, label, item));
+            }
             let tool_submenu = tool_sb.build()?;
 
             let tts_sep = PredefinedMenuItem::separator(app)?;
@@ -2715,6 +2802,14 @@ fn main() {
             {
                 let vi: State<TtsVoiceItems> = app.state();
                 *vi.0.lock().unwrap() = vec![tts_gr_troy, tts_gr_austin];
+            }
+            {
+                let si: State<SpeechItems> = app.state();
+                *si.0.lock().unwrap() = speech_store;
+            }
+            {
+                let ti: State<ToolItems> = app.state();
+                *ti.0.lock().unwrap() = tool_store;
             }
 
             let sep2         = PredefinedMenuItem::separator(app)?;
