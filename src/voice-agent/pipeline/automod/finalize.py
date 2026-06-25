@@ -91,6 +91,40 @@ def _read_intent(automod_id: str) -> dict:
     return out
 
 
+def _hermetic_test_env() -> dict[str, str]:
+    """Environment for the fitness gate: a CLEAN developer/CI shell, NOT the live
+    service runtime.
+
+    The voice-agent process loads src/voice-agent/.env + ~/.jarvis/keys.env
+    (JARVIS_* runtime flags + provider API keys) into its environment, and the
+    build subprocess this gate runs in inherits them. ~16 tests assert behaviour
+    against a clean env — e.g. JARVIS_STT_LOCAL_ONLY=1 flips build_stt_chain()
+    off the Groq chain test_stt_chain expects, and test_webcam captures
+    ANTHROPIC_API_KEY at import so a monkeypatch.delenv can't undo it. A
+    developer's clean shell passes all 3517; the inherited service env fails 16,
+    so EVERY autonomous build read tests_failed_on_rerun and nothing ever reached
+    review/deploy. Strip exactly the keys those two env files inject so the gate
+    is deterministic and matches a clean checkout (verified: 3517 pass stripped).
+    """
+    env = os.environ.copy()
+    tooling_root = Path(os.environ.get(
+        "JARVIS_AUTOMOD_TOOLING_ROOT",
+        str(Path(__file__).resolve().parents[4]),
+    ))
+    for env_file in (
+        tooling_root / "src" / "voice-agent" / ".env",
+        Path.home() / ".jarvis" / "keys.env",
+    ):
+        try:
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                s = line.strip()
+                if s and not s.startswith("#") and "=" in s:
+                    env.pop(s.split("=", 1)[0].strip(), None)
+        except OSError:
+            pass
+    return env
+
+
 def _rerun_pytest() -> tuple[bool, str]:
     """Re-run the full test suite in src/voice-agent/. Returns (ok, tail)."""
     # Derive from this file's location (.../src/voice-agent/pipeline/automod/
@@ -116,7 +150,7 @@ def _rerun_pytest() -> tuple[bool, str]:
         proc = subprocess.run(
             cmd,
             cwd=cwd, capture_output=True, text=True,
-            timeout=300,
+            timeout=300, env=_hermetic_test_env(),
         )
     except subprocess.TimeoutExpired:
         return False, "pytest re-run timed out after 300s"
