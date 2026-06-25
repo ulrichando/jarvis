@@ -50,7 +50,10 @@ const AUTH_DISABLED = process.env.JARVIS_AUTH_DISABLED === '1'
 // the deployed site — never source/secrets), so it must be reachable without
 // a login session. /a/<token> is the same idea for a published single
 // artifact (server-rendered, view-only — no source browser, no secrets).
-const LOGIN_PUBLIC_PREFIXES = ['/login', '/signup', '/share', '/a']
+// NOTE: '/signup' is intentionally NOT listed here — public registration is
+// disabled (single-user install). Any navigation to /signup is blocked here
+// and falls through to the cookie check → redirect to /login.
+const LOGIN_PUBLIC_PREFIXES = ['/login', '/share', '/a']
 
 function hasSessionCookie(req: NextRequest): boolean {
   // http (dev) vs __Secure- prefix (https/prod).
@@ -190,6 +193,28 @@ export function proxy(req: NextRequest) {
     )
   }
 
+  // ── Signup lockout (single-user install) ────────────────────────────────
+  // Public HTTP registration is disabled. Block POST /api/auth/sign-up/* at
+  // the proxy before the same-origin carve-out (or the dev-mode pass-through
+  // below) can pass it through to the better-auth route handler. This applies
+  // in ALL modes (REQUIRE_AUTH on/off, dev/prod) and regardless of
+  // Sec-Fetch-Site — signup is never allowed via HTTP.
+  //
+  // IMPORTANT: this is a PROXY-LAYER block only — it stops browser/HTTP
+  // callers. The in-process server API (auth.api.signUpEmail(...)) is NOT
+  // affected: the account-seed CLI calls it directly (server-side, no HTTP
+  // hop through this proxy) to provision the single owner account. That
+  // in-process path intentionally remains open.
+  //
+  // Note: auth.ts intentionally does NOT set emailAndPassword.disableSignUp
+  // because that would also block the in-process server API call.
+  if (req.method === 'POST' && path.startsWith('/api/auth/sign-up')) {
+    return new NextResponse(
+      JSON.stringify({ error: 'signup disabled' }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    )
+  }
+
   // Auth gate.
   if (!REQUIRE_AUTH) {
     // Dev mode (no auth required). Pass through so `next dev` still
@@ -222,7 +247,9 @@ export function proxy(req: NextRequest) {
   //
   // DEFENSE-IN-DEPTH: `/api/auth/*` is exempt from the session-cookie
   // requirement here so the sign-in form can POST before the cookie exists.
-  // All other `/api/*` routes that pass this carve-out (with a valid session
+  // The signup endpoint (POST /api/auth/sign-up*) is blocked before this
+  // carve-out (above), so it never reaches here. All other `/api/*` routes
+  // that pass this carve-out (with a valid session
   // cookie) are then independently validated by `withUser`/`requireUserId`
   // in their route handlers — those call auth.api.getSession() against the
   // DB, enforce the 30-day cap, and return 401 on stale/expired sessions.
