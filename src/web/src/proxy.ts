@@ -150,9 +150,23 @@ export function proxy(req: NextRequest) {
 
   // Page requests (not /api/*): JARVIS login gate. Unauthenticated page
   // navigations redirect to /login. Static assets are excluded by the
-  // matcher; /login + /signup are public; /api/* falls through to the
-  // network bearer gate below (and /api/auth/* is reached same-origin by
-  // the login forms).
+  // matcher; /login is public; /signup is NOT public (single-user: no
+  // public registration); /api/* falls through to the network bearer gate
+  // below (and /api/auth/* is reached same-origin by the login forms).
+  //
+  // TWO-LAYER AUTH MODEL (proxy = fast negative; server = authoritative):
+  //   Layer 1 (here): if no session cookie is present → redirect to /login
+  //     immediately. This is a cheap check — the proxy cannot hit the DB to
+  //     validate whether a cookie's session is still live or within the
+  //     30-day cap.
+  //   Layer 2 (server components + route handlers): getUserId() calls
+  //     auth.api.getSession() which validates the session against the DB and
+  //     enforces the 30-day absolute cap. If the session is stale or expired,
+  //     getUserId() returns null → server component does
+  //     `if (!uid) redirect("/login")` (Tasks 3+4), and API route handlers
+  //     do `requireUserId()` / `withUser()` → 401. This is the authoritative
+  //     gate. A stale cookie passes Layer 1 but NOT Layer 2 — so stale
+  //     cookies do NOT grant access to any protected resource.
   if (!path.startsWith('/api/')) {
     if (
       !AUTH_DISABLED &&
@@ -205,10 +219,16 @@ export function proxy(req: NextRequest) {
   // fetch()/EventSource always send the session cookie, so requiring it
   // costs legit traffic nothing, but a forged `Sec-Fetch-Site` with no
   // session cookie now falls through to the bearer check below.
-  // `/api/auth/*` is exempt — it's the same-origin POST that CREATES the
-  // session (no cookie exists yet), and the public `/share/*` surface is
-  // a page route (served via /share/[token]/asset/…, not /api/*), so it
-  // never reaches this gate.
+  //
+  // DEFENSE-IN-DEPTH: `/api/auth/*` is exempt from the session-cookie
+  // requirement here so the sign-in form can POST before the cookie exists.
+  // All other `/api/*` routes that pass this carve-out (with a valid session
+  // cookie) are then independently validated by `withUser`/`requireUserId`
+  // in their route handlers — those call auth.api.getSession() against the
+  // DB, enforce the 30-day cap, and return 401 on stale/expired sessions.
+  // So the session-cookie requirement here is a proxy-layer fast negative;
+  // the route handler is the authoritative validator. Public `/share/*`
+  // surface is a page route (never /api/*), so it never reaches this gate.
   if (
     req.headers.get('sec-fetch-site') === 'same-origin' &&
     (path.startsWith('/api/auth/') || hasSessionCookie(req))
