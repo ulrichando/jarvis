@@ -22,14 +22,14 @@ The hardcoded sites split cleanly, and the split is the whole point:
 
 ## Inventory (every site, verified)
 
-The 9 engine modules that hardcode `src/voice-agent/`:
+The 10 engine modules that hardcode `src/voice-agent/`:
 `_state.py · coverage_gate.py · error_logger.py · error_log_fallback.py ·
-finalize.py · watchdog.py · patterns.py · spawner.py · deploy.py`.
+finalize.py · watchdog.py · patterns.py · spawner.py · plan.py · deploy.py`.
 
 ### Config seams → `TreeProfile` data fields
 | Concept | Sites | voice-agent value | Field |
 |---|---|---|---|
-| Path scope prefix | `_state.py:132` `ALLOWED_PATH_PREFIX`; `coverage_gate.py:34` `_SRC_PREFIX`; `error_logger.py:36` `_PROJECT_PREFIX`; `error_log_fallback.py:145` | `"src/voice-agent/"` | `src_prefix` |
+| Path scope prefix | `_state.py:132` `ALLOWED_PATH_PREFIX`; `coverage_gate.py:34` `_SRC_PREFIX`; `error_logger.py:36` `_PROJECT_PREFIX`; `error_log_fallback.py:145`; `plan.py` `ALLOWED_PREFIX` + plan-agent prompts | `"src/voice-agent/"` | `src_prefix` |
 | Tree root | `finalize.py:29,100` `parents[2]`; `finalize.py:107`, `watchdog.py:143` | `<repo>/src/voice-agent` | `tree_root` |
 | Interpreter | `watchdog.py:143`, `finalize.py:107` | `tree_root/.venv/bin/python` | `interpreter` |
 | Test command (the GATE) | `finalize.py:111-114` (`pytest tests/` ± `coverage run`); watchdog selftest `:143` | `[py,-m,pytest,tests/,-q,--tb=no]` | `test_command` |

@@ -247,9 +247,31 @@ def _write_queue(records: list[dict]) -> None:
     p.write_text(body, encoding="utf-8")
 
 
+def _write_plan_rejected_artifact(rec_id: str, intent: dict, plan_result: dict) -> None:
+    """Write a failed artifact for an intent rejected at the plan stage (no build
+    ran) so it surfaces in /evolution's Failed list with the reason + the plan."""
+    import time
+
+    plan = plan_result.get("plan") or {}
+    artifact.write({
+        "id": rec_id,
+        "intent": intent.get("intent", ""),
+        "branch": "",
+        "files_changed": plan.get("files", []),
+        "diff_summary": "",
+        "test_output_tail": "",
+        "status": "failed",
+        "rejection_reason": f"plan_rejected: {plan_result.get('reason', '')}".strip(),
+        "plan": plan,
+        "evolution": intent.get("evolution", {}),
+        "priority": intent.get("priority", "P3"),
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    })
+
+
 async def _spawn_one(intent: dict) -> str:
     """Launch the wrapper script for a single intent. Returns
-    'spawned' / 'skipped' / 'timeout' / 'error'."""
+    'spawned' / 'skipped' / 'plan_rejected' / 'timeout' / 'error'."""
     intent = criteria.enrich_record(intent)
     rec_id = intent["id"]
 
@@ -284,6 +306,31 @@ async def _spawn_one(intent: dict) -> str:
         logger.warning("[automod] malformed queue entry — missing 'intent': id=%s", rec_id)
         artifact.audit("automod_spawn_error", id=rec_id, error="missing intent field")
         return "error"
+
+    # SDLC design stage (2026-06-25): a 2-agent plan fusion drafts + a judge
+    # reviews a plan BEFORE the expensive build. A plan that leaves
+    # src/voice-agent/, hits the blocklist, or is judged infeasible rejects the
+    # intent here (no build runs). A passing plan guides the build. Best-effort +
+    # gated (JARVIS_AUTOMOD_PLAN_STAGE) — any LLM failure proceeds with no plan,
+    # so the plan stage can never block the loop.
+    plan_block = ""
+    if os.environ.get("JARVIS_AUTOMOD_PLAN_STAGE", "1") != "0":
+        plan_result = None
+        try:
+            from pipeline.automod import plan as plan_mod
+            plan_result = await asyncio.to_thread(plan_mod.make_plan, intent_text)
+        except Exception as e:  # noqa: BLE001 — the plan stage must never break the loop
+            logger.warning("[automod] plan stage errored (proceeding): %s", e)
+        if plan_result and plan_result.get("verdict") == "reject":
+            logger.info("[automod] plan REJECTED id=%s: %s", rec_id, plan_result.get("reason"))
+            _write_plan_rejected_artifact(rec_id, intent, plan_result)
+            artifact.audit("automod_plan_rejected", id=rec_id, reason=plan_result.get("reason"))
+            return "plan_rejected"
+        if plan_result and plan_result.get("plan"):
+            block = plan_mod.format_for_prompt(plan_result["plan"])
+            if block:
+                plan_block = block + "\n"
+
     # Retry-lineage fields first (single-line, parsed by finalize._read_intent);
     # INTENT last because it may be multi-line (retry bodies are). The wrapper
     # cat's the whole file, so order doesn't affect the coding-agent prompt.
@@ -295,6 +342,7 @@ async def _spawn_one(intent: dict) -> str:
         f"KIND: {intent.get('kind', 'unknown')}\n"
         f"RATIONALE: {intent.get('rationale', '')}\n"
         f"EVOLUTION: {evolution_json}\n"
+        f"{plan_block}"
         f"INTENT: {intent_text}\n",
         encoding="utf-8",
     )

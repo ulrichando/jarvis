@@ -30,6 +30,7 @@ _CATALOGUED_PREFIX_SITES = {
     "watchdog.py",          # .venv interpreter for the selftest
     "patterns.py",          # agent edit-scope prompt
     "spawner.py",           # agent edit-scope prompt
+    "plan.py",              # ALLOWED_PREFIX + plan-agent scope prompts (2026-06-25)
     "deploy.py",            # module-location doc comment
 }
 

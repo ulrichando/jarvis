@@ -33,7 +33,8 @@ def _make_intent(id_, **overrides):
 
 @pytest.fixture(autouse=True)
 def _stub_worktrees(tmp_path, monkeypatch):
-    """Spawner tests should never create real git worktrees in the checkout."""
+    """Spawner tests should never create real git worktrees in the checkout, and
+    the LLM plan stage is off by default (tests that exercise it set it back)."""
     from pipeline.automod import spawner
 
     def _prepare(rec_id: str) -> tuple[Path, str]:
@@ -43,6 +44,7 @@ def _stub_worktrees(tmp_path, monkeypatch):
 
     monkeypatch.setattr(spawner, "_prepare_worktree", _prepare)
     monkeypatch.setattr(spawner, "_cleanup_worktree", lambda _p: None)
+    monkeypatch.setenv("JARVIS_AUTOMOD_PLAN_STAGE", "0")  # no LLM calls in unit tests
 
 
 def test_shadow_mode_returns_zero_no_spawn(tmp_path, monkeypatch):
@@ -739,3 +741,72 @@ def test_skip_rebuild_does_not_consume_daily_budget(tmp_path, monkeypatch):
     assert throttle.admitted_today() == budget_before, (
         "skipped rebuild must not consume the daily budget"
     )
+
+
+# ── Plan stage (SDLC design step, 2026-06-25) ──
+
+
+def test_plan_reject_skips_build_and_writes_failed(tmp_path, monkeypatch):
+    """When the plan stage rejects an intent, NO build is spawned and a failed
+    artifact is written so it surfaces in /evolution's Failed list."""
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    monkeypatch.setenv("JARVIS_AUTOMOD_SPAWN_LIVE", "1")
+    monkeypatch.setenv("JARVIS_AUTOMOD_DAILY_CAP", "10")
+    monkeypatch.setenv("JARVIS_AUTOMOD_PLAN_STAGE", "1")  # enable for this test
+    _seed_queue(tmp_path, [_make_intent("automod-pr1")])
+    from pipeline.automod import spawner, plan, artifact
+
+    monkeypatch.setattr(
+        plan, "make_plan",
+        lambda intent: {"verdict": "reject", "reason": "plan touches a blocklisted path",
+                        "plan": {"approach": "x", "files": ["src/voice-agent/sanitizers/x.py"],
+                                 "risks": []}, "models": []},
+    )
+    calls = []
+
+    async def fake_exec(*args, **kwargs):
+        calls.append(args)
+        class _Fake:
+            returncode = 0
+            pid = 1
+            async def wait(self): return 0
+        return _Fake()
+
+    with patch.object(asyncio, "create_subprocess_exec", side_effect=fake_exec):
+        n = asyncio.run(spawner.drain_queue())
+
+    assert n == 0           # nothing built
+    assert calls == []      # the build subprocess was never launched
+    art = artifact.load("automod-pr1")
+    assert art["status"] == "failed"
+    assert "plan_rejected" in art["rejection_reason"]
+
+
+def test_plan_proceed_injects_plan_into_intent_file(tmp_path, monkeypatch):
+    """A passing plan is written into the intent file so the build agent sees it."""
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    monkeypatch.setenv("JARVIS_AUTOMOD_SPAWN_LIVE", "1")
+    monkeypatch.setenv("JARVIS_AUTOMOD_DAILY_CAP", "10")
+    monkeypatch.setenv("JARVIS_AUTOMOD_PLAN_STAGE", "1")
+    _seed_queue(tmp_path, [_make_intent("automod-pp1", intent="add a guard")])
+    from pipeline.automod import spawner, plan
+
+    monkeypatch.setattr(
+        plan, "make_plan",
+        lambda intent: {"verdict": "proceed", "reason": "sound",
+                        "plan": {"approach": "ADD-THE-GUARD",
+                                 "files": ["src/voice-agent/tools/x.py"], "risks": []}, "models": []},
+    )
+
+    async def fake_exec(*args, **kwargs):
+        class _Fake:
+            returncode = 0
+            pid = 1
+            async def wait(self): return 0
+        return _Fake()
+
+    with patch.object(asyncio, "create_subprocess_exec", side_effect=fake_exec):
+        asyncio.run(spawner.drain_queue())
+
+    body = (tmp_path / "auto-mods" / "automod-pp1.intent.txt").read_text()
+    assert "REVIEWED PLAN" in body and "ADD-THE-GUARD" in body
