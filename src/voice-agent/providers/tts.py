@@ -335,39 +335,75 @@ def build_tts_chain(tts_provider_file) -> list:
     """
     groq_voice = os.getenv("JARVIS_TTS_VOICE", "troy")
     edge_voice = os.getenv("JARVIS_EDGE_VOICE", "en-US-GuyNeural")
+    local_primary = os.environ.get("JARVIS_LOCAL_TTS_PRIMARY", "0") == "1"
+    local_only    = os.environ.get("JARVIS_LOCAL_TTS_ONLY", "0") == "1"
 
-    primary = None
+    # The tray pick (~/.jarvis/tts-provider) is AUTHORITATIVE for the engine,
+    # via the spec prefix — so a Kokoro pick runs on-device, a groq/edge pick
+    # runs that online engine. The old code only ever built Orpheus here and
+    # ignored the engine, which silently moved the voice off Kokoro whenever
+    # JARVIS_PIN_ALL_ROUTES disabled the per-route dispatcher.
+    provider, voice = "", ""
     spec = read_unified_setting("tts-provider", tts_provider_file)
     if spec and ":" in spec:
-        provider, voice = spec.split(":", 1)
-        provider = provider.strip()
-        voice    = voice.strip()
-        if provider == "groq":
-            primary = LoggingGroqTTS(
-                model="canopylabs/orpheus-v1-english", voice=voice,
-            )
-            logger.info(f"[tts] Groq Orpheus voice={voice} [tray selection]")
-        else:
-            logger.warning(
-                f"[tts] unknown / removed provider {provider!r}; "
-                f"falling back to Groq Orpheus default"
-            )
+        provider, voice = (s.strip() for s in spec.split(":", 1))
+
+    # The on-device rung (Kokoro/Piper). build_local_tts() reads its voice from
+    # JARVIS_LOCAL_TTS_VOICE, kept in sync with the tray's Kokoro pick via the
+    # voice-mode env preset — so a "kokoro:<voice>" spec resolves to that voice.
+    local = build_local_tts()
+
+    def _orpheus(v):
+        return LoggingGroqTTS(model="canopylabs/orpheus-v1-english", voice=v or groq_voice)
+
+    def _edge(v):
+        return edge_tts_plugin.EdgeTTS(voice=v or edge_voice)
+
+    # Strict-local: on-device only, no cloud rungs (mirrors the dispatcher's
+    # JARVIS_LOCAL_TTS_ONLY). A local-engine failure then has no fallback — the
+    # deliberate "strictly on-device" trade.
+    if local_only and local is not None:
+        logger.info("[tts] JARVIS_LOCAL_TTS_ONLY=1 — on-device TTS only (no cloud fallback)")
+        return [local]
+
+    # Spec prefix picks the PRIMARY engine.
+    primary, primary_engine = None, None
+    if provider == "kokoro" and local is not None:
+        primary, primary_engine = local, "kokoro"
+        logger.info(f"[tts] Kokoro on-device primary [tray selection: {spec}]")
+    elif provider == "groq":
+        primary, primary_engine = _orpheus(voice), "groq"
+        logger.info(f"[tts] Groq Orpheus voice={voice or groq_voice} primary [tray selection]")
+    elif provider == "edge":
+        primary, primary_engine = _edge(voice), "edge"
+        logger.info(f"[tts] Edge-TTS voice={voice or edge_voice} primary [tray selection]")
 
     if primary is None:
-        primary = LoggingGroqTTS(
-            model="canopylabs/orpheus-v1-english", voice=groq_voice,
-        )
-        logger.info(f"[tts] Groq Orpheus voice={groq_voice} [default]")
+        # No usable engine pick → local-first when requested, else Orpheus.
+        if local_primary and local is not None:
+            primary, primary_engine = local, "kokoro"
+            logger.info("[tts] Kokoro on-device primary [local-first default]")
+        else:
+            primary, primary_engine = _orpheus(groq_voice), "groq"
+            logger.info(f"[tts] Groq Orpheus voice={groq_voice} primary [default]")
 
-    chain = [primary, edge_tts_plugin.EdgeTTS(voice=edge_voice)]
-    # Offline last rung: local Piper TTS. None unless
-    # JARVIS_LOCAL_TTS_ENABLED=1, so a no-op by default. Appended LAST so
-    # JARVIS still speaks when both Groq Orpheus AND Edge-TTS (both need
-    # the network) are unreachable.
-    local = build_local_tts()
-    if local is not None:
+    # Append the OTHER engines as fallback rungs (resilience), skipping the one
+    # already primary. Order: Orpheus → Edge → local (offline). Best-effort: a
+    # missing key for an UNSELECTED engine (e.g. no GROQ_API_KEY on a Kokoro-only
+    # box) drops that rung instead of crashing the whole TTS chain.
+    chain = [primary]
+    if primary_engine != "groq":
+        try:
+            chain.append(_orpheus(groq_voice))
+        except Exception as e:
+            logger.warning(f"[tts] Orpheus fallback unavailable ({e})")
+    if primary_engine != "edge":
+        try:
+            chain.append(_edge(edge_voice))
+        except Exception as e:
+            logger.warning(f"[tts] Edge fallback unavailable ({e})")
+    if primary_engine != "kokoro" and local is not None:
         chain.append(local)
-        logger.info("[tts] local Piper TTS appended as offline last rung")
     return chain
 
 

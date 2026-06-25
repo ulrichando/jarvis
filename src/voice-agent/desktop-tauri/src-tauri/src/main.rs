@@ -487,6 +487,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    #[test]
+    fn tts_provider_pretty_shows_specific_kokoro_voice() {
+        // The tray "TTS:" header must reflect the ACTIVE voice, not collapse
+        // every Kokoro voice to "Kokoro (local)".
+        assert_eq!(tts_provider_pretty("kokoro:af_heart").as_deref(), Some("Kokoro · Heart"));
+        // A voice outside the curated subset → fall back to the raw id.
+        assert_eq!(tts_provider_pretty("kokoro:zz_unknown").as_deref(), Some("Kokoro · zz_unknown"));
+        // Cloud Orpheus voices still resolve to their label.
+        assert!(tts_provider_pretty("groq:troy").is_some());
+        // Unrecognized spec → None (caller shows the raw name).
+        assert_eq!(tts_provider_pretty("bogus:xyz"), None);
+    }
+
     fn make_telemetry_db(dir: &std::path::Path, ts_iso: Option<&str>) -> PathBuf {
         let path = dir.join("telemetry.db");
         // Match the voice-agent schema enough to satisfy the query.
@@ -1162,27 +1175,70 @@ fn switch_cli_model(app: &tauri::AppHandle, id: &'static str) {
 /// Must match the order items are pushed into TtsVoiceItems.
 /// ElevenLabs entries removed 2026-05-01 — see jarvis_agent.py
 /// _build_dispatching_tts comment.
-const TTS_VOICES: &[(&str, &str)] = &[
-    ("groq:troy",   "Groq Orpheus · Troy"),
-    ("groq:austin", "Groq Orpheus · Austin"),
+/// ONLINE TTS voices — (spec, label, family). `family` ∈ {"orpheus","edge"}
+/// drives the menu's grouping headers. Every entry writes its full spec to
+/// ~/.jarvis/tts-provider; the agent's build_tts_chain selects the engine from
+/// the spec prefix. Groq Orpheus voice list verified against Groq's docs
+/// (autumn/diana/hannah female; austin/daniel/troy male). On-device Kokoro
+/// voices live in KOKORO_VOICE_CHOICES, listed separately under their own header.
+const ONLINE_TTS_VOICES: &[(&str, &str, &str)] = &[
+    ("groq:troy",   "Troy  (US male)",     "orpheus"),
+    ("groq:austin", "Austin  (US male)",   "orpheus"),
+    ("groq:daniel", "Daniel  (US male)",   "orpheus"),
+    ("groq:autumn", "Autumn  (US female)", "orpheus"),
+    ("groq:diana",  "Diana  (US female)",  "orpheus"),
+    ("groq:hannah", "Hannah  (US female)", "orpheus"),
+    ("edge:en-US-GuyNeural",         "Guy  (US male)",         "edge"),
+    ("edge:en-US-ChristopherNeural", "Christopher  (US male)", "edge"),
+    ("edge:en-US-JennyNeural",       "Jenny  (US female)",     "edge"),
+    ("edge:en-US-AriaNeural",        "Aria  (US female)",      "edge"),
+    ("edge:en-GB-RyanNeural",        "Ryan  (UK male)",        "edge"),
+    ("edge:en-GB-SoniaNeural",       "Sonia  (UK female)",     "edge"),
 ];
 
 /// Map a TTS provider:voice spec to a short pretty label for the tray.
 /// Mirrors TTS_PROVIDERS_AVAILABLE in jarvis_voice_client.py.
-fn tts_provider_pretty(spec: &str) -> Option<&'static str> {
-    // Local mode reports "kokoro:<voice>"; show the on-device engine (the
-    // specific voice is reflected by the ✓ in the TTS-voice list).
-    if spec.starts_with("kokoro:") {
-        return Some("Kokoro (local)");
+fn tts_provider_pretty(spec: &str) -> Option<String> {
+    // Local mode reports "kokoro:<voice>" — show the SPECIFIC on-device voice
+    // (not just the engine) so the tray "TTS:" line reflects what's actually
+    // speaking. Falls back to the raw voice id for voices outside the curated
+    // KOKORO_VOICE_CHOICES subset.
+    if let Some(voice) = spec.strip_prefix("kokoro:") {
+        let pretty = KOKORO_VOICE_CHOICES.iter()
+            .find(|(v, _)| *v == voice)
+            .map(|(_, l)| l.split('(').next().unwrap_or(l).trim())
+            .unwrap_or(voice);
+        return Some(format!("Kokoro · {pretty}"));
     }
-    TTS_VOICES.iter().find(|(s, _)| *s == spec).map(|(_, l)| *l)
+    // Online (Orpheus / Edge): curated label prefixed with the engine name.
+    ONLINE_TTS_VOICES.iter().find(|(s, _, _)| *s == spec).map(|(_, l, fam)| {
+        let short = l.split('(').next().unwrap_or(l).trim();
+        let engine = if *fam == "edge" { "Edge" } else { "Orpheus" };
+        format!("{engine} · {short}")
+    })
 }
 
 /// Switch the active TTS voice by POSTing to the voice-client.
 /// Voice-client writes `~/.jarvis/tts-provider`; the agent reads it
 /// on the next session start (or via _build_tts_chain on each call).
 /// No agent restart needed — order shifts on next utterance.
-fn switch_tts_provider(app: &tauri::AppHandle, spec: &'static str) {
+/// Restart the voice-agent off the UI thread so a TTS engine/voice change takes
+/// effect — build_tts_chain runs once per session, so the chain must rebuild.
+/// Agent only: the voice-client reads tts-provider fresh on each /status hit.
+fn restart_voice_agent_for_tts() {
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "restart", "jarvis-voice-agent.service"])
+            .spawn();
+    }
+    #[cfg(windows)]
+    {
+        std::thread::spawn(|| { let _ = restart_voice_agent_cmd(); });
+    }
+}
+
+fn switch_tts_provider(app: &tauri::AppHandle, spec: &str) {
     let body = format!(r#"{{"provider":"{spec}"}}"#);
     let _ = hidden_command("curl")
         .args([
@@ -1193,11 +1249,12 @@ fn switch_tts_provider(app: &tauri::AppHandle, spec: &'static str) {
         ])
         .spawn();
 
-    // Update ✓ prefix on all voice submenu items.
+    // Update ✓ across the online voice items + clear the on-device (Kokoro) ✓
+    // (we're switching to an online engine).
     {
         let items_state: State<TtsVoiceItems> = app.state();
         if let Ok(items) = items_state.0.lock() {
-            for (i, (s, label)) in TTS_VOICES.iter().enumerate() {
+            for (i, (s, label, _fam)) in ONLINE_TTS_VOICES.iter().enumerate() {
                 if let Some(item) = items.get(i) {
                     let text = if *s == spec {
                         format!("✓  {label}")
@@ -1208,7 +1265,16 @@ fn switch_tts_provider(app: &tauri::AppHandle, spec: &'static str) {
                 }
             }
         };
+        if let Some(state) = app.try_state::<LocalVoiceItems>() {
+            if let Ok(g) = state.0.lock() {
+                refresh_choice_menu(&g.voice, KOKORO_VOICE_CHOICES, "");
+            }
+        }
     }
+
+    // Online voices aren't hot-swappable (engine/voice is fixed when the
+    // session's TTS chain is built), so apply the pick by restarting the agent.
+    restart_voice_agent_for_tts();
 
     // Update the "TTS: …" header line.
     if let Some(pretty) = tts_provider_pretty(spec) {
@@ -1320,7 +1386,12 @@ fn set_speech_label(name: &str, label: State<SpeechLabel>) -> Result<(), String>
 /// changes — keeps the tray in sync even when the switch happens via
 /// the Python endpoint rather than a tray click.
 #[tauri::command]
-fn set_tts_label(name: &str, label: State<TtsLabel>, items: State<TtsVoiceItems>) -> Result<(), String> {
+fn set_tts_label(
+    name: &str,
+    label: State<TtsLabel>,
+    items: State<TtsVoiceItems>,
+    local_items: State<LocalVoiceItems>,
+) -> Result<(), String> {
     let text: String = if name.is_empty() {
         "TTS: (loading…)".to_string()
     } else {
@@ -1336,12 +1407,17 @@ fn set_tts_label(name: &str, label: State<TtsLabel>, items: State<TtsVoiceItems>
             item.set_text(text).map_err(|e| e.to_string())?;
         }
     };
-    // Sync ✓ checkmarks on the voice submenu items.
+    // Sync ✓ across BOTH voice families from the live /status spec, so the
+    // checkmark tracks the ACTUAL engine — Kokoro when JARVIS_LOCAL_TTS_PRIMARY
+    // is on, even though voice-mode still reads "cloud". A "kokoro:<voice>" spec
+    // ✓s that Kokoro voice and clears the cloud Orpheus voices; a cloud spec
+    // does the reverse.
     if !name.is_empty() {
+        let kokoro_voice = name.strip_prefix("kokoro:");
         if let Ok(voice_items) = items.0.lock() {
-            for (i, (spec, lbl)) in TTS_VOICES.iter().enumerate() {
+            for (i, (spec, lbl, _fam)) in ONLINE_TTS_VOICES.iter().enumerate() {
                 if let Some(item) = voice_items.get(i) {
-                    let t = if *spec == name {
+                    let t = if kokoro_voice.is_none() && *spec == name {
                         format!("✓  {lbl}")
                     } else {
                         (*lbl).to_string()
@@ -1349,6 +1425,9 @@ fn set_tts_label(name: &str, label: State<TtsLabel>, items: State<TtsVoiceItems>
                     let _ = item.set_text(t);
                 }
             }
+        };
+        if let Ok(g) = local_items.0.lock() {
+            refresh_choice_menu(&g.voice, KOKORO_VOICE_CHOICES, kokoro_voice.unwrap_or(""));
         };
     }
     Ok(())
@@ -1699,19 +1778,45 @@ fn refresh_choice_menu(items: &[(String, MenuItem<Wry>)], options: &[(&str, &str
     }
 }
 
-/// Handle a "kvoice::<voice>" pick: write ~/.jarvis/voice-tts-voice + repaint the
-/// ✓. NO restart — the Kokoro adapter reads the voice fresh per-utterance
-/// (providers/kokoro_tts.py), so it hot-swaps on the next spoken line.
+/// Handle a "kvoice::<voice>" pick: write ~/.jarvis/voice-tts-voice (the Kokoro
+/// adapter reads it fresh per-utterance, so the voice hot-swaps with no restart)
+/// AND ~/.jarvis/tts-provider = "kokoro:<voice>" so the engine selection is
+/// authoritative (build_tts_chain picks Kokoro from the spec prefix). Repaints
+/// the ✓ and "TTS:" header. Restarts the agent ONLY when flipping the ENGINE to
+/// Kokoro from an online one (the chain is built per session); a Kokoro→Kokoro
+/// voice tweak stays instant.
 fn local_choice_pick(app: &tauri::AppHandle, id: &str) {
     let Some(value) = id.strip_prefix("kvoice::") else { return; };
     let dir = jarvis_home().join(".jarvis");
     let _ = std::fs::create_dir_all(&dir);
+    let prev = std::fs::read_to_string(dir.join("tts-provider")).unwrap_or_default();
     let _ = std::fs::write(dir.join("voice-tts-voice"), value);
-    eprintln!("[tray] voice-tts-voice -> {value}");
+    let _ = std::fs::write(dir.join("tts-provider"), format!("kokoro:{value}\n"));
+    eprintln!("[tray] tts-provider -> kokoro:{value}");
     if let Some(state) = app.try_state::<LocalVoiceItems>() {
         if let Ok(g) = state.0.lock() {
             refresh_choice_menu(&g.voice, KOKORO_VOICE_CHOICES, value);
         }
+    }
+    // Clear the online ✓ (active voice is now on-device) + update the header.
+    if let Some(items) = app.try_state::<TtsVoiceItems>() {
+        if let Ok(items) = items.0.lock() {
+            for (i, (_s, label, _fam)) in ONLINE_TTS_VOICES.iter().enumerate() {
+                if let Some(item) = items.get(i) { let _ = item.set_text((*label).to_string()); }
+            }
+        }
+    }
+    if let Some(pretty) = tts_provider_pretty(&format!("kokoro:{value}")) {
+        if let Some(label) = app.try_state::<TtsLabel>() {
+            if let Ok(guard) = label.0.lock() {
+                if let Some(item) = guard.as_ref() { let _ = item.set_text(format!("TTS: {pretty}")); }
+            }
+        }
+    }
+    // Engine flip (online → Kokoro) needs a chain rebuild; a Kokoro→Kokoro voice
+    // change is hot (adapter re-reads per-utterance), so skip the restart there.
+    if !prev.trim_start().starts_with("kokoro:") {
+        restart_voice_agent_for_tts();
     }
 }
 
@@ -2704,12 +2809,6 @@ fn main() {
                 .map(|s| s.trim().to_string())
                 .unwrap_or_default();
 
-            // ✓ on a cloud Orpheus voice only in cloud mode — in local mode the
-            // active TTS is Kokoro, so the ✓ belongs on a Kokoro voice below.
-            let tts_cloud_mode = read_voice_mode() != "local";
-            let tts_item_label = |spec: &str, label: &str| -> String {
-                if tts_cloud_mode && spec == saved_tts.as_str() { format!("✓  {label}") } else { label.to_string() }
-            };
             let init_tts_header = tts_provider_pretty(&saved_tts)
                 .map(|p| format!("TTS: {p}"))
                 .unwrap_or_else(|| "TTS: (loading…)".to_string());
@@ -2717,20 +2816,48 @@ fn main() {
             let tts_current = MenuItemBuilder::with_id("tts_current", &init_tts_header)
                 .enabled(false)
                 .build(app)?;
-            let tts_gr_troy   = MenuItemBuilder::with_id("tts_gr_troy",   &tts_item_label("groq:troy",   "Groq Orpheus · Troy  (cloud)")).build(app)?;
-            let tts_gr_austin = MenuItemBuilder::with_id("tts_gr_austin", &tts_item_label("groq:austin", "Groq Orpheus · Austin  (cloud)")).build(app)?;
-            // Unified voice list: cloud Orpheus voices + the on-device Kokoro
-            // voices merged in below (the Kokoro ones take effect only when
-            // Voice brain = Local; they hot-swap with no restart).
-            let tts_kokoro_sep = PredefinedMenuItem::separator(app)?;
-            let tts_local_hdr = MenuItemBuilder::with_id("tts_local_hdr", "On-device (Kokoro):")
+
+            // ── ONLINE voices (Groq Orpheus + Microsoft Edge) ──
+            // Built from ONLINE_TTS_VOICES, grouped by family under disabled
+            // headers so the menu visibly separates online from on-device. Each
+            // item id is "ttsv::<spec>" and writes its full spec to
+            // ~/.jarvis/tts-provider; the agent's build_tts_chain picks the engine
+            // from the prefix. Stored (in ONLINE_TTS_VOICES order) in
+            // TtsVoiceItems for ✓ repaint; pre-marked when the saved spec matches.
+            let mut tts_builder = SubmenuBuilder::new(app, "TTS voice ▸");
+            let mut tts_online_items: Vec<MenuItem<Wry>> = Vec::new();
+            let mut tts_last_family = "";
+            for (spec, label, family) in ONLINE_TTS_VOICES.iter().copied() {
+                if family != tts_last_family {
+                    if !tts_last_family.is_empty() {
+                        tts_builder = tts_builder.item(&PredefinedMenuItem::separator(app)?);
+                    }
+                    let hdr_text = if family == "edge" {
+                        "Online · Edge (Microsoft):"
+                    } else {
+                        "Online · Groq Orpheus:"
+                    };
+                    let hdr = MenuItemBuilder::with_id(format!("tts_hdr_{family}"), hdr_text)
+                        .enabled(false).build(app)?;
+                    tts_builder = tts_builder.item(&hdr);
+                    tts_last_family = family;
+                }
+                let text = if spec == saved_tts.as_str() {
+                    format!("✓  {label}")
+                } else {
+                    label.to_string()
+                };
+                let item = MenuItemBuilder::with_id(format!("ttsv::{spec}"), text).build(app)?;
+                tts_builder = tts_builder.item(&item);
+                tts_online_items.push(item);
+            }
+
+            // ── ON-DEVICE voices (Kokoro) ──
+            tts_builder = tts_builder.item(&PredefinedMenuItem::separator(app)?);
+            let tts_local_hdr = MenuItemBuilder::with_id("tts_local_hdr", "On-device · Kokoro:")
                 .enabled(false)
                 .build(app)?;
-            let mut tts_builder = SubmenuBuilder::new(app, "TTS voice ▸")
-                .item(&tts_gr_troy)
-                .item(&tts_gr_austin)
-                .item(&tts_kokoro_sep)
-                .item(&tts_local_hdr);
+            tts_builder = tts_builder.item(&tts_local_hdr);
             for (_, item) in &kvoice_items {
                 tts_builder = tts_builder.item(item);
             }
@@ -2801,7 +2928,7 @@ fn main() {
             }
             {
                 let vi: State<TtsVoiceItems> = app.state();
-                *vi.0.lock().unwrap() = vec![tts_gr_troy, tts_gr_austin];
+                *vi.0.lock().unwrap() = tts_online_items;
             }
             {
                 let si: State<SpeechItems> = app.state();
@@ -3093,9 +3220,12 @@ fn main() {
                         "speech_deepseek-v4-flash"                         => switch_speech_model(app, "deepseek-v4-flash"),
                         "speech_ollama/qwen3:30b-a3b"                      => switch_speech_model(app, "ollama/qwen3:30b-a3b"),
                         "speech_ollama/gpt-oss:120b"                       => switch_speech_model(app, "ollama/gpt-oss:120b"),
-                        // TTS-voice picks (no agent restart — file written, read on next utterance)
-                        "tts_gr_troy"   => switch_tts_provider(app, "groq:troy"),
-                        "tts_gr_austin" => switch_tts_provider(app, "groq:austin"),
+                        // Online TTS-voice picks ("ttsv::<spec>") — Orpheus + Edge.
+                        // switch_tts_provider writes the spec + restarts the agent
+                        // so the engine change (build_tts_chain) takes effect.
+                        id if id.starts_with("ttsv::") => {
+                            switch_tts_provider(app, &id["ttsv::".len()..]);
+                        }
                         id if id.starts_with("kiosk_") => {
                             crate::tray_kiosk::handle_kiosk_menu_event(app, id);
                         }

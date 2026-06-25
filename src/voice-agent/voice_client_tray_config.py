@@ -161,6 +161,18 @@ SPEECH_MODELS_AVAILABLE: tuple[str, ...] = (
     # (qwen3-32b: BFCL v3 #2 open-weights, <400ms TTFT). For no-
     # OpenAI-quota / no-Anthropic-credit days.
     "qwen/qwen3-32b",
+    # DeepSeek — v4-flash re-added 2026-06-23 per user request (daily-driver
+    # voice model). It's in the tray menu + providers/llm.py SPEECH_MODELS but
+    # was missing here, so read_speech_model() rejected the pinned id and
+    # /status fell back to DEFAULT_SPEECH_MODEL (Haiku) — the tray header
+    # showed "Speech: Haiku" while the agent actually ran DeepSeek. Listing it
+    # makes /status report the real pinned model.
+    "deepseek-v4-flash",
+    # Local (Ollama) — on-device voice brain; the tray offers these when the
+    # model is pulled. Listed here so /status reports the active local pick
+    # instead of falling back to the Haiku default.
+    "ollama/qwen3:30b-a3b",
+    "ollama/gpt-oss:120b",
     # Kimi — K2.7 code model (Moonshot), added 2026-06-23 per user request for
     # voice tool-calling. CAVEAT: K2.6 broke the voice path (spontaneous
     # built-in web_search tool-call → Moonshot 400 → supervisor wedge → silent).
@@ -177,8 +189,8 @@ SPEECH_MODELS_AVAILABLE: tuple[str, ...] = (
     #   - llama-4-scout            (was EMOTIONAL — upgraded to Haiku)
     #   - openai/gpt-oss-120b      (qwen3-32b covers the Groq slot)
     #   - deepseek-chat (V3)       (non-thinking baseline)
-    #   - deepseek-v4-flash        (96% hallucination, Artificial Analysis)
     #   - deepseek-v4-pro          (retired 2026-05-16; 94% hallucination)
+    # (deepseek-v4-flash was here too until 2026-06-23 — re-added above.)
     # Kimi K2.6 entries remain gated behind
     # JARVIS_KIMI_VOICE_EXPERIMENTAL=1 — broken on third-party hosts
     # (spontaneous web_search tool-call emission per vLLM + Hermes-agent
@@ -192,8 +204,22 @@ SPEECH_MODELS_AVAILABLE: tuple[str, ...] = (
 TTS_PROVIDER_FILE: Path = Path.home() / ".jarvis" / "tts-provider"
 
 TTS_PROVIDERS_AVAILABLE: dict[str, str] = {
-    "groq:troy":   "Groq Orpheus · Troy",
-    "groq:austin": "Groq Orpheus · Austin",
+    # Online · Groq Orpheus (canopylabs/orpheus-v1-english). Voice list verified
+    # against Groq's docs 2026-06-25 (autumn/diana/hannah female; austin/daniel/
+    # troy male). These gate the /tts-provider POST + label the GET response.
+    "groq:troy":   "Orpheus · Troy",
+    "groq:austin": "Orpheus · Austin",
+    "groq:daniel": "Orpheus · Daniel",
+    "groq:autumn": "Orpheus · Autumn",
+    "groq:diana":  "Orpheus · Diana",
+    "groq:hannah": "Orpheus · Hannah",
+    # Online · Microsoft Edge-TTS (auth-free, online).
+    "edge:en-US-GuyNeural":         "Edge · Guy",
+    "edge:en-US-ChristopherNeural": "Edge · Christopher",
+    "edge:en-US-JennyNeural":       "Edge · Jenny",
+    "edge:en-US-AriaNeural":        "Edge · Aria",
+    "edge:en-GB-RyanNeural":        "Edge · Ryan",
+    "edge:en-GB-SoniaNeural":       "Edge · Sonia",
 }
 
 
@@ -210,20 +236,29 @@ def ensure_tts_provider_file() -> None:
 def active_tts_provider(current: str) -> str:
     """The TTS provider/engine ACTUALLY in effect.
 
-    The legacy tray switcher writes a cloud pick (e.g. ``groq:troy``) to
-    ``TTS_PROVIDER_FILE``, but the AgentSession pipeline overrides it on-device
-    when ``JARVIS_LOCAL_TTS_PRIMARY`` / ``JARVIS_LOCAL_TTS_ONLY`` is set (Kokoro
-    actually speaks). Report what's TRUE so the tray doesn't show Orpheus while
-    Kokoro is live — the 2026-06-22 "tts not local?" label bug. ``current`` is
-    the legacy file/tray selection, returned unchanged when no override is on.
+    ``current`` is the ~/.jarvis/tts-provider spec written by the tray. As of
+    2026-06-25 that spec is AUTHORITATIVE for the engine — build_tts_chain picks
+    Kokoro / Orpheus / Edge from its prefix (``kokoro:`` / ``groq:`` / ``edge:``)
+    — so report it as-is. Two exceptions:
+      - ``JARVIS_LOCAL_TTS_ONLY=1`` forces on-device regardless of the pick.
+      - an empty / prefix-less spec falls back to the local-first default when
+        ``JARVIS_LOCAL_TTS_PRIMARY=1``, else returns ``current`` unchanged.
+    Replaces the old behavior where LOCAL_TTS_PRIMARY made this ALWAYS report
+    Kokoro — which lied the moment an online voice was picked.
     """
-    if (os.environ.get("JARVIS_LOCAL_TTS_PRIMARY") == "1"
-            or os.environ.get("JARVIS_LOCAL_TTS_ONLY") == "1"):
+    def _local() -> str:
         engine = (os.environ.get("JARVIS_LOCAL_TTS_ENGINE") or "kokoro").strip() or "kokoro"
         if engine == "kokoro":
             voice = (os.environ.get("JARVIS_LOCAL_TTS_VOICE") or "af_heart").strip() or "af_heart"
             return f"kokoro:{voice}"
         return f"{engine}:local"
+
+    if os.environ.get("JARVIS_LOCAL_TTS_ONLY") == "1":
+        return _local()
+    if current and ":" in current:
+        return current
+    if os.environ.get("JARVIS_LOCAL_TTS_PRIMARY") == "1":
+        return _local()
     return current
 
 

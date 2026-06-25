@@ -36,13 +36,25 @@ def test_tts_label_passthrough_without_local_override(monkeypatch):
     assert active_tts_provider("groq:troy") == "groq:troy"
 
 
-def test_tts_label_kokoro_when_primary(monkeypatch):
+def test_tts_label_kokoro_when_primary_default(monkeypatch):
+    # Local-first DEFAULT: with no explicit engine pick (empty spec),
+    # LOCAL_TTS_PRIMARY reports the on-device engine/voice.
     _clear(monkeypatch, _TTS_ENVS)
     monkeypatch.setenv("JARVIS_LOCAL_TTS_PRIMARY", "1")
     monkeypatch.setenv("JARVIS_LOCAL_TTS_ENGINE", "kokoro")
     monkeypatch.setenv("JARVIS_LOCAL_TTS_VOICE", "af_heart")
-    # The bug: this used to return groq:troy. It must now tell the truth.
-    assert active_tts_provider("groq:troy") == "kokoro:af_heart"
+    assert active_tts_provider("") == "kokoro:af_heart"
+
+
+def test_tts_label_honors_explicit_online_pick(monkeypatch):
+    # Spec is AUTHORITATIVE (2026-06-25): an explicit online pick is honored
+    # even under LOCAL_TTS_PRIMARY — build_tts_chain runs that engine, so the
+    # /status label must reflect it instead of always reporting Kokoro.
+    _clear(monkeypatch, _TTS_ENVS)
+    monkeypatch.setenv("JARVIS_LOCAL_TTS_PRIMARY", "1")
+    monkeypatch.setenv("JARVIS_LOCAL_TTS_ENGINE", "kokoro")
+    assert active_tts_provider("groq:troy") == "groq:troy"
+    assert active_tts_provider("edge:en-US-AriaNeural") == "edge:en-US-AriaNeural"
 
 
 def test_tts_label_kokoro_defaults_when_only(monkeypatch):
@@ -51,9 +63,18 @@ def test_tts_label_kokoro_defaults_when_only(monkeypatch):
     assert active_tts_provider("groq:austin") == "kokoro:af_heart"
 
 
-def test_tts_label_piper_engine(monkeypatch):
+def test_tts_label_piper_engine_default(monkeypatch):
+    # Piper as the local-first default (empty spec → on-device).
     _clear(monkeypatch, _TTS_ENVS)
     monkeypatch.setenv("JARVIS_LOCAL_TTS_PRIMARY", "1")
+    monkeypatch.setenv("JARVIS_LOCAL_TTS_ENGINE", "piper")
+    assert active_tts_provider("") == "piper:local"
+
+
+def test_tts_label_only_forces_local_over_pick(monkeypatch):
+    # Strict-local (JARVIS_LOCAL_TTS_ONLY) overrides even an explicit online pick.
+    _clear(monkeypatch, _TTS_ENVS)
+    monkeypatch.setenv("JARVIS_LOCAL_TTS_ONLY", "1")
     monkeypatch.setenv("JARVIS_LOCAL_TTS_ENGINE", "piper")
     assert active_tts_provider("groq:troy") == "piper:local"
 
