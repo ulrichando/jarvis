@@ -3,7 +3,6 @@ import { getStore } from "@/lib/bridge/db";
 import { findEnvironment, findSession, validateSessionToken } from "@/lib/bridge/store";
 import { extractBearer } from "@/lib/bridge/auth";
 import { getUserId } from "@/lib/auth-helpers";
-import { LOCAL_USER_ID } from "@/lib/chat/persist";
 import { bridgeError } from "@/lib/bridge/errors";
 
 // Shared session-ownership gate for bridge routes. The CLI worker presents a
@@ -30,11 +29,10 @@ export async function authorizeSession(
     : null;
   const userId = await getUserId(req.headers);
   if (env?.user_id && env.user_id !== userId) {
-    // A lapsed session resolves to LOCAL_USER_ID (the getUserId fallback). When
-    // the session is owned by a real account, that's "your login expired" → 401
-    // so the client re-logs in, not a dead-end 403. A genuine cross-user
-    // mismatch (two real accounts) still returns 403.
-    if (userId === LOCAL_USER_ID && env.user_id !== LOCAL_USER_ID) {
+    // No valid session (getUserId → null) against a real-owned session is
+    // "your login expired" → 401 so the client re-logs in, not a dead-end 403.
+    // A genuine cross-user mismatch (two real accounts) still returns 403.
+    if (userId === null) {
       return bridgeError(401, "unauthenticated", "Session expired — please sign in again");
     }
     return bridgeError(403, "forbidden", "Not your session");

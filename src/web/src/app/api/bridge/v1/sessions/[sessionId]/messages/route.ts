@@ -9,7 +9,6 @@ import {
 } from '@/lib/bridge/store'
 import { emitInbound } from '@/lib/bridge/events'
 import { getUserId } from '@/lib/auth-helpers'
-import { LOCAL_USER_ID } from '@/lib/chat/persist'
 import { bridgeError } from '@/lib/bridge/errors'
 
 // POST /api/bridge/v1/sessions/{id}/messages — the /code session view talks
@@ -92,13 +91,12 @@ export async function POST(
       : null
     const userId = await getUserId(req.headers)
     if (env?.user_id && env.user_id !== userId) {
-      // A lapsed session resolves to LOCAL_USER_ID (the getUserId fallback).
-      // When the session is owned by a real account, that's "your login
-      // expired", not "someone else's session" — answer 401 so the client can
-      // prompt a re-login instead of a dead-end 403 that reads as a silent
-      // unresponsive chat. A genuine cross-user mismatch (two real accounts)
-      // still returns 403.
-      if (userId === LOCAL_USER_ID && env.user_id !== LOCAL_USER_ID) {
+      // No valid session (getUserId → null) against a real-owned session is
+      // "your login expired", not "someone else's session" — answer 401 so the
+      // client can prompt a re-login instead of a dead-end 403 that reads as a
+      // silent unresponsive chat. A genuine cross-user mismatch (two real
+      // accounts) still returns 403.
+      if (userId === null) {
         return bridgeError(401, 'unauthenticated', 'Session expired — please sign in again')
       }
       return bridgeError(403, 'forbidden', 'Not your session')

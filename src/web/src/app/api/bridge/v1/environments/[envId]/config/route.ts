@@ -43,6 +43,11 @@ async function authorize(
   const userId = await getUserId(req.headers);
   // Owner-scoped when the row is owned; legacy null-owner rows stay readable.
   if (env.user_id && env.user_id !== userId) {
+    // No valid session against an owned env → 401 (re-login); a real
+    // cross-user mismatch still 403s.
+    if (userId === null) {
+      return { res: bridgeError(401, "unauthenticated", "Session expired — please sign in again") };
+    }
     return { res: bridgeError(403, "forbidden", "Not your environment") };
   }
   return { ok: true };
@@ -59,6 +64,9 @@ async function authorizeWrite(
   const env = findEnvironment(getStore(), envId);
   if (!env) return { res: bridgeError(404, "not_found", "Environment not found") };
   const userId = await getUserId(req.headers);
+  // Requires an authenticated user (null → 401) so an unowned (null user_id)
+  // row can't be written by a logged-out caller via `null === null`.
+  if (!userId) return { res: bridgeError(401, "unauthenticated", "Sign in required") };
   if (env.user_id !== userId) {
     return { res: bridgeError(403, "forbidden", "Not your environment") };
   }

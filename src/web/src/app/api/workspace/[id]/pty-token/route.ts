@@ -16,9 +16,9 @@ const WSID_RE = /^[a-z0-9-]+$/i;
  * /code terminal presents to the PTY sidecar (scripts/pty-server.mjs) before it
  * spawns a shell. This route sits behind the same /api/* gate as every other
  * workspace route (proxy.ts: bearer + better-auth login + host allowlist), so
- * reaching it already proves an authenticated app session; getUserId only
- * records WHO for the token's `sub` (it falls back to the local user when auth
- * is disabled in dev, matching the sibling workspace routes).
+ * reaching it already proves an authenticated app session; getUserId records
+ * WHO for the token's `sub`. No session → 401 (no silent local-user fallback),
+ * so a lapsed login can't mint a PTY credential.
  *
  * The token is scoped to this `[id]` so it can't open a shell in another
  * workspace, and verified OFFLINE by the sidecar (the web app is not on the
@@ -34,6 +34,9 @@ export async function POST(
   }
   try {
     const sub = await getUserId(req.headers);
+    if (!sub) {
+      return NextResponse.json({ error: "authentication required" }, { status: 401 });
+    }
     const secret = getOrCreateProxyJwtSecret();
     const nowS = Math.floor(Date.now() / 1000);
     const token = signPtyToken({ sub, wsid: id, ttlSeconds: TTL_SECONDS }, secret, nowS);

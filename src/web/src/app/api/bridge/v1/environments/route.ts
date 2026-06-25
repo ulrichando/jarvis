@@ -12,6 +12,7 @@ export async function GET(req: Request): Promise<NextResponse> {
   try {
     const store = getStore()
     const userId = await getUserId(req.headers)
+    if (!userId) return bridgeError(401, 'unauthenticated', 'Sign in required')
     ensureDefaultCloudEnv(store, userId) // always offer a "Default" cloud env (claude.ai parity)
     reapStaleSandboxes(store) // lazy GC of stale cloud sandboxes
     const now = Date.now()

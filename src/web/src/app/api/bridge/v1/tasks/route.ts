@@ -56,6 +56,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     // Ownership: you can only dispatch to your own machines.
     const userId = await getUserId(req.headers)
     if (env.user_id && env.user_id !== userId) {
+      // No valid session against an owned machine → 401 (re-login); a real
+      // cross-user mismatch still 403s.
+      if (userId === null) {
+        return bridgeError(401, 'unauthenticated', 'Session expired — please sign in again')
+      }
       return bridgeError(403, 'forbidden', 'Not your machine')
     }
     sessionId = randomBytes(8).toString('hex')
