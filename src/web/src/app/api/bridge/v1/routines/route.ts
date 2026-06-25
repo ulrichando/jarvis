@@ -41,6 +41,7 @@ function rowToApi(r: ReturnType<typeof listRoutines>[number]) {
 export async function GET(req: Request): Promise<NextResponse> {
   try {
     const userId = await getUserId(req.headers);
+    if (!userId) return bridgeError(401, "unauthenticated", "Sign in required");
     const routines = listRoutines(getStore(), userId).map(rowToApi);
     return NextResponse.json({ routines });
   } catch (err) {
@@ -107,6 +108,7 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   try {
     const userId = await getUserId(req.headers);
+    if (!userId) return bridgeError(401, "unauthenticated", "Sign in required");
     const r = createRoutine(getStore(), {
       name,
       instructions,

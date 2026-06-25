@@ -90,4 +90,24 @@ describe('proxy() auth gate', () => {
     const r = req('/code', { cookie: 'better-auth.session_token=abc' })
     expect(proxy(r).status).toBe(200)
   })
+
+  test('reset endpoints reachable unauthenticated (no bearer, no cookie, no same-origin)', async () => {
+    const proxy = await loadProxy(ON)
+    for (const p of [
+      '/api/auth/reset/request',
+      '/api/auth/reset/verify',
+      '/api/auth/reset/complete',
+    ]) {
+      expect(proxy(req(p)).status).toBe(200)
+    }
+  })
+
+  test('signup is STILL blocked (reset carve-out did not widen signup)', async () => {
+    const proxy = await loadProxy(ON)
+    const r = new NextRequest('http://127.0.0.1:3000/api/auth/sign-up/email', {
+      method: 'POST',
+      headers: { host: '127.0.0.1:3000' },
+    })
+    expect(proxy(r).status).toBe(403)
+  })
 })

@@ -1,6 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
-import { getUserId } from "@/lib/auth-helpers";
+import { requireUserId, Unauthenticated } from "@/lib/auth-helpers";
 import { DEFAULT_MODEL } from "@/lib/ai/models-meta";
 
 export const runtime = "nodejs";
@@ -12,7 +12,13 @@ export async function GET(
   if (!db) return Response.json({ conversations: [] });
 
   const { id } = await ctx.params;
-  const userId = await getUserId(req.headers);
+  let userId: string;
+  try {
+    userId = await requireUserId(req.headers);
+  } catch (e) {
+    if (e instanceof Unauthenticated) return new Response("Unauthorized", { status: 401 });
+    throw e;
+  }
 
   const rows = await db
     .select({
@@ -41,7 +47,13 @@ export async function POST(
   if (!db) return new Response("Persistence disabled", { status: 503 });
 
   const { id: projectId } = await ctx.params;
-  const userId = await getUserId(req.headers);
+  let userId: string;
+  try {
+    userId = await requireUserId(req.headers);
+  } catch (e) {
+    if (e instanceof Unauthenticated) return new Response("Unauthorized", { status: 401 });
+    throw e;
+  }
 
   // Verify the project belongs to the current user before linking.
   const [project] = await db

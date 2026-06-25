@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, ne } from "drizzle-orm";
 import { betterAuth } from "better-auth";
+import { twoFactor } from "better-auth/plugins";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { db, schema } from "./db";
 import { LOCAL_USER_ID } from "./chat/persist";
@@ -65,8 +66,16 @@ export const auth = betterAuth({
       session: schema.sessions,
       account: schema.accounts,
       verification: schema.verifications,
+      // twoFactor plugin accesses this under the "twoFactor" model name.
+      twoFactor: schema.twoFactors,
     },
   }),
+  plugins: [
+    twoFactor({
+      issuer: "JARVIS",
+      totpOptions: { period: 30, digits: 6 },
+    }),
+  ],
   emailAndPassword: {
     enabled: true,
     autoSignIn: true,
@@ -105,8 +114,14 @@ export const auth = betterAuth({
     },
   },
   session: {
-    expiresIn: 60 * 60 * 24 * 30, // 30 days
-    updateAge: 60 * 60 * 24, // refresh once a day
+    // OWASP-aligned policy. 30-min IDLE timeout (sliding — resets on activity)
+    // so walking away logs you out; refreshed at most every 5 min while active.
+    // The 8-hour ABSOLUTE cap lives in auth-helpers.ts (isSessionWithinAbsoluteCap)
+    // — that is what forces a fresh login each work session regardless of
+    // activity, which a pure sliding window never does (active sessions renew
+    // forever — the reason JARVIS never re-prompted).
+    expiresIn: 60 * 30, // 30-minute idle window
+    updateAge: 60 * 5,  // refresh the expiry at most every 5 min of activity
   },
 });
 

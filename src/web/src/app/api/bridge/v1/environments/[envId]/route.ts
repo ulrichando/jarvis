@@ -15,6 +15,9 @@ export async function DELETE(
   const env = findEnvironment(getStore(), envId);
   if (!env) return bridgeError(404, "not_found", "Environment not found");
   const userId = await getUserId(req.headers);
+  // Requires an authenticated user (null → 401) so an unowned (null user_id)
+  // row can't be deleted by a logged-out caller via `null === null`.
+  if (!userId) return bridgeError(401, "unauthenticated", "Sign in required");
   // Owner-scoped: a definite ownership match is required (null-owner refused).
   if (env.user_id !== userId) {
     return bridgeError(403, "forbidden", "Not your environment");

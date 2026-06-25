@@ -19,6 +19,11 @@ async function authorizeRoutine(
   if (!routine) return bridgeError(404, "not_found", "Routine not found");
   const userId = await getUserId(req.headers);
   if (routine.user_id && routine.user_id !== userId) {
+    // No valid session against an owned routine → 401 (re-login); a real
+    // cross-user mismatch still 403s.
+    if (userId === null) {
+      return bridgeError(401, "unauthenticated", "Session expired — please sign in again");
+    }
     return bridgeError(403, "forbidden", "Not your routine");
   }
   return null;

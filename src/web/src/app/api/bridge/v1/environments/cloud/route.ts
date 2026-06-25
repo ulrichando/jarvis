@@ -27,6 +27,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     try {
       const store = getStore()
       const userId = await getUserId(req.headers)
+      if (!userId) return bridgeError(401, 'unauthenticated', 'Sign in required')
       const env = createEnvironment(store, {
         machine_name: name,
         directory: '/workspace',
@@ -50,6 +51,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     const store = getStore()
     const userId = await getUserId(req.headers)
+    if (!userId) return bridgeError(401, 'unauthenticated', 'Sign in required')
     const repoUrl = `https://github.com/${repo}`
     const existing = listEnvironments(store, userId).find(
       (e) => e.worker_type === 'container' && e.git_repo_url === repoUrl,

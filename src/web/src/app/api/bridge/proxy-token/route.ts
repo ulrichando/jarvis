@@ -44,6 +44,12 @@ export async function POST(req: Request): Promise<NextResponse> {
       }
     } else {
       userId = await getUserId(req.headers);
+      if (!userId) {
+        return NextResponse.json(
+          { error: "authentication required" },
+          { status: 401 },
+        );
+      }
     }
 
     const secret = getOrCreateProxyJwtSecret();

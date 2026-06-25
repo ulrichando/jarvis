@@ -23,6 +23,8 @@ export const users = pgTable("users", {
   name: text("name"),
   image: text("image"),
   emailVerified: boolean("email_verified").notNull().default(false),
+  // Added by twoFactor plugin — tracks whether TOTP is enrolled for this user.
+  twoFactorEnabled: boolean("two_factor_enabled").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -217,11 +219,47 @@ export const usageEvents = pgTable(
   (table) => [index("usage_user_idx").on(table.userId, table.createdAt)],
 );
 
+// ---------------------------------------------------------------------------
+// Two-factor auth (TOTP enrollment).
+// The better-auth `twoFactor` plugin accesses this table under the model name
+// "twoFactor". The drizzle adapter maps that → drizzleAdapter schema key
+// "twoFactor" → this table. Column property names match plugin field names
+// exactly (camelCase). PG columns are snake_case per drizzle convention.
+// ---------------------------------------------------------------------------
+export const twoFactors = pgTable("two_factors", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  secret: text("secret").notNull(),
+  backupCodes: text("backup_codes").notNull(),
+  // `verified` distinguishes an enrolled (true) from an in-progress
+  // enrollment (false). Plugin defaults to true on creation.
+  verified: boolean("verified").notNull().default(true),
+});
+
+// ---------------------------------------------------------------------------
+// Password reset tokens — custom table used by the reset-flow API routes
+// (added in a later task). Kept separate from better-auth's `verification`
+// table so we control expiry / used-at semantics explicitly.
+// ---------------------------------------------------------------------------
+export const passwordResets = pgTable("password_resets", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  token: text("token").notNull().unique(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+});
+
 export const usersRelations = relations(users, ({ many }) => ({
   conversations: many(conversations),
   sessions: many(sessions),
   accounts: many(accounts),
   projects: many(projects),
+  twoFactors: many(twoFactors),
+  passwordResets: many(passwordResets),
 }));
 
 export const projectsRelations = relations(projects, ({ one, many }) => ({

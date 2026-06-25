@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { bundleReactSource } from "@/lib/artifacts/bundle";
-import { getUserId } from "@/lib/auth-helpers";
+import { withUser } from "@/lib/auth-route";
 
 export const runtime = "nodejs";
 
@@ -13,25 +13,26 @@ export const runtime = "nodejs";
 // and this only transpiles posted source (no data/secret access). The gate
 // below keeps it consistent with the other artifact routes.
 export async function POST(req: Request) {
-  await getUserId(req.headers);
-  let source = "";
-  try {
-    const body = (await req.json()) as { source?: string };
-    source = body.source ?? "";
-  } catch {
-    return NextResponse.json({ error: "invalid body" }, { status: 400 });
-  }
-  if (!source.trim()) {
-    return NextResponse.json({ error: "missing source" }, { status: 400 });
-  }
-  const out = await bundleReactSource(source);
-  if ("error" in out) {
-    return NextResponse.json({ error: out.error }, { status: 422 });
-  }
-  return new Response(out.js, {
-    headers: {
-      "Content-Type": "application/javascript; charset=utf-8",
-      "Cache-Control": "no-store",
-    },
+  return withUser(req, async () => {
+    let source = "";
+    try {
+      const body = (await req.json()) as { source?: string };
+      source = body.source ?? "";
+    } catch {
+      return NextResponse.json({ error: "invalid body" }, { status: 400 });
+    }
+    if (!source.trim()) {
+      return NextResponse.json({ error: "missing source" }, { status: 400 });
+    }
+    const out = await bundleReactSource(source);
+    if ("error" in out) {
+      return NextResponse.json({ error: out.error }, { status: 422 });
+    }
+    return new Response(out.js, {
+      headers: {
+        "Content-Type": "application/javascript; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    });
   });
 }

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# jarvis-web-account — JARVIS web account management CLI.
+#
+# Creates the owner account (seed) or performs an emergency password reset
+# without a session (reset-password). Calls better-auth's IN-PROCESS server
+# API, bypassing the proxy block on public HTTP signup.
+#
+# Usage:
+#   jarvis-web-account seed           --email <email> --password <password> [--name <name>]
+#   jarvis-web-account reset-password --email <email> --password <password>
+#   jarvis-web-account --help
+#
+# Run from anywhere — this script locates src/web automatically.
+
+set -euo pipefail
+
+# ── Locate the repo root (this script lives in bin/) ────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+WEB_DIR="$REPO_ROOT/src/web"
+
+if [[ ! -d "$WEB_DIR" ]]; then
+  echo "[jarvis-web-account] ERROR: src/web not found at $WEB_DIR" >&2
+  exit 1
+fi
+
+# ── Verify tsx is available ──────────────────────────────────────────────────
+TSX="$WEB_DIR/node_modules/.bin/tsx"
+if [[ ! -x "$TSX" ]]; then
+  echo "[jarvis-web-account] ERROR: tsx not found at $TSX" >&2
+  echo "  Run: cd $WEB_DIR && npm install" >&2
+  exit 1
+fi
+
+# ── Run the TypeScript account script ───────────────────────────────────────
+# cd into src/web so relative imports inside account.ts resolve correctly.
+exec "$TSX" --tsconfig "$WEB_DIR/tsconfig.json" \
+     "$WEB_DIR/scripts/account.ts" "$@"

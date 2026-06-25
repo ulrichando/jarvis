@@ -11,6 +11,7 @@ import { bridgeError } from '@/lib/bridge/errors'
 export async function GET(req: Request): Promise<NextResponse> {
   try {
     const userId = await getUserId(req.headers)
+    if (!userId) return bridgeError(401, 'unauthenticated', 'Sign in required')
     const groups = listGroups(getStore(), userId).map((g) => ({
       group_id: g.group_id,
       name: g.name,
@@ -29,6 +30,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (!name) return bridgeError(400, 'invalid_request', 'name required')
   try {
     const userId = await getUserId(req.headers)
+    if (!userId) return bridgeError(401, 'unauthenticated', 'Sign in required')
     const groupId = createGroup(getStore(), name.slice(0, 60), userId)
     return NextResponse.json({ group_id: groupId, name }, { status: 201 })
   } catch (err) {

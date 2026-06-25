@@ -1,12 +1,18 @@
 import { desc, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
-import { getUserId } from "@/lib/auth-helpers";
+import { requireUserId, Unauthenticated } from "@/lib/auth-helpers";
 
 export const runtime = "nodejs";
 
 export async function GET(req: Request) {
   if (!db) return Response.json({ projects: [] });
-  const userId = await getUserId(req.headers);
+  let userId: string;
+  try {
+    userId = await requireUserId(req.headers);
+  } catch (e) {
+    if (e instanceof Unauthenticated) return new Response("Unauthorized", { status: 401 });
+    throw e;
+  }
 
   const rows = await db
     .select({
@@ -28,7 +34,13 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   if (!db) return new Response("Persistence disabled", { status: 503 });
-  const userId = await getUserId(req.headers);
+  let userId: string;
+  try {
+    userId = await requireUserId(req.headers);
+  } catch (e) {
+    if (e instanceof Unauthenticated) return new Response("Unauthorized", { status: 401 });
+    throw e;
+  }
 
   const body = (await req.json().catch(() => null)) as {
     name?: string;

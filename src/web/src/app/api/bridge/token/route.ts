@@ -10,6 +10,9 @@ import { getUserId } from "@/lib/auth-helpers";
 export async function GET(req: Request): Promise<NextResponse> {
   try {
     const userId = await getUserId(req.headers);
+    if (!userId) {
+      return NextResponse.json({ error: "authentication required" }, { status: 401 });
+    }
     const token = getOrCreateBridgeToken(getStore(), userId);
     return NextResponse.json({ token });
   } catch (err) {

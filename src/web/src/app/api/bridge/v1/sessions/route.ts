@@ -32,6 +32,7 @@ export async function GET(req: Request): Promise<NextResponse> {
   try {
     const store = getStore()
     const userId = await getUserId(req.headers)
+    if (!userId) return bridgeError(401, 'unauthenticated', 'Sign in required')
     const groupName = new Map(listGroups(store, userId).map((g) => [g.group_id, g.name]))
     const sessions = listSessions(store, userId)
       .slice(0, 40)
