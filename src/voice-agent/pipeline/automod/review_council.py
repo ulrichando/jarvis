@@ -1,17 +1,18 @@
 """3-lens review council for pending self-evolution proposals (2026-06-25).
 
 When a build produces a `pending` proposal, an automatic council reviews its
-diff through three INDEPENDENT lenses — correctness, security, regression —
-each a single structured Anthropic pass (mirrors introspection.py). The lens
-verdicts are fused worst-of into one recommendation and written to
+diff through three INDEPENDENT lenses — correctness, security, regression — each
+run on a DIFFERENT model family so a blind spot in one is caught by another. The
+lens verdicts are fused worst-of into one recommendation and written to
 ~/.jarvis/auto-mods/<id>.review.json, which GET /api/evolution surfaces so the
 reviewer sees the council's read BEFORE deciding to deploy.
 
 ADVISORY ONLY. It never gates or blocks a deploy automatically — a human still
-approves every deploy; this only informs that decision. Best-effort: no key /
-model error / unparseable output each degrade to a 'skipped' lens (NOT a pass)
-and never break finalize. Off the turn path — runs in the build subprocess
-after a pending artifact is written, or on demand via bin/jarvis-evolution-review.
+approves every deploy; this only informs that decision. Best-effort: a lens
+whose model/key is unavailable falls back to the default Claude model, then to a
+'skipped' verdict (NOT a pass). Never breaks finalize. Off the turn path — runs
+in the build subprocess after a pending artifact is written, or on demand via
+bin/jarvis-evolution-review.
 """
 from __future__ import annotations
 
@@ -26,7 +27,23 @@ from pipeline.automod.introspection import _parse_json_object
 
 logger = logging.getLogger("jarvis.automod.review")
 
-DEFAULT_REVIEW_MODEL = "claude-sonnet-4-6"
+# Per-lens models — DIFFERENT families on purpose (the point of a council).
+# Override any lens with JARVIS_REVIEW_MODEL_<LENS>="provider:model"
+# (provider ∈ anthropic|openai|deepseek|groq; a bare value means anthropic).
+# A lens falls back to the default Claude model if its provider/key/model is
+# unavailable — a missing key degrades diversity, never the review.
+_FALLBACK_MODEL = "claude-sonnet-4-6"
+LENS_DEFAULTS: dict[str, str] = {
+    "correctness": "anthropic:claude-sonnet-4-6",
+    "security": "openai:gpt-5-mini",
+    "regression": "deepseek:deepseek-chat",
+}
+# OpenAI-compatible providers (base_url + key env) reachable via the openai SDK.
+_OPENAI_COMPAT: dict[str, dict] = {
+    "openai": {"base_url": "https://api.openai.com/v1", "key_env": "OPENAI_API_KEY"},
+    "deepseek": {"base_url": "https://api.deepseek.com/v1", "key_env": "DEEPSEEK_API_KEY"},
+    "groq": {"base_url": "https://api.groq.com/openai/v1", "key_env": "GROQ_API_KEY"},
+}
 _DIFF_CAP = 24000  # bound the prompt; proposals are capped at <=5 files / 2000 diff lines
 
 # verdict severity ordering — fusion takes the worst across lenses.
@@ -67,10 +84,6 @@ _RUBRIC = (
 )
 
 
-def _model() -> str:
-    return os.environ.get("JARVIS_REVIEW_MODEL", DEFAULT_REVIEW_MODEL)
-
-
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -83,38 +96,93 @@ def _skipped(reason: str) -> dict:
     return {"verdict": "skipped", "findings": [], "summary": reason}
 
 
-def _review_one(lens: str, instruction: str, intent: str, diff: str) -> dict:
-    """One structured LLM pass for a single lens. Best-effort → 'skipped' on any
-    failure; an unknown/missing verdict normalizes to 'concern' (never a silent
-    pass)."""
-    try:
+def _lens_spec(lens: str) -> tuple[str, str]:
+    """(provider, model) for a lens — env-overridable; a bare value = anthropic."""
+    raw = os.environ.get(
+        f"JARVIS_REVIEW_MODEL_{lens.upper()}",
+        LENS_DEFAULTS.get(lens, f"anthropic:{_FALLBACK_MODEL}"),
+    )
+    provider, sep, model = raw.partition(":")
+    if not sep:  # bare model name → anthropic (back-compat)
+        return "anthropic", provider
+    return provider, model
+
+
+def _any_provider_key() -> bool:
+    return bool(
+        os.environ.get("ANTHROPIC_API_KEY")
+        or any(os.environ.get(c["key_env"]) for c in _OPENAI_COMPAT.values())
+    )
+
+
+def _call_model(provider: str, model: str, prompt: str) -> str:
+    """One text completion from any provider. Anthropic via its SDK; everything
+    else via the openai SDK against the provider's base_url. Raises on failure."""
+    if provider == "anthropic":
         import anthropic
 
         client = anthropic.Anthropic(timeout=45.0, max_retries=1)
-        prompt = (
-            f"{instruction}\n\n"
-            f"PROPOSAL INTENT:\n{(intent or '')[:1500]}\n\n"
-            f"UNIFIED DIFF (truncated to {_DIFF_CAP} chars):\n{(diff or '')[:_DIFF_CAP]}\n\n"
-            f"{_RUBRIC}"
-        )
         resp = client.messages.create(
-            model=_model(),
+            model=model,
             max_tokens=1200,
             messages=[{"role": "user", "content": prompt}],
         )
-        text = "".join(getattr(b, "text", "") for b in resp.content).strip()
-    except Exception as e:  # noqa: BLE001 — advisory; degrade, never raise
-        logger.warning("[review] %s lens call failed: %s", lens, e)
-        return _skipped(f"model call failed: {e}")
+        return "".join(getattr(b, "text", "") for b in resp.content).strip()
 
-    parsed = _parse_json_object(text)
-    if not parsed:
-        return _skipped("unparseable model output")
-    verdict = str(parsed.get("verdict", "")).lower().strip()
-    if verdict not in _SEVERITY:
-        verdict = "concern"  # unknown → flag for a human; do not silently pass
-    findings = [str(f) for f in (parsed.get("findings") or [])][:5]
-    return {"verdict": verdict, "findings": findings, "summary": str(parsed.get("summary", "")).strip()}
+    cfg = _OPENAI_COMPAT.get(provider)
+    if not cfg:
+        raise RuntimeError(f"unknown provider {provider!r}")
+    key = os.environ.get(cfg["key_env"])
+    if not key:
+        raise RuntimeError(f"no {cfg['key_env']}")
+    import openai
+
+    client = openai.OpenAI(base_url=cfg["base_url"], api_key=key, timeout=45.0, max_retries=1)
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
+def _review_one(lens: str, instruction: str, intent: str, diff: str) -> dict:
+    """One structured pass for a single lens, on that lens's model with a
+    fallback to the default Claude model. Best-effort → 'skipped' if every
+    attempt fails; an unknown/missing verdict normalizes to 'concern' (never a
+    silent pass). Records which model produced the verdict."""
+    prompt = (
+        f"{instruction}\n\n"
+        f"PROPOSAL INTENT:\n{(intent or '')[:1500]}\n\n"
+        f"UNIFIED DIFF (truncated to {_DIFF_CAP} chars):\n{(diff or '')[:_DIFF_CAP]}\n\n"
+        f"{_RUBRIC}"
+    )
+    provider, model = _lens_spec(lens)
+    attempts = [(provider, model)]
+    if provider != "anthropic":
+        attempts.append(("anthropic", _FALLBACK_MODEL))  # keep the lens working even if its model is down
+    last = "no attempt"
+    for ap, am in attempts:
+        try:
+            text = _call_model(ap, am, prompt)
+        except Exception as e:  # noqa: BLE001 — advisory; try the fallback, then skip
+            last = str(e)
+            logger.warning("[review] %s lens (%s:%s) failed: %s", lens, ap, am, e)
+            continue
+        parsed = _parse_json_object(text)
+        if not parsed:
+            last = "unparseable model output"
+            continue
+        verdict = str(parsed.get("verdict", "")).lower().strip()
+        if verdict not in _SEVERITY:
+            verdict = "concern"  # unknown → flag for a human; never silently pass
+        findings = [str(f) for f in (parsed.get("findings") or [])][:5]
+        return {
+            "verdict": verdict,
+            "findings": findings,
+            "summary": str(parsed.get("summary", "")).strip(),
+            "model": f"{ap}:{am}",
+        }
+    return {**_skipped(last), "model": f"{provider}:{model}"}
 
 
 def _fuse(lenses: dict[str, dict]) -> dict:
@@ -147,14 +215,18 @@ def _write(automod_id: str, review: dict) -> None:
         logger.warning("[review] write failed for %s: %s", automod_id, e)
 
 
+def _models_map() -> dict[str, str]:
+    return {l: f"{_lens_spec(l)[0]}:{_lens_spec(l)[1]}" for l in LENSES}
+
+
 def _all_skipped_review(automod_id: str, reason: str) -> dict:
     review = {
         "automod_id": automod_id,
-        "model": _model(),
+        "models": _models_map(),
         "generated_at": _now_iso(),
         "overall": {"verdict": "skipped", "recommendation": "review",
                     "blocking_lenses": [], "concern_lenses": [], "skipped": sorted(LENSES)},
-        "lenses": {l: _skipped(reason) for l in LENSES},
+        "lenses": {l: {**_skipped(reason), "model": f"{_lens_spec(l)[0]}:{_lens_spec(l)[1]}"} for l in LENSES},
     }
     _write(automod_id, review)
     return review
@@ -165,15 +237,15 @@ def review_proposal(automod_id: str, diff: str, intent: str) -> dict:
 
     ADVISORY: writes <id>.review.json but never changes the proposal's status —
     a human still approves. Best-effort; never raises."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return _all_skipped_review(automod_id, "no ANTHROPIC_API_KEY")
+    if not _any_provider_key():
+        return _all_skipped_review(automod_id, "no provider API key")
     if not (diff or "").strip():
         return _all_skipped_review(automod_id, "no diff to review")
 
     lenses = {l: _review_one(l, instr, intent, diff) for l, instr in LENSES.items()}
     review = {
         "automod_id": automod_id,
-        "model": _model(),
+        "models": {l: lenses[l].get("model", "") for l in LENSES},
         "generated_at": _now_iso(),
         "overall": _fuse(lenses),
         "lenses": lenses,

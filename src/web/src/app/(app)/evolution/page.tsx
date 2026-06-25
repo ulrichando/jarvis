@@ -29,6 +29,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { categorize, CATEGORIES, CATEGORY_TONE, type Category } from "@/lib/evolution/categorize";
 import { Sparkline } from "./Sparkline";
 
 // ── Types (mirror GET /api/evolution) ────────────────────────────────────
@@ -51,7 +52,7 @@ type Proposal = {
   review?: Review | null;
 };
 
-type ReviewLens = { verdict: string; findings: string[]; summary: string };
+type ReviewLens = { verdict: string; findings: string[]; summary: string; model?: string };
 type Review = {
   overall: { verdict: string; recommendation: string };
   lenses: Record<string, ReviewLens>;
@@ -168,6 +169,7 @@ const stripPrefix = (f: string) => f.replace(/^src\/voice-agent\//, "");
 export default function EvolutionPage() {
   const [data, setData] = useState<EvolutionData | null>(null);
   const [tab, setTab] = useState("review");
+  const [catFilter, setCatFilter] = useState<Category | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null); // "approve:<id>" / "cycle" / ...
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -347,55 +349,77 @@ export default function EvolutionPage() {
                 <TabsTrigger value="history">History</TabsTrigger>
               </TabsList>
 
-              {/* REVIEW: pending proposals + queued intents */}
+              {/* REVIEW: pending proposals + queued intents, filterable by category */}
               <TabsContent value="review" className="mt-5 space-y-3">
                 {data.proposals.length === 0 && data.queued.length === 0 ? (
                   <EmptyState />
                 ) : (
-                  <>
-                    <AnimatePresence initial={false}>
-                      {data.proposals.map((p, i) => (
-                        <motion.div
-                          key={p.id}
-                          layout
-                          initial={{ opacity: 0, y: 8 }}
-                          animate={{ opacity: 1, y: 0, transition: { delay: i * 0.04 } }}
-                          exit={{ opacity: 0, scale: 0.98, transition: { duration: 0.15 } }}
-                        >
-                          <ProposalCard
-                            p={p}
-                            confirming={confirming === p.id}
-                            deploying={busy === `approve:${p.id}`}
-                            rejecting={busy === `reject:${p.id}`}
-                            reviewing={busy === `review:${p.id}`}
-                            onAskConfirm={() => setConfirming(p.id)}
-                            onCancel={() => setConfirming(null)}
-                            onConfirm={() => approve(p.id)}
-                            onReject={() => reject(p.id)}
-                            onReview={() => runReview(p.id)}
-                          />
-                        </motion.div>
-                      ))}
-                    </AnimatePresence>
-
-                    {data.queued.length > 0 && (
-                      <div className="pt-2">
-                        <SectionLabel>Queued intents</SectionLabel>
-                        <div className="space-y-2">
-                          {data.queued.map((q) => (
-                            <QueuedRow
-                              key={q.id}
-                              q={q}
-                              building={busy === `process:${q.id}`}
-                              dismissing={busy === `dismiss:${q.id}`}
-                              onProcess={() => process(q.id)}
-                              onDismiss={() => dismiss(q.id)}
-                            />
+                  (() => {
+                    const propCat = (p: Proposal) => categorize(p.files, p.intent);
+                    const queuedCat = (q: Activity) => categorize([], q.detail || q.title);
+                    const present = CATEGORIES.filter(
+                      (c) =>
+                        data.proposals.some((p) => propCat(p) === c) ||
+                        data.queued.some((q) => queuedCat(q) === c),
+                    );
+                    const proposals = catFilter
+                      ? data.proposals.filter((p) => propCat(p) === catFilter)
+                      : data.proposals;
+                    const queued = catFilter
+                      ? data.queued.filter((q) => queuedCat(q) === catFilter)
+                      : data.queued;
+                    return (
+                      <>
+                        {present.length > 1 && (
+                          <CategoryFilterBar present={present} active={catFilter} onPick={setCatFilter} />
+                        )}
+                        <AnimatePresence initial={false}>
+                          {proposals.map((p, i) => (
+                            <motion.div
+                              key={p.id}
+                              layout
+                              initial={{ opacity: 0, y: 8 }}
+                              animate={{ opacity: 1, y: 0, transition: { delay: i * 0.04 } }}
+                              exit={{ opacity: 0, scale: 0.98, transition: { duration: 0.15 } }}
+                            >
+                              <ProposalCard
+                                p={p}
+                                category={propCat(p)}
+                                confirming={confirming === p.id}
+                                deploying={busy === `approve:${p.id}`}
+                                rejecting={busy === `reject:${p.id}`}
+                                reviewing={busy === `review:${p.id}`}
+                                onAskConfirm={() => setConfirming(p.id)}
+                                onCancel={() => setConfirming(null)}
+                                onConfirm={() => approve(p.id)}
+                                onReject={() => reject(p.id)}
+                                onReview={() => runReview(p.id)}
+                              />
+                            </motion.div>
                           ))}
-                        </div>
-                      </div>
-                    )}
-                  </>
+                        </AnimatePresence>
+
+                        {queued.length > 0 && (
+                          <div className="pt-2">
+                            <SectionLabel>Queued intents</SectionLabel>
+                            <div className="space-y-2">
+                              {queued.map((q) => (
+                                <QueuedRow
+                                  key={q.id}
+                                  q={q}
+                                  category={queuedCat(q)}
+                                  building={busy === `process:${q.id}`}
+                                  dismissing={busy === `dismiss:${q.id}`}
+                                  onProcess={() => process(q.id)}
+                                  onDismiss={() => dismiss(q.id)}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()
                 )}
               </TabsContent>
 
@@ -470,6 +494,73 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
     <p className="mb-2 px-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
       {children}
     </p>
+  );
+}
+
+function CategoryChip({ category }: { category: Category }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 text-[10.5px] font-medium",
+        CATEGORY_TONE[category],
+      )}
+    >
+      <span className="size-1.5 rounded-full bg-current" />
+      {category}
+    </span>
+  );
+}
+
+function CategoryFilterBar({
+  present,
+  active,
+  onPick,
+}: {
+  present: Category[];
+  active: Category | null;
+  onPick: (c: Category | null) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 pb-1">
+      <FilterPill label="All" active={active === null} onClick={() => onPick(null)} />
+      {present.map((c) => (
+        <FilterPill
+          key={c}
+          label={c}
+          tone={CATEGORY_TONE[c]}
+          active={active === c}
+          onClick={() => onPick(active === c ? null : c)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function FilterPill({
+  label,
+  tone,
+  active,
+  onClick,
+}: {
+  label: string;
+  tone?: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors",
+        active
+          ? "border-primary/40 bg-primary/10 text-foreground"
+          : "border-border/60 bg-card/40 text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {tone && <span className={cn("size-1.5 rounded-full bg-current", tone)} />}
+      {label}
+    </button>
   );
 }
 
@@ -579,6 +670,7 @@ function FileChips({ files }: { files: string[] }) {
 
 function ProposalCard({
   p,
+  category,
   confirming,
   deploying,
   rejecting,
@@ -590,6 +682,7 @@ function ProposalCard({
   onReview,
 }: {
   p: Proposal;
+  category: Category;
   confirming: boolean;
   deploying: boolean;
   rejecting: boolean;
@@ -605,15 +698,18 @@ function ProposalCard({
     <div className="rounded-2xl border border-border/60 bg-card/60 p-5 transition-colors hover:border-border">
       <div className="flex items-start justify-between gap-3">
         <h2 className="text-[15px] font-medium leading-snug text-foreground">{p.title}</h2>
-        <span
-          className={cn(
-            "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium",
-            p.testsOk ? "bg-emerald-500/10 text-emerald-500" : "bg-amber-500/10 text-amber-500",
-          )}
-        >
-          {p.testsOk ? <CheckCircle2 className="size-3" /> : <AlertTriangle className="size-3" />}
-          {p.testsOk ? "tests pass" : "check tests"}
-        </span>
+        <div className="flex shrink-0 items-center gap-2">
+          <CategoryChip category={category} />
+          <span
+            className={cn(
+              "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium",
+              p.testsOk ? "bg-emerald-500/10 text-emerald-500" : "bg-amber-500/10 text-amber-500",
+            )}
+          >
+            {p.testsOk ? <CheckCircle2 className="size-3" /> : <AlertTriangle className="size-3" />}
+            {p.testsOk ? "tests pass" : "check tests"}
+          </span>
+        </div>
       </div>
 
       {p.intent && p.intent !== p.title && (
@@ -736,12 +832,13 @@ function ReviewVerdict({
         </div>
         <div className="flex items-center gap-2.5">
           {LENS_ORDER.map((l) => {
-            const v = review.lenses[l]?.verdict ?? "skipped";
+            const lens = review.lenses[l];
+            const v = lens?.verdict ?? "skipped";
             return (
               <span
                 key={l}
                 className="inline-flex items-center gap-1 text-[10.5px] text-muted-foreground"
-                title={`${l}: ${v}`}
+                title={`${l}: ${v}${lens?.model ? ` (${lens.model})` : ""}`}
               >
                 <span className={cn("size-1.5 rounded-full", verdictDot(v))} />
                 {l.slice(0, 4)}
@@ -768,6 +865,11 @@ function ReviewVerdict({
               <div key={l}>
                 <p className={cn("text-[10px] font-medium uppercase tracking-wide", verdictText(lens.verdict))}>
                   {l}
+                  {lens.model && (
+                    <span className="ml-1.5 font-normal normal-case text-muted-foreground/80">
+                      · {lens.model.split(":").pop()}
+                    </span>
+                  )}
                 </p>
                 <ul className="mt-0.5 space-y-0.5">
                   {lens.findings.map((f, i) => (
@@ -787,12 +889,14 @@ function ReviewVerdict({
 
 function QueuedRow({
   q,
+  category,
   building,
   dismissing,
   onProcess,
   onDismiss,
 }: {
   q: Activity;
+  category: Category;
   building: boolean;
   dismissing: boolean;
   onProcess: () => void;
@@ -801,7 +905,10 @@ function QueuedRow({
   return (
     <div className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-card/40 px-4 py-2.5">
       <div className="min-w-0">
-        <p className="truncate text-[13px] text-foreground">{q.title}</p>
+        <div className="flex items-center gap-2">
+          <p className="truncate text-[13px] text-foreground">{q.title}</p>
+          <CategoryChip category={category} />
+        </div>
         {q.detail && q.detail !== q.title && (
           <p className="truncate text-[12px] text-muted-foreground">{q.detail}</p>
         )}
