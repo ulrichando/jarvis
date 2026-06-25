@@ -20,10 +20,12 @@ import { JarvisInChromeSection } from "@/components/settings/jarvis-in-chrome";
 import { KnowledgeSection } from "@/components/settings/knowledge";
 import { SkillsSection } from "@/components/settings/skills";
 import { CookbookSection } from "@/components/settings/cookbook";
+import { SecuritySection } from "@/components/settings/security";
 
 type Section =
   | "general"
   | "account"
+  | "security"
   | "applications"
   | "knowledge"
   | "skills"
@@ -40,6 +42,7 @@ type Section =
 const NAV: Array<{ id: Section; label: string }> = [
   { id: "general", label: "General" },
   { id: "account", label: "Account" },
+  { id: "security", label: "Security" },
   { id: "applications", label: "Applications" },
   { id: "knowledge", label: "Knowledge" },
   { id: "skills", label: "Skills" },
@@ -101,6 +104,7 @@ export default function SettingsPage() {
             <div className="mx-auto max-w-2xl px-8 py-8">
               {section === "general" && <GeneralSection />}
               {section === "account" && <AccountSection />}
+              {section === "security" && <SecuritySection />}
               {section === "applications" && <IntegrationsSection />}
               {section === "knowledge" && <KnowledgeSection />}
               {section === "skills" && <SkillsSection />}
