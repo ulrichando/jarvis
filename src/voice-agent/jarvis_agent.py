@@ -487,6 +487,15 @@ from providers.llm import (
 QUIET_HOURS_START      = int(os.environ.get("JARVIS_QUIET_START",      "0"))    # OFF (was 1am)
 QUIET_HOURS_END        = int(os.environ.get("JARVIS_QUIET_END",        "0"))    # OFF (was 6am)
 QUIET_HOURS_WINDOW_SEC = float(os.environ.get("JARVIS_QUIET_WINDOW_SEC", "1200"))  # 20 min
+# Addressing gate (2026-06-25): outside quiet hours JARVIS still answers ONLY
+# when addressed — by the "Jarvis" vocative, a wake phrase, or an active
+# conversation (a real interaction within this many seconds). Idle ambient room
+# audio (the user talking to someone else, a TV, footsteps as they walk past) is
+# dropped instead of answered with a continuer. Tighter than the night-time
+# QUIET_HOURS_WINDOW_SEC so JARVIS doesn't keep answering ambient for 20 min
+# after a chat. Kill-switch JARVIS_ADDRESSING_GATE=0 restores old always-answer.
+ENGAGEMENT_WINDOW_SEC  = float(os.environ.get("JARVIS_ENGAGEMENT_WINDOW_SEC", "90"))  # active-conversation follow-up window
+ADDRESSING_GATE_ON     = os.environ.get("JARVIS_ADDRESSING_GATE", "1") != "0"
 # Vocative regexes — single source of truth in pipeline/vocative.py.
 # Pre-2026-05-10 these were 3 separate regex compilations in this file
 # kept in sync by hand-written line-number comments; that produced
@@ -581,8 +590,26 @@ def _touch_interaction() -> None:
     _last_real_interaction = time.monotonic()
 
 
-def _recent_interaction() -> bool:
-    return (time.monotonic() - _last_real_interaction) < QUIET_HOURS_WINDOW_SEC
+def _recent_interaction(window: float = QUIET_HOURS_WINDOW_SEC) -> bool:
+    """True if a real interaction happened within `window` seconds — i.e. the
+    user is mid-conversation, so a follow-up needs no "Jarvis" vocative."""
+    return (time.monotonic() - _last_real_interaction) < window
+
+
+def _is_unaddressed_ambient(text: str) -> bool:
+    """Decide whether a transcript should be dropped as ambient room audio.
+
+    True when the addressing gate is on, the text carries NO "Jarvis" vocative
+    and NO wake phrase, AND there has been no real interaction within the
+    engagement window (tighter by day via ENGAGEMENT_WINDOW_SEC, generous at
+    night via QUIET_HOURS_WINDOW_SEC). Pure function of `text` + module state so
+    the gate is unit-testable. Wired into on_user_turn_completed."""
+    if not ADDRESSING_GATE_ON:
+        return False
+    if _JARVIS_NAME_RE.search(text) or _is_command(text, _WAKE_PATTERNS):
+        return False  # explicitly addressed — always answer
+    window = QUIET_HOURS_WINDOW_SEC if _in_quiet_hours() else ENGAGEMENT_WINDOW_SEC
+    return not _recent_interaction(window)
 
 
 # Hedge phrases that the POST-HANDOFF HONESTY rule trains the
@@ -4225,13 +4252,21 @@ class JarvisAgent(Agent):
         # idle 3am ambient noise (Spotify/Chrome opened while sleeping)
         # while preserving normal multi-turn conversation: once the user
         # says "Jarvis, X", follow-up turns within 5 minutes pass freely.
-        if _in_quiet_hours() and not _JARVIS_NAME_RE.search(text):
-            if not _is_command(text, _WAKE_PATTERNS) and not _recent_interaction():
-                logger.info(
-                    f"[quiet-hours] dropping ambient turn (no vocative, "
-                    f"no recent interaction): {text[:80]!r}"
-                )
-                raise StopResponse()
+        # Addressing gate (2026-06-25): JARVIS answers only when ADDRESSED — by
+        # the "Jarvis" vocative, an explicit wake phrase, or an active
+        # conversation (a recent interaction within the engagement window).
+        # Otherwise the turn is ambient room audio — the user talking to someone
+        # else, a TV, footsteps as they walk past — and is dropped silently
+        # rather than answered with a continuer ("Go on." / "I'm here"). Before
+        # this the gate was quiet-hours-only AND quiet hours defaulted OFF, so
+        # JARVIS answered ALL ambient 24/7 (user 2026-06-25: "responds when I
+        # walk by, not addressed to me"). Kill-switch: JARVIS_ADDRESSING_GATE=0.
+        if _is_unaddressed_ambient(text):
+            logger.info(
+                f"[addressing-gate] dropping ambient turn (not addressed): "
+                f"{text[:80]!r}"
+            )
+            raise StopResponse()
 
         # Turn accepted — stamp the interaction time so follow-ups within
         # the quiet-hours window don't need a vocative.
