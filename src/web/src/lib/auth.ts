@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, ne } from "drizzle-orm";
 import { betterAuth } from "better-auth";
+import { twoFactor } from "better-auth/plugins";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { db, schema } from "./db";
 import { LOCAL_USER_ID } from "./chat/persist";
@@ -65,8 +66,16 @@ export const auth = betterAuth({
       session: schema.sessions,
       account: schema.accounts,
       verification: schema.verifications,
+      // twoFactor plugin accesses this under the "twoFactor" model name.
+      twoFactor: schema.twoFactors,
     },
   }),
+  plugins: [
+    twoFactor({
+      issuer: "JARVIS",
+      totpOptions: { period: 30, digits: 6 },
+    }),
+  ],
   emailAndPassword: {
     enabled: true,
     autoSignIn: true,
