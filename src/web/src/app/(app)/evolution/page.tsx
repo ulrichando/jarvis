@@ -110,11 +110,25 @@ type Graduation = {
 
 type SelfAssessment = {
   summary?: string;
-  flaws?: string[];
-  improvements?: string[];
+  flaws?: unknown[]; // strings OR {area, detail}
+  improvements?: unknown[]; // strings OR {title, rationale, target_axis}
   generatedAt?: string;
   [k: string]: unknown;
 } | null;
+
+// Flaws/improvements come back as either strings or structured objects
+// ({area, detail} / {title, rationale}); render them safely either way.
+function assessmentText(x: unknown): { head: string; body: string } {
+  if (typeof x === "string") return { head: "", body: x };
+  if (x && typeof x === "object") {
+    const o = x as Record<string, unknown>;
+    const head = String(o.area ?? o.title ?? o.axis ?? "");
+    const body = String(o.detail ?? o.rationale ?? o.description ?? o.text ?? "");
+    if (head || body) return { head, body: body || head };
+    return { head: "", body: JSON.stringify(o) };
+  }
+  return { head: "", body: String(x ?? "") };
+}
 
 type EvolutionData = {
   proposals: Proposal[];
@@ -1187,12 +1201,18 @@ function AssessmentPanel({ assessment }: { assessment: SelfAssessment }) {
         <div className="mt-3">
           <SectionLabel>Flaws it sees</SectionLabel>
           <ul className="space-y-1">
-            {flaws.map((x, i) => (
-              <li key={i} className="flex gap-2 text-[12.5px] text-foreground/90">
-                <span className="text-amber-500">·</span>
-                {x}
-              </li>
-            ))}
+            {flaws.map((x, i) => {
+              const it = assessmentText(x);
+              return (
+                <li key={i} className="flex gap-2 text-[12.5px] text-foreground/90">
+                  <span className="text-amber-500">·</span>
+                  <span>
+                    {it.head && <span className="font-medium text-foreground">{it.head}: </span>}
+                    {it.body}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
@@ -1200,12 +1220,18 @@ function AssessmentPanel({ assessment }: { assessment: SelfAssessment }) {
         <div className="mt-3">
           <SectionLabel>Improvements to try</SectionLabel>
           <ul className="space-y-1">
-            {improvements.map((x, i) => (
-              <li key={i} className="flex gap-2 text-[12.5px] text-foreground/90">
-                <span className="text-emerald-500">·</span>
-                {x}
-              </li>
-            ))}
+            {improvements.map((x, i) => {
+              const it = assessmentText(x);
+              return (
+                <li key={i} className="flex gap-2 text-[12.5px] text-foreground/90">
+                  <span className="text-emerald-500">·</span>
+                  <span>
+                    {it.head && <span className="font-medium text-foreground">{it.head}: </span>}
+                    {it.body}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
