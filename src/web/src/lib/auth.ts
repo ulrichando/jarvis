@@ -114,8 +114,8 @@ export const auth = betterAuth({
     },
   },
   session: {
-    expiresIn: 60 * 60 * 24 * 30, // 30 days
-    updateAge: 60 * 60 * 24, // refresh once a day
+    expiresIn: 60 * 60 * 24 * 7, // 7-day idle window (refreshed on use)
+    updateAge: 60 * 60 * 24, // refresh the expiry once a day of activity
   },
 });
 

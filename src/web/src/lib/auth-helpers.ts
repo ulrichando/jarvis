@@ -3,6 +3,16 @@ import { headers as nextHeaders } from "next/headers";
 import { auth } from "./auth";
 import { LOCAL_USER_ID } from "./chat/persist";
 
+const ABSOLUTE_CAP_MS = 30 * 864e5; // 30-day hard cap regardless of activity
+
+/**
+ * Returns true if the session's creation time is within the 30-day absolute cap.
+ * Used to force re-login past 30 days regardless of activity.
+ */
+export function isSessionWithinAbsoluteCap(createdAt: Date): boolean {
+  return Date.now() - createdAt.getTime() < ABSOLUTE_CAP_MS;
+}
+
 /**
  * The logged-in user's id, server-side. In route handlers pass `req.headers`;
  * in server components call with no args (reads next/headers). Falls back to
