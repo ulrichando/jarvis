@@ -153,3 +153,9 @@ vendor/
 # Belt-and-suspenders: never re-commit a docs-stashed credential note
 **/API keys
 **/*api*key*.txt
+
+# The legacy cwd-relative settings.json could catch a committed API key (the
+# 2026-06 leak shape). Ignore the settings file at ANY depth — but NOT the rest
+# of .jarvis/ (the repo-root .jarvis/agents/ + setup.sh are legit tracked
+# source). Real settings live in ~/.jarvis/.
+**/.jarvis/settings.json
