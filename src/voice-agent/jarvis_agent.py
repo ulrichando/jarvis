@@ -4071,6 +4071,24 @@ class JarvisAgent(Agent):
                                 "(mode=%s, label=%s)", mode, cap.get("action_label"))
         except Exception:
             logger.debug("[vision] injection skipped", exc_info=True)
+
+        # Vision TOOL for a text-only brain (the P2c follow-up, done): when the
+        # route model can't see (decide_mode == "text" — e.g. DeepSeek/Groq/Kimi
+        # default), describe any images in THIS generation's ctx out-of-band via
+        # Gemini so a text-only supervisor can actually talk about them, instead
+        # of dropping/choking. Cached; best-effort — failures fall through to
+        # image_content_strip's placeholder, so it never bricks the turn.
+        try:
+            from pipeline import computer_use_vision as _cuv_mode
+            if _cuv_mode.decide_mode(getattr(self, "_dispatch_llm", None)) == "text":
+                from pipeline import image_describe as _imd
+                _n_desc = await _imd.describe_ctx_images(chat_ctx)
+                if _n_desc:
+                    logger.info("[vision] described %d ctx image(s) for the "
+                                "text-only supervisor", _n_desc)
+        except Exception:
+            logger.debug("[vision] ctx-image describe skipped", exc_info=True)
+
         async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
             yield chunk
 
