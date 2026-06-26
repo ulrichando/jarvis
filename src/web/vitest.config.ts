@@ -17,8 +17,10 @@ export default defineConfig({
     hookTimeout: 20000,
     coverage: {
       provider: "v8",
-      reporter: ["text", "html"],
-      include: ["src/lib/ai/kimi/**", "src/components/chat/kimi-*.tsx"],
+      // lcov for the Codecov upload in CI; text for a local glance.
+      reporter: ["text", "lcov"],
+      include: ["src/**"],
+      exclude: ["src/**/*.d.ts", "src/**/*.test.*", "src/**/__tests__/**"],
     },
   },
   resolve: {
