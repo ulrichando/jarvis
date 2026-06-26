@@ -1,0 +1,68 @@
+name: Claude Code
+
+# Interactive agent: mention @claude in any issue, PR comment, or review and
+# Claude implements / fixes / answers, following CLAUDE.md. The action gates on
+# the actor having write access, so randoms can't trigger it.
+#
+# BRIDGE (Path A): this runs stock claude-code-action until JARVIS's own CLI
+# runner (Path B) can take over — at which point only the `uses:` step below
+# swaps to the JARVIS runner; the triggers + permissions stay.
+#
+# DORMANT until the key exists:  gh secret set ANTHROPIC_API_KEY
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  claude:
+    # Two gates, both must hold: (1) @claude is mentioned, AND (2) the author is
+    # a trusted principal (OWNER/MEMBER/COLLABORATOR). On a public repo anyone
+    # can comment @claude — the author_association check stops a stranger's text
+    # from ever spawning a write-permission, key-bearing agent run (defense in
+    # depth on top of the action's own actor check). For this single-maintainer
+    # repo that effectively means: only Ulrich can trigger it.
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')) && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write  # REQUIRED by claude-code-action for OIDC GitHub auth
+                       # (confirmed 2026-06-26: pr-review failed "Could not fetch an
+                       # OIDC token" without it). Owner/same-repo gated + no OIDC
+                       # trust configured, so re-adding it is not exploitable here.
+      issues: write
+      actions: read
+    steps:
+      - name: Gate on API key (dormant until ANTHROPIC_API_KEY is set)
+        id: gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::notice::ANTHROPIC_API_KEY not set — JARVIS GitHub agent is dormant; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout repository
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code
+        id: claude
+        if: steps.gate.outputs.skip != 'true'
+        uses: anthropics/claude-code-action@e9072dc659c8b408d9df95ab08cfd8bf7acce9d8 # v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

@@ -1,0 +1,51 @@
+name: Claude Security Review
+
+# Semantic security review on same-repo PRs (auth bypass, injection, logic
+# flaws) — complements the rule-based CodeQL / Trivy / gitleaks, fitting the
+# public-repo + mic->root threat model. The action is NOT hardened against
+# prompt injection, so it is gated to same-repo PRs; ALSO enable
+# "Require approval for all outside collaborators" under Settings -> Actions.
+#
+# Pinned to main by SHA (no tagged releases exist yet); Renovate will bump it.
+# Reuses the single ANTHROPIC_API_KEY secret (the action's input is named
+# claude-api-key, but the secret name is ours).
+#
+# DORMANT until the key exists:  gh secret set ANTHROPIC_API_KEY
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  security:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Gate on API key (dormant until ANTHROPIC_API_KEY is set)
+        id: gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::notice::ANTHROPIC_API_KEY not set — JARVIS security review is dormant; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout repository
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          # head.sha (commit SHA), NOT head.ref (branch name) — avoids ref
+          # injection from an attacker-named branch.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2
+
+      - name: Claude security review
+        if: steps.gate.outputs.skip != 'true'
+        uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda # main @ 2026-06-26
+        with:
+          comment-pr: true
+          claude-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
