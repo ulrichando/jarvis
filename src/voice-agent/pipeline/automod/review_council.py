@@ -73,6 +73,33 @@ LENSES: dict[str, str] = {
     ),
 }
 
+# Advisory lenses — your spec's Expansionist / Researcher / Role-player. They
+# ENRICH the review with perspectives the flaw-hunters above miss, but they NEVER
+# gate the verdict: only the 3 LENSES above (the Contrarian / Principles cluster)
+# can block. Their findings surface to the human in <id>.review.json under
+# "advisory". On by default; JARVIS_AUTOMOD_REVIEW_ADVISORY=0 to skip (saves the
+# extra model calls).
+ADVISORY_LENSES: dict[str, str] = {
+    "expansionist": (
+        "You are the EXPANSIONIST reviewer. The change may be correct but small. "
+        "Name the SINGLE biggest higher-leverage improvement the same effort could "
+        "have made toward the intent, and whether a materially better approach "
+        "exists. You NEVER block — you advise. If the scope is already right, say so."
+    ),
+    "researcher": (
+        "You are the RESEARCHER reviewer. Judge the change against KNOWN industry "
+        "practice and the relevant library/API idioms. Flag where it reinvents or "
+        "contradicts established practice and name the authoritative approach. You "
+        "NEVER block — you advise."
+    ),
+    "role_player": (
+        "You are the ROLE-PLAYER reviewer. Stand in the shoes of the user / "
+        "operator / tester who lives with this change. Is it correct but awkward, "
+        "surprising, or bad to actually use or operate? Flag experience problems a "
+        "code review misses. You NEVER block — you advise."
+    ),
+}
+
 _RUBRIC = (
     "Respond with ONLY a JSON object, no prose:\n"
     '{"verdict": "pass" | "concern" | "block", '
@@ -255,12 +282,18 @@ def review_proposal(automod_id: str, diff: str, intent: str) -> dict:
         return _all_skipped_review(automod_id, "no diff to review")
 
     lenses = {l: _review_one(l, instr, intent, diff) for l, instr in LENSES.items()}
+    # Advisory lenses enrich the review but NEVER feed _fuse (gating stays the 3
+    # proven lenses). On by default; disable with JARVIS_AUTOMOD_REVIEW_ADVISORY=0.
+    advisory: dict[str, dict] = {}
+    if os.environ.get("JARVIS_AUTOMOD_REVIEW_ADVISORY", "1") != "0":
+        advisory = {l: _review_one(l, instr, intent, diff) for l, instr in ADVISORY_LENSES.items()}
     review = {
         "automod_id": automod_id,
         "models": {l: lenses[l].get("model", "") for l in LENSES},
         "generated_at": _now_iso(),
         "overall": _fuse(lenses),
         "lenses": lenses,
+        "advisory": advisory,
     }
     _write(automod_id, review)
     try:

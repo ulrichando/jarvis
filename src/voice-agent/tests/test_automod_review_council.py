@@ -149,3 +149,34 @@ def test_review_one_all_attempts_fail_skips(monkeypatch):
     monkeypatch.setattr(rc, "_call_model", fake_call)
     out = rc._review_one("regression", "instr", "intent", "diff")
     assert out["verdict"] == "skipped"
+
+
+# ── advisory lenses: Expansionist / Researcher / Role-player ──────────
+
+
+def test_advisory_recorded_but_does_not_gate(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    monkeypatch.setenv("JARVIS_AUTOMOD_REVIEW_ADVISORY", "1")
+    monkeypatch.setattr(rc, "_any_provider_key", lambda: True)
+
+    def fake_one(lens, instruction, intent, diff):
+        # gating lenses pass; advisory lenses 'block' (advice strength) → must NOT gate
+        if lens in rc.LENSES:
+            return _lens("pass")
+        return _lens("block", ["a bigger approach exists"])
+
+    monkeypatch.setattr(rc, "_review_one", fake_one)
+    out = rc.review_proposal("automod-adv", "real diff", "intent")
+    assert out["overall"]["verdict"] == "pass"  # advisory 'block' did NOT gate
+    assert set(out["advisory"]) == set(rc.ADVISORY_LENSES)
+    assert out["advisory"]["expansionist"]["findings"]
+
+
+def test_advisory_can_be_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    monkeypatch.setenv("JARVIS_AUTOMOD_REVIEW_ADVISORY", "0")
+    monkeypatch.setattr(rc, "_any_provider_key", lambda: True)
+    monkeypatch.setattr(rc, "_review_one", lambda lens, i, n, d: _lens("pass"))
+    out = rc.review_proposal("automod-noadv", "real diff", "intent")
+    assert out["advisory"] == {}
+    assert out["overall"]["verdict"] == "pass"
