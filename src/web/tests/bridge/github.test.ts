@@ -57,3 +57,28 @@ describe('mergePullRequest', () => {
     expect(r.ok).toBe(false)
   })
 })
+
+describe('input guards (request-forgery / SSRF)', () => {
+  test('a repo with URL-control chars or traversal is rejected WITHOUT fetching', async () => {
+    for (const bad of ['owner', 'owner/demo@evil.com', 'owner/demo?x=1', '../../etc', 'owner/de mo', 'a/b/c']) {
+      const r = await mergePullRequest(bad, 9)
+      expect(r.ok).toBe(false)
+    }
+    expect((fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0)
+  })
+
+  test('a non-integer PR number is rejected WITHOUT fetching', async () => {
+    const r = await mergePullRequest('owner/demo', Number.NaN)
+    expect(r.ok).toBe(false)
+    expect((fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0)
+  })
+
+  test('a valid repo with a slashed branch %-encodes the head query param', async () => {
+    ;(fetch as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(new Response('dup', { status: 422 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ html_url: 'u', number: 3 }]), { status: 200 }))
+    await openPullRequest('owner/demo', 'feature/x', 'main', 'T', 'B')
+    const secondUrl = String((fetch as ReturnType<typeof vi.fn>).mock.calls[1][0])
+    expect(secondUrl).toContain('head=owner:feature%2Fx') // slash encoded, not a raw path break
+  })
+})
