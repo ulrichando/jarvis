@@ -68,7 +68,7 @@ import json
 from typing import Optional
 
 class AXTreeExtractor:
-    """Extract accessibility tree from Chrome via CDP."""
+    \"\"\"Extract accessibility tree from Chrome via CDP.\"\"\"
 
     def __init__(self, cdp_url: str = "ws://127.0.0.1:9222"):
         self._cdp_url = cdp_url
