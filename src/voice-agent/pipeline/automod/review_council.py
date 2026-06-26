@@ -36,15 +36,16 @@ _FALLBACK_MODEL = "claude-sonnet-4-6"
 LENS_DEFAULTS: dict[str, str] = {
     # Gating lenses (can block) — 3 distinct families, the HIGHEST model of each.
     "correctness": "anthropic:claude-opus-4-8",
-    "security": "openai:gpt-5",
+    "security": "openai:gpt-5.5",
     "regression": "deepseek:deepseek-reasoner",
     # Advisory lenses on distinct families too: the 6-lens council spans 6 model
     # providers, each the TOP available model (per Ulrich — quality over cost; the
-    # council runs only on reviewable proposals). All verified live 2026-06-26.
-    # Override via JARVIS_REVIEW_MODEL_<LENS>; a provider failure falls back to
-    # Claude. (kimi-k2.6 is the ceiling — k2.6-thinking 404s; gpt-5-pro 404s.)
-    "expansionist": "gemini:gemini-2.5-pro",
-    "researcher": "kimi:kimi-k2.6",
+    # council runs only on reviewable proposals). Model IDs researched + verified
+    # live 2026-06-26 (gpt-5.5 / gemini-3.1-pro-preview / kimi-k2.7-code are the
+    # API ceilings — the -pro/-research/-thinking variants 404). Override via
+    # JARVIS_REVIEW_MODEL_<LENS>; a provider failure falls back to Claude.
+    "expansionist": "gemini:gemini-3.1-pro-preview",
+    "researcher": "kimi:kimi-k2.7-code",
     "role_player": "groq:openai/gpt-oss-120b",
 }
 # OpenAI-compatible providers (base_url + key env) reachable via the openai SDK.
