@@ -1,0 +1,86 @@
+name: evolution-nightly
+
+# Nightly regression backstop for the self-evolution system. Runs the full
+# voice-agent pytest suite (which includes every evolution/automod test) WITH
+# coverage, on a schedule, so regressions surface in GitHub — not only on the
+# local box. Read-only: shadow mode (no live spawn), no deploys, no service
+# touch. (The live telemetry SOAK rescoring needs the local turn_telemetry.db
+# + models and stays a local timer; this is the CI-runnable regression half.)
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nightly:
+    name: voice-agent suite + coverage (python 3.13)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/voice-agent
+    env:
+      # Bootstrap dummies — no test makes a live connection (mocks/fixtures).
+      LIVEKIT_URL: ws://127.0.0.1:7880
+      LIVEKIT_API_KEY: ci-dummy-key
+      LIVEKIT_API_SECRET: ci-dummy-secret
+      GOOGLE_API_KEY: ci-dummy-google-key
+      GROQ_API_KEY: ci-dummy-groq-key
+      DEEPSEEK_API_KEY: ci-dummy-deepseek-key
+      DISPLAY: ":0"
+      JARVIS_GRAPH_DISABLED: "1"
+      # Hard safety: the evolution loop must never spawn or deploy from CI.
+      JARVIS_AUTOMOD_SPAWN_LIVE: "0"
+      JARVIS_EVOLUTION_AUTOPUBLISH: "0"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: src/voice-agent/requirements.txt
+
+      - name: Install voice-agent system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg libsndfile1 libportaudio2
+
+      - name: pip install (+ coverage)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-test.txt
+          pip install pytest pytest-asyncio pytest-rerunfailures pytest-cov
+
+      - name: Run suite with coverage
+        # Default Actions bash has -eo pipefail, so a test failure fails the
+        # job even through the tee (the regression signal).
+        run: |
+          python -m pytest tests/ -q --durations=10 --timeout=60 \
+            --cov=. --cov-report=xml --cov-report=term-missing:skip-covered \
+            | tee /tmp/pytest.out
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "### Nightly voice-agent regression"
+            echo '```'
+            tail -n 20 /tmp/pytest.out 2>/dev/null || echo "(no output captured)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          files: src/voice-agent/coverage.xml
+          flags: voice-agent
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
