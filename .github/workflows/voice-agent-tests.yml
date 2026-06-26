@@ -29,6 +29,10 @@ on:
       - "src/voice-agent/**"
       - ".github/workflows/voice-agent-tests.yml"
 
+# Least-privilege default; jobs opt into more only if needed.
+permissions:
+  contents: read
+
 jobs:
   pytest:
     name: pytest (linux, python 3.13)
@@ -50,10 +54,10 @@ jobs:
       DISPLAY: ":0"
       JARVIS_GRAPH_DISABLED: "1"   # skip LangGraph slow-path init in CI
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
           cache: pip

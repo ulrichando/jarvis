@@ -19,6 +19,10 @@ on:
       - "src/voice-agent/desktop-tauri/**"
       - ".github/workflows/desktop-tauri-smoke.yml"
 
+# Least-privilege default; jobs opt into more only if needed.
+permissions:
+  contents: read
+
 jobs:
   build-smoke:
     name: build-smoke (linux)
@@ -27,7 +31,7 @@ jobs:
       run:
         working-directory: src/voice-agent/desktop-tauri
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Install Tauri 2 system deps
         run: |
@@ -41,15 +45,15 @@ jobs:
             patchelf \
             pkg-config
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: src/voice-agent/desktop-tauri/package-lock.json
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src/voice-agent/desktop-tauri/src-tauri
           shared-key: desktop-tauri-smoke

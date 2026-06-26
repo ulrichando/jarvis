@@ -9,13 +9,17 @@ on:
     # Weekly Monday 14:00 UTC — catches CVEs disclosed over the weekend
     - cron: '0 14 * * 1'
 
+# Least-privilege default; jobs opt into more only if needed.
+permissions:
+  contents: read
+
 jobs:
   pip-audit:
     name: pip-audit (voice-agent)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
       - run: pip install pip-audit
@@ -29,8 +33,8 @@ jobs:
     name: npm audit (cli)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: '20'
       # Level=critical (not high) since 2026-06-11: the two remaining
@@ -47,8 +51,8 @@ jobs:
     name: npm audit (web)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: '20'
       - working-directory: src/web
@@ -62,8 +66,8 @@ jobs:
     name: cargo-audit (tauri)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - run: cargo install --locked cargo-audit
       - working-directory: src/voice-agent/desktop-tauri/src-tauri
         run: cargo audit

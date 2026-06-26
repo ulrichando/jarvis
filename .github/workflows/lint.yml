@@ -10,6 +10,10 @@ on:
   pull_request:
     branches: [main, master]
 
+# Least-privilege default; jobs opt into more only if needed.
+permissions:
+  contents: read
+
 jobs:
   docs-truth:
     name: docs reference no tombstoned systems
@@ -22,7 +26,7 @@ jobs:
     # 2026-06-11. Historical mentions belong in CHANGELOG and
     # docs/superpowers/specs/ (deliberately not checked).
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: grep orientation docs for tombstoned systems
         run: |
@@ -46,9 +50,9 @@ jobs:
     # Non-blocking: ratchet to required once existing violations are fixed.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
 
@@ -65,7 +69,7 @@ jobs:
     # required once the existing warnings are addressed.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Install Tauri system deps
         run: |
@@ -79,11 +83,11 @@ jobs:
             patchelf \
             pkg-config
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src/voice-agent/desktop-tauri/src-tauri
           shared-key: desktop-tauri-clippy
@@ -99,9 +103,9 @@ jobs:
     # Non-blocking: type errors may exist today; ratchet to required once clean.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: latest
 
