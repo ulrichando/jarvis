@@ -31,6 +31,12 @@ jobs:
         with:
           bun-version: latest
 
+      # vitest runs under NODE (see the test step). Pin it so the
+      # better-sqlite3 native rebuild targets a known node ABI.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: bun install
         run: bun install
 
@@ -45,11 +51,16 @@ jobs:
           BETTER_AUTH_SECRET: ci-build-only-not-a-secret
         run: bun run build
 
-      - name: bun run test
-        # The suite is vitest (the package "test" script). It MUST run via
-        # `bun run test`; `bun test` invokes bun's native runner, which
-        # mis-handles the vitest suite (~107 spurious failures). Still
-        # non-blocking until one green CI run is observed here — then drop
-        # continue-on-error to enforce. (Local `vitest run`: 298 passing.)
+      - name: vitest (node runtime)
+        # The suite is vitest. It MUST run under NODE, not bun: `bun test` uses
+        # bun's native runner, and even `bun run test` executes the vitest binary
+        # on bun's runtime — both mishandle vitest's node:fs mocks and the
+        # better-sqlite3 native binding (node-ABI), yielding spurious failures
+        # (e.g. tests/bridge/github.test.ts) that all pass under node (338/338).
+        # Rebuild the addon for the runner's node, then run vitest via node.
+        # continue-on-error stays for ONE observed-green run here, then it's
+        # dropped so the suite becomes a real gate.
         continue-on-error: true
-        run: bun run test
+        run: |
+          npm rebuild better-sqlite3
+          npx vitest run
