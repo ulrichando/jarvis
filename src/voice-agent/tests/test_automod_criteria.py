@@ -47,3 +47,19 @@ def test_enrich_record_classifies_configuration_pressure():
     })
 
     assert rec["evolution"]["fitness_goal"] == "self_configuration"
+
+
+def test_priority_real_problems_outrank_speculative():
+    """All-P0 inflation fix (2026-06-26): speculative self_improvement is now the
+    LOWEST priority, so real problems + explicit requests build first."""
+    from pipeline.automod import criteria
+
+    def pri(kind):
+        return criteria.enrich_record({"id": "x", "kind": kind, "intent": "i"})["priority"]
+
+    assert pri("self_improvement") == "P3"   # speculative → last (was P0)
+    assert pri("explicit") == "P0"           # user request → first
+    # the cycle sorts ascending (P0 first), so real problems precede speculative:
+    assert pri("error") < pri("self_improvement")
+    assert pri("correction") < pri("self_improvement")
+    assert pri("confab") < pri("self_improvement")
