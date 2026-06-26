@@ -38,7 +38,11 @@ ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1
 WORKDIR /app
 # docker CLI *client* (no daemon) — talks to the socket-proxy over TCP.
-ARG DOCKER_CLI_VERSION=27.5.1
+# Pinned to a build whose Go stdlib is patched: 27.5.1 shipped Go 1.22.11
+# (CVE-2025-68121 + siblings, critical); 29.6.1's static binary is Go 1.26.4.
+# Verify a bump with `go version <extracted docker binary>` before raising it —
+# the apt build's Go version differs from the static tarball's.
+ARG DOCKER_CLI_VERSION=29.6.1
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tini \
     && curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_CLI_VERSION}.tgz" \
        | tar xz --strip-components=1 -C /usr/local/bin docker/docker \
