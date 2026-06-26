@@ -34,15 +34,26 @@ logger = logging.getLogger("jarvis.automod.review")
 # unavailable — a missing key degrades diversity, never the review.
 _FALLBACK_MODEL = "claude-sonnet-4-6"
 LENS_DEFAULTS: dict[str, str] = {
-    "correctness": "anthropic:claude-sonnet-4-6",
-    "security": "openai:gpt-5-mini",
-    "regression": "deepseek:deepseek-chat",
+    # Gating lenses (can block) — 3 distinct families, the HIGHEST model of each.
+    "correctness": "anthropic:claude-opus-4-8",
+    "security": "openai:gpt-5",
+    "regression": "deepseek:deepseek-reasoner",
+    # Advisory lenses on distinct families too: the 6-lens council spans 6 model
+    # providers, each the TOP available model (per Ulrich — quality over cost; the
+    # council runs only on reviewable proposals). All verified live 2026-06-26.
+    # Override via JARVIS_REVIEW_MODEL_<LENS>; a provider failure falls back to
+    # Claude. (kimi-k2.6 is the ceiling — k2.6-thinking 404s; gpt-5-pro 404s.)
+    "expansionist": "gemini:gemini-2.5-pro",
+    "researcher": "kimi:kimi-k2.6",
+    "role_player": "groq:openai/gpt-oss-120b",
 }
 # OpenAI-compatible providers (base_url + key env) reachable via the openai SDK.
 _OPENAI_COMPAT: dict[str, dict] = {
     "openai": {"base_url": "https://api.openai.com/v1", "key_env": "OPENAI_API_KEY"},
     "deepseek": {"base_url": "https://api.deepseek.com/v1", "key_env": "DEEPSEEK_API_KEY"},
     "groq": {"base_url": "https://api.groq.com/openai/v1", "key_env": "GROQ_API_KEY"},
+    "kimi": {"base_url": "https://api.moonshot.ai/v1", "key_env": "KIMI_API_KEY"},
+    "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai", "key_env": "GOOGLE_API_KEY"},
 }
 _DIFF_CAP = 24000  # bound the prompt; proposals are capped at <=5 files / 2000 diff lines
 

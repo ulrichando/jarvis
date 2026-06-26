@@ -64,6 +64,15 @@ def test_lens_defaults_are_distinct_families():
     assert provs == {"anthropic", "openai", "deepseek"}  # genuinely different model families
 
 
+def test_council_spans_six_distinct_providers():
+    """6-provider council (2026-06-26): each of the 6 lenses runs on a different
+    model family — claude / openai / deepseek / gemini / kimi / groq."""
+    all_lenses = list(rc.LENSES) + list(rc.ADVISORY_LENSES)
+    provs = [rc._lens_spec(lens)[0] for lens in all_lenses]
+    assert len(provs) == 6
+    assert len(set(provs)) == 6  # every lens a distinct provider
+
+
 def test_lens_spec_env_override(monkeypatch):
     monkeypatch.setenv("JARVIS_REVIEW_MODEL_SECURITY", "groq:openai/gpt-oss-120b")
     assert rc._lens_spec("security") == ("groq", "openai/gpt-oss-120b")
