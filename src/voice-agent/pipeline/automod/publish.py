@@ -102,3 +102,58 @@ def publish_deploy(automod_id: str, *, base: str = "master") -> Tuple[bool, str]
     except Exception:  # noqa: BLE001 - recording the URL is best-effort
         pass
     return True, issue_url
+
+
+def publish_rollback(automod_id: str, rollback_sha: str, *, base: str = "master") -> Tuple[bool, str]:
+    """After the watchdog auto-rolls-back an unhealthy deploy: record the
+    rollback as an OPEN GitHub Issue for triage — the failure-path mirror of
+    publish_deploy (which opens a CLOSED Issue for a shipped fix).
+
+    On origin: a deploy is only pushed once it is health-CONFIRMED
+    (publish_deploy), and a rollback happens BEFORE confirmation — so normally
+    the bad commit never reached origin and there is nothing to revert. The one
+    case that does diverge is a confirmed deploy that later regressed: if
+    origin/<base> has moved past the last-good SHA, rewind it (the owner bypasses
+    the no-force-push branch rule; force-with-lease so a concurrent push isn't
+    clobbered). Best-effort + gated by the caller. Returns (True, issue_url) or
+    (False, reason).
+    """
+    from pipeline.automod import artifact
+    from pipeline.automod.summarize import summarize
+
+    art = artifact.load(automod_id)
+
+    # Refresh the tracking ref, then only rewind origin if it actually leads the
+    # last-good SHA (a pushed-then-regressed deploy). Normal rollbacks: no-op.
+    pushed_note = ""
+    _git("fetch", "origin", base)
+    ahead = _git("rev-list", "--count", f"{rollback_sha}..origin/{base}")
+    try:
+        n_ahead = int((ahead.stdout or "0").strip() or "0")
+    except ValueError:
+        n_ahead = 0
+    if ahead.returncode == 0 and n_ahead > 0:
+        push = _git("push", "--force-with-lease", "origin", f"{rollback_sha}:{base}")
+        if push.returncode != 0:
+            return False, f"rollback push failed: {push.stderr.strip()}"
+        pushed_note = f" origin/`{base}` rewound to `{rollback_sha[:12]}`."
+
+    s = summarize(art)
+    body = (
+        f"{s['markdown']}\n\n---\n_Auto-rolled-back by the JARVIS evolution "
+        f"watchdog: unhealthy past its deploy window, reset to `{rollback_sha[:12]}` "
+        f"locally.{pushed_note} Left OPEN for triage._"
+    )
+    issue = _gh("issue", "create", "--title", f"[evolution] ROLLED BACK: {s['title']}", "--body", body)
+    if issue.returncode != 0:
+        return False, f"gh issue create failed: {issue.stderr.strip() or issue.stdout.strip()}"
+    issue_url = issue.stdout.strip()
+    # Deliberately left OPEN — publish_deploy closes its Issue, but a rollback
+    # needs a human to look at why the deploy regressed.
+
+    try:
+        artifact.update_status(
+            automod_id, art.get("status", "auto-rolled-back"), issue_url=issue_url)
+    except Exception:  # noqa: BLE001 - recording the URL is best-effort
+        pass
+    return True, issue_url

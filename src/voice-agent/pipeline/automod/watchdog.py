@@ -293,6 +293,20 @@ def run_once() -> str:
         _notify("evolution_rolled_back", automod_id=automod_id,
                 rollback_sha=rollback_sha[:8],
                 detail="deploy was unhealthy; reverted to last-good + restarted")
+        # #29: reflect the rollback on GitHub (open triage Issue; rewind origin
+        # only if a confirmed deploy regressed) — the failure-path mirror of the
+        # deploy-publish above. Same gate + best-effort; a GitHub hiccup must
+        # never affect the local rollback that already happened.
+        if os.environ.get("JARVIS_EVOLUTION_GITHUB_DEPLOY", "0") == "1":
+            try:
+                from pipeline.automod import artifact, publish
+                ok, info = publish.publish_rollback(automod_id, rollback_sha)
+                artifact.audit(
+                    "automod_rollback_published" if ok else "automod_rollback_publish_failed",
+                    id=automod_id, info=(info or "")[:200])
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[watchdog] github rollback-publish failed for %s: %s",
+                               automod_id, e)
         _deploy.clear_marker()
         return "rolled-back"
     # Reset failed — keep the marker so the next tick retries.

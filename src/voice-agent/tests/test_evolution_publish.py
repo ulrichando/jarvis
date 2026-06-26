@@ -132,3 +132,57 @@ def test_publish_deploy_fails_gracefully_when_push_rejected(home, monkeypatch):
     ok, reason = pub.publish_deploy("automod-test-10")
     assert not ok and "push failed" in reason
     assert called["gh"] is False  # no Issue when the push didn't land
+
+
+def test_publish_rollback_opens_open_issue_without_touching_origin(home, monkeypatch):
+    """The normal rollback (deploy never reached origin): open a triage Issue,
+    do NOT force-push (origin isn't ahead of the last-good SHA)."""
+    _write_art("automod-test-11", status="auto-rolled-back")
+    calls = {"git": [], "gh": []}
+
+    def fake_git(*a):
+        calls["git"].append(a)
+        if a[:1] == ("rev-list",):
+            return _ok("0")  # origin NOT ahead of rollback_sha → nothing to rewind
+        return _ok()
+
+    monkeypatch.setattr(pub, "_git", fake_git)
+
+    def fake_gh(*a):
+        calls["gh"].append(a)
+        if a[:2] == ("issue", "create"):
+            return subprocess.CompletedProcess(
+                a, 0, "https://github.com/ulrichando/jarvis/issues/77\n", "")
+        return _ok()
+
+    monkeypatch.setattr(pub, "_gh", fake_gh)
+    ok, url = pub.publish_rollback("automod-test-11", "deadbeefcafe1234")
+    assert ok and url.endswith("/issues/77")
+    assert any(g[:2] == ("issue", "create") for g in calls["gh"])
+    assert not any(g[:2] == ("issue", "close") for g in calls["gh"])  # left OPEN for triage
+    assert not any("--force-with-lease" in g for g in calls["git"])  # origin untouched
+
+
+def test_publish_rollback_rewinds_origin_when_it_regressed(home, monkeypatch):
+    """A confirmed-then-regressed deploy: origin leads the last-good SHA, so
+    force-with-lease rewind it, then open the triage Issue."""
+    _write_art("automod-test-12", status="auto-rolled-back")
+    calls = {"git": [], "gh": []}
+
+    def fake_git(*a):
+        calls["git"].append(a)
+        if a[:1] == ("rev-list",):
+            return _ok("2")  # origin is 2 commits ahead → rewind needed
+        return _ok()
+
+    monkeypatch.setattr(pub, "_git", fake_git)
+    monkeypatch.setattr(
+        pub, "_gh",
+        lambda *a: subprocess.CompletedProcess(
+            a, 0, "https://github.com/ulrichando/jarvis/issues/78\n", "")
+        if a[:2] == ("issue", "create") else _ok())
+    ok, url = pub.publish_rollback("automod-test-12", "deadbeefcafe1234")
+    assert ok and url.endswith("/issues/78")
+    assert any(
+        g[:2] == ("push", "--force-with-lease") for g in calls["git"]
+    )  # origin rewound to the last-good SHA
