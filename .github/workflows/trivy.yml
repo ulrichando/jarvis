@@ -1,0 +1,63 @@
+name: trivy
+
+# Filesystem vulnerability scan + SBOM for the whole repo. Complements the
+# per-ecosystem audits (npm/pip/cargo) with one cross-ecosystem CVE pass, and
+# emits a CycloneDX SBOM. Findings go to the Security tab (report-only — the
+# "scan + alert" model), so transitive CVEs don't hard-block every build.
+# Container-image scanning is deferred to the CD workflow (#27), where the web
+# image is actually built.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: '41 4 * * 1'
+
+# Least-privilege default; the scan job opts into security-events:write to
+# upload SARIF.
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: vuln scan + SBOM
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Trivy filesystem vuln scan → SARIF
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          skip-dirs: src/android/app/src/main/cpp/llama.cpp,src/android/app/.cxx
+          exit-code: '0'
+
+      - name: Upload results to the Security tab
+        uses: github/codeql-action/upload-sarif@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-fs
+
+      - name: Trivy SBOM (CycloneDX)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          format: cyclonedx
+          output: sbom.cdx.json
+          skip-dirs: src/android/app/src/main/cpp/llama.cpp,src/android/app/.cxx
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+          if-no-files-found: error
