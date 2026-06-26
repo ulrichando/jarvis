@@ -11,7 +11,7 @@
 # musl + minimal package set drops that OS-CVE floor to a handful. Native modules
 # (better-sqlite3, node-pty) verified to build AND run on alpine/musl before the
 # switch; esbuild resolves its platform binary via npm optionalDeps.
-FROM node:22-alpine AS deps
+FROM node:24-alpine AS deps
 WORKDIR /app
 RUN apk add --no-cache python3 make g++
 COPY package.json package-lock.json* ./
@@ -37,7 +37,7 @@ ENV DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build \
 RUN npm run build
 
 # ── runtime: minimal alpine + docker CLI client only, non-root ──────────────
-FROM node:22-alpine AS runtime
+FROM node:24-alpine AS runtime
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1
 WORKDIR /app
