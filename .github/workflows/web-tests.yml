@@ -58,9 +58,8 @@ jobs:
         # better-sqlite3 native binding (node-ABI), yielding spurious failures
         # (e.g. tests/bridge/github.test.ts) that all pass under node (338/338).
         # Rebuild the addon for the runner's node, then run vitest via node.
-        # continue-on-error stays for ONE observed-green run here, then it's
-        # dropped so the suite becomes a real gate.
-        continue-on-error: true
+        # This is a REAL gate: a failing test fails the job (verified green in
+        # run 28214862472 before continue-on-error was dropped).
         run: |
           npm rebuild better-sqlite3
           npx vitest run
