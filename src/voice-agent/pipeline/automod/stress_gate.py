@@ -20,9 +20,11 @@ so the gate logic is unit-tested without an LLM or a real pytest run.
 from __future__ import annotations
 
 import ast
+import functools
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Callable
@@ -122,24 +124,28 @@ def _generate_stress_tests(diff: str, intent: str) -> str | None:
     return code or None
 
 
-def _run_pytest(code: str, automod_id: str) -> dict:
-    """Write the generated tests next to the suite + run them in the CURRENT
-    working dir (the proposal's checkout when called from finalize). Cleans up."""
-    repo = Path(__file__).resolve().parents[2]  # src/voice-agent
-    py = repo / ".venv" / "bin" / "python"
-    safe_id = re.sub(r"[^A-Za-z0-9_]", "_", automod_id)
+def _run_generated_in(code: str, cwd: str) -> dict:
+    """Run the generated test module against the code checked out at `cwd`. The
+    test is written into `cwd/tests` so its imports + the conftest resolve from
+    THAT checkout; it runs with the tooling venv's python (the checkout has none),
+    so the same test exercises pre- or post-change code purely by `cwd`."""
+    venv_py = Path(__file__).resolve().parents[2] / ".venv" / "bin" / "python"
+    py = str(venv_py) if venv_py.exists() else sys.executable
+    tests_dir = Path(cwd) / "tests"
+    if not tests_dir.is_dir():
+        return {"passed": 0, "failed": 0, "errored": 1, "tail": f"no tests/ dir in {cwd}"}
     with tempfile.NamedTemporaryFile(
-        "w", suffix=".py", prefix=f"test_stress_{safe_id}_", dir=str(repo / "tests"), delete=False
+        "w", suffix=".py", prefix="test_stress_", dir=str(tests_dir), delete=False
     ) as fh:
         fh.write(code)
         path = fh.name
     try:
         proc = subprocess.run(
-            [str(py), "-m", "pytest", path, "-q", "--no-header", "-p", "no:cacheprovider"],
-            cwd=os.getcwd(), capture_output=True, text=True, timeout=300, check=False,
+            [py, "-m", "pytest", path, "-q", "--no-header", "-p", "no:cacheprovider"],
+            cwd=cwd, capture_output=True, text=True, timeout=300, check=False,
         )
         out = proc.stdout + proc.stderr
-        return {"tail": out[-1500:], **_parse_pytest(out)}
+        return {"tail": out[-1200:], **_parse_pytest(out)}
     except (subprocess.TimeoutExpired, OSError) as e:
         return {"tail": f"stress run error: {e}", "passed": 0, "failed": 0, "errored": 1}
     finally:
@@ -149,6 +155,31 @@ def _run_pytest(code: str, automod_id: str) -> dict:
             pass
 
 
+def _run_pytest(code: str, automod_id: str, baseline_ref: str | None = None) -> dict:
+    """Run the generated tests against the current (post-change) checkout, and —
+    when `baseline_ref` is given — against an ISOLATED git worktree at that ref
+    (the pre-change code) too, attaching it as `baseline` for the differential
+    verdict. The worktree never touches the live tree."""
+    result = _run_generated_in(code, os.getcwd())
+    if baseline_ref:
+        wt = tempfile.mkdtemp(prefix="stress_baseline_")
+        try:
+            add = subprocess.run(
+                ["git", "worktree", "add", "--detach", wt, baseline_ref],
+                capture_output=True, text=True, timeout=90, check=False,
+            )
+            if add.returncode == 0:
+                result["baseline"] = _run_generated_in(code, wt)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        finally:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", wt],
+                capture_output=True, text=True, check=False,
+            )
+    return result
+
+
 def run_stress_gate(
     automod_id: str,
     diff: str,
@@ -156,6 +187,7 @@ def run_stress_gate(
     *,
     generate: Callable[[str, str], str | None] | None = None,
     run_tests: Callable[[str, str], dict] | None = None,
+    baseline_ref: str | None = None,
 ) -> dict:
     """Gate a proposal on generated edge-case tests. Returns a verdict dict with
     'verdict' in {pass, fail, skipped}. Never raises (best-effort, off the turn
@@ -165,7 +197,9 @@ def run_stress_gate(
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return _skipped("no provider key for stress generation")
     gen = generate or _generate_stress_tests
-    run = run_tests or _run_pytest
+    # The real runner does the differential dual-run (current + baseline worktree);
+    # injected run_tests keep their 2-arg shape via partial.
+    run = run_tests or functools.partial(_run_pytest, baseline_ref=baseline_ref)
     try:
         code = gen(diff, intent)
     except Exception as e:  # generation must never break finalize

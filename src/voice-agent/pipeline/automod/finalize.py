@@ -341,7 +341,7 @@ def finalize_branch(automod_id: str, branch: str,
     # can't false-reject. Best-effort — must never break finalize.
     try:
         from pipeline.automod import stress_gate
-        stress = stress_gate.run_stress_gate(automod_id, diff_text, intent)
+        stress = stress_gate.run_stress_gate(automod_id, diff_text, intent, baseline_ref=parent)
     except Exception:  # noqa: BLE001 — the gate must never break finalize
         stress = {"verdict": "skipped", "summary": "stress gate raised", "failed": 0}
     if stress.get("verdict") == "fail":
