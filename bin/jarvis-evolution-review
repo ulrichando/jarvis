@@ -11,4 +11,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VA="$REPO_ROOT/src/voice-agent"
 
 cd "$VA" || exit 1
+
+# Self-sufficient secrets: the council calls provider LLMs (Anthropic / OpenAI /
+# DeepSeek), so we need their API keys regardless of who invoked us — the web
+# dev server's execFile, cron, or a bare shell all carry different env. Load the
+# canonical plaintext stores ourselves (same keys.env the voice-agent service
+# reads via systemd EnvironmentFile). Without this, every lens silently returns
+# "skipped: no provider API key" and the Review-council button looks broken.
+set -a
+[ -f "$HOME/.jarvis/keys.env" ] && . "$HOME/.jarvis/keys.env"
+[ -f "$VA/.env" ] && . "$VA/.env"
+set +a
+
 exec "$VA/.venv/bin/python" -m pipeline.automod.review_council "$@"

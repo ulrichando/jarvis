@@ -9,4 +9,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VA="$REPO_ROOT/src/voice-agent"
 
 cd "$VA" || exit 1
+
+# Self-sufficient secrets: introspection calls a provider LLM, so we need the API
+# keys regardless of who invoked us (web execFile, cron, bare shell). Load the
+# canonical plaintext stores ourselves — same keys.env the voice-agent service
+# reads via systemd EnvironmentFile — so it never silently no-ops on a missing key.
+set -a
+[ -f "$HOME/.jarvis/keys.env" ] && . "$HOME/.jarvis/keys.env"
+[ -f "$VA/.env" ] && . "$VA/.env"
+set +a
+
 exec "$VA/.venv/bin/python" -m pipeline.automod.introspection "$@"
