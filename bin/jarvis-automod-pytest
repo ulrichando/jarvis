@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# jarvis-automod-pytest — hermetic pytest for the automod build agent's
+# pre-commit gate (HARD RULE 5 in bin/jarvis-automod-impl).
+#
+# The build subprocess inherits the voice-agent SERVICE env (.env + keys.env),
+# but ~16 tests assume a CLEAN shell: JARVIS_STT_LOCAL_ONLY=1 flips
+# build_stt_chain off the Groq chain test_stt_chain expects, and test_webcam
+# captures ANTHROPIC_API_KEY at import (a monkeypatch.delenv can't undo it). A
+# developer's clean shell passes all 3517; the inherited env fails 16. This
+# strips exactly the keys those two env files inject so the agent's pre-commit
+# run matches a clean checkout — the bash mirror of finalize._hermetic_test_env
+# (so the agent never sees spurious failures and refuses to commit / wastes a
+# retry). The agent's OWN process keeps its keys; only this pytest run is clean.
+set -uo pipefail
+
+TOOLING_ROOT="${JARVIS_AUTOMOD_TOOLING_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
+for envfile in "$TOOLING_ROOT/src/voice-agent/.env" "$HOME/.jarvis/keys.env"; do
+  [ -f "$envfile" ] || continue
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"   # left-trim
+    case "$line" in ''|\#*) continue ;; esac
+    [[ "$line" == *=* ]] || continue
+    key="${line%%=*}"
+    key="${key//[[:space:]]/}"
+    case "$key" in [A-Za-z_]*) unset "$key" 2>/dev/null || true ;; esac
+  done < "$envfile"
+done
+
+exec "$TOOLING_ROOT/src/voice-agent/.venv/bin/python" -m pytest "$@"

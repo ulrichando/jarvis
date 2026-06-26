@@ -30,6 +30,12 @@ from pipeline.automod import throttle
 
 logger = logging.getLogger("jarvis.automod.cycle")
 
+# Circuit-breaker: stop retrying a goal after this many attempts, and never retry
+# a blocklist rejection (the agent keeps trying to edit its own protected code).
+# Without this, _build_until_functional retried until the daily budget ran out —
+# the "RETRY attempt 5/6" storms that wasted the whole cap on one doomed goal.
+MAX_RETRY_ATTEMPTS = int(os.environ.get("JARVIS_AUTOMOD_MAX_RETRY_ATTEMPTS", "2"))
+
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -134,6 +140,18 @@ def _build_until_functional(intent_id: str) -> dict:
                        attempt=art.get("attempt", 1))
         logger.warning("[cycle] build FAILED id=%s attempt=%s reason=%s",
                        current, art.get("attempt", 1), last_reason)
+        # CIRCUIT-BREAKER (2026-06-25): halt the retry chain instead of burning
+        # the whole daily budget on one doomed goal. Stop after MAX_RETRY_ATTEMPTS,
+        # and NEVER retry a blocklist rejection — a retry just hits the blocklist
+        # again. Kills the "RETRY attempt 5/6" storms in the Failed list.
+        this_attempt = int(art.get("attempt", 1) or 1)
+        blocklisted = "blocklist" in last_reason.lower()
+        if this_attempt >= MAX_RETRY_ATTEMPTS or blocklisted:
+            halt = "blocklist (no retry)" if blocklisted else f"retry cap {MAX_RETRY_ATTEMPTS} reached"
+            artifact.audit("automod_retry_halted", id=current, reason=halt, attempt=this_attempt)
+            logger.info("[cycle] circuit-breaker halted retries for %s — %s", current, halt)
+            return {"id": current, "status": "failed", "attempts": attempts,
+                    "reason": last_reason, "halted": halt}
         retry = patterns.build_retry_intent(art)
         if not retry:
             artifact.audit("automod_build_error", id=current,

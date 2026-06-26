@@ -78,6 +78,7 @@ def test_build_with_retries_stops_at_daily_budget_and_keeps_retry(tmp_path, monk
     monkeypatch.setenv("JARVIS_AUTOMOD_DAILY_CAP", "2")
     (tmp_path / "auto-mods").mkdir(parents=True)
     from pipeline.automod import cycle
+    monkeypatch.setattr(cycle, "MAX_RETRY_ATTEMPTS", 99)  # isolate the budget path from the circuit-breaker
     calls = {"n": 0}
 
     async def fake_build(intent_id):
@@ -104,3 +105,54 @@ def test_run_cycle_skips_when_marker_pid_alive(tmp_path, monkeypatch):
     monkeypatch.setattr(cycle, "_pid_alive", lambda _pid: True)
     out = cycle.run_cycle(assess_first=False, detect_first=False)
     assert out["skipped"] == "cycle-running"
+
+
+def test_circuit_breaker_halts_at_retry_cap(tmp_path, monkeypatch):
+    """A goal that keeps failing is dropped after MAX_RETRY_ATTEMPTS instead of
+    burning the whole daily budget (the 'RETRY attempt 5/6' storm)."""
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    monkeypatch.setenv("JARVIS_AUTOMOD_DAILY_CAP", "10")
+    (tmp_path / "auto-mods").mkdir(parents=True)
+    from pipeline.automod import cycle
+    monkeypatch.setattr(cycle, "MAX_RETRY_ATTEMPTS", 2)
+    calls = {"n": 0}
+
+    async def fake_build(intent_id):
+        from pipeline.automod import throttle
+        calls["n"] += 1
+        throttle.mark_admitted(intent_id)
+        return ({"id": intent_id, "status": "failed", "attempt": calls["n"],
+                 "rejection_reason": "tests_failed_on_rerun", "intent": "Fix the thing"},
+                True)
+
+    monkeypatch.setattr(cycle, "_build", fake_build)
+    out = cycle._build_until_functional("automod-2026-06-26-aaaaaa")
+    assert out["status"] == "failed"
+    assert out["halted"] == "retry cap 2 reached"
+    assert calls["n"] == 2  # attempt 1 retried, attempt 2 halted — NOT 10 (the budget)
+
+
+def test_circuit_breaker_never_retries_blocklist(tmp_path, monkeypatch):
+    """A blocklist rejection is never retried — the agent would just hit the
+    blocklist again (the 'plan_rejected: blocklisted path' storm)."""
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    monkeypatch.setenv("JARVIS_AUTOMOD_DAILY_CAP", "10")
+    (tmp_path / "auto-mods").mkdir(parents=True)
+    from pipeline.automod import cycle
+    calls = {"n": 0}
+
+    async def fake_build(intent_id):
+        from pipeline.automod import throttle
+        calls["n"] += 1
+        throttle.mark_admitted(intent_id)
+        return ({"id": intent_id, "status": "failed", "attempt": 1,
+                 "rejection_reason": "plan_rejected: plan touches a blocklisted path: "
+                                     "src/voice-agent/pipeline/automod/patterns.py",
+                 "intent": "Add a circuit-breaker"},
+                True)
+
+    monkeypatch.setattr(cycle, "_build", fake_build)
+    out = cycle._build_until_functional("automod-2026-06-26-bbbbbb")
+    assert out["status"] == "failed"
+    assert out["halted"] == "blocklist (no retry)"
+    assert calls["n"] == 1  # not retried at all

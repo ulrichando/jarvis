@@ -64,9 +64,11 @@ HARD RULES (violating ANY means the spawner will reject your commit and delete t
    - USER.md
 3. Do NOT delete tests or weaken assertions. You MAY add tests.
 4. Do NOT add @pytest.mark.skip / @pytest.mark.skipif / @pytest.mark.xfail.
-5. Before committing, run the test suite. This worktree has NO local .venv, so
-   use the tooling interpreter at this absolute path (do NOT use .venv/bin):
-     cd src/voice-agent && ${TOOLING_ROOT}/src/voice-agent/.venv/bin/python -m pytest tests/ -q
+5. Before committing, run the test suite via the HERMETIC runner below (this
+   worktree has no local .venv; the runner uses the tooling interpreter and
+   strips the live service env so the suite matches a clean checkout — do NOT
+   invoke pytest directly or it will report ~16 spurious env-dependent failures):
+     cd src/voice-agent && ${TOOLING_ROOT}/bin/jarvis-automod-pytest tests/ -q
 6. If tests fail: DO NOT commit. Print the failure summary and stop.
 7. If tests pass: git add only the files you edited (NEVER git add -A).
    Commit with a one-line Conventional Commit message describing the change.
