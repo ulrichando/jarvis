@@ -50,6 +50,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 # Non-root runtime user.
 RUN useradd -m -u 10001 jarvis
 COPY --from=build --chown=10001:10001 /app ./
+# Strip build-time-only tooling from the runtime image. drizzle-kit (the
+# migration CLI, run OUTSIDE the container per docs/runbook/deploy-online.md)
+# drags in old esbuild binaries (Go 1.18/1.23 — Trivy criticals CVE-2024-24790
+# + CVE-2025-68121) through better-auth's optional peer dep. start:container
+# only runs `next start` + the pty-server, neither of which imports it, so
+# removing it + its esbuild-carrying siblings (@esbuild-kit, tsx) is safe and
+# clears those image CVEs. The direct prod `esbuild` (artifact bundling, a
+# current build) is untouched.
+RUN rm -rf node_modules/drizzle-kit node_modules/@esbuild-kit node_modules/tsx \
+           node_modules/.bin/drizzle-kit node_modules/.bin/tsx
 USER 10001
 EXPOSE 3000
 # tini reaps zombies. start:container binds next + the pty-server to 0.0.0.0 so
