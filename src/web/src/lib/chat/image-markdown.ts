@@ -30,7 +30,7 @@ export function appendImageMarkdown(text: string, images: readonly ImageRef[]): 
  */
 export function stripGeneratedImagesForModel(text: string): string {
   return text
-    .replace(/!\[[^\]]*\]\((?:\/api\/media\/|data:image\/)[^)]*\)\s*/g, "")
+    .replace(/!\[[^\]]{0,1000}\]\((?:\/api\/media\/|data:image\/)[^)]{0,200000}\)\s*/g, "")
     .trimEnd();
 }
 

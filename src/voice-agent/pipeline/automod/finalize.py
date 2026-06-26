@@ -333,6 +333,39 @@ def finalize_branch(automod_id: str, branch: str,
                 _delete_branch(branch)
                 return art
 
+    # 4.5 Stress-test gate (2026-06-26): RUN model-generated edge-case tests
+    # against the change before it becomes reviewable — the review council READS
+    # the diff, this RUNS it. A genuine new edge-case break fails the build (→
+    # rework); pass/skip proceeds. OFF by default (JARVIS_AUTOMOD_STRESS_GATE=1);
+    # the verdict is differential (stress_gate._decide) so a bad generated test
+    # can't false-reject. Best-effort — must never break finalize.
+    try:
+        from pipeline.automod import stress_gate
+        stress = stress_gate.run_stress_gate(automod_id, diff_text, intent, baseline_ref=parent)
+    except Exception:  # noqa: BLE001 — the gate must never break finalize
+        stress = {"verdict": "skipped", "summary": "stress gate raised", "failed": 0}
+    if stress.get("verdict") == "fail":
+        art = {
+            "id": automod_id,
+            "intent": intent,
+            "branch": branch,
+            "parent_sha": parent,
+            "head_sha": head,
+            "files_changed": test_gate.files_changed(diff_text),
+            "test_output_tail": test_tail,
+            "coverage_gate": coverage_result,
+            "status": "failed",
+            "rejection_reason": f"stress_gate: {stress.get('summary', '')}",
+            "stress": stress,
+            "evolution": evolution,
+            **_lineage,
+            "created_at": _now_iso(),
+        }
+        artifact.write(art)
+        artifact.audit("automod_stress_failed", id=automod_id)
+        _git("checkout", "master")
+        return art
+
     # 5. Write pending artifact. Persist a truncated unified diff so the
     # /evolution review UI can show it without shelling git (and so it survives
     # the branch being deleted on merge/reject). Capped to keep artifacts small.
@@ -348,6 +381,7 @@ def finalize_branch(automod_id: str, branch: str,
         "diff_truncated": len(diff_text) > 60000,
         "test_output_tail": test_tail,
         "coverage_gate": coverage_result,
+        "stress": stress,
         "status": "pending",
         "evolution": evolution,
         **_lineage,
@@ -380,7 +414,17 @@ def finalize_branch(automod_id: str, branch: str,
     if os.environ.get("JARVIS_AUTOMOD_REVIEW_COUNCIL", "1") != "0":
         try:
             from pipeline.automod import review_council
-            review_council.review_proposal(automod_id, diff_text, intent)
+            _review = review_council.review_proposal(automod_id, diff_text, intent)
+            # Council→rework (gated, OFF by default): a BLOCK verdict routes the
+            # proposal back to rework instead of leaving it reviewable. Default is
+            # advisory — a human decides.
+            if review_council.council_blocks(_review):
+                blockers = ", ".join(_review.get("overall", {}).get("blocking_lenses", [])) or "block"
+                artifact.update_status(automod_id, "failed",
+                                       rejection_reason=f"council_block: {blockers}")
+                artifact.audit("automod_council_blocked", id=automod_id, blockers=blockers)
+                art["status"] = "failed"
+                art["rejection_reason"] = f"council_block: {blockers}"
         except Exception:  # noqa: BLE001 — advisory; must never break finalize
             pass
     _git("checkout", "master")

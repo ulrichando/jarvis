@@ -1,4 +1,5 @@
 import "server-only";
+import { randomUUID } from "node:crypto";
 import {
   convertToModelMessages,
   createUIMessageStream,
@@ -96,7 +97,7 @@ export async function handleSwarm(body: KimiModeRequest): Promise<Response> {
   // toast-warning territory. Now we emit an initial swarm-status data
   // part within ~100ms so the UI can show "Coordinating agents…" while
   // the long async work happens inside `execute`.
-  const sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const sessionId = `${Date.now()}-${randomUUID().slice(0, 8)}`;
   const cacheKey = `swarm-${sessionId}`;
 
   const composite = createUIMessageStream({

@@ -34,15 +34,27 @@ logger = logging.getLogger("jarvis.automod.review")
 # unavailable — a missing key degrades diversity, never the review.
 _FALLBACK_MODEL = "claude-sonnet-4-6"
 LENS_DEFAULTS: dict[str, str] = {
-    "correctness": "anthropic:claude-sonnet-4-6",
-    "security": "openai:gpt-5-mini",
-    "regression": "deepseek:deepseek-chat",
+    # Gating lenses (can block) — 3 distinct families, the HIGHEST model of each.
+    "correctness": "anthropic:claude-opus-4-8",
+    "security": "openai:gpt-5.5",
+    "regression": "deepseek:deepseek-reasoner",
+    # Advisory lenses on distinct families too: the 6-lens council spans 6 model
+    # providers, each the TOP available model (per Ulrich — quality over cost; the
+    # council runs only on reviewable proposals). Model IDs researched + verified
+    # live 2026-06-26 (gpt-5.5 / gemini-3.1-pro-preview / kimi-k2.7-code are the
+    # API ceilings — the -pro/-research/-thinking variants 404). Override via
+    # JARVIS_REVIEW_MODEL_<LENS>; a provider failure falls back to Claude.
+    "expansionist": "gemini:gemini-3.1-pro-preview",
+    "researcher": "kimi:kimi-k2.7-code",
+    "role_player": "groq:openai/gpt-oss-120b",
 }
 # OpenAI-compatible providers (base_url + key env) reachable via the openai SDK.
 _OPENAI_COMPAT: dict[str, dict] = {
     "openai": {"base_url": "https://api.openai.com/v1", "key_env": "OPENAI_API_KEY"},
     "deepseek": {"base_url": "https://api.deepseek.com/v1", "key_env": "DEEPSEEK_API_KEY"},
     "groq": {"base_url": "https://api.groq.com/openai/v1", "key_env": "GROQ_API_KEY"},
+    "kimi": {"base_url": "https://api.moonshot.ai/v1", "key_env": "KIMI_API_KEY"},
+    "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai", "key_env": "GOOGLE_API_KEY"},
 }
 _DIFF_CAP = 24000  # bound the prompt; proposals are capped at <=5 files / 2000 diff lines
 
@@ -70,6 +82,33 @@ LENSES: dict[str, str] = {
         "changed function signatures or return contracts that other call sites "
         "depend on, altered default values, and behavior changes with no covering "
         "test. Purely additive code with its own tests is low risk."
+    ),
+}
+
+# Advisory lenses — your spec's Expansionist / Researcher / Role-player. They
+# ENRICH the review with perspectives the flaw-hunters above miss, but they NEVER
+# gate the verdict: only the 3 LENSES above (the Contrarian / Principles cluster)
+# can block. Their findings surface to the human in <id>.review.json under
+# "advisory". On by default; JARVIS_AUTOMOD_REVIEW_ADVISORY=0 to skip (saves the
+# extra model calls).
+ADVISORY_LENSES: dict[str, str] = {
+    "expansionist": (
+        "You are the EXPANSIONIST reviewer. The change may be correct but small. "
+        "Name the SINGLE biggest higher-leverage improvement the same effort could "
+        "have made toward the intent, and whether a materially better approach "
+        "exists. You NEVER block — you advise. If the scope is already right, say so."
+    ),
+    "researcher": (
+        "You are the RESEARCHER reviewer. Judge the change against KNOWN industry "
+        "practice and the relevant library/API idioms. Flag where it reinvents or "
+        "contradicts established practice and name the authoritative approach. You "
+        "NEVER block — you advise."
+    ),
+    "role_player": (
+        "You are the ROLE-PLAYER reviewer. Stand in the shoes of the user / "
+        "operator / tester who lives with this change. Is it correct but awkward, "
+        "surprising, or bad to actually use or operate? Flag experience problems a "
+        "code review misses. You NEVER block — you advise."
     ),
 }
 
@@ -255,12 +294,18 @@ def review_proposal(automod_id: str, diff: str, intent: str) -> dict:
         return _all_skipped_review(automod_id, "no diff to review")
 
     lenses = {l: _review_one(l, instr, intent, diff) for l, instr in LENSES.items()}
+    # Advisory lenses enrich the review but NEVER feed _fuse (gating stays the 3
+    # proven lenses). On by default; disable with JARVIS_AUTOMOD_REVIEW_ADVISORY=0.
+    advisory: dict[str, dict] = {}
+    if os.environ.get("JARVIS_AUTOMOD_REVIEW_ADVISORY", "1") != "0":
+        advisory = {l: _review_one(l, instr, intent, diff) for l, instr in ADVISORY_LENSES.items()}
     review = {
         "automod_id": automod_id,
         "models": {l: lenses[l].get("model", "") for l in LENSES},
         "generated_at": _now_iso(),
         "overall": _fuse(lenses),
         "lenses": lenses,
+        "advisory": advisory,
     }
     _write(automod_id, review)
     try:
@@ -272,6 +317,17 @@ def review_proposal(automod_id: str, diff: str, intent: str) -> dict:
     except Exception:  # noqa: BLE001 — audit must never break the review
         pass
     return review
+
+
+def council_blocks(review: dict) -> bool:
+    """Whether the council's gating verdict should route the proposal back to
+    rework (instead of leaving it reviewable). GATED by
+    JARVIS_AUTOMOD_COUNCIL_GATES=1 — default OFF, i.e. the council stays advisory
+    and a human decides. Only the 3 gating lenses feed the verdict, so this never
+    fires on an advisory-lens concern."""
+    if os.environ.get("JARVIS_AUTOMOD_COUNCIL_GATES") != "1":
+        return False
+    return review.get("overall", {}).get("verdict") == "block"
 
 
 def read_review(automod_id: str) -> dict | None:

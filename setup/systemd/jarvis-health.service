@@ -1,0 +1,22 @@
+[Unit]
+Description=JARVIS stack + API-key health probe (alerts on dead keys / services)
+Documentation=file:%h/Documents/Projects/jarvis/bin/jarvis-health
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/mkdir -p %h/.local/share/jarvis/logs %h/.jarvis/health
+ExecStart=/home/ulrich/Documents/Projects/jarvis/bin/jarvis-health-alert
+TimeoutStartSec=120
+
+# Minimal hardening only: the probe needs network (provider API curls), the
+# docker socket, systemctl --user, nvidia-smi, and the session D-Bus
+# (notify-send). The heavy Protect*/SystemCallFilter sandbox used by
+# dep-check would block all of those. Mirrors jarvis-voice-health.service.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+# No [Install] — triggered by jarvis-health.timer only.

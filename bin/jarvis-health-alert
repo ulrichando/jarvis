@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# jarvis-health-alert — run bin/jarvis-health; desktop-notify ONCE per distinct
+# failure set (no 30-min spam), log every run, announce recovery. Driven by
+# jarvis-health.timer. Exists so a dead API key / wedged service is never
+# silent — the failure mode that has bitten this box repeatedly (dead OpenAI
+# key, CUDA wedge after suspend, proxy death). notify-send is best-effort; the
+# log at ~/.local/share/jarvis/logs/health.log is the durable record.
+set -uo pipefail
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HEALTH="${SELF_DIR}/jarvis-health"
+LOG="${HOME}/.local/share/jarvis/logs/health.log"
+STATE="${HOME}/.jarvis/health/last-fail.txt"
+mkdir -p "$(dirname "$LOG")" "$(dirname "$STATE")"
+
+out="$("$HEALTH" 2>&1)"; rc=$?
+{ printf '[%s] rc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc"; printf '%s\n' "$out"; } >> "$LOG"
+
+notify() { command -v notify-send >/dev/null 2>&1 && notify-send -u critical "$1" "$2" >/dev/null 2>&1 || true; }
+
+# Strip ANSI colour, keep the [FAIL] lines as the failure signature.
+fails="$(printf '%s\n' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep '\[FAIL\]' || true)"
+
+if [ "$rc" -eq 0 ]; then
+  # Healthy now. If we were failing, announce recovery + clear the latch.
+  if [ -s "$STATE" ]; then notify "JARVIS: stack recovered" "All health checks pass again."; : > "$STATE"; fi
+  exit 0
+fi
+
+# Failing. Notify only when the failure SET changed since the last alert.
+sig="$(printf '%s\n' "$fails" | sort)"
+if [ "$sig" != "$(cat "$STATE" 2>/dev/null || true)" ]; then
+  n="$(printf '%s\n' "$fails" | grep -c '\[FAIL\]' || true)"
+  notify "JARVIS health: ${n} check(s) failing" "$(printf '%s\n' "$fails" | sed 's/^[[:space:]]*//')"
+  printf '%s' "$sig" > "$STATE"
+fi
+# Always exit 0: this is the ALERTER. Health status rides the notification +
+# log; bin/jarvis-health keeps its own 0/1 exit for direct/probe callers.
+exit 0

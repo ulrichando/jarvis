@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# jarvis-health — one-shot health snapshot of the whole JARVIS stack:
+# systemd --user services, docker containers, LLM provider keys (live),
+# GPU, the evolution queue, and the last voice turn.
+#
+# Exit 0 if everything healthy, 1 if any hard check FAILs — so it doubles as the
+# probe behind an alert (systemd timer / tray indicator). Soft issues = WARN
+# (don't fail the exit). The thing this session kept doing by hand, in one place.
+set -uo pipefail
+
+KEYS="${HOME}/.jarvis/keys.env"
+[ -f "$KEYS" ] && { set -a; . "$KEYS" 2>/dev/null || true; set +a; }
+
+fail=0
+hdr() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
+ok()  { printf '  \033[32m[OK]\033[0m   %s\n' "$1"; }
+bad() { printf '  \033[31m[FAIL]\033[0m %s\n' "$1"; fail=1; }
+warn(){ printf '  \033[33m[WARN]\033[0m %s\n' "$1"; }
+hc()  { curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$@" 2>/dev/null; }
+
+hdr "systemd --user services"
+for svc in jarvis-voice-agent jarvis-proxy jarvis-bridge; do
+  if systemctl --user list-unit-files "${svc}.service" >/dev/null 2>&1; then
+    st=$(systemctl --user is-active "${svc}.service" 2>/dev/null || echo unknown)
+    [ "$st" = active ] && ok "${svc}: ${st}" || bad "${svc}: ${st}"
+  fi
+done
+
+hdr "docker containers"
+for c in honcho-api honcho-deriver kokoro-tts; do
+  st=$(docker ps --filter "name=${c}" --format '{{.Status}}' 2>/dev/null | head -1)
+  [ -n "$st" ] && ok "${c}: ${st}" || warn "${c}: not running"
+done
+
+hdr "LLM provider keys (live HTTP)"
+[ -n "${ANTHROPIC_API_KEY:-}" ] && { c=$(hc https://api.anthropic.com/v1/models -H "x-api-key: ${ANTHROPIC_API_KEY}" -H 'anthropic-version: 2023-06-01'); [ "$c" = 200 ] && ok "Anthropic" || bad "Anthropic (HTTP ${c:-?})"; } || warn "Anthropic: no key"
+[ -n "${OPENAI_API_KEY:-}" ]    && { c=$(hc https://api.openai.com/v1/models -H "Authorization: Bearer ${OPENAI_API_KEY}"); [ "$c" = 200 ] && ok "OpenAI" || bad "OpenAI (HTTP ${c:-?})"; } || warn "OpenAI: no key"
+[ -n "${DEEPSEEK_API_KEY:-}" ]  && { c=$(hc https://api.deepseek.com/v1/models -H "Authorization: Bearer ${DEEPSEEK_API_KEY}"); [ "$c" = 200 ] && ok "DeepSeek" || bad "DeepSeek (HTTP ${c:-?})"; } || warn "DeepSeek: no key"
+[ -n "${KIMI_API_KEY:-}" ]      && { c=$(hc https://api.moonshot.ai/v1/models -H "Authorization: Bearer ${KIMI_API_KEY}"); [ "$c" = 200 ] && ok "Kimi" || bad "Kimi (HTTP ${c:-?})"; } || warn "Kimi: no key"
+[ -n "${GROQ_API_KEY:-}" ]      && { c=$(hc https://api.groq.com/openai/v1/models -H "Authorization: Bearer ${GROQ_API_KEY}"); [ "$c" = 200 ] && ok "Groq" || bad "Groq (HTTP ${c:-?})"; } || warn "Groq: no key"
+[ -n "${GOOGLE_API_KEY:-}" ]    && { c=$(hc "https://generativelanguage.googleapis.com/v1beta/models?key=${GOOGLE_API_KEY}"); [ "$c" = 200 ] && ok "Gemini/Google" || bad "Gemini/Google (HTTP ${c:-?})"; } || warn "Google: no key"
+
+hdr "GPU (local STT/LLM)"
+if command -v nvidia-smi >/dev/null 2>&1; then
+  if nvidia-smi -L >/dev/null 2>&1; then
+    ok "$(nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader 2>/dev/null | head -1)"
+  else
+    bad "nvidia-smi present but failing (CUDA may be wedged — try bin/jarvis-cuda-recover)"
+  fi
+else
+  warn "no nvidia-smi (CPU-only box)"
+fi
+
+hdr "evolution + voice"
+q=$(wc -l < "${HOME}/.jarvis/auto-mods/queue.jsonl" 2>/dev/null || echo 0)
+ok "evolution queue: ${q} intents"
+last=$(sqlite3 "${HOME}/.local/share/jarvis/turn_telemetry.db" \
+  "SELECT CAST((julianday('now')-julianday(MAX(ts_utc)))*86400 AS INT) FROM turns;" 2>/dev/null || echo "")
+[ -n "$last" ] && ok "last voice turn: ${last}s ago" || warn "no turn telemetry"
+
+printf '\n\033[1m== %s ==\033[0m\n' "$([ "$fail" = 0 ] && echo 'ALL HEALTHY' || echo 'ISSUES FOUND (see [FAIL] above)')"
+exit "$fail"

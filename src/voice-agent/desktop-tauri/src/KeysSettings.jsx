@@ -113,13 +113,45 @@ export default function KeysSettings() {
     }
   }
 
+  // Restart the WHOLE stack (voice-agent + proxy + bridge + honcho + kokoro)
+  // via the restart_all_services command → bin/jarvis-restart-all. The script
+  // refuses if a voice turn happened <60s ago (ABORT); on that we offer a
+  // force-retry so a live session is never cut off by accident.
+  const onRestartAll = async (force = false) => {
+    setBusy(true)
+    setStatus(force ? 'Restarting all services (forced)…' : 'Restarting all services…')
+    try {
+      const out = await invoke('restart_all_services', { force })
+      setStatus(out?.trim() || 'All services restarted.')
+    } catch (e) {
+      const msg = String(e)
+      if (!force && msg.includes('ABORT')) {
+        if (confirm('A voice session may be live (last turn <60s ago). Restart all services anyway?')) {
+          await onRestartAll(true)
+          return
+        }
+        setStatus('Restart cancelled — a session may be live.')
+      } else {
+        setStatus(`Restart-all failed: ${msg}`)
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div style={pageStyle}>
       <div style={headerStyle}>
         <h2 style={{ margin: 0, fontSize: 18 }}>API Keys</h2>
-        <button onClick={onRestart} disabled={busy} style={primaryButton}>
-          Restart voice agent
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={() => onRestartAll()} disabled={busy} style={smallButton}
+            title="Restart voice-agent + proxy + bridge + honcho + kokoro">
+            Restart all services
+          </button>
+          <button onClick={onRestart} disabled={busy} style={primaryButton}>
+            Restart voice agent
+          </button>
+        </div>
       </div>
 
       <p style={subtitleStyle}>

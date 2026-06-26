@@ -669,8 +669,11 @@ function layoutTsx(args: {
   description: string;
   fontLinks: string[];
 }): string {
-  const escapedTitle = args.title.replace(/"/g, '\\"');
-  const escapedDesc = args.description.replace(/"/g, '\\"');
+  // JSON.stringify is a complete JS-string-literal encoder (escapes backslash,
+  // quote, control chars) and emits the surrounding quotes. Escaping only `"`
+  // left a backslash-injection: a title ending in `\` broke out of the string.
+  const titleLit = JSON.stringify(args.title);
+  const descLit = JSON.stringify(args.description);
   const linkTags = args.fontLinks
     .map((href) => {
       const rel = href.includes("preconnect") ? "preconnect" : "stylesheet";
@@ -682,8 +685,8 @@ import type { Metadata } from "next";
 import FormsHydrate from "@/components/FormsHydrate";
 
 export const metadata: Metadata = {
-  title: "${escapedTitle}",
-  description: "${escapedDesc}",
+  title: ${titleLit},
+  description: ${descLit},
 };
 
 export default function RootLayout({

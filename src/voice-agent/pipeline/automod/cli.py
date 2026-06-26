@@ -65,6 +65,25 @@ def cmd_show(automod_id: str) -> dict:
     return artifact.load(automod_id)
 
 
+def _resolve_merge_ref(art: dict) -> str | None:
+    """The git ref to merge for a proposal: its branch, or — if the branch has
+    been reaped — its recorded ``head_sha`` (the commit object can outlive the
+    ref). ``None`` if neither resolves. Lets an ORPHANED proposal (reviewable but
+    branch-deleted) still deploy by SHA — the 836e3d orphan bug, 2026-06-26.
+    """
+    branch = art.get("branch")
+    if branch and _git(
+        "rev-parse", "--verify", "--quiet", f"{branch}^{{commit}}"
+    ).returncode == 0:
+        return branch
+    head_sha = art.get("head_sha")
+    if head_sha and _git(
+        "rev-parse", "--verify", "--quiet", f"{head_sha}^{{commit}}"
+    ).returncode == 0:
+        return head_sha
+    return None
+
+
 def cmd_merge(automod_id: str) -> tuple[bool, str]:
     """Cherry-pick the automod branch's commit(s) onto master.
 
@@ -83,14 +102,16 @@ def cmd_merge(automod_id: str) -> tuple[bool, str]:
             f"artifact_status_{art.get('status', 'unknown')}_not_pending"
         )
 
-    branch = art["branch"]
+    ref = _resolve_merge_ref(art)
+    if ref is None:
+        return False, f"branch_and_head_sha_gone:{art.get('branch')}"
 
-    # Re-validate the diff (3rd defence layer). THREE-dot (master...branch) =
-    # the branch's changes since its merge-base with master — i.e. ONLY the
-    # proposal's own changes, immune to master advancing between build and deploy.
-    # (Two-dot master..branch would sweep in master's later commits and bogusly
-    # fail the gate — the moving-base bug also fixed in finalize/spawner.)
-    diff = _git("diff", f"master...{branch}").stdout
+    # Re-validate the diff (3rd defence layer). THREE-dot (master...ref) = the
+    # ref's changes since its merge-base with master — i.e. ONLY the proposal's
+    # own changes, immune to master advancing between build and deploy. (Two-dot
+    # would sweep in master's later commits and bogusly fail the gate.) `ref` is
+    # the branch, or the head_sha if the branch was reaped (orphan proposals).
+    diff = _git("diff", f"master...{ref}").stdout
     ok, reason = test_gate.validate_diff(diff)
     if not ok:
         return False, f"diff_validation_failed:{reason}"
@@ -105,7 +126,7 @@ def cmd_merge(automod_id: str) -> tuple[bool, str]:
     # pick replays just the proposal's commits on top — linear history, no merge
     # commit, tolerant of an unrelated-dirty tree (verified 2026-06-23). Aborts
     # cleanly if master changed the proposal's OWN files (a real conflict).
-    cp = _git("cherry-pick", f"master..{branch}")
+    cp = _git("cherry-pick", f"master..{ref}")
     if cp.returncode != 0:
         _git("cherry-pick", "--abort")
         return False, f"cherry_pick_aborted: {cp.stderr.strip()}"

@@ -64,6 +64,15 @@ def test_lens_defaults_are_distinct_families():
     assert provs == {"anthropic", "openai", "deepseek"}  # genuinely different model families
 
 
+def test_council_spans_six_distinct_providers():
+    """6-provider council (2026-06-26): each of the 6 lenses runs on a different
+    model family — claude / openai / deepseek / gemini / kimi / groq."""
+    all_lenses = list(rc.LENSES) + list(rc.ADVISORY_LENSES)
+    provs = [rc._lens_spec(lens)[0] for lens in all_lenses]
+    assert len(provs) == 6
+    assert len(set(provs)) == 6  # every lens a distinct provider
+
+
 def test_lens_spec_env_override(monkeypatch):
     monkeypatch.setenv("JARVIS_REVIEW_MODEL_SECURITY", "groq:openai/gpt-oss-120b")
     assert rc._lens_spec("security") == ("groq", "openai/gpt-oss-120b")
@@ -149,3 +158,51 @@ def test_review_one_all_attempts_fail_skips(monkeypatch):
     monkeypatch.setattr(rc, "_call_model", fake_call)
     out = rc._review_one("regression", "instr", "intent", "diff")
     assert out["verdict"] == "skipped"
+
+
+# ── advisory lenses: Expansionist / Researcher / Role-player ──────────
+
+
+def test_advisory_recorded_but_does_not_gate(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    monkeypatch.setenv("JARVIS_AUTOMOD_REVIEW_ADVISORY", "1")
+    monkeypatch.setattr(rc, "_any_provider_key", lambda: True)
+
+    def fake_one(lens, instruction, intent, diff):
+        # gating lenses pass; advisory lenses 'block' (advice strength) → must NOT gate
+        if lens in rc.LENSES:
+            return _lens("pass")
+        return _lens("block", ["a bigger approach exists"])
+
+    monkeypatch.setattr(rc, "_review_one", fake_one)
+    out = rc.review_proposal("automod-adv", "real diff", "intent")
+    assert out["overall"]["verdict"] == "pass"  # advisory 'block' did NOT gate
+    assert set(out["advisory"]) == set(rc.ADVISORY_LENSES)
+    assert out["advisory"]["expansionist"]["findings"]
+
+
+def test_advisory_can_be_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    monkeypatch.setenv("JARVIS_AUTOMOD_REVIEW_ADVISORY", "0")
+    monkeypatch.setattr(rc, "_any_provider_key", lambda: True)
+    monkeypatch.setattr(rc, "_review_one", lambda lens, i, n, d: _lens("pass"))
+    out = rc.review_proposal("automod-noadv", "real diff", "intent")
+    assert out["advisory"] == {}
+    assert out["overall"]["verdict"] == "pass"
+
+
+# ── council→rework gating ─────────────────────────────────────────────
+
+
+def test_council_blocks_off_by_default(monkeypatch):
+    monkeypatch.delenv("JARVIS_AUTOMOD_COUNCIL_GATES", raising=False)
+    # advisory by default: a block verdict does NOT route to rework
+    assert rc.council_blocks({"overall": {"verdict": "block"}}) is False
+
+
+def test_council_blocks_only_when_gated_and_block(monkeypatch):
+    monkeypatch.setenv("JARVIS_AUTOMOD_COUNCIL_GATES", "1")
+    assert rc.council_blocks({"overall": {"verdict": "block"}}) is True
+    assert rc.council_blocks({"overall": {"verdict": "concern"}}) is False
+    assert rc.council_blocks({"overall": {"verdict": "pass"}}) is False
+    assert rc.council_blocks({"overall": {"verdict": "skipped"}}) is False

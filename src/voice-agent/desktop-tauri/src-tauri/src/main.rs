@@ -984,6 +984,50 @@ fn keys_restart_agent() -> Result<(), String> {
     restart_voice_agent_cmd()
 }
 
+/// Restart the ENTIRE JARVIS service stack — voice-agent + proxy + bridge
+/// + honcho (memory) + kokoro (TTS) — in one shot. Delegates to
+/// `bin/jarvis-restart-all`, the single source of truth for the restart
+/// order AND the 60s-live-turn guard, so the desktop button and the CLI
+/// never drift. `force` maps to the script's `--force` flag (skip the
+/// guard). Returns the script's combined output so the settings UI can
+/// show per-service ✓/✗ lines or the ABORT message.
+///
+/// Linux only — on Windows the stack is the PS launcher (no systemd /
+/// docker), so we fall back to the voice-agent restart.
+#[tauri::command]
+fn restart_all_services(force: bool) -> Result<String, String> {
+    #[cfg(not(windows))]
+    {
+        let script = repo_root().join("bin").join("jarvis-restart-all");
+        if !script.is_file() {
+            return Err(format!(
+                "restart-all script not found at {} — is the repo checked out?",
+                script.display()
+            ));
+        }
+        let mut cmd = std::process::Command::new("bash");
+        cmd.arg(&script);
+        if force {
+            cmd.arg("--force");
+        }
+        let out = cmd.output().map_err(|e| e.to_string())?;
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if out.status.success() {
+            Ok(stdout)
+        } else {
+            // exit 1 = the 60s-guard ABORT (stdout carries the message), or a
+            // failed unit (stderr). Surface it so the UI can offer a force-retry.
+            Err(if stdout.is_empty() { stderr } else { stdout })
+        }
+    }
+    #[cfg(windows)]
+    {
+        let _ = force;
+        restart_voice_agent_cmd().map(|()| "Voice stack restarted.".to_string())
+    }
+}
+
 #[tauri::command]
 fn set_click_through(window: WebviewWindow, enabled: bool) -> Result<(), String> {
     window.set_ignore_cursor_events(enabled).map_err(|e| e.to_string())?;
@@ -3445,6 +3489,7 @@ fn main() {
             keys_set,
             keys_clear,
             keys_restart_agent,
+            restart_all_services,
             mcp_list,
             mcp_set_enabled,
             mcp_remove,

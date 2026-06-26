@@ -495,3 +495,52 @@ def scan_and_emit() -> int:
     if emitted:
         logger.info("[automod] emitted %d intent(s) this scan", emitted)
     return emitted
+
+
+def collapse_failed_retries(*, archive: bool = True) -> int:
+    """Collapse a goal's per-attempt FAILED records into one. The retry mechanism
+    writes a separate failed artifact per attempt, so a goal that failed N times
+    leaves N records that read as duplicates in the /evolution Failed list. Keeps
+    the lowest-attempt record per lineage (it carries the real goal text — retries
+    only say 'RETRY attempt N'); archives the rest under _superseded/ (reversible).
+    Returns the count collapsed. Best-effort; never raises."""
+    home = _automod_home()
+    by_lineage: dict[str, list] = {}
+    try:
+        for f in home.glob("*.json"):
+            if f.name.endswith(".review.json"):
+                continue
+            try:
+                d = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if d.get("status") != "failed":
+                continue
+            lin = d.get("lineage") or d.get("parent_sha") or d.get("id")
+            by_lineage.setdefault(lin, []).append((f, d))
+    except OSError:
+        return 0
+    arch = home / "_superseded"
+    collapsed = 0
+    for recs in by_lineage.values():
+        if len(recs) <= 1:
+            continue
+        recs.sort(key=lambda fd: int(fd[1].get("attempt", 0) or 0))
+        for f, d in recs[1:]:  # keep the original (lowest attempt); supersede the rest
+            rid = d.get("id") or f.stem
+            for ext in (".json", ".review.json", ".log", ".intent.txt"):
+                sib = home / f"{rid}{ext}"
+                if not sib.exists():
+                    continue
+                try:
+                    if archive:
+                        arch.mkdir(exist_ok=True)
+                        sib.rename(arch / sib.name)
+                    else:
+                        sib.unlink()
+                except OSError:
+                    continue
+            collapsed += 1
+    if collapsed:
+        logger.info("[patterns] collapsed %d redundant retry-failure record(s)", collapsed)
+    return collapsed

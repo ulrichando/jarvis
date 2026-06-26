@@ -57,16 +57,19 @@ _KIND_GOAL: dict[str, tuple[str, str]] = {
 
 _DEFAULT_GOAL = ("self_configuration", "Self-configuration")
 
-# Build priority. The cycle builds P0 first. Per Ulrich: self-assessment
-# improvements are the top priority; explicit user requests rank with them.
-# Retries inherit their lineage's priority (set in patterns.build_retry_intent).
+# Build priority. The cycle builds P0 first. Reworked 2026-06-26 (per Ulrich,
+# reversing the earlier "self-assessment is top priority"): REAL problems and
+# explicit requests outrank SPECULATIVE self-improvements, so the loop fixes
+# errors/corrections before chasing its own ideas — and the priority field is
+# meaningful again (it had inflated to ~all-P0, since most intents are
+# self_improvement). Retries inherit their lineage's priority.
 _KIND_PRIORITY = {
-    "self_improvement": "P0",   # from JARVIS's own self-assessment — first
-    "explicit":         "P0",   # user asked for it directly
+    "explicit":         "P0",   # user asked for it directly — highest
+    "confab":           "P0",   # confabulation = a safety defect, fix first
     "correction":       "P1",   # repeated user correction (real pain)
-    "confab":           "P1",
-    "error":            "P2",   # self-detected runtime error
+    "error":            "P1",   # self-detected runtime error (real)
     "fitness":          "P2",   # weak-axis self-optimization
+    "self_improvement": "P3",   # JARVIS's own speculative idea — last
 }
 _DEFAULT_PRIORITY = "P3"
 

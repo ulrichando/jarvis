@@ -82,6 +82,16 @@ def run() -> Dict[str, Any]:
         logger.warning("[nightly] cycle failed: %s", e)
         summary["cycle_error"] = str(e)
 
+    # 1b. Collapse redundant per-attempt retry-failure records (a goal that failed
+    #     N times leaves N records that read as duplicates in the Failed list).
+    try:
+        from pipeline.automod import patterns
+        collapsed = patterns.collapse_failed_retries()
+        if collapsed:
+            summary["failed_retries_collapsed"] = collapsed
+    except Exception as e:  # noqa: BLE001 — cleanup must never break the nightly pass
+        logger.warning("[nightly] collapse_failed_retries failed: %s", e)
+
     # 2. Publish freshly-spawned, not-yet-published proposals (gated).
     if summary["spawned"] and _autopublish():
         try:

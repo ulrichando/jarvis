@@ -171,6 +171,16 @@ from livekit.plugins import groq, openai as lk_openai, silero
 import sanitizers.deepseek_roundtrip as deepseek_roundtrip
 deepseek_roundtrip.install()
 
+# Strip image content blocks from OpenAI-format messages before they reach a
+# TEXT-ONLY conversational model (DeepSeek/Groq/Kimi/local). An image_url block
+# in chat_ctx 400s those providers NON-RETRYABLY ("unknown variant image_url,
+# expected text"), which kills the inference task AND — because the image stays
+# in history — bricks every subsequent turn (JARVIS acks then never returns the
+# result). Patches the same provider_format.openai.to_chat_ctx chokepoint;
+# Anthropic uses its own serializer so its vision path is untouched.
+import sanitizers.image_content_strip as image_content_strip
+image_content_strip.install()
+
 # Backfill DeepSeek's `prompt_cache_hit_tokens` into the OpenAI-spec
 # `prompt_tokens_details.cached_tokens` slot when the latter is empty.
 # DeepSeek currently mirrors both fields, so the framework's stock
@@ -4061,6 +4071,24 @@ class JarvisAgent(Agent):
                                 "(mode=%s, label=%s)", mode, cap.get("action_label"))
         except Exception:
             logger.debug("[vision] injection skipped", exc_info=True)
+
+        # Vision TOOL for a text-only brain (the P2c follow-up, done): when the
+        # route model can't see (decide_mode == "text" — e.g. DeepSeek/Groq/Kimi
+        # default), describe any images in THIS generation's ctx out-of-band via
+        # Gemini so a text-only supervisor can actually talk about them, instead
+        # of dropping/choking. Cached; best-effort — failures fall through to
+        # image_content_strip's placeholder, so it never bricks the turn.
+        try:
+            from pipeline import computer_use_vision as _cuv_mode
+            if _cuv_mode.decide_mode(getattr(self, "_dispatch_llm", None)) == "text":
+                from pipeline import image_describe as _imd
+                _n_desc = await _imd.describe_ctx_images(chat_ctx)
+                if _n_desc:
+                    logger.info("[vision] described %d ctx image(s) for the "
+                                "text-only supervisor", _n_desc)
+        except Exception:
+            logger.debug("[vision] ctx-image describe skipped", exc_info=True)
+
         async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
             yield chunk
 

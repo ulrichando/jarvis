@@ -66,6 +66,18 @@ function ghHeaders(token: string): Record<string, string> {
   };
 }
 
+// ── Outbound-URL input guards (request-forgery / SSRF defense) ──────────────
+// repo / number / sha / branch get interpolated into api.github.com URLs. GH
+// pins the host, but unsanitized values can still smuggle URL-control chars
+// (@ ? # CR/LF) or `..` traversal into the request target. Validate the
+// structural parts (repo's "/" is load-bearing, so it's charset-checked, not
+// %-encoded); %-encode the free-form branch refs, which sit in query params.
+const REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/; // owner/name, GitHub's charset
+const SHA_RE = /^[0-9a-f]{7,40}$/i;
+const isRepo = (r: string): boolean => REPO_RE.test(r);
+const isPrNum = (n: number): boolean => Number.isInteger(n) && n >= 0;
+const isSha = (s: string): boolean => SHA_RE.test(s);
+
 export async function githubStatus(): Promise<{ connected: boolean; login?: string }> {
   const c = await load();
   return c.github ? { connected: true, login: c.github.login } : { connected: false };
@@ -183,6 +195,7 @@ export async function listGithubRepos(): Promise<
 export async function getPrDiff(repo: string, number: number, cap = 60000): Promise<string | null> {
   const c = await load();
   if (!c.github) return null;
+  if (!isRepo(repo) || !isPrNum(number)) return null;
   try {
     const r = await fetch(`${GH}/repos/${repo}/pulls/${number}`, {
       headers: { ...ghHeaders(c.github.token), Accept: "application/vnd.github.v3.diff" },
@@ -203,6 +216,7 @@ export async function postPrComment(
 ): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
   const c = await load();
   if (!c.github) return { ok: false, error: "GitHub not connected" };
+  if (!isRepo(repo) || !isPrNum(number)) return { ok: false, error: "Invalid repo or number" };
   try {
     const r = await fetch(`${GH}/repos/${repo}/issues/${number}/comments`, {
       method: "POST",
@@ -235,11 +249,12 @@ export async function githubPrStatus(
 ): Promise<{ ok: true; status: PrStatus } | { ok: false; error: string }> {
   const c = await load();
   if (!c.github) return { ok: false, error: "GitHub not connected" };
+  if (!isRepo(repo)) return { ok: false, error: "Invalid repo" };
   const owner = repo.split("/")[0];
   const h = ghHeaders(c.github.token);
   try {
     const pr = await fetch(
-      `${GH}/repos/${repo}/pulls?head=${owner}:${branch}&state=all&per_page=1`,
+      `${GH}/repos/${repo}/pulls?head=${owner}:${encodeURIComponent(branch)}&state=all&per_page=1`,
       { headers: h },
     );
     if (!pr.ok) return { ok: false, error: `GitHub error ${pr.status}` };
@@ -254,7 +269,7 @@ export async function githubPrStatus(
     };
     const sha = (p.head as { sha?: string } | undefined)?.sha;
     let checks: PrStatus["checks"] = null;
-    if (sha) {
+    if (sha && isSha(sha)) {
       const cr = await fetch(`${GH}/repos/${repo}/commits/${sha}/check-runs`, { headers: h });
       if (cr.ok) {
         const runs = ((await cr.json()) as { check_runs?: Array<Record<string, unknown>> }).check_runs ?? [];
@@ -296,6 +311,7 @@ export async function openPullRequest(
 ): Promise<{ ok: true; url: string; number: number } | { ok: false; error: string }> {
   const c = await load();
   if (!c.github) return { ok: false, error: "GitHub not connected" };
+  if (!isRepo(repo)) return { ok: false, error: "Invalid repo" };
   try {
     const r = await fetch(`${GH}/repos/${repo}/pulls`, {
       method: "POST",
@@ -305,7 +321,7 @@ export async function openPullRequest(
     if (r.status === 422) {
       const owner = repo.split("/")[0];
       const ex = await fetch(
-        `${GH}/repos/${repo}/pulls?head=${owner}:${head}&state=open&per_page=1`,
+        `${GH}/repos/${repo}/pulls?head=${owner}:${encodeURIComponent(head)}&state=open&per_page=1`,
         { headers: ghHeaders(c.github.token) },
       );
       if (ex.ok) {
@@ -330,6 +346,7 @@ export async function mergePullRequest(
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const c = await load();
   if (!c.github) return { ok: false, error: "GitHub not connected" };
+  if (!isRepo(repo) || !isPrNum(number)) return { ok: false, error: "Invalid repo or number" };
   try {
     const r = await fetch(`${GH}/repos/${repo}/pulls/${number}/merge`, {
       method: "PUT",

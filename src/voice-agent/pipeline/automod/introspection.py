@@ -217,13 +217,26 @@ def enqueue_improvements(result: dict, *, max_items: int = 3) -> int:
         return 0
     qp = queue_path()
     existing: set[str] = set()
+    # Dedup against the live queue AND already-built proposals (pending OR
+    # failed). Without the artifact check, a drained or FAILED improvement gets
+    # re-queued every assessment — the assessment resurrects already-attempted
+    # goals faster than the serial build loop can drain them, so the queue never
+    # empties (the "queue won't drop" root cause). The retry mechanism already
+    # gives each goal MAX_RETRY_ATTEMPTS; the assessment must not re-add it.
     if qp.exists():
         for line in qp.read_text(encoding="utf-8").splitlines():
             try:
-                r = json.loads(line)
-                existing.add(_norm(str(r.get("intent", "")).split("\n")[0]))
+                existing.add(_norm(str(json.loads(line).get("intent", "")).split("\n")[0]))
             except json.JSONDecodeError:
                 continue
+    for af in _automod_home().glob("*.json"):
+        if af.name.endswith(".review.json"):
+            continue
+        try:
+            built = json.loads(af.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        existing.add(_norm(str(built.get("intent", "")).split("\n")[0]))
     qp.parent.mkdir(parents=True, exist_ok=True)
     queued = 0
     for im in improvements[:max_items]:

@@ -66,12 +66,20 @@ function unwrapDuckDuckGoRedirect(href: string): string {
 }
 
 function stripTags(s: string): string {
-  return s.replace(/<[^>]+>/g, '')
+  // Loop until stable — a single pass lets `<<a>script>` collapse into a fresh
+  // `<script>` tag (js/incomplete-multi-character-sanitization).
+  let prev: string
+  do {
+    prev = s
+    s = s.replace(/<[^>]+>/g, '')
+  } while (s !== prev)
+  return s
 }
 
 function decodeHtmlEntities(s: string): string {
+  // Decode &amp; LAST: doing it first turns `&amp;lt;` into `&lt;` then `<`
+  // (double-decoding). Last keeps `&amp;lt;` → `&lt;` (js/double-escaping).
   return s
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
@@ -80,6 +88,7 @@ function decodeHtmlEntities(s: string): string {
     .replace(/&nbsp;/g, ' ')
     .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
     .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&amp;/g, '&')
 }
 
 // ── Detect a WebSearchTool inner request ──────────────────────────────────
