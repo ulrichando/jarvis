@@ -2,15 +2,16 @@ import "server-only";
 import { headers as nextHeaders } from "next/headers";
 import { auth } from "./auth";
 
-// 8-hour absolute cap (OWASP). Unlike the sliding idle window, this is measured
-// from session CREATION and never renews — so an actively-used session is still
-// forced to re-login every 8 hours. This is what makes JARVIS actually present
-// the login page each work session instead of keeping you signed in forever.
-const ABSOLUTE_CAP_MS = 8 * 60 * 60 * 1000;
+// Absolute cap, measured from session CREATION (never renews). 30 days for this
+// single-user personal box so working sessions aren't interrupted — the user
+// reported being logged out constantly under the old 8-hour cap. Tighten this
+// back down (e.g. 8h) if the box ever goes multi-user or is exposed beyond
+// localhost.
+const ABSOLUTE_CAP_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
- * Returns true if the session's creation time is within the 8-hour absolute cap.
- * Used to force re-login past 8 hours regardless of activity.
+ * Returns true if the session's creation time is within the absolute cap (30d).
+ * Used to force re-login only past the cap, regardless of activity.
  */
 export function isSessionWithinAbsoluteCap(createdAt: Date): boolean {
   return Date.now() - createdAt.getTime() < ABSOLUTE_CAP_MS;
