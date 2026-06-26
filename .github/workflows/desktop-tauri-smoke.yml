@@ -72,7 +72,14 @@ jobs:
 
       - name: cargo check (Rust + dist embed)
         working-directory: src/voice-agent/desktop-tauri/src-tauri
-        run: cargo check --locked
+        run: |
+          # tauri.conf.json bundles bundle-assets/ — the multi-GB generated
+          # "brain" sidecar, gitignored and populated only by the release
+          # bundler. tauri-build's build.rs fails if the resource path is
+          # missing. The smoke only checks COMPILATION, so an empty placeholder
+          # satisfies the existence check (verified: an empty dir builds clean).
+          mkdir -p bundle-assets
+          cargo check --locked
 
       # cargo test is gated — run only if any test modules exist, so
       # this workflow doesn't fail on an empty test surface today and
