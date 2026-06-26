@@ -44,12 +44,31 @@ BRANCH="automod/$ID"
 
   INTENT_BODY="$(cat "$INTENT_FILE")"
 
+  # Pre-build RESEARCH (network-ALLOWED, read-only) — runs in a SEPARATE process
+  # BEFORE the offline sandbox below, so it can ground the build in current
+  # docs/best-practices without ever giving the build agent network. OFF by
+  # default (JARVIS_AUTOMOD_RESEARCH=1). Best-effort; never blocks the build.
+  RESEARCH_SECTION=""
+  if [ "${JARVIS_AUTOMOD_RESEARCH:-0}" = "1" ]; then
+    _RPY="$TOOLING_ROOT/src/voice-agent/.venv/bin/python"
+    if [ -x "$_RPY" ]; then
+      ( cd "$TOOLING_ROOT/src/voice-agent" \
+          && JARVIS_AUTOMOD_RESEARCH=1 timeout 180 "$_RPY" -m pipeline.automod.research "$ID" "$INTENT_FILE" ) \
+          >>"$LOG" 2>&1 || true
+      _BRIEF="$JARVIS_HOME_DIR/auto-mods/$ID.research.md"
+      if [ -s "$_BRIEF" ]; then
+        RESEARCH_SECTION="$(printf 'RESEARCH BRIEF (grounding from online docs — consider it, but VERIFY against the actual code; never trust it blindly):\n%s\n\n' "$(cat "$_BRIEF")")"
+        echo "[$(date -u +%FT%TZ)] [automod-impl] research brief attached ($(wc -c <"$_BRIEF") bytes)"
+      fi
+    fi
+  fi
+
   PROMPT="You are JARVIS auto-mod. A targeted code change has been
 requested:
 
 ${INTENT_BODY}
 
-HARD RULES (violating ANY means the spawner will reject your commit and delete this branch):
+${RESEARCH_SECTION}HARD RULES (violating ANY means the spawner will reject your commit and delete this branch):
 
 1. Edit ONLY files under src/voice-agent/.
 2. Do NOT touch ANY of these paths:
@@ -88,7 +107,17 @@ committing."
     [ -n "$_bm" ] && export JARVIS_AUTOMOD_BUILD_MODEL="$_bm"
   fi
 
-  export JARVIS_AUTOMOD_NO_NETWORK=1
+  # Build network isolation. SECURITY: an autonomous, self-modifying coding agent
+  # that RUNS what it writes can exfiltrate secrets or pull a malicious dep if it
+  # has network — so the default is OFFLINE. Set JARVIS_AUTOMOD_BUILD_NETWORK=1 to
+  # ALLOW the build agent to research online DURING the build (user directive
+  # 2026-06-26): a deliberate opt-in that accepts that risk. Either way the
+  # pre-build research stage above already grounds the build with online docs.
+  if [ "${JARVIS_AUTOMOD_BUILD_NETWORK:-0}" = "1" ]; then
+    echo "[$(date -u +%FT%TZ)] [automod-impl] BUILD NETWORK ENABLED — offline security boundary relaxed (research-during-build)"
+  else
+    export JARVIS_AUTOMOD_NO_NETWORK=1
+  fi
   # 25 min for the coding agent itself; the spawner's SPAWN_TIMEOUT_S (30 min)
   # is the outer bound, leaving ~5 min for finalize (diff-gate + test re-run +
   # commit check) to run after. 10 min was too short → no_commit_landed.

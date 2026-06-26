@@ -129,3 +129,19 @@ def research_intent(
         except OSError:
             pass
     return {"skipped": False, "reason": "", "brief": brief, "sources": sources}
+
+
+if __name__ == "__main__":  # pragma: no cover — invoked by bin/jarvis-automod-impl
+    import sys
+
+    _aid = sys.argv[1] if len(sys.argv) > 1 else None
+    _intent_file = sys.argv[2] if len(sys.argv) > 2 else None
+    _intent = ""
+    if _intent_file and os.path.exists(_intent_file):
+        with open(_intent_file, encoding="utf-8") as _fh:
+            _intent = _fh.read()
+    _res = research_intent(_intent, _aid)
+    print(
+        f"research: skipped={_res['skipped']} reason={_res.get('reason', '')!r} "
+        f"sources={len(_res.get('sources', []))}"
+    )
