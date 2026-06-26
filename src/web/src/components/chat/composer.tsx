@@ -58,6 +58,10 @@ type ComposerProps = {
   // surfaces like /design where the composer is a means to an end and should
   // not flicker between Anthropic / Groq / DeepSeek visual variants.
   unifiedUX?: boolean;
+  // Whether an image-generation model is configured. Passed by the chat page's
+  // image-gen feature to gate the Image toggle; accepted here so the prop
+  // type-checks (the gating itself is wired by that feature).
+  imageAvailable?: boolean;
 };
 
 export function Composer({
