@@ -1,0 +1,15 @@
+[Unit]
+Description=JARVIS health probe — periodic dead-key / dead-service alert
+Documentation=file:%h/Documents/Projects/jarvis/bin/jarvis-health
+
+[Timer]
+# Start 2 min after boot (let the stack come up), then every 30 min. The probe
+# is cheap (6 provider /models GETs + local checks); the alert wrapper de-dupes
+# so a persistent failure notifies once, not every 30 min.
+OnBootSec=120
+OnUnitActiveSec=30min
+AccuracySec=1min
+Unit=jarvis-health.service
+
+[Install]
+WantedBy=timers.target
