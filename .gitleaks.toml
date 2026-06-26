@@ -1,0 +1,25 @@
+# gitleaks config for JARVIS — extends the default ruleset and allowlists
+# vendored trees + known false-positives so the CI gate (and the local
+# pre-commit hook) stay low-noise. Defense-in-depth on top of GitHub's
+# native secret scanning + push protection.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "vendored trees + known false-positives"
+paths = [
+  '''node_modules/''',
+  '''\.venv/''',
+  '''src/android/app/src/main/cpp/llama\.cpp/''',
+  '''.*\.test\.(ts|tsx|js|py)$''',
+  '''package-lock\.json''',
+  '''bun\.lock''',
+]
+# Line-level allowlist for non-secret matches:
+#  - prompt_cache_key: an Anthropic cache-namespace label, not a credential
+#  - DATADOG_CLIENT_TOKEN: a browser-RUM client token, public by design
+regexTarget = "line"
+regexes = [
+  '''prompt_cache_key''',
+  '''DATADOG_CLIENT_TOKEN''',
+]

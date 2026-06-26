@@ -1,0 +1,29 @@
+name: gitleaks
+
+# Defense-in-depth secret scan on top of GitHub's native secret scanning +
+# push protection. Scans the push/PR commits; full history on schedule.
+# Free for personal public repos (no GITLEAKS_LICENSE needed).
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: '5 5 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITLEAKS_CONFIG: .gitleaks.toml
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
