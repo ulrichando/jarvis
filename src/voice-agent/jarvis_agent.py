@@ -171,6 +171,16 @@ from livekit.plugins import groq, openai as lk_openai, silero
 import sanitizers.deepseek_roundtrip as deepseek_roundtrip
 deepseek_roundtrip.install()
 
+# Strip image content blocks from OpenAI-format messages before they reach a
+# TEXT-ONLY conversational model (DeepSeek/Groq/Kimi/local). An image_url block
+# in chat_ctx 400s those providers NON-RETRYABLY ("unknown variant image_url,
+# expected text"), which kills the inference task AND — because the image stays
+# in history — bricks every subsequent turn (JARVIS acks then never returns the
+# result). Patches the same provider_format.openai.to_chat_ctx chokepoint;
+# Anthropic uses its own serializer so its vision path is untouched.
+import sanitizers.image_content_strip as image_content_strip
+image_content_strip.install()
+
 # Backfill DeepSeek's `prompt_cache_hit_tokens` into the OpenAI-spec
 # `prompt_tokens_details.cached_tokens` slot when the latter is empty.
 # DeepSeek currently mirrors both fields, so the framework's stock
