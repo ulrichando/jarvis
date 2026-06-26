@@ -180,3 +180,20 @@ def test_advisory_can_be_disabled(tmp_path, monkeypatch):
     out = rc.review_proposal("automod-noadv", "real diff", "intent")
     assert out["advisory"] == {}
     assert out["overall"]["verdict"] == "pass"
+
+
+# ── council→rework gating ─────────────────────────────────────────────
+
+
+def test_council_blocks_off_by_default(monkeypatch):
+    monkeypatch.delenv("JARVIS_AUTOMOD_COUNCIL_GATES", raising=False)
+    # advisory by default: a block verdict does NOT route to rework
+    assert rc.council_blocks({"overall": {"verdict": "block"}}) is False
+
+
+def test_council_blocks_only_when_gated_and_block(monkeypatch):
+    monkeypatch.setenv("JARVIS_AUTOMOD_COUNCIL_GATES", "1")
+    assert rc.council_blocks({"overall": {"verdict": "block"}}) is True
+    assert rc.council_blocks({"overall": {"verdict": "concern"}}) is False
+    assert rc.council_blocks({"overall": {"verdict": "pass"}}) is False
+    assert rc.council_blocks({"overall": {"verdict": "skipped"}}) is False

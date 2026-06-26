@@ -307,6 +307,17 @@ def review_proposal(automod_id: str, diff: str, intent: str) -> dict:
     return review
 
 
+def council_blocks(review: dict) -> bool:
+    """Whether the council's gating verdict should route the proposal back to
+    rework (instead of leaving it reviewable). GATED by
+    JARVIS_AUTOMOD_COUNCIL_GATES=1 — default OFF, i.e. the council stays advisory
+    and a human decides. Only the 3 gating lenses feed the verdict, so this never
+    fires on an advisory-lens concern."""
+    if os.environ.get("JARVIS_AUTOMOD_COUNCIL_GATES") != "1":
+        return False
+    return review.get("overall", {}).get("verdict") == "block"
+
+
 def read_review(automod_id: str) -> dict | None:
     """Return the last stored review for an id, or None."""
     try:

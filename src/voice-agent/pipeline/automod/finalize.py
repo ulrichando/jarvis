@@ -414,7 +414,17 @@ def finalize_branch(automod_id: str, branch: str,
     if os.environ.get("JARVIS_AUTOMOD_REVIEW_COUNCIL", "1") != "0":
         try:
             from pipeline.automod import review_council
-            review_council.review_proposal(automod_id, diff_text, intent)
+            _review = review_council.review_proposal(automod_id, diff_text, intent)
+            # Council→rework (gated, OFF by default): a BLOCK verdict routes the
+            # proposal back to rework instead of leaving it reviewable. Default is
+            # advisory — a human decides.
+            if review_council.council_blocks(_review):
+                blockers = ", ".join(_review.get("overall", {}).get("blocking_lenses", [])) or "block"
+                artifact.update_status(automod_id, "failed",
+                                       rejection_reason=f"council_block: {blockers}")
+                artifact.audit("automod_council_blocked", id=automod_id, blockers=blockers)
+                art["status"] = "failed"
+                art["rejection_reason"] = f"council_block: {blockers}"
         except Exception:  # noqa: BLE001 — advisory; must never break finalize
             pass
     _git("checkout", "master")
