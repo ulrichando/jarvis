@@ -1,0 +1,17 @@
+name: labeler
+
+# Auto-applies path-based labels to PRs (config: .github/labeler.yml).
+on: [pull_request_target]
+
+permissions:
+  contents: read
+
+jobs:
+  label:
+    name: apply labels
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/labeler@f27b608878404679385c85cfa523b85ccb86e213 # v6.1.0

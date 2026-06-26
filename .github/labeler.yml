@@ -1,0 +1,25 @@
+# Auto-labels PRs by changed path (actions/labeler v6 format).
+voice-agent:
+  - changed-files:
+      - any-glob-to-any-file: 'src/voice-agent/**'
+desktop:
+  - changed-files:
+      - any-glob-to-any-file: 'src/voice-agent/desktop-tauri/**'
+web:
+  - changed-files:
+      - any-glob-to-any-file: 'src/web/**'
+cli:
+  - changed-files:
+      - any-glob-to-any-file: 'src/cli/**'
+android:
+  - changed-files:
+      - any-glob-to-any-file: 'src/android/**'
+ci:
+  - changed-files:
+      - any-glob-to-any-file: '.github/**'
+docs:
+  - changed-files:
+      - any-glob-to-any-file: ['**/*.md', 'docs/**']
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file: ['**/package.json', '**/package-lock.json', '**/requirements*.txt', '**/Cargo.toml', '**/Cargo.lock', '**/*.gradle*']
