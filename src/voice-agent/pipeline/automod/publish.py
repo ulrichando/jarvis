@@ -62,3 +62,43 @@ def publish(automod_id: str, *, draft: bool = True, base: str = "master") -> Tup
     except Exception:  # noqa: BLE001 - recording the URL is best-effort
         pass
     return True, pr_url
+
+
+def publish_deploy(automod_id: str, *, base: str = "master") -> Tuple[bool, str]:
+    """After a deploy is health-confirmed by the watchdog: push the live commit to
+    origin and record the shipped fix as a (closed) GitHub Issue.
+
+    Distinct from publish() (which pushes a proposal BRANCH + opens a PR for
+    review): this reflects an already-approved, already-live deploy on GitHub —
+    so "deployed" means on origin/master + visible in the Issues history, not
+    just on the local box. Best-effort + idempotent; the change is live locally
+    regardless. Returns (True, issue_url) or (False, reason).
+    """
+    from pipeline.automod import artifact
+    from pipeline.automod.summarize import summarize
+
+    art = artifact.load(automod_id)
+
+    push = _git("push", "origin", base)
+    if push.returncode != 0:
+        return False, f"push failed: {push.stderr.strip()}"
+
+    s = summarize(art)
+    sha = _git("rev-parse", "HEAD").stdout.strip()[:12]
+    body = (
+        f"{s['markdown']}\n\n---\n_Shipped by JARVIS self-evolution: approved, "
+        f"deployed, and health-confirmed locally, then pushed to `{base}` as "
+        f"`{sha}`. Closed because it is already live — the watchdog auto-reverts "
+        f"it if it regresses._"
+    )
+    issue = _gh("issue", "create", "--title", f"[evolution] {s['title']}", "--body", body)
+    if issue.returncode != 0:
+        return False, f"gh issue create failed: {issue.stderr.strip() or issue.stdout.strip()}"
+    issue_url = issue.stdout.strip()
+    _gh("issue", "close", issue_url, "--reason", "completed")  # best-effort
+
+    try:
+        artifact.update_status(automod_id, art.get("status", "merged"), issue_url=issue_url)
+    except Exception:  # noqa: BLE001 - recording the URL is best-effort
+        pass
+    return True, issue_url

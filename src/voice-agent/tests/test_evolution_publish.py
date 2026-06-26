@@ -90,3 +90,45 @@ def test_publish_push_failure_is_reported(home, monkeypatch):
         lambda *a: subprocess.CompletedProcess(a, 1, "", "permission denied"))
     ok, reason = pub.publish("automod-test-4")
     assert not ok and "push failed" in reason
+
+
+def test_publish_deploy_pushes_master_and_opens_closed_issue(home, monkeypatch):
+    """A confirmed deploy is pushed to origin/master and recorded as a closed
+    GitHub Issue (the shipped-fix record the user asked for)."""
+    _write_art("automod-test-9", status="merged")
+    calls = {"git": [], "gh": []}
+
+    def fake_git(*a):
+        calls["git"].append(a)
+        if a[:1] == ("rev-parse",):
+            return _ok("abcdef1234567890")
+        return _ok()
+
+    monkeypatch.setattr(pub, "_git", fake_git)
+
+    def fake_gh(*a):
+        calls["gh"].append(a)
+        if a[:2] == ("issue", "create"):
+            return subprocess.CompletedProcess(
+                a, 0, "https://github.com/ulrichando/jarvis/issues/42\n", "")
+        return _ok()
+
+    monkeypatch.setattr(pub, "_gh", fake_gh)
+    ok, url = pub.publish_deploy("automod-test-9")
+    assert ok and url.endswith("/issues/42")
+    assert ("push", "origin", "master") in calls["git"]
+    assert any(g[:2] == ("issue", "create") for g in calls["gh"])
+    assert any(g[:2] == ("issue", "close") for g in calls["gh"])  # closed = shipped record
+
+
+def test_publish_deploy_fails_gracefully_when_push_rejected(home, monkeypatch):
+    """A rejected push aborts cleanly without creating a phantom Issue."""
+    _write_art("automod-test-10", status="merged")
+    monkeypatch.setattr(
+        pub, "_git",
+        lambda *a: subprocess.CompletedProcess(a, 1, "", "rejected (non-fast-forward)"))
+    called = {"gh": False}
+    monkeypatch.setattr(pub, "_gh", lambda *a: called.__setitem__("gh", True) or _ok())
+    ok, reason = pub.publish_deploy("automod-test-10")
+    assert not ok and "push failed" in reason
+    assert called["gh"] is False  # no Issue when the push didn't land

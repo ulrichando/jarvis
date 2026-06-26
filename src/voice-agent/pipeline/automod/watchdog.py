@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import time
 import urllib.request
@@ -238,6 +239,19 @@ def run_once() -> str:
         _notify("evolution_deployed", automod_id=automod_id,
                 detail="healthy after deploy")
         logger.info("[watchdog] deploy %s CONFIRMED healthy", automod_id)
+        # #15: reflect the confirmed-healthy deploy on GitHub (push origin/master
+        # + a closed Issue for the shipped fix). Gated + best-effort — a GitHub
+        # hiccup must never affect the rollback-safety path above.
+        if os.environ.get("JARVIS_EVOLUTION_GITHUB_DEPLOY", "0") == "1":
+            try:
+                from pipeline.automod import artifact, publish
+                ok, info = publish.publish_deploy(automod_id)
+                artifact.audit(
+                    "automod_deploy_published" if ok else "automod_deploy_publish_failed",
+                    id=automod_id, info=(info or "")[:200])
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[watchdog] github deploy-publish failed for %s: %s",
+                               automod_id, e)
         return "confirmed"
 
     # Not healthy yet. Still inside the window → wait for the next tick.
