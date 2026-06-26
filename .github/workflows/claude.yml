@@ -22,26 +22,47 @@ on:
 
 jobs:
   claude:
+    # Two gates, both must hold: (1) @claude is mentioned, AND (2) the author is
+    # a trusted principal (OWNER/MEMBER/COLLABORATOR). On a public repo anyone
+    # can comment @claude — the author_association check stops a stranger's text
+    # from ever spawning a write-permission, key-bearing agent run (defense in
+    # depth on top of the action's own actor check). For this single-maintainer
+    # repo that effectively means: only Ulrich can trigger it.
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')) && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
       issues: write
-      id-token: write
       actions: read
+      # No id-token: write — that's only needed for OIDC / Bedrock / Vertex /
+      # GitHub-App auth. We use a direct API key, so omitting it keeps a
+      # prompt-injected agent from ever minting a federation token. Re-add only
+      # if you switch to OIDC/WIF.
     steps:
+      - name: Gate on API key (dormant until ANTHROPIC_API_KEY is set)
+        id: gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::notice::ANTHROPIC_API_KEY not set — JARVIS GitHub agent is dormant; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout repository
+        if: steps.gate.outputs.skip != 'true'
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 1
 
       - name: Run Claude Code
         id: claude
+        if: steps.gate.outputs.skip != 'true'
         uses: anthropics/claude-code-action@e9072dc659c8b408d9df95ab08cfd8bf7acce9d8 # v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
