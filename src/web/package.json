@@ -11,8 +11,10 @@
     "@babel/core": "7.29.6",
     "qs": "6.15.2",
     "ip-address": "10.1.1",
-    "hono": "4.12.18",
-    "esbuild": "$esbuild"
+    "hono": "4.12.25",
+    "esbuild": "$esbuild",
+    "brace-expansion": "2.0.3",
+    "picomatch": "4.0.4"
   },
   "scripts": {
     "dev": "concurrently -n next,pty -c blue,magenta \"next dev -H 127.0.0.1\" \"node scripts/pty-server.mjs\"",
