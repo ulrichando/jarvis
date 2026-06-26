@@ -60,14 +60,10 @@ jobs:
         # mishandles vitest's node:fs mocks + the better-sqlite3 node-ABI
         # binding). Rebuild the addon for the runner's node, then run via node.
         #
-        # STILL non-blocking: a handful of tests are NOT hermetic and fail in
-        # CI's no-network/no-services sandbox even though they pass locally —
-        #   * tests/bridge/github.test.ts — node:fs mock doesn't intercept;
-        #     locally a real ~/.jarvis/connectors.json masks it.
-        #   * tests/kimi/{dispatch,e2e}.test.ts swarm — make real outbound AI
-        #     API calls that time out in CI.
-        # Drop continue-on-error once those are mocked/quarantined (tracked).
-        continue-on-error: true
+        # REAL GATE: the suite is now hermetic (no live Redis / AI APIs /
+        # ~/.jarvis files needed) — github connector reads JARVIS_CONNECTORS_FILE,
+        # ioredis is mocked in vitest.setup.ts. Verified green in CI's
+        # no-network/no-services sandbox (343 tests). A failing web test fails CI.
         run: |
           npm rebuild better-sqlite3
           npx vitest run

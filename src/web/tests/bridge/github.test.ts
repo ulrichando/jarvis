@@ -1,21 +1,25 @@
 import { describe, expect, test, beforeEach, afterEach, vi } from 'vitest'
+import { promises as fs } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { openPullRequest, mergePullRequest } from '@/lib/connectors/github'
 
-// Make load() return a connected token without touching the real
-// ~/.jarvis/connectors.json (github.ts reads it via fs.promises.readFile).
-vi.mock('node:fs', async (orig) => {
-  const real = await orig<typeof import('node:fs')>()
-  return {
-    ...real,
-    promises: {
-      ...real.promises,
-      readFile: async () => JSON.stringify({ github: { token: 't', login: 'me', connectedAt: 1 } }),
-    },
-  }
+// Hermetic: point the connector at a temp file holding a connected token via
+// JARVIS_CONNECTORS_FILE, instead of mocking node:fs (which doesn't reliably
+// intercept `import { promises as fs } from "node:fs"`, so the old test only
+// passed when a real ~/.jarvis/connectors.json happened to exist).
+let tmpFile: string
+beforeEach(async () => {
+  tmpFile = path.join(os.tmpdir(), `connectors-${Date.now()}-${Math.random().toString(36).slice(2)}.json`)
+  await fs.writeFile(tmpFile, JSON.stringify({ github: { token: 't', login: 'me', connectedAt: 1 } }))
+  process.env.JARVIS_CONNECTORS_FILE = tmpFile
+  vi.stubGlobal('fetch', vi.fn())
 })
-
-beforeEach(() => vi.stubGlobal('fetch', vi.fn()))
-afterEach(() => vi.unstubAllGlobals())
+afterEach(async () => {
+  delete process.env.JARVIS_CONNECTORS_FILE
+  vi.unstubAllGlobals()
+  await fs.rm(tmpFile, { force: true })
+})
 
 describe('openPullRequest', () => {
   test('POSTs /pulls and returns url+number', async () => {

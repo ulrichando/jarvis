@@ -9,7 +9,15 @@ import os from "node:os";
 // (~/.jarvis/connectors.json, chmod 600) and never sent to the browser — the
 // client only ever learns the connected login + uses the server routes.
 
-const FILE = path.join(os.homedir(), ".jarvis", "connectors.json");
+// Path is read per-call so JARVIS_CONNECTORS_FILE (tests set this for
+// hermeticity — no fragile node:fs mocking) is honored regardless of import
+// order. Defaults to the chmod-600 file under the user's home.
+function connectorsFile(): string {
+  const override = process.env.JARVIS_CONNECTORS_FILE;
+  return override
+    ? path.resolve(override)
+    : path.join(os.homedir(), ".jarvis", "connectors.json");
+}
 const GH = "https://api.github.com";
 
 type Connectors = {
@@ -35,16 +43,17 @@ export type GithubRepo = {
 
 async function load(): Promise<Connectors> {
   try {
-    return JSON.parse(await fs.readFile(FILE, "utf8")) as Connectors;
+    return JSON.parse(await fs.readFile(connectorsFile(), "utf8")) as Connectors;
   } catch {
     return {};
   }
 }
 
 async function save(c: Connectors): Promise<void> {
-  await fs.mkdir(path.dirname(FILE), { recursive: true });
-  await fs.writeFile(FILE, JSON.stringify(c, null, 2), { mode: 0o600 });
-  await fs.chmod(FILE, 0o600).catch(() => {});
+  const file = connectorsFile();
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, JSON.stringify(c, null, 2), { mode: 0o600 });
+  await fs.chmod(file, 0o600).catch(() => {});
 }
 
 function ghHeaders(token: string): Record<string, string> {
