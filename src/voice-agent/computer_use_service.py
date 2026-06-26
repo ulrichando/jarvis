@@ -385,7 +385,9 @@ async def _run(req: web.Request) -> web.StreamResponse:
     except Exception as e:  # noqa: BLE001
         logger.exception("run loop crashed")
         try:
-            await emit({"type": "error", "error": str(e)})
+            # Generic message to the SSE client; the full exception (+traceback)
+            # is in logger.exception above, not the response (py/stack-trace-exposure).
+            await emit({"type": "error", "error": "the task failed — see the voice-agent log"})
         except Exception:  # noqa: BLE001
             pass
     finally:
