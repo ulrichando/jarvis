@@ -36,8 +36,12 @@ def test_enqueue_improvements_queues_and_dedups(tmp_path, monkeypatch):
 
 def test_priority_assignment_and_retry_inherits():
     from pipeline.automod import criteria, patterns
-    assert criteria.enrich_record({"kind": "self_improvement", "intent": "x"})["priority"] == "P0"
+    # Priority de-inflated 2026-06-26: explicit/confab P0, correction/error P1,
+    # fitness P2, speculative self_improvement P3 (was P0).
+    assert criteria.enrich_record({"kind": "explicit", "intent": "x"})["priority"] == "P0"
+    assert criteria.enrich_record({"kind": "self_improvement", "intent": "x"})["priority"] == "P3"
     assert criteria.enrich_record({"kind": "correction", "intent": "x"})["priority"] == "P1"
+    assert criteria.enrich_record({"kind": "error", "intent": "x"})["priority"] == "P1"
     assert criteria.enrich_record({"kind": "fitness", "intent": "x"})["priority"] == "P2"
     assert criteria.enrich_record({"kind": "weird", "intent": "x"})["priority"] == "P3"
     # an explicitly-set priority is preserved (not overwritten by kind)
