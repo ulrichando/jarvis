@@ -959,6 +959,7 @@ function ReviewVerdict({
         type="button"
         onClick={onReview}
         disabled={reviewing}
+        title="The 3-lens council usually runs automatically when a build passes the gate — run it manually here if it didn't, or to refresh the verdict."
         className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-background/40 px-2 py-1 text-[11.5px] text-muted-foreground transition-colors hover:text-foreground disabled:opacity-60"
       >
         {reviewing ? <Loader2 className="size-3 animate-spin" /> : <Radar className="size-3" />}
@@ -989,7 +990,12 @@ function ReviewVerdict({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Radar className="size-3.5 text-muted-foreground" />
-          <span className="text-[11.5px] font-medium text-foreground">Review council</span>
+          <span
+            className="text-[11.5px] font-medium text-foreground"
+            title="The 3-lens council (correctness · security · regression) ran automatically when this build passed the gate. Re-run it anytime."
+          >
+            Review council
+          </span>
           <span className={cn("rounded-full px-1.5 py-0.5 text-[10.5px] font-medium", recTone)}>{recLabel}</span>
         </div>
         <div className="flex items-center gap-2.5">
@@ -1016,6 +1022,15 @@ function ReviewVerdict({
               {open ? "hide" : "details"}
             </button>
           )}
+          <button
+            type="button"
+            onClick={onReview}
+            disabled={reviewing}
+            title="Re-run the council on this diff"
+            className="text-[10.5px] text-muted-foreground hover:text-foreground disabled:opacity-60"
+          >
+            {reviewing ? "re-running…" : "re-run"}
+          </button>
         </div>
       </div>
       {open && hasFindings && (
@@ -1446,7 +1461,8 @@ function EmptyState() {
       <p className="mt-4 text-[14px] font-medium text-foreground">Nothing to review</p>
       <p className="mt-1 max-w-sm text-[13px] leading-5 text-muted-foreground">
         JARVIS proposes improvements to his own code as he runs. When he does, they&apos;ll appear here
-        for your review and approval. Run a cycle to kick one off now.
+        — each auto-reviewed by a 3-lens council (correctness · security · regression) — for your
+        approval. Run a cycle to kick one off now.
       </p>
     </div>
   );
