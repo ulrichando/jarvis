@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# jarvis-restart-all — restart the whole JARVIS service stack in one shot.
+# Respects the operational rule: NEVER bounce the voice-agent within 60s of a
+# live turn (a session would hear silence). Aborts in that window unless --force.
+# Backend for a "restart all" desktop/tray button. Web dev server is left alone
+# (it's an interactive process, not a service) — restart it yourself if running.
+set -uo pipefail
+
+FORCE=0
+[ "${1:-}" = "--force" ] && FORCE=1
+
+last=$(sqlite3 "${HOME}/.local/share/jarvis/turn_telemetry.db" \
+  "SELECT CAST((julianday('now')-julianday(MAX(ts_utc)))*86400 AS INT) FROM turns;" 2>/dev/null || echo 99999)
+[ -z "$last" ] && last=99999
+
+if [ "$FORCE" != 1 ] && [ "$last" -lt 60 ]; then
+  echo "ABORT: last voice turn was ${last}s ago (<60s) — a session may be live."
+  echo "       Re-run with --force to restart anyway."
+  exit 1
+fi
+
+echo "Restarting JARVIS stack (last voice turn ${last}s ago)…"
+rc=0
+for svc in jarvis-voice-agent jarvis-proxy jarvis-bridge; do
+  if systemctl --user list-unit-files "${svc}.service" >/dev/null 2>&1; then
+    if systemctl --user restart "${svc}.service" 2>/dev/null; then
+      echo "  ✓ ${svc}"
+    else
+      echo "  ✗ ${svc} (restart failed)"; rc=1
+    fi
+  fi
+done
+
+if [ -d "${HOME}/honcho" ]; then
+  if (cd "${HOME}/honcho" && docker compose restart >/dev/null 2>&1); then
+    echo "  ✓ honcho (memory stack)"
+  else
+    echo "  - honcho (skipped / not up)"
+  fi
+fi
+if docker restart kokoro-tts >/dev/null 2>&1; then
+  echo "  ✓ kokoro-tts"
+else
+  echo "  - kokoro-tts (skipped / not running)"
+fi
+
+echo "Done. (Web dev server, if running, restart manually: cd src/web && npm run dev)"
+exit "$rc"
