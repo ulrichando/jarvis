@@ -41,9 +41,37 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _already_queued(text: str) -> bool:
+    """True if a pending queue entry already has this exact intent text."""
+    qp = queue_path()
+    if not text or not qp.exists():
+        return False
+    try:
+        for ln in qp.read_text(encoding="utf-8").splitlines():
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                if (json.loads(ln).get("intent") or "").strip() == text:
+                    return True
+            except json.JSONDecodeError:
+                continue
+    except OSError:
+        return False
+    return False
+
+
 def _enqueue(intent: dict) -> None:
     qp = queue_path()
     qp.parent.mkdir(parents=True, exist_ok=True)
+    # Dedup: skip a NON-retry intent whose exact text is already pending — stops
+    # the assessment piling the same goal up. RETRY intents are EXEMPT (they are
+    # meant to re-attempt, and are bounded by MAX_RETRY_ATTEMPTS + the `retried`
+    # marker), so legitimate retries of different goals are never dropped.
+    text = (intent.get("intent") or "").strip()
+    if text and not text.upper().startswith("RETRY") and _already_queued(text):
+        logger.info("[cycle] skip enqueue — intent already queued: %s", text[:80])
+        return
     with qp.open("a", encoding="utf-8") as f:
         f.write(json.dumps(intent, ensure_ascii=False) + "\n")
 
