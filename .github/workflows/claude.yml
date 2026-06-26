@@ -37,12 +37,12 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      id-token: write  # REQUIRED by claude-code-action for OIDC GitHub auth
+                       # (confirmed 2026-06-26: pr-review failed "Could not fetch an
+                       # OIDC token" without it). Owner/same-repo gated + no OIDC
+                       # trust configured, so re-adding it is not exploitable here.
       issues: write
       actions: read
-      # No id-token: write — that's only needed for OIDC / Bedrock / Vertex /
-      # GitHub-App auth. We use a direct API key, so omitting it keeps a
-      # prompt-injected agent from ever minting a federation token. Re-add only
-      # if you switch to OIDC/WIF.
     steps:
       - name: Gate on API key (dormant until ANTHROPIC_API_KEY is set)
         id: gate
