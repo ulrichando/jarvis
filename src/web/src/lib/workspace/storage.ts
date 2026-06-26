@@ -472,6 +472,13 @@ export async function deleteWorkspace(id: string) {
 // resolve INSIDE the workspace dir. Anything starting with `..`,
 // `/`, or symlinks pointing outside is rejected.
 export function workspaceRoot(id: string) {
+  // `id` is a path segment (a randomUUID at creation). Validate it before it
+  // reaches the filesystem so a crafted id (`../`, an abs path) can't escape
+  // WORKSPACES_ROOT — resolveSafe() only guards the rel path AFTER this root is
+  // built, so an unchecked id was the real traversal hole (js/path-injection).
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+    throw new Error(`Invalid workspace id: ${id}`);
+  }
   return path.join(WORKSPACES_ROOT, id);
 }
 
