@@ -27,7 +27,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { categorize, CATEGORIES, CATEGORY_TONE, type Category } from "@/lib/evolution/categorize";
 import { Sparkline } from "./Sparkline";
@@ -154,11 +154,13 @@ type EvolutionData = {
     failed: number;
     builds: { today: number; cap: number; remaining: number };
     building: number;
-    buildingIds: string[];
+    buildingDetail: InFlightBuild[];
     deployInFlight: boolean;
     rollbacks: number;
   };
 };
+
+type InFlightBuild = { id: string; intent: string; kind: string; elapsedSec: number };
 
 const BUILD_MODELS = [
   { value: "", label: "Global model" },
@@ -187,6 +189,12 @@ export default function EvolutionPage() {
   const [confirming, setConfirming] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null); // "approve:<id>" / "cycle" / ...
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const didDefaultRef = useRef(false);
+  // Switch tabs AND reset the category filter — each view starts unfiltered.
+  const goTab = useCallback((t: string) => {
+    setTab(t);
+    setCatFilter(null);
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -214,6 +222,17 @@ export default function EvolutionPage() {
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, [load]);
+
+  // Smart default: on first load, open the tab that actually has something for
+  // the user — proposals to decide, else a live build, else the queue — instead
+  // of always landing on a Review tab that may be empty.
+  useEffect(() => {
+    if (!data || didDefaultRef.current) return;
+    didDefaultRef.current = true;
+    if (data.status.pending > 0) setTab("review");
+    else if (data.status.building > 0) setTab("building");
+    else if (data.queued.length > 0) setTab("queue");
+  }, [data]);
 
   // Generic POST helper — toasts the detail, reloads, manages the busy key.
   const act = useCallback(
@@ -316,23 +335,47 @@ export default function EvolutionPage() {
           </p>
         </div>
 
-        {/* Status + controls */}
+        {/* Pipeline — the loop at a glance. These counts ARE the stages a
+            proposal moves through: queued → building → review → deployed, with
+            failed as the drop-off. Each stage opens its tab. */}
         {data && (
-          <div className="mt-5 flex flex-wrap items-center gap-2">
-            <Stat label="pending" value={data.status.pending} />
-            <Stat label="queued" value={data.status.queued} />
-            {data.status.building > 0 && (
-              <Stat label="building" value={data.status.building} live />
-            )}
-            <Stat label="deployed" value={data.status.deployed} tone="emerald" />
-            <Stat label="failed" value={data.status.failed} tone="amber" />
-            {data.status.rollbacks > 0 && (
-              <Stat label="rollbacks" value={data.status.rollbacks} tone="amber" />
-            )}
-            <div className="ml-auto flex items-center gap-2">
-              <span className="text-[11.5px] text-muted-foreground">
-                {data.status.builds.remaining}/{data.status.builds.cap} builds left today
-              </span>
+          <>
+            <div className="mt-5 overflow-hidden rounded-xl border border-border/60 bg-card/40">
+              <div className="flex items-stretch divide-x divide-border/50">
+                <PipelineStage label="Queued" value={data.status.queued} active={tab === "queue"} onClick={() => goTab("queue")} />
+                <PipelineStage
+                  label="Building"
+                  value={data.status.building}
+                  live={data.status.building > 0}
+                  active={tab === "building"}
+                  onClick={() => goTab("building")}
+                />
+                <PipelineStage
+                  label="Review"
+                  value={data.status.pending}
+                  attention={data.status.pending > 0}
+                  active={tab === "review"}
+                  onClick={() => goTab("review")}
+                />
+                <PipelineStage label="Deployed" value={data.status.deployed} tone="emerald" active={tab === "deployed"} onClick={() => goTab("deployed")} />
+                <PipelineStage label="Failed" value={data.status.failed} tone="amber" active={tab === "failed"} onClick={() => goTab("failed")} />
+                <PipelineStage label="Health" icon={ActivityIcon} active={tab === "health"} onClick={() => goTab("health")} />
+              </div>
+            </div>
+
+            {/* Action bar — every control in one place: not mixed into the
+                metrics, not buried in a tab (build-model used to live at the
+                bottom of History). */}
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                className="gap-1.5"
+                disabled={busy === "cycle" || data.paused}
+                onClick={cycle}
+              >
+                {busy === "cycle" ? <Loader2 className="size-3.5 animate-spin" /> : <Hammer className="size-3.5" />}
+                Run cycle
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -343,17 +386,27 @@ export default function EvolutionPage() {
                 {busy === "introspect" ? <Loader2 className="size-3.5 animate-spin" /> : <Brain className="size-3.5" />}
                 Introspect
               </Button>
-              <Button
-                size="sm"
-                className="gap-1.5"
-                disabled={busy === "cycle" || data.paused}
-                onClick={cycle}
-              >
-                {busy === "cycle" ? <Loader2 className="size-3.5 animate-spin" /> : <Hammer className="size-3.5" />}
-                Run cycle
-              </Button>
+              <BuildModelPicker
+                current={data.buildModel}
+                busy={busy === "buildModel"}
+                onChange={setBuildModel}
+              />
+              <div className="ml-auto flex items-center gap-3">
+                {data.status.rollbacks > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setTab("history")}
+                    className="text-[11.5px] text-amber-500 transition-opacity hover:opacity-80"
+                  >
+                    {data.status.rollbacks} rollback{data.status.rollbacks === 1 ? "" : "s"}
+                  </button>
+                )}
+                <span className="text-[11.5px] tabular-nums text-muted-foreground">
+                  {data.status.builds.remaining}/{data.status.builds.cap} builds left today
+                </span>
+              </div>
             </div>
-          </div>
+          </>
         )}
 
         {/* Tabs */}
@@ -364,42 +417,31 @@ export default function EvolutionPage() {
               <span className="text-[13.5px]">Loading evolution state…</span>
             </div>
           ) : (
-            <Tabs value={tab} onValueChange={setTab}>
-              <TabsList>
-                <TabsTrigger value="review">
-                  Review{data.proposals.length > 0 ? ` · ${data.proposals.length}` : ""}
-                </TabsTrigger>
-                <TabsTrigger value="health">Health</TabsTrigger>
-                <TabsTrigger value="history">History</TabsTrigger>
-              </TabsList>
+            <Tabs value={tab} onValueChange={goTab}>
 
-              {/* REVIEW: pending proposals + queued intents, filterable by category */}
+              {/* REVIEW: pending PROPOSALS only — the decisions awaiting you.
+                  Queued intents live in their own tab so a destructive
+                  "Approve & deploy" is never adjacent to a "Build" (mixing them
+                  is dangerous — flagged by the user). */}
               <TabsContent value="review" className="mt-5 space-y-3">
-                {data.proposals.length === 0 && data.queued.length === 0 ? (
+                {data.proposals.length === 0 ? (
                   <EmptyState />
                 ) : (
                   (() => {
                     const propCat = (p: Proposal) => categorize(p.files, p.intent);
-                    const queuedCat = (q: Activity) => categorize([], q.detail || q.title);
                     const counts = Object.fromEntries(CATEGORIES.map((c) => [c, 0])) as Record<Category, number>;
                     data.proposals.forEach((p) => {
                       counts[propCat(p)] += 1;
                     });
-                    data.queued.forEach((q) => {
-                      counts[queuedCat(q)] += 1;
-                    });
                     const proposals = catFilter
                       ? data.proposals.filter((p) => propCat(p) === catFilter)
                       : data.proposals;
-                    const queued = catFilter
-                      ? data.queued.filter((q) => queuedCat(q) === catFilter)
-                      : data.queued;
                     return (
                       <>
                         <CategoryFilterBar counts={counts} active={catFilter} onPick={setCatFilter} />
-                        {catFilter && proposals.length === 0 && queued.length === 0 && (
+                        {catFilter && proposals.length === 0 && (
                           <p className="px-1 py-8 text-center text-[13px] text-muted-foreground">
-                            Nothing in review under {catFilter}.
+                            No proposals to review under {catFilter}.
                           </p>
                         )}
                         <AnimatePresence initial={false}>
@@ -427,28 +469,79 @@ export default function EvolutionPage() {
                             </motion.div>
                           ))}
                         </AnimatePresence>
-
-                        {queued.length > 0 && (
-                          <div className="pt-2">
-                            <SectionLabel>Queued intents</SectionLabel>
-                            <div className="space-y-2">
-                              {queued.map((q) => (
-                                <QueuedRow
-                                  key={q.id}
-                                  q={q}
-                                  category={queuedCat(q)}
-                                  building={busy === `process:${q.id}`}
-                                  dismissing={busy === `dismiss:${q.id}`}
-                                  onProcess={() => process(q.id)}
-                                  onDismiss={() => dismiss(q.id)}
-                                />
-                              ))}
-                            </div>
-                          </div>
-                        )}
                       </>
                     );
                   })()
+                )}
+              </TabsContent>
+
+              {/* QUEUE: intents waiting to build (Build → a reviewable proposal,
+                  or History → Failed). Deliberately separate from Review so a
+                  Build click can never sit next to an Approve & deploy. */}
+              <TabsContent value="queue" className="mt-5 space-y-3">
+                {data.queued.length === 0 ? (
+                  <div className="rounded-xl border border-border/60 bg-card/40 px-4 py-10 text-center">
+                    <p className="text-[13.5px] text-muted-foreground">Nothing queued.</p>
+                    <p className="mx-auto mt-1 max-w-sm text-[12.5px] leading-5 text-muted-foreground/80">
+                      Intents JARVIS wants to attempt show here. Build one to turn it into a
+                      reviewable proposal, or dismiss it.
+                    </p>
+                  </div>
+                ) : (
+                  (() => {
+                    const queuedCat = (q: Activity) => categorize([], q.detail || q.title);
+                    const counts = Object.fromEntries(CATEGORIES.map((c) => [c, 0])) as Record<Category, number>;
+                    data.queued.forEach((q) => {
+                      counts[queuedCat(q)] += 1;
+                    });
+                    const queued = catFilter
+                      ? data.queued.filter((q) => queuedCat(q) === catFilter)
+                      : data.queued;
+                    return (
+                      <>
+                        <CategoryFilterBar counts={counts} active={catFilter} onPick={setCatFilter} />
+                        {catFilter && queued.length === 0 && (
+                          <p className="px-1 py-8 text-center text-[13px] text-muted-foreground">
+                            Nothing queued under {catFilter}.
+                          </p>
+                        )}
+                        <div className="space-y-2">
+                          {queued.map((q) => (
+                            <QueuedRow
+                              key={q.id}
+                              q={q}
+                              category={queuedCat(q)}
+                              building={busy === `process:${q.id}`}
+                              dismissing={busy === `dismiss:${q.id}`}
+                              onProcess={() => process(q.id)}
+                              onDismiss={() => dismiss(q.id)}
+                            />
+                          ))}
+                        </div>
+                      </>
+                    );
+                  })()
+                )}
+              </TabsContent>
+
+              {/* BUILDING: live in-flight builds — one row per running jarvis-automod-impl */}
+              <TabsContent value="building" className="mt-5 space-y-3">
+                {(data.status.buildingDetail ?? []).length === 0 ? (
+                  <div className="rounded-xl border border-border/60 bg-card/40 px-4 py-10 text-center">
+                    <p className="text-[13.5px] text-muted-foreground">
+                      No build is running right now.
+                    </p>
+                    <p className="mx-auto mt-1 max-w-sm text-[12.5px] leading-5 text-muted-foreground/80">
+                      When a cycle or a queued intent builds, it shows here live — then moves to
+                      Review if it passes the gate, or History → Failed if it doesn&apos;t.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {(data.status.buildingDetail ?? []).map((b) => (
+                      <BuildingRow key={b.id} b={b} />
+                    ))}
+                  </div>
                 )}
               </TabsContent>
 
@@ -458,40 +551,8 @@ export default function EvolutionPage() {
                 <GraduationPanel autonomy={data.autonomy} graduation={data.graduation} />
                 <CriteriaGrid criteria={data.criteria} />
                 <AssessmentPanel assessment={data.selfAssessment} />
-              </TabsContent>
-
-              {/* HISTORY: deployed, failed, activity, rollbacks */}
-              <TabsContent value="history" className="mt-5 space-y-5">
-                {data.deployed.length > 0 && (
-                  <div>
-                    <SectionLabel>Deployed</SectionLabel>
-                    <div className="space-y-2">
-                      {data.deployed.map((d) => (
-                        <DeployedRow
-                          key={d.id}
-                          d={d}
-                          confirming={confirming === `revert:${d.id}`}
-                          reverting={busy === `revert:${d.id}`}
-                          onAskRevert={() => setConfirming(`revert:${d.id}`)}
-                          onCancel={() => setConfirming(null)}
-                          onRevert={() => revert(d.id)}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {data.failed.length > 0 && (
-                  <div>
-                    <SectionLabel>Failed</SectionLabel>
-                    <div className="space-y-2">
-                      {data.failed.map((f) => (
-                        <FailedRow key={f.id} f={f} />
-                      ))}
-                    </div>
-                  </div>
-                )}
                 <div>
-                  <SectionLabel>Activity</SectionLabel>
+                  <SectionLabel>Recent activity</SectionLabel>
                   {data.activity.length === 0 ? (
                     <p className="px-1 text-[13px] text-muted-foreground">No recent activity.</p>
                   ) : (
@@ -502,11 +563,42 @@ export default function EvolutionPage() {
                     </div>
                   )}
                 </div>
-                <BuildModelPicker
-                  current={data.buildModel}
-                  busy={busy === "buildModel"}
-                  onChange={setBuildModel}
-                />
+              </TabsContent>
+
+              {/* DEPLOYED: changes that shipped — each revertible in one click */}
+              <TabsContent value="deployed" className="mt-5 space-y-2">
+                {data.deployed.length === 0 ? (
+                  <div className="rounded-xl border border-border/60 bg-card/40 px-4 py-10 text-center">
+                    <p className="text-[13.5px] text-muted-foreground">Nothing deployed yet.</p>
+                    <p className="mx-auto mt-1 max-w-sm text-[12.5px] leading-5 text-muted-foreground/80">
+                      Approving a reviewed proposal deploys it here — and an external watchdog
+                      auto-reverts it if JARVIS doesn&apos;t come back healthy.
+                    </p>
+                  </div>
+                ) : (
+                  data.deployed.map((d) => (
+                    <DeployedRow
+                      key={d.id}
+                      d={d}
+                      confirming={confirming === `revert:${d.id}`}
+                      reverting={busy === `revert:${d.id}`}
+                      onAskRevert={() => setConfirming(`revert:${d.id}`)}
+                      onCancel={() => setConfirming(null)}
+                      onRevert={() => revert(d.id)}
+                    />
+                  ))
+                )}
+              </TabsContent>
+
+              {/* FAILED: builds that didn't pass the gate (rejected / red tests) */}
+              <TabsContent value="failed" className="mt-5 space-y-2">
+                {data.failed.length === 0 ? (
+                  <div className="rounded-xl border border-border/60 bg-card/40 px-4 py-10 text-center">
+                    <p className="text-[13.5px] text-muted-foreground">No failed builds.</p>
+                  </div>
+                ) : (
+                  data.failed.map((f) => <FailedRow key={f.id} f={f} />)
+                )}
               </TabsContent>
             </Tabs>
           )}
@@ -557,7 +649,7 @@ function CategoryFilterBar({
       {CATEGORIES.map((c) => (
         <FilterPill
           key={c}
-          label={counts[c] ? `${c} ${counts[c]}` : c}
+          label={`${c} ${counts[c] || 0}`}
           tone={CATEGORY_TONE[c]}
           active={active === c}
           dim={!counts[c]}
@@ -599,29 +691,70 @@ function FilterPill({
   );
 }
 
-function Stat({
+// One segment of the pipeline strip. Equal-width, divided cells that read
+// left-to-right as a flow. The Review stage gets an "attention" tint when a
+// proposal is actually waiting on the human; Building pulses when live.
+// One segment of the unified pipeline nav. It IS the tab bar now — clicking a
+// stage selects its view (active = highlighted). A count stage shows its number;
+// the Health stage shows an icon instead (no count).
+function PipelineStage({
   label,
   value,
+  icon: Icon,
   tone,
   live,
+  attention,
+  active,
+  onClick,
 }: {
   label: string;
-  value: number;
+  value?: number;
+  icon?: React.ComponentType<{ className?: string }>;
   tone?: "emerald" | "amber";
   live?: boolean;
+  attention?: boolean;
+  active?: boolean;
+  onClick: () => void;
 }) {
   return (
-    <span
+    <button
+      type="button"
+      onClick={onClick}
+      title={`View ${label.toLowerCase()}`}
+      aria-pressed={active}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-card/50 px-2.5 py-1 text-[12px]",
-        tone === "emerald" && "text-emerald-500",
-        tone === "amber" && "text-amber-500",
+        "flex flex-1 flex-col items-center gap-1 px-2 py-3.5 transition-colors",
+        active ? "bg-accent" : "hover:bg-accent/60",
+        !active && attention && "bg-primary/[0.06]",
       )}
     >
-      {live && <span className="size-1.5 animate-pulse rounded-full bg-current" />}
-      <span className="font-medium tabular-nums text-foreground">{value}</span>
-      <span className="text-muted-foreground">{label}</span>
-    </span>
+      <span className="flex items-center gap-1.5">
+        {live && <span className="size-1.5 animate-pulse rounded-full bg-primary" />}
+        {Icon ? (
+          <Icon className={cn("size-[18px]", active ? "text-foreground" : "text-muted-foreground")} />
+        ) : (
+          <span
+            className={cn(
+              "text-[20px] font-semibold leading-none tabular-nums",
+              tone === "emerald" && "text-emerald-500",
+              tone === "amber" && "text-amber-500",
+              !tone && (attention || active ? "text-primary" : "text-foreground"),
+              tone && active && "opacity-100",
+            )}
+          >
+            {value}
+          </span>
+        )}
+      </span>
+      <span
+        className={cn(
+          "text-[10.5px] font-medium uppercase tracking-wide",
+          active ? "text-foreground" : "text-muted-foreground",
+        )}
+      >
+        {label}
+      </span>
+    </button>
   );
 }
 
@@ -732,7 +865,7 @@ function ProposalCard({
   return (
     <div className="rounded-2xl border border-border/60 bg-card/60 p-5 transition-colors hover:border-border">
       <div className="flex items-start justify-between gap-3">
-        <h2 className="text-[15px] font-medium leading-snug text-foreground">{p.title}</h2>
+        <h2 className="line-clamp-2 text-[15px] font-medium leading-snug text-foreground">{p.intent || p.title}</h2>
         <div className="flex shrink-0 items-center gap-2">
           <CategoryChip category={category} />
           <span
@@ -747,12 +880,6 @@ function ProposalCard({
         </div>
       </div>
 
-      {p.intent && p.intent !== p.title && (
-        <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-[13px] leading-5 text-muted-foreground">
-          {p.intent}
-        </p>
-      )}
-
       <FileChips files={p.files} />
 
       {(p.diffSummary || cov.score !== null) && (
@@ -760,7 +887,7 @@ function ProposalCard({
           {p.diffSummary && <span className="font-mono">{p.diffSummary}</span>}
           {cov.score !== null && (
             <span title={`${cov.covered}/${cov.measurable} changed lines covered`}>
-              coverage {(cov.score * 100).toFixed(0)}%
+              coverage {Math.min(100, cov.score * 100).toFixed(0)}%
             </span>
           )}
         </div>
@@ -1117,15 +1244,18 @@ function GraduationPanel({
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <ShieldCheck className="size-4 text-primary" />
-          <h3 className="text-[14px] font-medium">Autonomy</h3>
+          <h3 className="text-[14px] font-medium">Autonomy graduation</h3>
         </div>
         <span className="text-[12px] tabular-nums text-muted-foreground">
           {graduation.metCount}/{graduation.total} met
         </span>
       </div>
       <p className="mt-1.5 text-[12.5px] text-muted-foreground">
-        <span className="text-foreground">{autonomy.currentLabel}</span> → {autonomy.targetLabel}. A human
-        approves every deploy until these are consistently met.
+        Tracking progress from{" "}
+        <span className="text-foreground">{autonomy.currentLabel}</span> to{" "}
+        <span className="text-foreground">{autonomy.targetLabel}</span>. These are
+        observable track-record milestones — once consistently met, JARVIS earns
+        the next autonomy level.
       </p>
       <div className="mt-3 space-y-2">
         {graduation.criteria.map((c) => (
@@ -1151,7 +1281,11 @@ function CriteriaGrid({ criteria }: { criteria: Criterion[] }) {
   const system = criteria.filter((c) => c.group === "system");
   return (
     <div className="rounded-2xl border border-border/60 bg-card/60 p-5">
-      <h3 className="text-[14px] font-medium">What every change must satisfy</h3>
+      <h3 className="text-[14px] font-medium">Change acceptance criteria</h3>
+      <p className="mt-1 text-[12.5px] text-muted-foreground">
+        Invariants every proposed diff must pass before it can be approved —
+        independent of how many autonomy milestones are met.
+      </p>
       <div className="mt-3 grid gap-2.5 sm:grid-cols-2">
         {pillars.map((c) => (
           <div key={c.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
@@ -1249,18 +1383,15 @@ function BuildModelPicker({
   onChange: (model: string) => void;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-card/40 px-4 py-3">
-      <div>
-        <p className="text-[12.5px] font-medium text-foreground">Build model</p>
-        <p className="text-[11.5px] text-muted-foreground">
-          The model autonomous builds run on. Empty inherits the global model.
-        </p>
-      </div>
+    <div className="flex items-center gap-1.5 rounded-lg border border-border/60 bg-card/40 px-2.5 py-1.5">
+      <span className="text-[12px] text-muted-foreground">Model</span>
       <select
         value={current}
         disabled={busy}
         onChange={(e) => onChange(e.target.value)}
-        className="rounded-lg border border-border/60 bg-background px-2.5 py-1.5 text-[12.5px] text-foreground outline-none focus:border-border disabled:opacity-50"
+        aria-label="Build model — autonomous builds run on this; empty inherits the global model."
+        title="The model autonomous builds run on. Empty inherits the global model."
+        className="rounded border-0 bg-transparent px-0 py-0 text-[12px] text-foreground outline-none disabled:opacity-50"
       >
         {BUILD_MODELS.map((m) => (
           <option key={m.value} value={m.value}>
@@ -1268,6 +1399,40 @@ function BuildModelPicker({
           </option>
         ))}
       </select>
+    </div>
+  );
+}
+
+function fmtElapsed(sec: number): string {
+  if (sec <= 0) return "just now";
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+// One live build. The spinner + ticking elapsed make "is anything happening?"
+// answerable at a glance — the gap that made a click on Build feel like a no-op.
+function BuildingRow({ b }: { b: InFlightBuild }) {
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-border/60 bg-card/50 px-4 py-3">
+      <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin text-primary" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="text-[13px] font-medium text-foreground">Building…</span>
+          {b.kind && (
+            <span className="rounded-full border border-border/60 px-1.5 py-0.5 text-[10.5px] text-muted-foreground">
+              {b.kind}
+            </span>
+          )}
+          <span className="ml-auto text-[11.5px] tabular-nums text-muted-foreground">
+            {b.elapsedSec > 0 ? `${fmtElapsed(b.elapsedSec)} elapsed` : "just started"}
+          </span>
+        </div>
+        <p className="mt-1 line-clamp-2 text-[12.5px] leading-5 text-muted-foreground">
+          {b.intent || "(intent unavailable)"}
+        </p>
+        <p className="mt-1 font-mono text-[10.5px] text-muted-foreground/70">{b.id}</p>
+      </div>
     </div>
   );
 }
@@ -1281,7 +1446,7 @@ function EmptyState() {
       <p className="mt-4 text-[14px] font-medium text-foreground">Nothing to review</p>
       <p className="mt-1 max-w-sm text-[13px] leading-5 text-muted-foreground">
         JARVIS proposes improvements to his own code as he runs. When he does, they&apos;ll appear here
-        for your approval — each one tested and safe to roll back. Run a cycle to kick one off now.
+        for your review and approval. Run a cycle to kick one off now.
       </p>
     </div>
   );

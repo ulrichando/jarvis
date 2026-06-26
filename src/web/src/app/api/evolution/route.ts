@@ -10,7 +10,11 @@
 import { promises as fs } from 'fs'
 import os from 'os'
 import path from 'path'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 import Database from 'better-sqlite3'
+
+const execFileP = promisify(execFile)
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -670,19 +674,43 @@ async function readDeployStatus(): Promise<{ deployInFlight: boolean; rollbacks:
   return { deployInFlight, rollbacks }
 }
 
-async function readInFlightBuilds(): Promise<{ count: number; ids: string[] }> {
-  // Each running build holds a disposable worktree at ~/.jarvis/worktrees/<id>
-  // (spawner._worktree_path), removed on completion. Counting them gives a live
-  // "building now" signal for autonomous/cycle builds — not just user clicks.
+type InFlightBuild = { id: string; intent: string; kind: string; elapsedSec: number }
+
+async function readInFlightBuilds(): Promise<{ count: number; builds: InFlightBuild[] }> {
+  // Truth, not inference: a build is in-flight iff its `jarvis-automod-impl`
+  // process is alive. (Counting ~/.jarvis/worktrees/automod-* over-counted —
+  // failed builds leave the worktree behind, so e.g. 6 dead + 1 live read as
+  // "7 building" forever.) Parse the intent id from the process argv, then
+  // enrich with elapsed seconds (ps etimes) + the intent text/kind.
   try {
-    const dir = path.join(os.homedir(), '.jarvis', 'worktrees')
-    const entries = await fs.readdir(dir, { withFileTypes: true })
-    const ids = entries
-      .filter((e) => e.isDirectory() && e.name.startsWith('automod-'))
-      .map((e) => e.name)
-    return { count: ids.length, ids }
+    const { stdout } = await execFileP('pgrep', ['-af', 'jarvis-automod-impl'], { timeout: 4000 })
+    const seen = new Set<string>()
+    const builds: InFlightBuild[] = []
+    for (const line of stdout.split('\n')) {
+      const idM = line.match(/automod-\d{4}-\d{2}-\d{2}-[0-9a-f]{6}/)
+      const pidM = line.trim().match(/^(\d+)/)
+      if (!idM || !pidM || seen.has(idM[0])) continue
+      const id = idM[0]
+      seen.add(id)
+      let elapsedSec = 0
+      try {
+        const { stdout: et } = await execFileP('ps', ['-o', 'etimes=', '-p', pidM[1]], { timeout: 2000 })
+        elapsedSec = parseInt(et.trim(), 10) || 0
+      } catch { /* process may have just exited */ }
+      let intent = ''
+      let kind = ''
+      try {
+        const txt = await fs.readFile(
+          path.join(AUTOMOD_DIR, `${id}.intent.txt`), 'utf8')
+        intent = (txt.match(/^INTENT:\s*(.+)$/m)?.[1] ?? '').trim()
+        kind = (txt.match(/^KIND:\s*(.+)$/m)?.[1] ?? '').trim()
+      } catch { /* intent file may be gone */ }
+      builds.push({ id, intent, kind, elapsedSec })
+    }
+    return { count: builds.length, builds }
   } catch {
-    return { count: 0, ids: [] }
+    // pgrep exits non-zero when nothing matches → no builds in flight.
+    return { count: 0, builds: [] }
   }
 }
 
@@ -780,7 +808,7 @@ export async function GET(): Promise<Response> {
       autoMode,
       mode: autoMode ? 'auto' : 'manual',
       building: inFlight.count,
-      buildingIds: inFlight.ids,
+      buildingDetail: inFlight.builds,
       deployInFlight: deployStatus.deployInFlight,
       rollbacks: rollbackCount,
       recentActivity: activity.length,
