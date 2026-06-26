@@ -1,0 +1,52 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits"
+  ],
+  "labels": ["dependencies"],
+  "schedule": ["before 9am on monday"],
+  "prConcurrentLimit": 8,
+  "prHourlyLimit": 4,
+  "packageRules": [
+    {
+      "description": "Group dev-tooling patch/minor bumps into one PR; automerge those.",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "groupName": "dev-dependencies",
+      "automerge": true
+    },
+    {
+      "description": "Pin GitHub Actions to digests (feeds the #22 SHA-pinning hardening).",
+      "matchManagers": ["github-actions"],
+      "pinDigests": true,
+      "groupName": "github-actions"
+    },
+    {
+      "description": "Docker base images: digest-pin, weekly.",
+      "matchManagers": ["dockerfile", "docker-compose"],
+      "pinDigests": true
+    },
+    {
+      "description": "livekit-agents is version-pinned on purpose (plugin ABI skew). Never automerge; flag for human review.",
+      "matchPackageNames": ["/^livekit/"],
+      "automerge": false,
+      "labels": ["dependencies", "livekit-careful"]
+    },
+    {
+      "description": "Major bumps always get their own PR + explicit review.",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "addLabels": ["major-update"]
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": ["security"],
+    "automerge": false
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 9am on monday"]
+  }
+}
