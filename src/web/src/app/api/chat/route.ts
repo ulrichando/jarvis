@@ -871,7 +871,7 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
       } else {
         d.raw = err;
       }
-      console.error(`[chat] streamText error (model=${modelId}):`, JSON.stringify(d));
+      console.error("[chat] streamText error", { model: modelId, detail: d });
     },
     onFinish: async ({ text, totalUsage, finishReason }) => {
       // Disconnect MCP servers now that all tool-calling steps are done.
