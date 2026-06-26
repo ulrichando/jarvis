@@ -236,11 +236,12 @@ class BrowserbaseProvider(BrowserProvider):
             if response.status_code in {200, 201, 204}:
                 logger.debug("Closed Browserbase session %s", session_id)
                 return True
+            # Log the status only — the API response body can carry session/
+            # project detail (py/clear-text-logging-sensitive-data).
             logger.warning(
-                "Failed to close Browserbase session %s: HTTP %s - %s",
+                "Failed to close Browserbase session %s: HTTP %s",
                 session_id,
                 response.status_code,
-                response.text[:200],
             )
             return False
         except Exception as exc:  # noqa: BLE001 — cleanup must not raise
