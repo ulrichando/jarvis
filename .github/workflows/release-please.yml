@@ -1,0 +1,24 @@
+name: release-please
+
+# Maintains a rolling "release PR": parses Conventional-Commit history on
+# master, computes the next semver, updates CHANGELOG.md + the manifest. On
+# merge of that PR it tags + creates a GitHub Release. Nothing auto-releases —
+# the release happens only when you merge the PR.
+#
+# Note: the release PR is opened by GITHUB_TOKEN, which (by GitHub design) does
+# not trigger the other CI workflows, so the required checks won't run on it.
+# Merge it via owner/admin bypass, or switch to a PAT to get CI on release PRs.
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    name: release PR / tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
