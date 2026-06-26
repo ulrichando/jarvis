@@ -1,0 +1,46 @@
+name: codeql
+
+# Static analysis (SAST) for the two highest-surface languages: the web + cli
+# TypeScript and the voice-agent Python. Results land in the repo Security tab.
+# Free on this public repo. Java (android) can be added later (needs build mode).
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    # Weekly full scan (Mon 03:27 UTC) so newly-published CodeQL queries catch
+    # issues even on weeks with no pushes.
+    - cron: '27 3 * * 1'
+
+# Least privilege: only what CodeQL needs to upload results.
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both are interpreted → CodeQL "none" build mode (no compile step).
+        language: [javascript-typescript, python]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

@@ -1,0 +1,13 @@
+name: JARVIS CodeQL config
+
+# Focus analysis on first-party code. Vendored / generated / build trees are
+# excluded so the Security tab isn't drowned in noise we don't own.
+paths-ignore:
+  - 'src/android/app/src/main/cpp/llama.cpp'
+  - 'src/android/app/.cxx'
+  - '**/node_modules'
+  - '**/.venv'
+  - '**/dist'
+  - '**/.next'
+  - '**/build'
+  - '**/*.min.js'
