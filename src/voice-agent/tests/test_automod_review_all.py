@@ -63,3 +63,18 @@ def test_main_all_dispatches(tmp_path, monkeypatch, capsys):
     assert rc == 0
     assert called.get("hit") is not None
     assert json.loads(capsys.readouterr().out)["count"] == 0
+
+
+def test_review_all_pending_writes_progress_status(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    ad = tmp_path / "auto-mods"
+    ad.mkdir(parents=True)
+    _proposal(ad, "automod-2026-01-01-aaa")
+    _proposal(ad, "automod-2026-01-01-bbb")
+    from pipeline.automod import review_council
+    monkeypatch.setattr(review_council, "review_proposal", lambda *a: {"overall": {"verdict": "pass"}})
+    review_council.review_all_pending(concurrency=2)
+    status = json.loads((ad / ".review-all-status.json").read_text())
+    assert status["running"] is False
+    assert status["total"] == 2 and status["done"] == 2
+    assert "finished_at" in status

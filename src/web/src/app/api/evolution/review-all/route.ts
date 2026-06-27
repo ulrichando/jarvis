@@ -1,18 +1,16 @@
 /**
- * POST /api/evolution/review-all — run the 3-lens review council on EVERY
- * pending proposal, in parallel (bounded by JARVIS_AUTOMOD_REVIEW_CONCURRENCY,
- * default 4). Lets the user review the whole backlog in one action instead of
- * one-at-a-time through the UI's single-action gate.
+ * POST /api/evolution/review-all — kick off the 3-lens review council on EVERY
+ * pending proposal IN THE BACKGROUND (detached) and return immediately. The
+ * council writes ~/.jarvis/auto-mods/.review-all-status.json as it progresses,
+ * which GET /api/evolution surfaces — so the page polls and updates each
+ * proposal's verdict INCREMENTALLY instead of blocking on one long request
+ * (which would time out and look like "nothing happened").
  *
- * Runs host-side `jarvis-evolution-review --all`. Synchronous (several LLM calls
- * across proposals), so a generous timeout. ADVISORY ONLY — never deploys.
+ * Runs host-side `jarvis-evolution-review --all`. ADVISORY ONLY — never deploys.
  * Same-origin, proxy-gated. No args → no injection surface.
  */
-import { execFile } from 'child_process'
+import { spawn } from 'child_process'
 import path from 'path'
-import { promisify } from 'util'
-
-const execFileP = promisify(execFile)
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -21,21 +19,13 @@ const REVIEW_BIN = path.resolve(process.cwd(), '..', '..', 'bin', 'jarvis-evolut
 
 export async function POST(): Promise<Response> {
   try {
-    const { stdout } = await execFileP(REVIEW_BIN, ['--all'], {
-      timeout: 600_000,
-      maxBuffer: 16 * 1024 * 1024,
-    })
-    let summary: unknown = null
-    try {
-      summary = JSON.parse(stdout.trim())
-    } catch {
-      /* council prints JSON on success; non-JSON falls through to summary:null */
-    }
-    return Response.json({ ok: true, summary })
+    const child = spawn(REVIEW_BIN, ['--all'], { detached: true, stdio: 'ignore' })
+    child.unref()
+    return Response.json({ ok: true, started: true })
   } catch (e) {
-    const err = e as { stderr?: string; stdout?: string; message?: string }
+    const err = e as { message?: string }
     return Response.json(
-      { ok: false, detail: (err.stderr || err.stdout || err.message || 'review-all failed').trim() },
+      { ok: false, detail: err.message || 'failed to start review-all' },
       { status: 502 },
     )
   }
