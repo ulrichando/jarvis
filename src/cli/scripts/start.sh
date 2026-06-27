@@ -160,6 +160,12 @@ export ENABLE_TOOL_SEARCH=true
 export JARVIS_DISABLE_TOOL_DEFERRAL="${JARVIS_DISABLE_TOOL_DEFERRAL:-1}"
 export IS_DEMO=1
 export DISABLE_INSTALLATION_CHECKS=1
+# Enable the agent-teams / swarm feature for the (external-build) JARVIS user.
+# isAgentSwarmsEnabled() (utils/agentSwarmsEnabled.ts) is always-on for USER_TYPE=ant
+# but external builds must opt in via this env var. Unlocks the /swarm command,
+# the TeamCreate/TeamDelete tools, and the footer 'teams' menu. The swarm backends
+# (tmux / in-process) are intact and cross-platform.
+export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
 
 if [ "$JARVIS_SANDBOX_ENABLED" = "1" ]; then
   JARVIS_FLAG_SETTINGS='{"sandbox":{"enabled":true}}'
@@ -274,6 +280,12 @@ CLI_CMD=( "$BUN"
   --feature=BRIDGE_MODE
   --feature=AGENT_TRIGGERS
   --feature=AGENT_TRIGGERS_REMOTE
+  # ── Unlocked Claude-Code feature gates (see commands.ts / feature()) ──
+  # These ship in the source but were dark because the external build never
+  # passed their --feature= flag. Enabling the user-facing subset only; the
+  # Anthropic-internal / phone-home flags (KAIROS*, *_USER_SETTINGS sync,
+  # TEAMMEM, CHICAGO_MCP, telemetry/tracing) are deliberately left OFF.
+  --feature=ULTRAPLAN
   --define 'MACRO.VERSION="2.1.107"'
   --define 'MACRO.BUILD_TIME=""'
   --define 'MACRO.PACKAGE_URL="@anthropic-ai/claude-code"'
