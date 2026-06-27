@@ -7,7 +7,7 @@ Description=JARVIS self-evolution - periodic AUTO cycle trigger
 # builds — most ticks no-op cheaply. Was OnUnitActiveSec=30min, which drove the
 # token burn the 2026-06-27 governance redesign fixed.
 OnBootSec=10min
-OnCalendar=*-*-* 00/04/08/12/16/20:00:00
+OnCalendar=*-*-* 00,04,08,12,16,20:00:00
 Persistent=false
 RandomizedDelaySec=300s
 AccuracySec=2min
