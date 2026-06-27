@@ -21,6 +21,22 @@ cross-cutting ops (`bin/`, `setup/`, `scripts/`, `.github/workflows/`, docs).
 | 006  | Validate provider/Ollama `baseURL` as a URL | P3 | S | — | DONE — 3 tests |
 | 007  | Tighten `hasImageIntent()` (stop false-firing on text asks) | P3 | S | — | DONE — extended TEXT_NOUN; 298-test suite green |
 | 008  | Clear the HIGH `form-data` npm advisory (web) | P2 | S | — | DONE — override→4.0.6; audit clean |
+| 009  | Close 3 diff-path-extraction bypasses in the auto-mod safety gate | P1 | S | — | DONE — `58b69a8a`; +6 tests; bypasses empirically closed |
+| 010  | Derive build-prompt blocklist from `HARD_BLOCKLIST_PATHS` (layer-1 anti-drift) | P2 | S | — | DONE — `55d1f40f`; +sync-guard test |
+| 011  | Watchdog re-verifies health after rollback before clearing the marker | P2 | M | — | DONE — `1be7d48b`; updated 1 + 3 new tests |
+
+**009–011 implemented 2026-06-27** on branch `evolution-governance-redesign` (full
+voice-agent suite green: 3605 passed). Stay on that branch by decision — they reach
+master when it merges (the hardening belongs with the evolution work it protects).
+
+> **009–011 are from a second audit (2026-06-27)** — focus: the JARVIS
+> self-evolution / auto-mod loop (`src/voice-agent/pipeline/automod/`, watchdog/
+> deploy/publish, `bin/jarvis-automod*`), planned against commit `e04d31c8`.
+> SEC-01 (plan 009) is empirically proven and the highest-leverage. All three touch
+> auto-mod `HARD_BLOCKLIST` files → **human/normal-executor only, never the
+> auto-mod loop itself**. The loop is OFF by default today, so these are
+> "harden before flipping `JARVIS_AUTOMOD_SPAWN_LIVE=1`" findings, not live bugs.
+> Suggested order: **009 → 010 → 011** (all independent; 009 first for leverage).
 
 **002 PARTIAL (2026-06-22):** verification found the web-test gate runs `bun test`
 (bun's native runner) on a **vitest** suite → ~107 spurious failures masked by
@@ -80,6 +96,33 @@ So these aren't re-audited next run:
   RPC framing; confab_detector ReDoS (dev-controlled patterns). Not worth planning.
 - **`esbuild`/`drizzle-kit` MODERATE advisory**: deliberately left (below the web
   `high` audit gate, dev-only, fix is a breaking `--force` downgrade). See plan 008 notes.
+
+### From the 2026-06-27 Evolution audit (noted, not planned)
+
+- **OPS-03 — `deploy._wait_for_quiet` 75s cap can restart mid-conversation**: real,
+  but a **deliberate** bounded-wait tradeoff (so a deploy never hangs). Ceiling is
+  "interrupt the user after ~75s" vs "defer the deploy indefinitely". Document, don't
+  fix, unless deploys start landing during active sessions.
+- **OPS-05 — in-wrapper AUTO_MERGE `git reset --hard origin/master`** (`bin/jarvis-automod-impl:189`):
+  would discard unpushed local commits IF ever run outside a worktree — but the
+  spawner ALWAYS supplies a worktree and the block exits early there (line 163-166),
+  so it's **inert** in normal operation. Cleanest fix is to delete the dead AUTO_MERGE
+  block (superseded by `/evolution` approval + `deploy.py`); not worth a standalone plan.
+- **"3 independent layers" is 1 prompt + 1 shared validator checked twice**
+  (`finalize.py:244` + `cli.py:115` both call `test_gate.validate_diff`): architecture-
+  truth gap, not a separate bug — it's the reason plan 009 matters (one validator bug
+  defeats two layers). Folded into 009, not planned separately.
+- **Minor/low-confidence** (not worth planning): `throttle.json` non-atomic write +
+  corrupt-file-resets-cap-to-0 (cap is best-effort by design); abandoned-worktree leak
+  on SIGKILL (`prune_orphan_branches` handles branches, not worktrees); global spawn
+  lock held across a 30-min build blocks `cmd_dismiss`; `cycle.run_cycle` sets
+  `os.environ["JARVIS_AUTOMOD_SPAWN_LIVE"]=1` without restore (safe only because it
+  runs detached).
+- **Direction (maintainer's call, not a fix)**: "watch the watchdog" — nothing escalates
+  if the watchdog timer stops or `run_once` crashes every tick (`fault_boundary` swallows
+  it to `"crashed"`, no rollback, no alert). Wiring that + `evolution_rollback_unhealthy`
+  (plan 011) into the off-box `jarvis-notify` path would close the "who guards the guard"
+  gap. Deferred as a follow-up note on plan 011.
 
 ## Related: items already tracked in `docs/decisions-pending.md`
 
