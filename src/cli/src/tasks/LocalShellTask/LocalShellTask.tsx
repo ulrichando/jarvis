@@ -263,7 +263,8 @@ export function registerForeground(input: LocalShellSpawnInput & {
     command,
     description,
     shellCommand,
-    agentId
+    agentId,
+    kind
   } = input;
   const taskId = shellCommand.taskOutput.taskId;
   const unregisterCleanup = registerCleanup(async () => {
@@ -280,7 +281,8 @@ export function registerForeground(input: LocalShellSpawnInput & {
     lastReportedTotalLines: 0,
     isBackgrounded: false,
     // Not yet backgrounded - running in foreground
-    agentId
+    agentId,
+    kind
   };
   registerTask(taskState, setAppState);
   return taskId;
@@ -422,12 +424,14 @@ export function backgroundExistingForegroundTask(taskId: string, shellCommand: S
     return false;
   }
   let agentId: AgentId | undefined;
+  let kind: BashTaskKind | undefined;
   setAppState(prev => {
     const prevTask = prev.tasks[taskId];
     if (!isLocalShellTask(prevTask) || prevTask.isBackgrounded) {
       return prev;
     }
     agentId = prevTask.agentId;
+    kind = prevTask.kind;
     return {
       ...prev,
       tasks: {
@@ -439,7 +443,7 @@ export function backgroundExistingForegroundTask(taskId: string, shellCommand: S
       }
     };
   });
-  const cancelStallWatchdog = startStallWatchdog(taskId, description, undefined, toolUseId, agentId);
+  const cancelStallWatchdog = startStallWatchdog(taskId, description, kind, toolUseId, agentId);
 
   // Set up result handler (mirrors backgroundTask's handler)
   void shellCommand.result.then(async result => {
@@ -467,7 +471,7 @@ export function backgroundExistingForegroundTask(taskId: string, shellCommand: S
     });
     cleanupFn?.();
     const finalStatus = wasKilled ? 'killed' : result.code === 0 ? 'completed' : 'failed';
-    enqueueShellNotification(taskId, description, finalStatus, result.code, setAppState, toolUseId, undefined, agentId);
+    enqueueShellNotification(taskId, description, finalStatus, result.code, setAppState, toolUseId, kind, agentId);
     void evictTaskOutput(taskId);
   });
   return true;

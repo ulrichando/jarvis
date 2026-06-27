@@ -857,6 +857,7 @@ async function* runShellCommand({
     timeout,
     run_in_background
   } = input;
+  const kind = (input as BashToolInput & { kind?: 'bash' | 'monitor' }).kind;
   const timeoutMs = timeout || getDefaultTimeoutMs();
   let fullOutput = '';
   let lastProgressOutput = '';
@@ -907,7 +908,8 @@ async function* runShellCommand({
       description: description || command,
       shellCommand,
       toolUseId,
-      agentId
+      agentId,
+      kind
     }, {
       abortController,
       getAppState: () => {
@@ -1114,7 +1116,8 @@ async function* runShellCommand({
             command,
             description: description || command,
             shellCommand,
-            agentId
+            agentId,
+            kind
           }, setAppState, toolUseId);
         }
         setToolJSX({
