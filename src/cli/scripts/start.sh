@@ -160,6 +160,22 @@ export ENABLE_TOOL_SEARCH=true
 export JARVIS_DISABLE_TOOL_DEFERRAL="${JARVIS_DISABLE_TOOL_DEFERRAL:-1}"
 export IS_DEMO=1
 export DISABLE_INSTALLATION_CHECKS=1
+# Enable the agent-teams / swarm feature for the (external-build) JARVIS user.
+# isAgentSwarmsEnabled() (utils/agentSwarmsEnabled.ts) is always-on for USER_TYPE=ant
+# but external builds must opt in via this env var. Unlocks the /swarm command,
+# the TeamCreate/TeamDelete tools, and the footer 'teams' menu. The swarm backends
+# (tmux / in-process) are intact and cross-platform.
+export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
+
+# /ultraplan against jarvis-web (Phase B). The teleport/ultraplan client is wired
+# to talk to the local jarvis-web CCR-compat backend (src/web/.../api/v1/*) when
+# JARVIS_CCR_BASE_URL is set, and /ultraplan surfaces when JARVIS_ULTRAPLAN=1.
+# Left OFF by default until verified end-to-end against a running jarvis-web +
+# bridge worker. To enable: run jarvis-web, then uncomment (match your web port):
+#   export JARVIS_CCR_BASE_URL="http://127.0.0.1:3000/api"
+#   export JARVIS_ULTRAPLAN=1
+# and add the web origin to the systemd-run IPAddressAllow list below if non-local.
+# Spec: docs/superpowers/specs/2026-06-27-jarvis-web-ccr-backend-design.md
 
 if [ "$JARVIS_SANDBOX_ENABLED" = "1" ]; then
   JARVIS_FLAG_SETTINGS='{"sandbox":{"enabled":true}}'
@@ -274,6 +290,12 @@ CLI_CMD=( "$BUN"
   --feature=BRIDGE_MODE
   --feature=AGENT_TRIGGERS
   --feature=AGENT_TRIGGERS_REMOTE
+  # ── Unlocked Claude-Code feature gates (see commands.ts / feature()) ──
+  # These ship in the source but were dark because the external build never
+  # passed their --feature= flag. Enabling the user-facing subset only; the
+  # Anthropic-internal / phone-home flags (KAIROS*, *_USER_SETTINGS sync,
+  # TEAMMEM, CHICAGO_MCP, telemetry/tracing) are deliberately left OFF.
+  --feature=ULTRAPLAN
   --define 'MACRO.VERSION="2.1.107"'
   --define 'MACRO.BUILD_TIME=""'
   --define 'MACRO.PACKAGE_URL="@anthropic-ai/claude-code"'

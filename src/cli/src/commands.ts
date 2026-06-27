@@ -160,6 +160,7 @@ import antTrace from './commands/ant-trace/index.js'
 import perfIssue from './commands/perf-issue/index.js'
 import sandboxToggle from './commands/sandbox-toggle/index.js'
 import chrome from './commands/chrome/index.js'
+import swarm from './commands/swarm/index.js'
 import stickers from './commands/stickers/index.js'
 import advisor from './commands/advisor.js'
 import { logError } from './utils/log.js'
@@ -248,7 +249,9 @@ export const INTERNAL_ONLY_COMMANDS = [
   mockLimits,
   bridgeKick,
   version,
-  ...(ultraplan ? [ultraplan] : []),
+  // ultraplan moved to the main COMMANDS list (gated by feature('ULTRAPLAN') +
+  // its own JARVIS_ULTRAPLAN isEnabled check) so it's reachable in JARVIS
+  // without the USER_TYPE='ant' identity flip. See commands/ultraplan.tsx.
   ...(subscribePr ? [subscribePr] : []),
   resetLimits,
   resetLimitsNonInteractive,
@@ -274,6 +277,8 @@ const COMMANDS = memoize((): Command[] => [
   branch,
   btw,
   chrome,
+  swarm,
+  ...(ultraplan ? [ultraplan] : []),
   clear,
   color,
   compact,

@@ -1,8 +1,47 @@
 import { NextResponse } from "next/server";
+import { randomBytes } from "node:crypto";
 import { getStore } from "@/lib/bridge/db";
-import { listSessionEvents } from "@/lib/bridge/store";
+import { appendInbound, listSessionEvents } from "@/lib/bridge/store";
 import { authorizeSession } from "@/lib/bridge/authz";
 import { bridgeError } from "@/lib/bridge/errors";
+
+// Scan a session's events for ExitPlanMode tool calls and their results.
+// Returns the tool_use id of the NEWEST ExitPlanMode call that has no
+// tool_result yet (the plan awaiting a decision), or null.
+function findPendingExitPlanToolUseId(
+  events: ReturnType<typeof listSessionEvents>,
+): string | null {
+  const calls: string[] = [];
+  const resolved = new Set<string>();
+  for (const e of events) {
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(e.payload_json) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const content = (payload.message as { content?: unknown } | undefined)
+      ?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content as Array<Record<string, unknown>>) {
+      if (
+        block?.type === "tool_use" &&
+        typeof block?.name === "string" &&
+        /exit_?plan_?mode/i.test(block.name) &&
+        typeof block?.id === "string"
+      ) {
+        calls.push(block.id);
+      }
+      if (block?.type === "tool_result" && typeof block?.tool_use_id === "string") {
+        resolved.add(block.tool_use_id);
+      }
+    }
+  }
+  for (let i = calls.length - 1; i >= 0; i--) {
+    if (!resolved.has(calls[i]!)) return calls[i]!;
+  }
+  return null;
+}
 
 // GET /api/bridge/v1/sessions/{id}/plan — the latest plan the agent proposed
 // in plan mode (an ExitPlanMode tool call in an assistant turn). Read-only;
@@ -41,5 +80,80 @@ export async function GET(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return bridgeError(500, "internal_error", `plan failed: ${msg}`);
+  }
+}
+
+// POST /api/bridge/v1/sessions/{id}/plan — the PlanModal's decision (Phase B5).
+// Resolves the pending ExitPlanMode tool call by appending a `user` tool_result
+// the worker delivers to the agent, with the exact markers the ultraplan poller
+// scans for (ccrSession.ts extractApprovedPlan / extractTeleportPlan):
+//   approve → is_error:false, "## Approved Plan:\n<plan>" (+ edited variant)
+//   reject  → is_error:true  (no sentinel → poller iterates)
+//   local   → is_error:true, "__ULTRAPLAN_TELEPORT_LOCAL__\n<plan>" (run locally)
+export async function POST(
+  req: Request,
+  ctx: { params: Promise<{ sessionId: string }> },
+): Promise<NextResponse> {
+  const { sessionId } = await ctx.params;
+  const denied = await authorizeSession(req, sessionId);
+  if (denied) return denied;
+  const body = (await req.json().catch(() => null)) as {
+    decision?: string;
+    plan?: string;
+    edited?: boolean;
+  } | null;
+  const decision = body?.decision;
+  if (decision !== "approve" && decision !== "reject" && decision !== "local") {
+    return bridgeError(
+      400,
+      "invalid_request",
+      "decision must be 'approve' | 'reject' | 'local'",
+    );
+  }
+  try {
+    const store = getStore();
+    const toolUseId = findPendingExitPlanToolUseId(
+      listSessionEvents(store, sessionId, 0),
+    );
+    if (!toolUseId) {
+      return bridgeError(409, "no_pending_plan", "No plan awaiting a decision");
+    }
+    const plan = typeof body?.plan === "string" ? body.plan : "";
+    let isError: boolean;
+    let content: string;
+    if (decision === "approve") {
+      isError = false;
+      const marker = body?.edited
+        ? "## Approved Plan (edited by user):"
+        : "## Approved Plan:";
+      content = `${marker}\n${plan}`;
+    } else if (decision === "local") {
+      isError = true;
+      content = `__ULTRAPLAN_TELEPORT_LOCAL__\n${plan}`;
+    } else {
+      isError = true;
+      content = "Plan rejected by user.";
+    }
+    appendInbound(store, sessionId, {
+      type: "user",
+      uuid: randomBytes(8).toString("hex"),
+      session_id: sessionId,
+      parent_tool_use_id: null,
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: toolUseId,
+            is_error: isError,
+            content,
+          },
+        ],
+      },
+    });
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return bridgeError(500, "internal_error", `plan decision failed: ${msg}`);
   }
 }

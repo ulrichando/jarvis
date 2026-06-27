@@ -618,10 +618,16 @@ function DiffPanel({
 type PlanData = { plan: string; mode: string };
 
 /** Renders the agent's current plan (from plan mode / a plan_* event) — the
- *  SDLC design phase, polled live like the diff. */
+ *  SDLC design phase, polled live like the diff. The plan is editable, and the
+ *  Approve / Run-locally / Reject actions POST a decision that resolves the
+ *  pending ExitPlanMode tool call (the /ultraplan approval flow). */
 function PlanPanel({ sessionId }: { sessionId?: string }) {
   const [plan, setPlan] = useState<string>("");
+  const [draft, setDraft] = useState<string>("");
+  const [dirty, setDirty] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [decided, setDecided] = useState<string>("");
 
   useEffect(() => {
     if (!sessionId) return;
@@ -630,7 +636,12 @@ function PlanPanel({ sessionId }: { sessionId?: string }) {
     const load = async () => {
       try {
         const r = await fetch(`/api/bridge/v1/sessions/${sessionId}/plan`);
-        if (r.ok && active) setPlan(((await r.json()) as PlanData).plan ?? "");
+        if (r.ok && active) {
+          const next = ((await r.json()) as PlanData).plan ?? "";
+          setPlan(next);
+          // Don't clobber the user's edits on subsequent polls.
+          if (!dirty) setDraft(next);
+        }
       } catch {
         /* transient */
       }
@@ -644,7 +655,36 @@ function PlanPanel({ sessionId }: { sessionId?: string }) {
       active = false;
       clearTimeout(timer);
     };
-  }, [sessionId]);
+  }, [sessionId, dirty]);
+
+  const decide = async (decision: "approve" | "reject" | "local") => {
+    if (!sessionId || busy) return;
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/bridge/v1/sessions/${sessionId}/plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          decision,
+          plan: draft,
+          edited: decision === "approve" && draft.trim() !== plan.trim(),
+        }),
+      });
+      setDecided(
+        !r.ok
+          ? "Couldn't send your decision — try again."
+          : decision === "approve"
+            ? "Plan approved — Jarvis is executing it."
+            : decision === "local"
+              ? "Sent to your terminal to run locally."
+              : "Plan rejected — Jarvis will revise.",
+      );
+    } catch {
+      setDecided("Couldn't send your decision — try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (loading && !plan) {
     return <Empty icon={<ListChecks className="size-5" />} lines={["Loading plan…"]} />;
@@ -658,10 +698,48 @@ function PlanPanel({ sessionId }: { sessionId?: string }) {
     );
   }
   return (
-    <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
-      <pre className="whitespace-pre-wrap break-words font-sans text-[12.5px] leading-relaxed text-foreground/85">
-        {plan}
-      </pre>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <textarea
+        value={draft}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          setDirty(true);
+        }}
+        spellCheck={false}
+        className="min-h-0 flex-1 resize-none overflow-auto bg-transparent px-4 py-3 font-sans text-[12.5px] leading-relaxed text-foreground/85 outline-none"
+      />
+      <div className="border-t border-border/50 px-4 py-3">
+        {decided ? (
+          <span className="text-[12px] text-foreground/70">{decided}</span>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => decide("approve")}
+              className="rounded-md bg-foreground px-2.5 py-1 text-[12px] font-medium text-background disabled:opacity-50"
+            >
+              {draft.trim() !== plan.trim() ? "Approve edited" : "Approve"}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => decide("local")}
+              className="rounded-md border border-border px-2.5 py-1 text-[12px] disabled:opacity-50"
+            >
+              Run locally
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => decide("reject")}
+              className="rounded-md border border-border px-2.5 py-1 text-[12px] text-foreground/70 disabled:opacity-50"
+            >
+              Reject
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

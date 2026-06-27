@@ -201,14 +201,14 @@ import type { LogOption } from "./types/logs.js";
 import type { Message as MessageType } from "./types/message.js";
 import { assertMinVersion } from "./utils/autoUpdater.js";
 import {
-  CLAUDE_IN_CHROME_SKILL_HINT,
-  CLAUDE_IN_CHROME_SKILL_HINT_WITH_WEBBROWSER,
-} from "./utils/claudeInChrome/prompt.js";
+  JARVIS_IN_CHROME_SKILL_HINT,
+  JARVIS_IN_CHROME_SKILL_HINT_WITH_WEBBROWSER,
+} from "./utils/jarvisInChrome/prompt.js";
 import {
   setupClaudeInChrome,
   shouldAutoEnableClaudeInChrome,
   shouldEnableClaudeInChrome,
-} from "./utils/claudeInChrome/setup.js";
+} from "./utils/jarvisInChrome/setup.js";
 import { getContextWindowForModel } from "./utils/context.js";
 import { loadConversationForResume } from "./utils/conversationRecovery.js";
 import { buildDeepLinkBanner } from "./utils/deepLink/banner.js";
@@ -314,9 +314,9 @@ import { isXaaEnabled } from "src/services/mcp/xaaIdpLogin.js";
 import { getRelevantTips } from "src/services/tips/tipRegistry.js";
 import { logContextMetrics } from "src/utils/api.js";
 import {
-  CLAUDE_IN_CHROME_MCP_SERVER_NAME,
+  JARVIS_IN_CHROME_MCP_SERVER_NAME,
   isClaudeInChromeMCPServer,
-} from "src/utils/claudeInChrome/common.js";
+} from "src/utils/jarvisInChrome/common.js";
 import { registerCleanup } from "src/utils/cleanupRegistry.js";
 import { eagerParseCliFlag } from "src/utils/cliArgs.js";
 import { createEmptyAttributionState } from "src/utils/commitAttribution.js";
@@ -1698,8 +1698,8 @@ async function run(): Promise<CommanderCommand> {
       [] as string[],
     )
     .option("--disable-slash-commands", "Disable all skills", () => true)
-    .option("--chrome", "Enable Claude in Chrome integration")
-    .option("--no-chrome", "Disable Claude in Chrome integration")
+    .option("--chrome", "Enable Jarvis in Chrome integration")
+    .option("--no-chrome", "Disable Jarvis in Chrome integration")
     .option(
       "--file <specs...>",
       "File resources to download at startup. Format: file_id:relative_path (e.g., --file file_abc:doc.txt file_def:img.png)",
@@ -2355,7 +2355,7 @@ async function run(): Promise<CommanderCommand> {
             .map(([name]) => name);
           let reservedNameError: string | null = null;
           if (nonSdkConfigNames.some(isClaudeInChromeMCPServer)) {
-            reservedNameError = `Invalid MCP configuration: "${CLAUDE_IN_CHROME_MCP_SERVER_NAME}" is a reserved MCP name.`;
+            reservedNameError = `Invalid MCP configuration: "${JARVIS_IN_CHROME_MCP_SERVER_NAME}" is a reserved MCP name.`;
           } else if (feature("CHICAGO_MCP")) {
             const { isComputerUseMCPServer, COMPUTER_USE_MCP_SERVER_NAME } =
               await import("src/utils/computerUse/common.js");
@@ -2401,7 +2401,7 @@ async function run(): Promise<CommanderCommand> {
         }
       }
 
-      // Extract Claude in Chrome option and enforce claude.ai subscriber check (unless user is ant)
+      // Extract Jarvis in Chrome option and enforce claude.ai subscriber check (unless user is ant)
       const chromeOpts = options as {
         chrome?: boolean;
       };
@@ -2439,10 +2439,10 @@ async function run(): Promise<CommanderCommand> {
             platform:
               platform as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
           });
-          logForDebugging(`[Claude in Chrome] Error: ${error}`);
+          logForDebugging(`[Jarvis in Chrome] Error: ${error}`);
           logError(error);
           // biome-ignore lint/suspicious/noConsole:: intentional console output
-          console.error(`Error: Failed to run with Claude in Chrome.`);
+          console.error(`Error: Failed to run with Jarvis in Chrome.`);
           process.exit(1);
         }
       } else if (autoEnableClaudeInChrome) {
@@ -2456,14 +2456,14 @@ async function run(): Promise<CommanderCommand> {
             feature("WEB_BROWSER_TOOL") &&
             typeof Bun !== "undefined" &&
             "WebView" in Bun
-              ? CLAUDE_IN_CHROME_SKILL_HINT_WITH_WEBBROWSER
-              : CLAUDE_IN_CHROME_SKILL_HINT;
+              ? JARVIS_IN_CHROME_SKILL_HINT_WITH_WEBBROWSER
+              : JARVIS_IN_CHROME_SKILL_HINT;
           appendSystemPrompt = appendSystemPrompt
             ? `${appendSystemPrompt}\n\n${hint}`
             : hint;
         } catch (error) {
           // Silently skip any errors for the auto-enable
-          logForDebugging(`[Claude in Chrome] Error (auto-enable): ${error}`);
+          logForDebugging(`[Jarvis in Chrome] Error (auto-enable): ${error}`);
         }
       }
 
