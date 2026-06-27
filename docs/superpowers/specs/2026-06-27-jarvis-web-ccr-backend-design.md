@@ -106,14 +106,24 @@ Cursor: expose `rowid` as the opaque `last_id`/`after_id` string. No schema chan
   (loopback already allowed if web runs locally), and flip `JARVIS_ULTRAPLAN=1` once this
   lands so the command surfaces.
 
-### B4 — worker (mostly exists)
+### B4 — worker (VERIFIED to already exist, 2026-06-27)
 The session's agent must run in **plan mode** and emit `assistant`/`user`/`result`
-`SDKMessage`s incl. the `ExitPlanMode` tool_use. The CLI in `--feature=BRIDGE_MODE`
-(already enabled in `start.sh`) registers as a worker and writes via
-`code/sessions/{id}/worker/events`. Verify it: (a) leases work enqueued by `POST /v1/sessions`,
-(b) honors the `set_permission_mode ultraplan` control_request, (c) writes the ExitPlanMode
-tool_use the poller scans. If a gap exists, add a thin worker loop that drives a normal CLI
-session in plan mode against the seeded prompt and writes events to the store.
+`SDKMessage`s incl. the `ExitPlanMode` tool_use. **Verified the chain holds end-to-end:**
+- `cli/print.ts:2918` — the worker's headless query loop handles the inbound
+  `control_request` `subtype:'set_permission_mode'` and applies the mode (incl. `ultraplan`)
+  before the first user turn — exactly what `teleport.tsx:1117-1135` seeds and `ccrSession.ts:4-5`
+  relies on.
+- `cli/transports/ccrClient.ts` (the BRIDGE_MODE worker transport, already enabled via
+  `--feature=BRIDGE_MODE` in `start.sh`) POSTs the agent's `StdoutMessage` stream as client
+  events to `POST /sessions/{id}/worker/events` (`ccrClient.ts:726`), which the existing
+  `code/sessions/{id}/worker/events` route writes via `appendSessionEvent` into `session_events`.
+- The ExitPlanMode tool_use is just a normal `assistant` tool_use in that stream; the CCR-compat
+  `GET /v1/sessions/{id}/events` reads the SAME `session_events` table (`listSessionEvents`), so
+  the poller (`ExitPlanModeScanner`) sees it. No new worker loop needed.
+
+Remaining B4 work is only wiring: ensure `POST /v1/sessions` enqueues work the local bridge
+worker leases (`enqueueWork` + the existing lease loop in `bridge/bridgeMain.ts`), and that a
+local (non-container) worker is acceptable for single-user JARVIS.
 
 ### B5 — browser PlanModal + approval POST (`src/web`)
 The `/plan` GET + plan panel already render the plan markdown. Add:
