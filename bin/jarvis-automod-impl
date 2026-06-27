@@ -63,6 +63,34 @@ BRANCH="automod/$ID"
     fi
   fi
 
+  # Layer-1 blocklist is DERIVED from pipeline.automod._state.HARD_BLOCKLIST_PATHS
+  # (the same tuple finalize/merge enforce) so this prompt can never drift from
+  # the enforced truth. Fallback keeps it blocklist-safe if the import ever fails;
+  # tests/test_automod_impl_blocklist_synced.py guards that the fallback is complete.
+  # `|| true` so a missing venv degrades to the fallback instead of aborting (set -e).
+  BLOCKLIST_LINES="$(PYTHONPATH="$TOOLING_ROOT/src/voice-agent" \
+    "$TOOLING_ROOT/src/voice-agent/.venv/bin/python" -c \
+    'from pipeline.automod._state import HARD_BLOCKLIST_PATHS as B; print("\n".join("   - "+p for p in B))' \
+    2>/dev/null || true)"
+  if [ -z "$BLOCKLIST_LINES" ]; then
+    BLOCKLIST_LINES="   - src/voice-agent/desktop-tauri/
+   - src/voice-agent/sanitizers/
+   - src/voice-agent/confab_detector.py
+   - src/voice-agent/pipeline/automod/
+   - src/voice-agent/evolution/
+   - src/voice-agent/pipeline/skill_review.py
+   - src/voice-agent/prompts/soul.md
+   - CLAUDE.md
+   - .claude/rules/regression-prevention.md
+   - MEMORY.md
+   - USER.md
+   - bin/jarvis-automod-impl
+   - bin/jarvis-automod
+   - bin/jarvis-evolution-watchdog
+   - bin/jarvis-evolution-nightly
+   - bin/jarvis-evolution-ondemand"
+  fi
+
   PROMPT="You are JARVIS auto-mod. A targeted code change has been
 requested:
 
@@ -72,15 +100,7 @@ ${RESEARCH_SECTION}HARD RULES (violating ANY means the spawner will reject your 
 
 1. Edit ONLY files under src/voice-agent/.
 2. Do NOT touch ANY of these paths:
-   - src/voice-agent/sanitizers/
-   - src/voice-agent/confab_detector.py
-   - src/voice-agent/pipeline/automod/
-   - src/voice-agent/pipeline/skill_review.py
-   - src/voice-agent/prompts/soul.md
-   - CLAUDE.md
-   - .claude/rules/regression-prevention.md
-   - MEMORY.md
-   - USER.md
+${BLOCKLIST_LINES}
 3. Do NOT delete tests or weaken assertions. You MAY add tests.
 4. Do NOT add @pytest.mark.skip / @pytest.mark.skipif / @pytest.mark.xfail.
 5. Before committing, run the test suite via the HERMETIC runner below (this
