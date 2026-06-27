@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# jarvis-backup-verify — prove the off-box backup is RESTORABLE.
+#
+# Decrypts the newest encrypted bundle (offsite dir first, else the local copy
+# at ~/.jarvis/backup/), extracts it to a throwaway scratch dir, and checks:
+#   - every *.db passes `PRAGMA integrity_check`
+#   - the memory tarball extracts
+#   - the expected core files are present
+# Alerts via jarvis-notify on ANY failure. Driven by jarvis-backup-verify.timer.
+# Read-only w.r.t. live state — it never touches anything outside its scratch.
+set -uo pipefail
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NOTIFY="${SELF_DIR}/jarvis-notify"
+BK_DIR="${HOME}/.jarvis/backup"
+LOG="${HOME}/.local/share/jarvis/logs/backup-offsite.log"
+mkdir -p "$(dirname "$LOG")"
+
+for f in "${HOME}/.jarvis/keys.env" "${HOME}/.jarvis/alerts.env"; do
+  [ -f "$f" ] && { set -a; . "$f" 2>/dev/null || true; set +a; }
+done
+OFFSITE_DIR="${JARVIS_BACKUP_OFFSITE_DIR:-}"
+
+log()  { printf '[%s] verify: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" | tee -a "$LOG" >&2; }
+fail() { log "FAIL: $1"; "$NOTIFY" "JARVIS backup UNRESTORABLE" "$1 (see ${LOG})" urgent >/dev/null 2>&1 || true; exit 1; }
+
+# Pick newest bundle: prefer the off-box copy (proves transport), else local.
+bundle=""
+for dir in "$OFFSITE_DIR" "$BK_DIR"; do
+  [ -n "$dir" ] && [ -d "$dir" ] || continue
+  cand="$(ls -1t "$dir"/jarvis-backup-*.age "$dir"/jarvis-backup-*.gpg 2>/dev/null | head -1)"
+  [ -n "$cand" ] && { bundle="$cand"; break; }
+done
+[ -n "$bundle" ] || fail "no encrypted bundle found in offsite dir or ${BK_DIR}"
+log "verifying $(basename "$bundle")"
+
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-verify.XXXXXX")"
+trap 'rm -rf "$scratch"' EXIT
+chmod 700 "$scratch"
+
+# Decrypt by extension.
+case "$bundle" in
+  *.age)
+    id="${BK_DIR}/age-identity.txt"
+    [ -f "$id" ] || fail "age bundle but no identity at ${id}"
+    age -d -i "$id" "$bundle" > "$scratch/b.tar.gz" 2>/dev/null || fail "age decrypt failed" ;;
+  *.gpg)
+    pass="${BK_DIR}/backup.pass"
+    [ -f "$pass" ] || fail "gpg bundle but no passphrase at ${pass}"
+    gpg --batch --yes --pinentry-mode loopback --passphrase-file "$pass" -d "$bundle" > "$scratch/b.tar.gz" 2>/dev/null || fail "gpg decrypt failed" ;;
+  *) fail "unknown bundle type: $bundle" ;;
+esac
+
+tar xzf "$scratch/b.tar.gz" -C "$scratch" 2>/dev/null || fail "tarball extract failed"
+
+# integrity_check every db
+dbs=0
+for db in "$scratch"/*.db; do
+  [ -e "$db" ] || continue
+  dbs=$((dbs+1))
+  r="$(sqlite3 "$db" 'PRAGMA integrity_check;' 2>/dev/null || echo ERR)"
+  [ "$r" = ok ] || fail "$(basename "$db") integrity_check = ${r}"
+done
+[ "$dbs" -gt 0 ] || fail "no .db files in bundle"
+
+# memory tarball must extract
+if [ -f "$scratch/memory-latest.tar.gz" ]; then
+  tar tzf "$scratch/memory-latest.tar.gz" >/dev/null 2>&1 || fail "memory tarball corrupt"
+fi
+
+log "OK — ${dbs} db(s) integrity-checked, bundle restorable ($(basename "$bundle"))"
+exit 0

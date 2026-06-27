@@ -1,0 +1,24 @@
+[Unit]
+Description=JARVIS — encrypted off-box backup of the latest snapshots + secrets
+Documentation=file:%h/Documents/Projects/jarvis/scripts/jarvis-backup-offsite.sh
+# Run after a fresh local snapshot, and only once the network is up (rclone).
+After=jarvis-backup-local.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/Documents/Projects/jarvis/scripts/jarvis-backup-offsite.sh
+# Light sandbox only: the destination (JARVIS_BACKUP_OFFSITE_DIR) is a
+# user-chosen arbitrary path (USB / mount / synced folder) and the script
+# needs network for rclone + reads ~/.jarvis secrets, so ProtectHome/
+# ProtectSystem=strict would break it. The script encrypts before it leaves.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=default.target

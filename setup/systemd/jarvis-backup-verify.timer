@@ -1,0 +1,15 @@
+[Unit]
+Description=JARVIS — weekly backup restore-verification trigger
+Documentation=file:%h/Documents/Projects/jarvis/bin/jarvis-backup-verify
+
+[Timer]
+# Weekly, Monday 04:00. A backup nobody has ever restored is a hope, not a
+# backup — this decrypts the newest off-box bundle, integrity-checks every DB,
+# and alerts (jarvis-notify) if it can't be restored.
+OnCalendar=Mon *-*-* 04:00:00
+Persistent=true
+RandomizedDelaySec=600s
+Unit=jarvis-backup-verify.service
+
+[Install]
+WantedBy=timers.target
