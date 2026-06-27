@@ -338,13 +338,72 @@ def read_review(automod_id: str) -> dict | None:
         return None
 
 
+def _pending_ids() -> list[str]:
+    """Ids of all proposals with status 'pending' (built, reviewable, awaiting a
+    human decision)."""
+    from pipeline.automod._state import _automod_home
+
+    ids: list[str] = []
+    for f in sorted(_automod_home().glob("automod-*.json")):
+        if f.name.endswith(".review.json"):
+            continue
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if d.get("status") == "pending":
+            ids.append(str(d.get("id") or f.name[: -len(".json")]))
+    return ids
+
+
+def review_all_pending(concurrency: int | None = None) -> dict:
+    """Re-run the council on EVERY pending proposal, in parallel (bounded), so the
+    backlog can be reviewed in one shot instead of one-at-a-time through the UI's
+    single-action gate. Regenerates each <id>.review.json with the current council.
+    Best-effort per proposal; returns a summary."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from pipeline.automod._state import artifact_path
+
+    if concurrency is None:
+        try:
+            concurrency = max(1, int(os.environ.get("JARVIS_AUTOMOD_REVIEW_CONCURRENCY", "4")))
+        except ValueError:
+            concurrency = 4
+
+    ids = _pending_ids()
+
+    def _one(automod_id: str) -> dict:
+        try:
+            art = json.loads(artifact_path(automod_id).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return {"id": automod_id, "ok": False, "error": f"artifact: {exc}"}
+        rev = review_proposal(automod_id, str(art.get("diff", "")), str(art.get("intent", "")))
+        return {"id": automod_id, "ok": True, "verdict": (rev.get("overall") or {}).get("verdict", "?")}
+
+    results: list[dict] = []
+    if ids:
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            results = list(pool.map(_one, ids))
+    return {
+        "count": len(ids),
+        "reviewed": sum(1 for r in results if r.get("ok")),
+        "failed": sum(1 for r in results if not r.get("ok")),
+        "concurrency": concurrency,
+        "results": results,
+    }
+
+
 def _main(argv: list[str]) -> int:
-    """CLI: `python -m pipeline.automod.review_council <automod_id>` — reviews a
-    proposal by reading the diff stored in its artifact. Used by
-    bin/jarvis-evolution-review (on-demand from the web)."""
+    """CLI: `python -m pipeline.automod.review_council <automod_id> | --all` —
+    reviews one proposal (by reading the diff in its artifact) or, with --all,
+    every pending proposal in parallel. Used by bin/jarvis-evolution-review."""
     if not argv:
-        print(json.dumps({"error": "usage: review_council <automod_id>"}))
+        print(json.dumps({"error": "usage: review_council <automod_id> | --all"}))
         return 2
+    if argv[0] in ("--all", "-a"):
+        print(json.dumps(review_all_pending(), indent=2, ensure_ascii=False))
+        return 0
     automod_id = argv[0]
     from pipeline.automod._state import artifact_path
 
