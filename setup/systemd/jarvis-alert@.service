@@ -1,0 +1,13 @@
+[Unit]
+Description=JARVIS — push an off-box alert that %i failed
+# Templated failure handler, invoked via OnFailure=jarvis-alert@%n.service on
+# the core units. No OnFailure= here — this IS the handler; recursing would loop.
+
+[Service]
+Type=oneshot
+# %H = hostname, %i = the failed unit's name. jarvis-notify reads
+# ~/.jarvis/alerts.env for the ntfy topic and fans out to the phone channels.
+ExecStart=%h/Documents/Projects/jarvis/bin/jarvis-notify "JARVIS unit failed on %H" "%i entered a failed state (auto-restart exhausted). Inspect: journalctl --user -u %i -n 80 --no-pager — Recover: bin/jarvis-restart-all" urgent
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes

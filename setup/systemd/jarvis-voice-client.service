@@ -9,6 +9,8 @@ Description=JARVIS voice client (native PortAudio mic/speaker bridge to LiveKit 
 After=network-online.target livekit-server.service jarvis-voice-agent.service
 Wants=network-online.target jarvis-voice-agent.service
 Requires=livekit-server.service
+# Page off-box if the mic/speaker bridge crash-loops into a failed state.
+OnFailure=jarvis-alert@%n.service
 
 [Service]
 Type=notify

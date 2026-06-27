@@ -293,6 +293,11 @@ install_systemd_units() {
   # .timer files are what get enabled.
   for src in \
       jarvis-backup-local.service jarvis-backup-local.timer \
+      jarvis-backup-offsite.service jarvis-backup-offsite.timer \
+      jarvis-backup-verify.service jarvis-backup-verify.timer \
+      jarvis-alert@.service \
+      jarvis-slo.service jarvis-slo.timer \
+      jarvis-key-age.service jarvis-key-age.timer \
       jarvis-log-rotate.service jarvis-log-rotate.timer \
       jarvis-retention-prune.service jarvis-retention-prune.timer \
       jarvis-dep-check.service jarvis-dep-check.timer \
@@ -318,7 +323,7 @@ install_systemd_units() {
   # immediately (they don't depend on .env or running provider APIs).
   # First fire happens per OnCalendar (hourly / 02:00 daily / 03:00
   # monthly-1st); Persistent=true catches up if laptop was off.
-  for unit in jarvis-backup-local.timer jarvis-log-rotate.timer jarvis-retention-prune.timer jarvis-dep-check.timer; do
+  for unit in jarvis-backup-local.timer jarvis-backup-offsite.timer jarvis-backup-verify.timer jarvis-slo.timer jarvis-key-age.timer jarvis-log-rotate.timer jarvis-retention-prune.timer jarvis-dep-check.timer; do
     if [ -f "$USER_SYSTEMD/$unit" ]; then
       systemctl --user enable --now "$unit" >/dev/null 2>&1 \
         && ok "enabled + started $unit" \
