@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# jarvis-notify — one place to push an alert OFF the box.
+#
+#   jarvis-notify "<title>" "<body>" [priority]      priority: min|low|default|high|urgent
+#
+# Why this exists: bin/jarvis-health-alert only ever did `notify-send` — a
+# desktop toast that is INVISIBLE when you're away from the machine. Every
+# "JARVIS went silent" outage on this box went unnoticed until the user spoke
+# to a dead assistant. This dispatches to channels that reach a phone.
+#
+# Channels (all best-effort; every configured one is tried, failures are logged
+# not fatal):
+#   - ntfy       (DEFAULT, zero-account): a topic is auto-generated on first run
+#                and saved to ~/.jarvis/alerts.env. Install the ntfy app, subscribe
+#                to the printed topic, done. Override server with JARVIS_NTFY_SERVER.
+#   - Telegram   set JARVIS_TELEGRAM_BOT_TOKEN + JARVIS_TELEGRAM_CHAT_ID
+#   - email      set JARVIS_ALERT_EMAIL (needs a working `mail` or `sendmail`)
+#   - desktop    notify-send, if a session bus is reachable (local convenience)
+#
+# Config is read from ~/.jarvis/alerts.env (preferred) and ~/.jarvis/keys.env.
+# Always exits 0 — an alerter must never break its caller.
+set -uo pipefail
+
+TITLE="${1:-JARVIS}"
+BODY="${2:-}"
+PRIORITY="${3:-default}"
+
+ALERTS_ENV="${HOME}/.jarvis/alerts.env"
+KEYS_ENV="${HOME}/.jarvis/keys.env"
+LOG="${HOME}/.local/share/jarvis/logs/notify.log"
+mkdir -p "$(dirname "$LOG")" "$(dirname "$ALERTS_ENV")"
+
+# Load config (alerts.env wins; keys.env may also carry tokens).
+for f in "$KEYS_ENV" "$ALERTS_ENV"; do
+  [ -f "$f" ] && { set -a; . "$f" 2>/dev/null || true; set +a; }
+done
+
+log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$LOG"; }
+
+# ── ntfy: auto-provision a topic on first use ────────────────────────────────
+NTFY_SERVER="${JARVIS_NTFY_SERVER:-https://ntfy.sh}"
+if [ -z "${JARVIS_NTFY_TOPIC:-}" ]; then
+  # Unguessable per-box topic (ntfy topics are the only access control on the
+  # public server, so it must not be guessable).
+  rnd="$(head -c 12 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n' || date +%s%N)"
+  JARVIS_NTFY_TOPIC="jarvis-${rnd}"
+  printf 'JARVIS_NTFY_TOPIC=%s\n' "$JARVIS_NTFY_TOPIC" >> "$ALERTS_ENV"
+  chmod 600 "$ALERTS_ENV" 2>/dev/null || true
+  log "provisioned ntfy topic ${JARVIS_NTFY_TOPIC} on ${NTFY_SERVER}"
+  printf '\033[1m[jarvis-notify] new ntfy topic created:\033[0m %s\n' "$JARVIS_NTFY_TOPIC" >&2
+  printf '  Subscribe: install the ntfy app and add topic "%s" (server %s)\n' "$JARVIS_NTFY_TOPIC" "$NTFY_SERVER" >&2
+  printf '  Or in a browser: %s/%s\n' "$NTFY_SERVER" "$JARVIS_NTFY_TOPIC" >&2
+fi
+
+sent=0
+
+# Map our priority words to ntfy's.
+ntfy_prio="$PRIORITY"
+case "$PRIORITY" in min|low|default|high|urgent) ;; *) ntfy_prio="default" ;; esac
+tag="information_source"; [ "$PRIORITY" = high ] && tag="warning"; [ "$PRIORITY" = urgent ] && tag="rotating_light"
+
+if command -v curl >/dev/null 2>&1 && [ -n "${JARVIS_NTFY_TOPIC:-}" ]; then
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+    -H "Title: ${TITLE}" -H "Priority: ${ntfy_prio}" -H "Tags: ${tag}" \
+    -d "${BODY}" "${NTFY_SERVER}/${JARVIS_NTFY_TOPIC}" 2>/dev/null || echo "000")
+  [ "$code" = 200 ] && { sent=1; log "ntfy OK (${JARVIS_NTFY_TOPIC})"; } || log "ntfy FAILED http=${code}"
+fi
+
+# ── Telegram ─────────────────────────────────────────────────────────────────
+if [ -n "${JARVIS_TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${JARVIS_TELEGRAM_CHAT_ID:-}" ] && command -v curl >/dev/null 2>&1; then
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+    --data-urlencode "chat_id=${JARVIS_TELEGRAM_CHAT_ID}" \
+    --data-urlencode "text=${TITLE}"$'\n'"${BODY}" \
+    "https://api.telegram.org/bot${JARVIS_TELEGRAM_BOT_TOKEN}/sendMessage" 2>/dev/null || echo "000")
+  [ "$code" = 200 ] && { sent=1; log "telegram OK"; } || log "telegram FAILED http=${code}"
+fi
+
+# ── email ────────────────────────────────────────────────────────────────────
+if [ -n "${JARVIS_ALERT_EMAIL:-}" ]; then
+  if command -v mail >/dev/null 2>&1; then
+    printf '%s\n' "$BODY" | mail -s "[JARVIS] ${TITLE}" "$JARVIS_ALERT_EMAIL" 2>/dev/null && { sent=1; log "email OK (mail)"; } || log "email FAILED (mail)"
+  elif command -v sendmail >/dev/null 2>&1; then
+    { printf 'Subject: [JARVIS] %s\nTo: %s\n\n%s\n' "$TITLE" "$JARVIS_ALERT_EMAIL" "$BODY"; } | sendmail -t 2>/dev/null && { sent=1; log "email OK (sendmail)"; } || log "email FAILED (sendmail)"
+  fi
+fi
+
+# ── desktop (local convenience; needs an active session bus) ─────────────────
+if command -v notify-send >/dev/null 2>&1; then
+  urg=normal; [ "$PRIORITY" = urgent ] && urg=critical
+  notify-send -u "$urg" "$TITLE" "$BODY" >/dev/null 2>&1 || true
+fi
+
+[ "$sent" = 1 ] || log "NO off-box channel delivered (title=${TITLE})"
+exit 0
