@@ -27,6 +27,7 @@ import { prefetchApiKeyFromApiKeyHelperIfSafe } from './utils/auth.js'
 import { clearMemoryFileCaches } from './utils/claudemd.js'
 import { getCurrentProjectConfig, getGlobalConfig } from './utils/config.js'
 import { logForDiagnosticsNoPII } from './utils/diagLogs.js'
+import { logForDebugging } from './utils/debug.js'
 import { env } from './utils/env.js'
 import { envDynamic } from './utils/envDynamic.js'
 import { isBareMode, isEnvTruthy } from './utils/envUtils.js'
@@ -92,27 +93,36 @@ export async function setup(
     // --messaging-socket-path is passed. Awaited so the server is bound
     // and $CLAUDE_CODE_MESSAGING_SOCKET is exported before any hook
     // (SessionStart in particular) can spawn and snapshot process.env.
-    if (feature('UDS_INBOX')) {
+    const shouldStartUdsMessaging =
+      messagingSocketPath !== undefined ||
+      process.env.USER_TYPE === 'ant' ||
+      isEnvTruthy(process.env.JARVIS_UDS_INBOX)
+    if (feature('UDS_INBOX') && shouldStartUdsMessaging) {
       const m = await import('./utils/udsMessaging.js')
       await m.startUdsMessaging(
         messagingSocketPath ?? m.getDefaultUdsSocketPath(),
         { isExplicit: messagingSocketPath !== undefined },
       )
+    } else if (feature('UDS_INBOX')) {
+      logForDebugging('[setup] UDS inbox auto-bind skipped')
     }
   }
 
   // Teammate snapshot — SIMPLE-only gate (no escape hatch, swarm not used in bare)
   if (!isBareMode() && isAgentSwarmsEnabled()) {
+    logForDebugging('[setup] capturing teammate mode snapshot')
     const { captureTeammateModeSnapshot } = await import(
       './utils/swarm/backends/teammateModeSnapshot.js'
     )
     captureTeammateModeSnapshot()
+    logForDebugging('[setup] teammate mode snapshot captured')
   }
 
   // Terminal backup restoration — interactive only. Print mode doesn't
   // interact with terminal settings; the next interactive session will
   // detect and restore any interrupted setup.
   if (!getIsNonInteractiveSession()) {
+    logForDebugging('[setup] terminal backup checks starting')
     // iTerm2 backup check only when swarms enabled
     if (isAgentSwarmsEnabled()) {
       const restoredIterm2Backup = await checkAndRestoreITerm2Backup()
@@ -155,20 +165,24 @@ export async function setup(
       // Log but don't crash if Terminal.app backup restoration fails
       logError(error)
     }
+    logForDebugging('[setup] terminal backup checks complete')
   }
 
   // IMPORTANT: setCwd() must be called before any other code that depends on the cwd
+  logForDebugging('[setup] setting cwd')
   setCwd(cwd)
 
   // Capture hooks configuration snapshot to avoid hidden hook modifications.
   // IMPORTANT: Must be called AFTER setCwd() so hooks are loaded from the correct directory
   const hooksStart = Date.now()
+  logForDebugging('[setup] capturing hooks snapshot')
   captureHooksConfigSnapshot()
   logForDiagnosticsNoPII('info', 'setup_hooks_captured', {
     duration_ms: Date.now() - hooksStart,
   })
 
   // Initialize FileChanged hook watcher — sync, reads hook config snapshot
+  logForDebugging('[setup] initializing file changed watcher')
   initializeFileChangedWatcher(cwd)
 
   // Handle worktree creation if requested
@@ -285,19 +299,24 @@ export async function setup(
   }
 
   // Background jobs - only critical registrations that must happen before first query
+  logForDebugging('[setup] background jobs starting')
   logForDiagnosticsNoPII('info', 'setup_background_jobs_starting')
   // Bundled skills/plugins are registered in main.tsx before the parallel
   // getCommands() kick — see comment there. Moved out of setup() because
   // the await points above (startUdsMessaging, ~20ms) meant getCommands()
   // raced ahead and memoized an empty bundledSkills list.
   if (!isBareMode()) {
+    logForDebugging('[setup] initializing session memory')
     initSessionMemory() // Synchronous - registers hook, gate check happens lazily
+    logForDebugging('[setup] session memory initialized')
     if (feature('CONTEXT_COLLAPSE')) {
+      logForDebugging('[setup] initializing context collapse')
       /* eslint-disable @typescript-eslint/no-require-imports */
       ;(
         require('./services/contextCollapse/index.js') as typeof import('./services/contextCollapse/index.js')
       ).initContextCollapse()
       /* eslint-enable @typescript-eslint/no-require-imports */
+      logForDebugging('[setup] context collapse initialized')
     }
   }
   void lockCurrentVersion() // Lock current version to prevent deletion by other processes
@@ -319,8 +338,10 @@ export async function setup(
     // wasted when executeHooks early-returns under --bare anyway.
     isBareMode()
   if (!skipPluginPrefetch) {
+    logForDebugging('[setup] prefetching commands')
     void getCommands(getProjectRoot())
   }
+  logForDebugging('[setup] loading plugin hooks')
   void import('./utils/plugins/loadPluginHooks.js').then(m => {
     if (!skipPluginPrefetch) {
       void m.loadPluginHooks() // Pre-load plugin hooks (consumed by processSessionStartHooks before render)
@@ -368,6 +389,7 @@ export async function setup(
       ) // Start team memory sync watcher
     }
   }
+  logForDebugging('[setup] initializing sinks')
   initSinks() // Attach error log + analytics sinks and drain queued events
 
   // Session-success-rate denominator. Emit immediately after the analytics
@@ -384,15 +406,20 @@ export async function setup(
   // --bare / SIMPLE: skip — release notes are interactive-UI display data,
   // and getRecentActivity() reads up to 10 session JSONL files.
   if (!isBareMode()) {
+    logForDebugging('[setup] checking release notes')
     const { hasReleaseNotes } = await checkForReleaseNotes(
       getGlobalConfig().lastReleaseNotesSeen,
     )
+    logForDebugging(`[setup] release notes checked: hasReleaseNotes=${hasReleaseNotes}`)
     if (hasReleaseNotes) {
+      logForDebugging('[setup] loading recent activity')
       await getRecentActivity()
+      logForDebugging('[setup] recent activity loaded')
     }
   }
 
   // If permission mode is set to bypass, verify we're in a safe environment
+  logForDebugging('[setup] checking bypass permission safety')
   if (
     permissionMode === 'bypassPermissions' ||
     allowDangerouslySkipPermissions
@@ -446,6 +473,7 @@ export async function setup(
   }
 
   // Log tengu_exit event from the last session?
+  logForDebugging('[setup] final project config check')
   const projectConfig = getCurrentProjectConfig()
   if (
     projectConfig.lastCost !== undefined &&
@@ -474,4 +502,5 @@ export async function setup(
     // They're needed for cost restoration when resuming sessions.
     // The values will be overwritten when the next session exits.
   }
+  logForDebugging('[setup] complete')
 }
