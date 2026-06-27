@@ -144,9 +144,9 @@ function renderChromeToolUseMessage(
 }
 
 /**
- * Renders a clickable "View Tab" link for Claude in Chrome MCP tools.
+ * Renders a clickable "View Tab" link for Jarvis in Chrome MCP tools.
  * Returns null if:
- * - The tool is not a Claude in Chrome MCP tool
+ * - The tool is not a Jarvis in Chrome MCP tool
  * - The input doesn't have a valid tabId
  * - Hyperlinks are not supported
  */
@@ -257,7 +257,7 @@ export function renderChromeToolResultMessage(
 }
 
 /**
- * Returns tool method overrides for Claude in Chrome MCP tools. Use this to customize
+ * Returns tool method overrides for Jarvis in Chrome MCP tools. Use this to customize
  * rendering for chrome tools in a single spread operation.
  */
 export function getClaudeInChromeMCPToolOverrides(toolName: string): {
@@ -283,7 +283,7 @@ export function getClaudeInChromeMCPToolOverrides(toolName: string): {
     userFacingName(_input?: Record<string, unknown>) {
       // Trim the _mcp postfix that show up in some of the tool names
       const displayName = toolName.replace(/_mcp$/, "");
-      return `Claude in Chrome[${displayName}]`;
+      return `Jarvis in Chrome[${displayName}]`;
     },
     renderToolUseMessage(
       input: Record<string, unknown>,

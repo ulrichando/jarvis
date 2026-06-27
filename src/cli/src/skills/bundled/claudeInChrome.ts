@@ -18,11 +18,11 @@ const BROWSER_TOOLS = [
   { name: 'shortcuts_list' },
   { name: 'shortcuts_execute' },
 ] as const
-import { BASE_CHROME_PROMPT } from '../../utils/claudeInChrome/prompt.js'
-import { shouldAutoEnableClaudeInChrome } from '../../utils/claudeInChrome/setup.js'
+import { BASE_CHROME_PROMPT } from '../../utils/jarvisInChrome/prompt.js'
+import { shouldAutoEnableClaudeInChrome } from '../../utils/jarvisInChrome/setup.js'
 import { registerBundledSkill } from '../bundledSkills.js'
 
-const CLAUDE_IN_CHROME_MCP_TOOLS = BROWSER_TOOLS.map(
+const JARVIS_IN_CHROME_MCP_TOOLS = BROWSER_TOOLS.map(
   tool => `mcp__claude-in-chrome__${tool.name}`,
 )
 
@@ -39,7 +39,7 @@ export function registerClaudeInChromeSkill(): void {
       'Automates your Chrome browser to interact with web pages - clicking elements, filling forms, capturing screenshots, reading console logs, and navigating sites. Opens pages in new tabs within your existing Chrome session. Requires site-level permissions before executing (configured in the extension).',
     whenToUse:
       'When the user wants to interact with web pages, automate browser tasks, capture screenshots, read console logs, or perform any browser-based actions. Always invoke BEFORE attempting to use any mcp__claude-in-chrome__* tools.',
-    allowedTools: CLAUDE_IN_CHROME_MCP_TOOLS,
+    allowedTools: JARVIS_IN_CHROME_MCP_TOOLS,
     userInvocable: true,
     isEnabled: () => shouldAutoEnableClaudeInChrome(),
     async getPromptForCommand(args) {
