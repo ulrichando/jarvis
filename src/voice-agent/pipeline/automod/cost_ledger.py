@@ -53,3 +53,33 @@ def record(build_id: str, cost_usd: float) -> None:
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(d), encoding="utf-8")
     os.replace(tmp, p)
+
+
+def record_from_result(build_id: str, result_path: str) -> float:
+    """Parse a ``jarvis -p --output-format json`` result file, record its
+    ``total_cost_usd`` to the daily ledger, and return the cost.
+
+    The CLI prefixes stdout with a non-JSON line (``[jarvis] proxy: …``), so we
+    scan for the line that parses as a JSON object carrying ``total_cost_usd``.
+    Best-effort: returns 0.0 and records nothing if missing/unparseable. Records
+    for BOTH passed and failed builds — a failed build still spent tokens.
+    """
+    from pathlib import Path
+
+    cost = 0.0
+    try:
+        for line in Path(result_path).read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "total_cost_usd" in obj:
+                cost = float(obj.get("total_cost_usd", 0) or 0)
+    except OSError:
+        return 0.0
+    if cost > 0:
+        record(build_id, cost)
+    return cost

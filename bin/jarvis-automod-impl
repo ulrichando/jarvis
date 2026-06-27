@@ -121,7 +121,17 @@ committing."
   # 25 min for the coding agent itself; the spawner's SPAWN_TIMEOUT_S (30 min)
   # is the outer bound, leaving ~5 min for finalize (diff-gate + test re-run +
   # commit check) to run after. 10 min was too short → no_commit_landed.
-  timeout "${JARVIS_AUTOMOD_BUILD_TIMEOUT_S:-1500}" "$TOOLING_ROOT/bin/jarvis" -p "$PROMPT" || true
+  # Per-build hard spend cap = the day's REMAINING budget (the cost brake): one
+  # runaway build can't blow the whole day. Capture the agent's JSON result (it
+  # carries total_cost_usd) to a sidecar, then record it to the daily ledger
+  # regardless of pass/fail — a failed build still spent tokens.
+  _PYBIN="$TOOLING_ROOT/src/voice-agent/.venv/bin/python"
+  _RESULT="$JARVIS_HOME_DIR/auto-mods/$ID.result.json"
+  _REMAIN="$("$_PYBIN" -c "import sys; sys.path.insert(0, '$TOOLING_ROOT/src/voice-agent'); from pipeline.automod import cost_ledger; print('%.2f' % max(0.5, cost_ledger.daily_usd() - cost_ledger.spent_today()))" 2>/dev/null || echo 6)"
+  echo "[$(date -u +%FT%TZ)] [automod-impl] per-build budget cap=\$$_REMAIN (daily remaining)"
+  timeout "${JARVIS_AUTOMOD_BUILD_TIMEOUT_S:-1500}" "$TOOLING_ROOT/bin/jarvis" -p "$PROMPT" \
+      --output-format json --max-budget-usd "$_REMAIN" > "$_RESULT" 2>>"$LOG" || true
+  "$_PYBIN" -c "import sys; sys.path.insert(0, '$TOOLING_ROOT/src/voice-agent'); from pipeline.automod import cost_ledger; print('[automod-impl] build cost \$%.4f recorded' % cost_ledger.record_from_result('$ID', '$_RESULT'))" 2>>"$LOG" || true
 
   "$TOOLING_ROOT/src/voice-agent/.venv/bin/python" \
     "$REPO_ROOT/src/voice-agent/pipeline/automod/finalize.py" \
