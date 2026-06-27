@@ -356,11 +356,28 @@ def _pending_ids() -> list[str]:
     return ids
 
 
+def _review_all_status_path() -> Path:
+    from pipeline.automod._state import _automod_home
+
+    return _automod_home() / ".review-all-status.json"
+
+
+def _write_review_all_status(status: dict) -> None:
+    p = _review_all_status_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(status), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def review_all_pending(concurrency: int | None = None) -> dict:
     """Re-run the council on EVERY pending proposal, in parallel (bounded), so the
     backlog can be reviewed in one shot instead of one-at-a-time through the UI's
     single-action gate. Regenerates each <id>.review.json with the current council.
-    Best-effort per proposal; returns a summary."""
+    Writes a .review-all-status.json the /evolution UI polls so verdicts + progress
+    appear INCREMENTALLY (not all-at-once). Best-effort per proposal."""
+    import threading
     from concurrent.futures import ThreadPoolExecutor
 
     from pipeline.automod._state import artifact_path
@@ -372,21 +389,33 @@ def review_all_pending(concurrency: int | None = None) -> dict:
             concurrency = 4
 
     ids = _pending_ids()
+    total = len(ids)
+    started = _now_iso()
+    lock = threading.Lock()
+    progress = {"done": 0}
+    _write_review_all_status({"running": total > 0, "total": total, "done": 0, "started_at": started})
 
     def _one(automod_id: str) -> dict:
         try:
             art = json.loads(artifact_path(automod_id).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            return {"id": automod_id, "ok": False, "error": f"artifact: {exc}"}
-        rev = review_proposal(automod_id, str(art.get("diff", "")), str(art.get("intent", "")))
-        return {"id": automod_id, "ok": True, "verdict": (rev.get("overall") or {}).get("verdict", "?")}
+            rev = review_proposal(automod_id, str(art.get("diff", "")), str(art.get("intent", "")))
+            r = {"id": automod_id, "ok": True, "verdict": (rev.get("overall") or {}).get("verdict", "?")}
+        except Exception as exc:  # noqa: BLE001 — one bad proposal must not abort the batch
+            r = {"id": automod_id, "ok": False, "error": str(exc)}
+        with lock:
+            progress["done"] += 1
+            _write_review_all_status({"running": progress["done"] < total, "total": total,
+                                      "done": progress["done"], "started_at": started})
+        return r
 
     results: list[dict] = []
     if ids:
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             results = list(pool.map(_one, ids))
+    _write_review_all_status({"running": False, "total": total, "done": total,
+                              "started_at": started, "finished_at": _now_iso()})
     return {
-        "count": len(ids),
+        "count": total,
         "reviewed": sum(1 for r in results if r.get("ok")),
         "failed": sum(1 for r in results if not r.get("ok")),
         "concurrency": concurrency,

@@ -587,6 +587,16 @@ async function readReview(id: string): Promise<unknown> {
   }
 }
 
+// Progress of a background "review all pending" run (written by
+// review_all_pending) so the page can poll + update verdicts incrementally.
+async function readReviewAllStatus(): Promise<unknown> {
+  try {
+    return JSON.parse(await fs.readFile(path.join(AUTOMOD_DIR, '.review-all-status.json'), 'utf-8'))
+  } catch {
+    return null
+  }
+}
+
 type FitnessPoint = { ts: string; composite: number; passed: boolean }
 
 function readFitness(): {
@@ -734,6 +744,7 @@ export async function GET(): Promise<Response> {
   const proposalsReviewed = await Promise.all(
     proposals.map(async (p) => ({ ...p, review: await readReview(p.id) })),
   )
+  const reviewAllStatus = await readReviewAllStatus()
   const rollbackEvents = await readRollbackEvents(deployed)
   const rollbackCount = rollbackEvents.filter(actualRollbackEvent).length
   const fitness = readFitness()
@@ -783,6 +794,7 @@ export async function GET(): Promise<Response> {
     .slice(0, 24)
   return Response.json({
     proposals: proposalsReviewed,
+    reviewAll: reviewAllStatus,
     failed,
     deployed,
     queued,
