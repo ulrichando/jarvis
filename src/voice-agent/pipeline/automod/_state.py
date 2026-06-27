@@ -26,6 +26,10 @@ def throttle_state_path() -> Path:
     return _automod_home() / "throttle.json"
 
 
+def cost_ledger_path() -> Path:
+    return _automod_home() / "cost-ledger.json"
+
+
 def lockfile_path() -> Path:
     return _automod_home() / ".lock"
 
