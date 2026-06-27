@@ -42,8 +42,7 @@
     }
   ],
   "vulnerabilityAlerts": {
-    "labels": ["security"],
-    "automerge": false
+    "enabled": false
   },
   "lockFileMaintenance": {
     "enabled": true,

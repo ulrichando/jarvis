@@ -33,13 +33,7 @@ updates:
     open-pull-requests-limit: 0   # security-only
 
   - package-ecosystem: "npm"
-    directory: "/src/hub"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 0   # security-only
-
-  - package-ecosystem: "npm"
-    directory: "/src/extensions/jarvis-screen"
+    directory: "/src/voice-agent/desktop-tauri"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 0   # security-only
