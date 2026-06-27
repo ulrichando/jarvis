@@ -4,6 +4,13 @@
 
 **Use LUKS for disk-level encryption. Do not migrate to SQLCipher.**
 
+> **STATUS (verified 2026-06-27): DECIDED BUT NOT APPLIED.** `lsblk` shows no
+> `crypto_LUKS` device — this box runs on a plaintext filesystem. Live
+> `~/.jarvis` state (conversations, memories, `keys.env`) is **unencrypted at
+> rest**; laptop theft = full exposure. Off-box *backup* bundles ARE gpg-encrypted
+> (`jarvis-backup-offsite`), but the live disk is not. Tracked in
+> `disaster-recovery.md`.
+
 JARVIS holds three SQLite databases with sensitive content:
 
 | DB | Path | Contents |
