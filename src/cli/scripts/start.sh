@@ -167,6 +167,16 @@ export DISABLE_INSTALLATION_CHECKS=1
 # (tmux / in-process) are intact and cross-platform.
 export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
 
+# /ultraplan against jarvis-web (Phase B). The teleport/ultraplan client is wired
+# to talk to the local jarvis-web CCR-compat backend (src/web/.../api/v1/*) when
+# JARVIS_CCR_BASE_URL is set, and /ultraplan surfaces when JARVIS_ULTRAPLAN=1.
+# Left OFF by default until verified end-to-end against a running jarvis-web +
+# bridge worker. To enable: run jarvis-web, then uncomment (match your web port):
+#   export JARVIS_CCR_BASE_URL="http://127.0.0.1:3000/api"
+#   export JARVIS_ULTRAPLAN=1
+# and add the web origin to the systemd-run IPAddressAllow list below if non-local.
+# Spec: docs/superpowers/specs/2026-06-27-jarvis-web-ccr-backend-design.md
+
 if [ "$JARVIS_SANDBOX_ENABLED" = "1" ]; then
   JARVIS_FLAG_SETTINGS='{"sandbox":{"enabled":true}}'
 else

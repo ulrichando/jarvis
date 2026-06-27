@@ -3,19 +3,22 @@
 Status: IN PROGRESS (Phase A shipped on `claude/review-jarvis-utilities-oyki90`).
 Author date: 2026-06-27.
 
-**Implementation status:**
+**Implementation status — all pieces built; full E2E pending a running jarvis-web:**
 - ✅ B1 spec; ✅ B4 worker path verified (see B4 below).
-- ✅ B2 CCR-compat routes built (`src/web/src/app/api/v1/*` + `src/lib/bridge/ccrCompat.ts`),
-  transpile-verified (full Next.js typecheck/E2E pending — `src/web` deps not installed here).
-- ◐ B3: base-URL override done (`JARVIS_CCR_BASE_URL` in `constants/oauth.ts`). **Remaining:**
-  the no-auth token path — the poller/fetch/create call-sites still require a claude.ai OAuth
-  token (`getClaudeAIOAuthTokens()`); in JARVIS proxy mode they must instead send a JARVIS
-  bridge bearer and skip `x-organization-uuid`/`anthropic-beta`. Best done against a running
-  instance (multi-site edit to the intact client — verify carefully).
-- ☐ B5: browser PlanModal + plan-approval POST (`POST /api/v1/sessions/{id}/plan` →
-  `appendInbound` the ExitPlanMode tool_result). Needs the running `/code` UI to develop+verify.
-- ☐ Final wiring: `JARVIS_CCR_BASE_URL` + `JARVIS_ULTRAPLAN=1` + jarvis-web origin on the
-  `start.sh` allow-list, then E2E.
+- ✅ B2 CCR-compat routes (`src/web/src/app/api/v1/*` + `src/lib/bridge/ccrCompat.ts`).
+- ✅ B3 base-URL override (`JARVIS_CCR_BASE_URL`) + no-auth token path
+  (`getTeleportAccessToken`/`getTeleportOrgUUID` + `prepareApiRequest` JARVIS branch in
+  `utils/teleport/api.ts`; the 4 inline `teleport.tsx` sites route through them; OAuth refresh
+  skipped in JARVIS mode). CLI message shapes unchanged.
+- ✅ B5 plan-approval POST (added to `…/api/bridge/v1/sessions/{id}/plan/route.ts` — co-located
+  with the GET the UI polls) + editable PlanPanel with Approve / Run-locally / Reject buttons
+  (`src/web/src/components/code/code-panels.tsx`). Markers match `ccrSession.ts`.
+- ◐ Final wiring: `JARVIS_CCR_BASE_URL` + `JARVIS_ULTRAPLAN=1` added to `start.sh` as a
+  **commented opt-in** (left OFF until verified — enabling surfaces a command that only works
+  with jarvis-web running). E2E is the remaining step.
+- Verified here: every changed file transpiles; CLI boots clean. NOT verified (no running
+  jarvis-web + worker + model in this sandbox): full Next.js typecheck/build of `src/web`, and
+  the live `/ultraplan` round-trip.
 
 ## Problem
 
