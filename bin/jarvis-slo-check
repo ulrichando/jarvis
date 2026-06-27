@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# jarvis-slo-check — turn the telemetry JARVIS already collects into SLOs with
+# THRESHOLD ALERTS. turn_telemetry.db has per-turn ttfw, provider fallback, tool
+# errors and RSS, but nothing ever looked at it and paged — e.g. the STT-drop
+# "JARVIS silent" outage was a latency/availability breach sitting in the data
+# with no alarm. This checks the last N turns against budgets and pushes via
+# jarvis-notify on breach (latched — one alert per distinct breach set, no spam).
+#
+# Budgets (env-overridable):
+#   JARVIS_SLO_WINDOW=40            turns to evaluate
+#   JARVIS_SLO_MIN_SAMPLES=8        skip if fewer turns than this (not enough signal)
+#   JARVIS_SLO_TTFW_P95_MS=6000     p95 time-to-first-word ceiling (baseline p95
+#                                   on this box is ~4.5s for mixed routing incl.
+#                                   REASONING/cold-cache turns; 6s catches real
+#                                   regressions without firing on normal variance)
+#   JARVIS_SLO_FALLBACK_PCT=40      % of turns where the primary provider fell back
+#   JARVIS_SLO_TOOLERR_PCT=40       % of turns with a tool error
+#   JARVIS_SLO_RSS_MB=4500          worker RSS ceiling (OOM-wedge guard)
+set -uo pipefail
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NOTIFY="${SELF_DIR}/jarvis-notify"
+DB="${HOME}/.local/share/jarvis/turn_telemetry.db"
+LOG="${HOME}/.local/share/jarvis/logs/slo.log"
+STATE="${HOME}/.jarvis/health/slo-last.txt"
+mkdir -p "$(dirname "$LOG")" "$(dirname "$STATE")"
+
+WIN="${JARVIS_SLO_WINDOW:-40}"
+MIN="${JARVIS_SLO_MIN_SAMPLES:-8}"
+T_TTFW="${JARVIS_SLO_TTFW_P95_MS:-6000}"
+T_FB="${JARVIS_SLO_FALLBACK_PCT:-40}"
+T_TE="${JARVIS_SLO_TOOLERR_PCT:-40}"
+T_RSS="${JARVIS_SLO_RSS_MB:-4500}"
+
+log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$LOG"; }
+[ -f "$DB" ] || { log "no telemetry db"; exit 0; }
+
+# One query → "count|ttfw_p95|fallback_pct|toolerr_pct|rss_max" over last WIN turns.
+read -r CNT P95 FB TE RSS < <(sqlite3 -separator ' ' "$DB" "
+WITH recent AS (SELECT * FROM turns ORDER BY ts_utc DESC LIMIT ${WIN})
+SELECT
+  (SELECT COUNT(*) FROM recent),
+  IFNULL((SELECT ttfw_ms FROM (SELECT ttfw_ms FROM recent WHERE ttfw_ms IS NOT NULL ORDER BY ttfw_ms)
+          LIMIT 1 OFFSET (SELECT CAST(0.95*(COUNT(*)-1) AS INT) FROM recent WHERE ttfw_ms IS NOT NULL)), 0),
+  IFNULL((SELECT ROUND(100.0*SUM(COALESCE(route_fallback,0))/COUNT(*),0) FROM recent), 0),
+  IFNULL((SELECT ROUND(100.0*SUM(COALESCE(had_tool_error,0))/COUNT(*),0) FROM recent), 0),
+  IFNULL((SELECT ROUND(MAX(rss_mb),0) FROM recent), 0);
+" 2>/dev/null)
+
+CNT="${CNT:-0}"
+if [ "$CNT" -lt "$MIN" ]; then
+  log "skip — only ${CNT} turns in window (< ${MIN})"
+  exit 0
+fi
+
+breaches=""
+[ "${P95%.*}" -gt "$T_TTFW" ] 2>/dev/null && breaches="${breaches}TTFW p95 ${P95}ms > ${T_TTFW}ms; "
+[ "${FB%.*}"  -gt "$T_FB"   ] 2>/dev/null && breaches="${breaches}provider-fallback ${FB}% > ${T_FB}%; "
+[ "${TE%.*}"  -gt "$T_TE"   ] 2>/dev/null && breaches="${breaches}tool-error ${TE}% > ${T_TE}%; "
+[ "${RSS%.*}" -gt "$T_RSS"  ] 2>/dev/null && breaches="${breaches}RSS ${RSS}MB > ${T_RSS}MB; "
+
+summary="n=${CNT} ttfw_p95=${P95}ms fallback=${FB}% toolerr=${TE}% rss=${RSS}MB"
+log "$summary${breaches:+ — BREACH: $breaches}"
+
+if [ -z "$breaches" ]; then
+  # recovered: announce + clear latch
+  [ -s "$STATE" ] && { "$NOTIFY" "JARVIS SLOs healthy" "Back within budget ($summary)." default >/dev/null 2>&1 || true; : > "$STATE"; }
+  exit 0
+fi
+
+# latch on the breach set so we don't re-page every 15 min for the same thing
+if [ "$breaches" != "$(cat "$STATE" 2>/dev/null || true)" ]; then
+  "$NOTIFY" "JARVIS SLO breach" "${breaches}(${summary})" high >/dev/null 2>&1 || true
+  printf '%s' "$breaches" > "$STATE"
+fi
+exit 0
