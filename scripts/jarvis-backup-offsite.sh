@@ -45,7 +45,8 @@ fi
 # ── stage: latest snapshots + un-snapshotted secrets/config ──────────────────
 stamp="$(date +%Y-%m-%d-%H%M)"
 stage="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-offsite.XXXXXX")"
-trap 'rm -rf "$stage"' EXIT
+bundle=""; enc=""
+trap 'rm -rf "$stage" "${bundle:-}" "${enc:-}"' EXIT
 chmod 700 "$stage"
 
 copied=0
@@ -61,7 +62,9 @@ for f in "${HOME}/.jarvis/keys.env" "${HOME}/.jarvis/alerts.env" "${HOME}/.jarvi
 done
 [ "$copied" -gt 0 ] || die_soft "nothing to back up (no snapshots/secrets found)"
 
-bundle="${stage}/../jarvis-backup-${stamp}.tar.gz"
+# Stage the plaintext bundle (contains keys.env) in the 700 backup dir, never
+# in world-readable /tmp — it exists only until the encrypt step rm's it.
+bundle="${BK_DIR}/.staging-${stamp}.tar.gz"
 tar czf "$bundle" -C "$stage" . || die_soft "tar failed"
 
 # ── encrypt (mandatory) ──────────────────────────────────────────────────────
@@ -70,12 +73,12 @@ if command -v age >/dev/null 2>&1 && command -v age-keygen >/dev/null 2>&1; then
   id="${BK_DIR}/age-identity.txt"
   [ -f "$id" ] || { age-keygen -o "$id" 2>/dev/null && chmod 600 "$id" && log "generated age identity ${id} — COPY OFF-BOX"; }
   recip="$(age-keygen -y "$id" 2>/dev/null)"
-  enc="${bundle}.age"
+  enc="${BK_DIR}/jarvis-backup-${stamp}.tar.gz.age"
   age -r "$recip" -o "$enc" "$bundle" || die_soft "age encrypt failed"
 elif command -v gpg >/dev/null 2>&1; then
   pass="${BK_DIR}/backup.pass"
   [ -f "$pass" ] || { head -c 32 /dev/urandom | base64 > "$pass" && chmod 600 "$pass" && log "generated gpg passphrase ${pass} — COPY OFF-BOX"; }
-  enc="${bundle}.gpg"
+  enc="${BK_DIR}/jarvis-backup-${stamp}.tar.gz.gpg"
   gpg --batch --yes --pinentry-mode loopback --passphrase-file "$pass" \
       -c --cipher-algo AES256 -o "$enc" "$bundle" || die_soft "gpg encrypt failed"
 else
