@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# jarvis-trace — reconstruct ONE voice turn end-to-end for debugging.
+#
+# A turn crosses processes (voice-client mic -> livekit -> voice-agent STT/LLM/TTS
+# -> livekit -> voice-client speaker). Full injected cross-process correlation
+# IDs (OTel-style) are YAGNI for a single box AND would mean instrumenting the
+# live ~7k-line brain + a restart + the whole test suite for a debug aid. Instead
+# this CORRELATES BY TIME + the per-turn id across data JARVIS already writes: it
+# pulls a turn's row from turn_telemetry.db and stitches in the voice-agent +
+# voice-client JSON log lines from that turn's window — one turn's whole
+# lifecycle, greppable, zero core changes.
+#
+#   jarvis-trace [last|<turn_id>] [--before SECONDS] [--after SECONDS]
+set -uo pipefail
+
+DB="${HOME}/.local/share/jarvis/turn_telemetry.db"
+LOGDIR="${HOME}/.local/share/jarvis/logs"
+TURN="last"; BEFORE="${JARVIS_TRACE_BEFORE_S:-90}"; AFTER="${JARVIS_TRACE_AFTER_S:-15}"
+while [ $# -gt 0 ]; do case "$1" in
+  --before) BEFORE="$2"; shift 2 ;;
+  --after) AFTER="$2"; shift 2 ;;
+  --before=*) BEFORE="${1#*=}"; shift ;;
+  --after=*) AFTER="${1#*=}"; shift ;;
+  -*) echo "unknown flag: $1" >&2; exit 2 ;;
+  *) TURN="$1"; shift ;;
+esac; done
+
+[ -f "$DB" ] || { echo "no telemetry db at $DB" >&2; exit 1; }
+[ "$TURN" = last ] && TURN="$(sqlite3 "$DB" 'SELECT MAX(id) FROM turns;' 2>/dev/null)"
+[ -n "$TURN" ] || { echo "no turns found" >&2; exit 1; }
+
+# Turn header (pipe-separated; jarvis_text/user_text truncated).
+row="$(sqlite3 -separator '|' "$DB" "
+SELECT id, ts_utc, COALESCE(route,'?'), COALESCE(llm_used,'?'), COALESCE(voice_used,'?'),
+       COALESCE(ttfw_ms,'?'), COALESCE(total_audio_ms,'?'), COALESCE(tool_call_count,0),
+       COALESCE(had_tool_error,0), COALESCE(interrupted,0), COALESCE(route_fallback,0),
+       COALESCE(printf('%.4f',cost_usd),'?'), COALESCE(rss_mb,'?'),
+       substr(REPLACE(user_text,char(10),' '),1,90), substr(REPLACE(jarvis_text,char(10),' '),1,90)
+FROM turns WHERE id=${TURN};" 2>/dev/null)"
+[ -n "$row" ] || { echo "turn ${TURN} not found" >&2; exit 1; }
+IFS='|' read -r id ts route llm voice ttfw audio tools toolerr intr fb cost rss utext jtext <<< "$row"
+
+bold=$'\033[1m'; dim=$'\033[2m'; rst=$'\033[0m'
+printf '%s== turn %s ==%s  %s\n' "$bold" "$id" "$rst" "$ts"
+printf '  route=%s  llm=%s  voice=%s  ttfw=%sms  audio=%sms\n' "$route" "$llm" "$voice" "$ttfw" "$audio"
+printf '  tools=%s  tool_error=%s  interrupted=%s  fallback=%s  cost=$%s  rss=%sMB\n' "$tools" "$toolerr" "$intr" "$fb" "$cost" "$rss"
+printf '  %suser:%s %s\n  %sjarvis:%s %s\n\n' "$dim" "$rst" "$utext" "$dim" "$rst" "$jtext"
+printf '%slog timeline%s (window: -%ss .. +%ss around turn write)\n' "$bold" "$rst" "$BEFORE" "$AFTER"
+
+# Stitch the JSON logs in the turn's time window, merged + time-sorted.
+python3 - "$ts" "$BEFORE" "$AFTER" "$LOGDIR" <<'PY'
+import sys, os, json
+from datetime import datetime, timezone
+
+ts_str, before, after, logdir = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), sys.argv[4]
+
+def to_epoch(v):
+    if v is None: return None
+    if isinstance(v, (int, float)): return float(v)
+    s = str(v).strip().replace('Z', '+00:00')
+    try: return float(s)
+    except ValueError: pass
+    try:
+        d = datetime.fromisoformat(s)
+        if d.tzinfo is None: d = d.replace(tzinfo=timezone.utc)
+        return d.timestamp()
+    except Exception: return None
+
+center = to_epoch(ts_str)
+if center is None:
+    print("  (could not parse turn timestamp)"); sys.exit(0)
+lo, hi = center - before, center + after
+
+rows = []
+for fn in ("voice-agent.log", "voice-client.log"):
+    p = os.path.join(logdir, fn)
+    if not os.path.exists(p): continue
+    src = fn.split('.')[0].replace('voice-', '')
+    try:
+        with open(p, errors='replace') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line[0] != '{': continue
+                try: d = json.loads(line)
+                except Exception: continue
+                e = to_epoch(d.get('timestamp') or d.get('ts') or d.get('time'))
+                if e is None or not (lo <= e <= hi): continue
+                rows.append((e, src, str(d.get('level','')), str(d.get('name','')), str(d.get('message',''))[:160]))
+    except Exception: continue
+
+rows.sort(key=lambda r: r[0])
+if not rows:
+    print("  (no log lines in window — logs may have rotated, or the turn predates them)")
+for e, src, lvl, name, msg in rows:
+    t = datetime.fromtimestamp(e, timezone.utc).strftime('%H:%M:%S')
+    print(f"  {t} [{src:5}] {lvl:7} {name[:24]:24} {msg}")
+PY
+exit 0
