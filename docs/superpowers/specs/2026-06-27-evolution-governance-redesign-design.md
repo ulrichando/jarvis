@@ -117,14 +117,21 @@ tighter budget, later slots no-op on `budget_exhausted`.
 
 ### 4. Dashboard queue-count fix
 
-- `src/web/src/hooks/use-evolution-count.ts` — the nav badge should reflect
-  **queue depth** (intents waiting to build), not `proposals` (built, awaiting
-  review). Read the queued count from the API.
-- `src/web/src/app/api/evolution/route.ts` — ensure the GET response exposes an
-  explicit `queueDepth` (= `queued.length` + in-flight), distinct from
-  `proposals`. The `/evolution` page table labels each correctly (Queued vs
-  In-flight vs Proposals/Awaiting-review vs Deployed) so the counts stop
-  conflating.
+**Diagnosis (verified 2026-06-27):** the API *already* returns `queued` +
+`status.queued` (= `queued.length`), and the `/evolution` page's "Queued"
+pipeline stage already reads `data.status.queued`. So the bug is narrower than a
+missing field:
+
+- The nav badge `src/web/src/hooks/use-evolution-count.ts` reads
+  `data.proposals.length` (built proposals awaiting review), **not** the queue —
+  so the badge is the wrong metric. Point it at `status.queued`.
+- Runtime-verify `readQueue()` (reads `queue.jsonl` tail-50 + dedup) actually
+  counts all live intents. `queue.jsonl` has 17 lines; if dedup/parse drops some,
+  `status.queued` < the real depth. If it under-counts, fix the parse/dedup so
+  `status.queued` matches `wc -l queue.jsonl` minus genuinely-dead intents.
+
+The page's stage labels (Queued vs Building vs Proposals vs Deployed) are already
+distinct — keep them; just make each count read the right source.
 
 ## Components & data flow
 
