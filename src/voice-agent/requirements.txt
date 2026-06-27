@@ -167,3 +167,8 @@ coverage>=7.0
 # now so Phase 2 is ready; not yet wired. See
 # docs/superpowers/specs/2026-06-23-evolution-mutation-test-gate-design.md.
 mutmut>=3.0
+
+# D-Bus session-bus monitor for the desktop-notification listener
+# (pipeline.notification_listener) — pure-Python, no system deps. Lets JARVIS
+# read OS notifications via the notifications tool instead of a screenshot.
+jeepney>=0.9

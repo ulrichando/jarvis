@@ -1,0 +1,26 @@
+[Unit]
+Description=JARVIS — desktop notification listener (D-Bus monitor -> store, no vision)
+# Needs the user session bus + a notification daemon to observe.
+After=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Projects/jarvis/src/voice-agent
+ExecStart=%h/Documents/Projects/jarvis/src/voice-agent/.venv/bin/python -m pipeline.notification_listener
+Restart=always
+RestartSec=5
+StandardOutput=append:%h/.local/share/jarvis/logs/notifications.log
+StandardError=append:%h/.local/share/jarvis/logs/notifications.log
+
+# Light sandbox: writes ~/.jarvis/notifications.jsonl + the log, talks to the
+# session bus (AF_UNIX). No ProtectHome (it writes the store).
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=default.target
