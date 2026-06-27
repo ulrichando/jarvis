@@ -52,7 +52,13 @@ done
 # already active, do nothing (avoid double mute/unmute cycles).
 # Wrap in timeout so a hung jarvis-mode doesn't stall the unit past
 # its TimeoutStartSec.
-current="$(timeout 10 "$JARVIS_MODE" status 2>/dev/null | head -1 | sed -nE 's/^mode: ([a-z]+).*/\1/p')"
+# `|| true` is load-bearing: under `set -euo pipefail`, if `jarvis-mode status`
+# hangs at cold boot and `timeout 10` fires, the pipeline returns 124 and the
+# bare command substitution would KILL the script with 124 — landing the unit in
+# 'failed' (the exact "exit 124 for days" bug the line-68 guard below was meant
+# to fix, but on the wrong line). Tolerate it: a timed-out probe just means
+# current="" (unknown), and we fall through to the best-effort restore.
+current="$(timeout 10 "$JARVIS_MODE" status 2>/dev/null | head -1 | sed -nE 's/^mode: ([a-z]+).*/\1/p' || true)"
 if [[ "$current" == "$desired" ]]; then
     echo "[mode-resume] already in mode '$desired' — no-op"
     exit 0
@@ -65,7 +71,10 @@ echo "[mode-resume] restoring mode → $desired (was: ${current:-unknown})"
 # pick a mode from the tray — so warn and exit 0 instead of failing
 # the unit.
 rc=0
-timeout 50 "$JARVIS_MODE" "$desired" || rc=$?
+# 30s (was 50): the wait-loop (≤15s) + status probe (≤10s) + this must stay
+# under the unit's TimeoutStartSec=60s, or systemd SIGTERMs the script and the
+# unit fails anyway. 15+10+30=55s leaves margin. A cut-off switch is cosmetic.
+timeout 30 "$JARVIS_MODE" "$desired" || rc=$?
 if [[ $rc -ne 0 ]]; then
     echo "[mode-resume] jarvis-mode '$desired' did not complete (rc=$rc) — leaving mode as-is" >&2
 fi
