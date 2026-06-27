@@ -191,6 +191,19 @@ export async function prepareApiRequest(): Promise<{
   accessToken: string
   orgUUID: string
 }> {
+  // JARVIS (Phase B): when teleport/ultraplan is pointed at the local jarvis-web
+  // backend (JARVIS_CCR_BASE_URL), there is no claude.ai OAuth token — the CCR
+  // routes accept any non-empty bearer (extractBearer) and ignore the org UUID.
+  // Send a JARVIS bridge bearer instead of throwing. Placeholder orgUUID is
+  // harmless (jarvis-web ignores x-organization-uuid). See
+  // docs/superpowers/specs/2026-06-27-jarvis-web-ccr-backend-design.md
+  if (process.env.JARVIS_CCR_BASE_URL) {
+    return {
+      accessToken: process.env.JARVIS_CCR_TOKEN || 'local',
+      orgUUID: 'local',
+    }
+  }
+
   const accessToken = getClaudeAIOAuthTokens()?.accessToken
   if (accessToken === undefined) {
     throw new Error(getTeleportAuthMessage())
@@ -202,6 +215,26 @@ export async function prepareApiRequest(): Promise<{
   }
 
   return { accessToken, orgUUID }
+}
+
+/**
+ * Access token for teleport/CCR requests. In JARVIS mode (JARVIS_CCR_BASE_URL),
+ * returns a bridge bearer instead of the claude.ai OAuth token, so the inline
+ * call-sites' existing `if (!accessToken)` guards pass through. Spec:
+ * docs/superpowers/specs/2026-06-27-jarvis-web-ccr-backend-design.md
+ */
+export function getTeleportAccessToken(): string | undefined {
+  if (process.env.JARVIS_CCR_BASE_URL) {
+    return process.env.JARVIS_CCR_TOKEN || 'local'
+  }
+  return getClaudeAIOAuthTokens()?.accessToken
+}
+
+/** Org UUID for teleport/CCR requests; a placeholder in JARVIS mode (the
+ *  jarvis-web routes ignore x-organization-uuid). */
+export async function getTeleportOrgUUID(): Promise<string | null | undefined> {
+  if (process.env.JARVIS_CCR_BASE_URL) return 'local'
+  return getOrganizationUUID()
 }
 
 /**
