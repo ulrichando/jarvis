@@ -9,6 +9,7 @@ Spec: docs/superpowers/specs/2026-05-24-jarvis-source-code-self-mod-design.md
 from __future__ import annotations
 
 import os
+import posixpath
 from pathlib import Path
 
 
@@ -142,10 +143,18 @@ ALLOWED_PATH_PREFIX = "src/voice-agent/"
 
 def is_blocked_path(path: str) -> bool:
     """True if `path` (repo-relative) is in the hard blocklist OR is
-    outside the allowed prefix. Used by throttle, finalize, and merge."""
-    p = path.strip().lstrip("./")
+    outside the allowed prefix. Normalizes the path first so `..` traversal,
+    quoting, and `./` prefixes cannot slip past. Used by throttle, finalize,
+    and merge."""
+    p = path.strip().strip('"').strip()
+    if not p:
+        return True  # empty/garbage path → fail closed
+    p = posixpath.normpath(p)
+    # Absolute, or escapes the repo root via a leading `..` → never allowed.
+    if p.startswith("/") or p == ".." or p.startswith("../"):
+        return True
     for blocked in HARD_BLOCKLIST_PATHS:
-        if p == blocked or p.startswith(blocked):
+        if p == blocked.rstrip("/") or p.startswith(blocked):
             return True
     if not p.startswith(ALLOWED_PATH_PREFIX):
         return True
