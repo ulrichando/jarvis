@@ -212,5 +212,17 @@ export function getOauthConfig(): OauthConfig {
     }
   }
 
+  // JARVIS (Phase B): route CCR/teleport (/ultraplan) at the local jarvis-web
+  // backend instead of Anthropic's cloud. Set JARVIS_CCR_BASE_URL to the web
+  // origin's /api base (e.g. http://127.0.0.1:3000/api) so the client's
+  // `${BASE_API_URL}/v1/...` requests hit the CCR-compat route group in
+  // src/web/src/app/api/v1/. Only overrides the API base — the OAuth/login URLs
+  // are unused in JARVIS proxy mode (JARVIS_DISABLE_AUTH=1). Spec:
+  // docs/superpowers/specs/2026-06-27-jarvis-web-ccr-backend-design.md
+  const jarvisCcrBase = process.env.JARVIS_CCR_BASE_URL
+  if (jarvisCcrBase) {
+    config = { ...config, BASE_API_URL: jarvisCcrBase.replace(/\/$/, '') }
+  }
+
   return config
 }

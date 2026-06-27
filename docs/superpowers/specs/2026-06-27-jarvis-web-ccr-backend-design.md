@@ -1,7 +1,21 @@
 # JARVIS-web CCR backend for /ultraplan (and teleport) — design
 
-Status: DESIGN (Phase B1 of the CLI-utils unlock; Phase A shipped on
-`claude/review-jarvis-utilities-oyki90`). Author date: 2026-06-27.
+Status: IN PROGRESS (Phase A shipped on `claude/review-jarvis-utilities-oyki90`).
+Author date: 2026-06-27.
+
+**Implementation status:**
+- ✅ B1 spec; ✅ B4 worker path verified (see B4 below).
+- ✅ B2 CCR-compat routes built (`src/web/src/app/api/v1/*` + `src/lib/bridge/ccrCompat.ts`),
+  transpile-verified (full Next.js typecheck/E2E pending — `src/web` deps not installed here).
+- ◐ B3: base-URL override done (`JARVIS_CCR_BASE_URL` in `constants/oauth.ts`). **Remaining:**
+  the no-auth token path — the poller/fetch/create call-sites still require a claude.ai OAuth
+  token (`getClaudeAIOAuthTokens()`); in JARVIS proxy mode they must instead send a JARVIS
+  bridge bearer and skip `x-organization-uuid`/`anthropic-beta`. Best done against a running
+  instance (multi-site edit to the intact client — verify carefully).
+- ☐ B5: browser PlanModal + plan-approval POST (`POST /api/v1/sessions/{id}/plan` →
+  `appendInbound` the ExitPlanMode tool_result). Needs the running `/code` UI to develop+verify.
+- ☐ Final wiring: `JARVIS_CCR_BASE_URL` + `JARVIS_ULTRAPLAN=1` + jarvis-web origin on the
+  `start.sh` allow-list, then E2E.
 
 ## Problem
 
