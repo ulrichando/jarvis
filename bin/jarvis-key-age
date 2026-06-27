@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# jarvis-key-age — rotation REMINDER for provider API keys.
+#
+# Honest scope: no LLM provider exposes a key-rotation API, so this cannot
+# auto-rotate. What it CAN do is track each key's value-hash and tell you when a
+# key hasn't changed in JARVIS_KEY_MAX_AGE_DAYS — closing the "keys scrubbed
+# from git history months ago but never actually rotated" gap (the open
+# follow-through from the secret-scrub pass). Rotating a key (its value-hash
+# changes) resets the clock. The key VALUE is never stored or logged — only a
+# truncated SHA-256.
+set -uo pipefail
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NOTIFY="${SELF_DIR}/jarvis-notify"
+KEYS="${HOME}/.jarvis/keys.env"
+STATE="${HOME}/.jarvis/health/key-ages.tsv"
+LATCH="${HOME}/.jarvis/health/key-age-last.txt"
+LOG="${HOME}/.local/share/jarvis/logs/key-age.log"
+MAXD="${JARVIS_KEY_MAX_AGE_DAYS:-90}"
+VARS="${JARVIS_KEY_AGE_VARS:-ANTHROPIC_API_KEY OPENAI_API_KEY DEEPSEEK_API_KEY KIMI_API_KEY GROQ_API_KEY GOOGLE_API_KEY}"
+mkdir -p "$(dirname "$STATE")" "$(dirname "$LOG")"
+[ -f "$KEYS" ] || { echo "no keys.env"; exit 0; }
+set -a; . "$KEYS" 2>/dev/null || true; set +a
+
+now=$(date +%s)
+log()    { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$LOG"; }
+hashof() { printf '%s' "$1" | sha256sum | cut -c1-16; }
+
+declare -A P_HASH P_SINCE
+if [ -f "$STATE" ]; then
+  while IFS=$'\t' read -r k h s; do P_HASH[$k]="$h"; P_SINCE[$k]="$s"; done < "$STATE"
+fi
+
+tmp="$(mktemp)"; stale=""
+for v in $VARS; do
+  val="${!v:-}"; [ -n "$val" ] || continue
+  h="$(hashof "$val")"; since="${P_SINCE[$v]:-}"
+  if [ -z "$since" ] || [ "${P_HASH[$v]:-}" != "$h" ]; then since=$now; fi   # new or rotated → reset
+  printf '%s\t%s\t%s\n' "$v" "$h" "$since" >> "$tmp"
+  age_d=$(( (now - since) / 86400 ))
+  [ "$age_d" -ge "$MAXD" ] && stale="${stale}${v}(${age_d}d) "
+done
+mv "$tmp" "$STATE"; chmod 600 "$STATE"
+
+if [ -n "$stale" ]; then
+  log "stale (>=${MAXD}d): $stale"
+  if [ "$stale" != "$(cat "$LATCH" 2>/dev/null || true)" ]; then
+    "$NOTIFY" "JARVIS: rotate API keys" "Unrotated >= ${MAXD}d: ${stale}— rotate per docs/runbook/credential-rotation.md, then update ~/.jarvis/keys.env." default >/dev/null 2>&1 || true
+    printf '%s' "$stale" > "$LATCH"
+  fi
+else
+  log "all tracked keys within ${MAXD}d"
+  [ -s "$LATCH" ] && : > "$LATCH"
+fi
+exit 0

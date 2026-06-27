@@ -1,0 +1,13 @@
+[Unit]
+Description=JARVIS — weekly API-key age check
+Documentation=file:%h/Documents/Projects/jarvis/bin/jarvis-key-age
+
+[Timer]
+# Weekly, Sunday 05:00. Slow-changing signal; weekly is plenty.
+OnCalendar=Sun *-*-* 05:00:00
+Persistent=true
+RandomizedDelaySec=600s
+Unit=jarvis-key-age.service
+
+[Install]
+WantedBy=timers.target
