@@ -282,6 +282,8 @@ export default function EvolutionPage() {
     act(`reject:${id}`, `/api/evolution/${id}/reject`, {}, "Proposal rejected; its branch was deleted.");
   const runReview = (id: string) =>
     act(`review:${id}`, `/api/evolution/${id}/review`, undefined, "Review council finished — verdict is on the card.");
+  const reviewAll = () =>
+    act("review-all", "/api/evolution/review-all", undefined, "Reviewed all pending proposals — verdicts are on the cards.");
   const process = (id: string) =>
     act(`process:${id}`, `/api/evolution/${id}/process`, undefined, "Building — turning this into a reviewable diff.");
   const dismiss = (id: string) =>
@@ -439,6 +441,22 @@ export default function EvolutionPage() {
                     return (
                       <>
                         <CategoryFilterBar counts={counts} active={catFilter} onPick={setCatFilter} />
+                        <div className="flex justify-end">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={busy === "review-all"}
+                            onClick={reviewAll}
+                            title="Re-run the 3-lens review council on every pending proposal, in parallel"
+                          >
+                            {busy === "review-all" ? (
+                              <Loader2 className="size-3.5 animate-spin" />
+                            ) : (
+                              <Radar className="size-3.5" />
+                            )}
+                            {busy === "review-all" ? "Reviewing all…" : `Review all pending (${data.proposals.length})`}
+                          </Button>
+                        </div>
                         {catFilter && proposals.length === 0 && (
                           <p className="px-1 py-8 text-center text-[13px] text-muted-foreground">
                             No proposals to review under {catFilter}.
