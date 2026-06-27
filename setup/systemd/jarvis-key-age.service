@@ -1,0 +1,17 @@
+[Unit]
+Description=JARVIS — remind to rotate provider API keys older than the budget
+Documentation=file:%h/Documents/Projects/jarvis/bin/jarvis-key-age
+
+[Service]
+Type=oneshot
+ExecStart=%h/Documents/Projects/jarvis/bin/jarvis-key-age
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=default.target

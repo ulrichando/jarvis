@@ -1,0 +1,19 @@
+[Unit]
+Description=JARVIS — verify the off-box backup is actually restorable
+Documentation=file:%h/Documents/Projects/jarvis/bin/jarvis-backup-verify
+
+[Service]
+Type=oneshot
+ExecStart=%h/Documents/Projects/jarvis/bin/jarvis-backup-verify
+# Light sandbox: decrypts a bundle (gpg/age touch ~/.gnupg) and reads the
+# offsite dir, so no ProtectHome. Restores into a private /tmp scratch.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# jarvis-voice-deploy — restart the voice-agent BEHIND a health gate, so a bad
+# restart/deploy can't silently leave JARVIS dead (the failure seen live: a
+# restart that doesn't come up healthy = no audio until a human notices).
+#
+# Restart -> soak -> verify the agent reached AND HELD `active` without a
+# restart loop. On failure it runs the proven recovery routine, PAGES off-box,
+# and prints the last-known-good SHA for a controlled rollback. It deliberately
+# does NOT `git reset` — this repo carries concurrent-session dirty files; code
+# rollback is the evolution-watchdog's job (detached worktree). This gates the
+# *restart*, records last-known-good on success, and screams on failure.
+#
+#   jarvis-voice-deploy [--full] [--force] [--dry-run]
+#     --full     also bounce livekit + voice-client + proxy (jarvis-restart-all)
+#     --force    skip the "no restart within 60s of a live turn" guard
+#     --dry-run  report current health + intended action, change nothing
+set -uo pipefail
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NOTIFY="${SELF_DIR}/jarvis-notify"
+RECOVER="${SELF_DIR}/jarvis-voice-recover"
+REPO="$(cd "${SELF_DIR}/.." && pwd)"
+DB="${HOME}/.local/share/jarvis/turn_telemetry.db"
+GOOD="${HOME}/.jarvis/health/voice-last-good-sha"
+LOG="${HOME}/.local/share/jarvis/logs/deploy.log"
+SOAK="${JARVIS_DEPLOY_SOAK_S:-20}"
+mkdir -p "$(dirname "$GOOD")" "$(dirname "$LOG")"
+
+FULL=0; FORCE=0; DRY=0
+for a in "$@"; do case "$a" in
+  --full) FULL=1 ;; --force) FORCE=1 ;; --dry-run) DRY=1 ;;
+  *) echo "unknown flag: $a" >&2; exit 2 ;;
+esac; done
+
+log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" | tee -a "$LOG"; }
+sha() { git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown; }
+
+last=$(sqlite3 "$DB" "SELECT CAST((julianday('now')-julianday(MAX(ts_utc)))*86400 AS INT) FROM turns;" 2>/dev/null || echo 99999)
+[ -z "$last" ] && last=99999
+if [ "$FORCE" != 1 ] && [ "$last" -lt 60 ]; then
+  log "ABORT: last turn ${last}s ago (<60s) — a session may be live. Use --force."
+  exit 1
+fi
+
+cur="$(sha)"
+log "deploy start: HEAD=${cur} agent=$(systemctl --user is-active jarvis-voice-agent.service 2>/dev/null || echo unknown) last_turn=${last}s full=${FULL} dry=${DRY}"
+if [ "$DRY" = 1 ]; then
+  log "dry-run: would restart $( [ "$FULL" = 1 ] && echo 'full stack' || echo 'voice-agent'), soak ${SOAK}s, health-gate; last-known-good=$(cat "$GOOD" 2>/dev/null || echo none)"
+  exit 0
+fi
+
+nbefore=$(systemctl --user show jarvis-voice-agent.service -p NRestarts --value 2>/dev/null || echo 0)
+if [ "$FULL" = 1 ]; then
+  "${SELF_DIR}/jarvis-restart-all" $([ "$FORCE" = 1 ] && echo --force) >>"$LOG" 2>&1 || true
+else
+  systemctl --user restart jarvis-voice-agent.service >>"$LOG" 2>&1 || true
+fi
+
+# Health gate: must be `active` for the whole soak with no new restart loop.
+ok=1; st=unknown
+for _ in $(seq 1 "$SOAK"); do
+  st=$(systemctl --user is-active jarvis-voice-agent.service 2>/dev/null || echo unknown)
+  [ "$st" = active ] || ok=0
+  sleep 1
+done
+nafter=$(systemctl --user show jarvis-voice-agent.service -p NRestarts --value 2>/dev/null || echo 0)
+looped=0; [ "${nafter:-0}" -gt "${nbefore:-0}" ] 2>/dev/null && looped=1
+
+if [ "$ok" = 1 ] && [ "$looped" = 0 ]; then
+  echo "$cur" > "$GOOD"
+  log "OK: agent healthy (HEAD=${cur}, held active ${SOAK}s, no restart loop)"
+  exit 0
+fi
+
+good="$(cat "$GOOD" 2>/dev/null || echo unknown)"
+log "FAIL: agent not healthy (active=${st} looped=${looped}). Recovering + paging."
+[ -x "$RECOVER" ] && "$RECOVER" deploy-gate >>"$LOG" 2>&1 || true
+"$NOTIFY" "JARVIS deploy FAILED" "voice-agent did not come up healthy after restart (HEAD=${cur}, active=${st}, looped=${looped}). Recovery attempted. Last-known-good=${good}. Roll back ${good} in a clean worktree, then re-deploy." urgent >/dev/null 2>&1 || true
+exit 1

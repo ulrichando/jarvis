@@ -1,0 +1,15 @@
+[Unit]
+Description=JARVIS — daily encrypted off-box backup trigger
+Documentation=file:%h/Documents/Projects/jarvis/scripts/jarvis-backup-offsite.sh
+
+[Timer]
+# Daily at 03:30. Persistent=true catches up after the box was asleep at the
+# scheduled time — a backup that only runs when the laptop happens to be awake
+# at 03:30 is not a backup.
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=600s
+Unit=jarvis-backup-offsite.service
+
+[Install]
+WantedBy=timers.target

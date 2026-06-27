@@ -1,0 +1,15 @@
+[Unit]
+Description=JARVIS — 15-minute SLO evaluation trigger
+Documentation=file:%h/Documents/Projects/jarvis/bin/jarvis-slo-check
+
+[Timer]
+# Every 15 minutes. Persistent=false — a missed SLO window is stale; no point
+# batch-firing catch-up checks after the box wakes.
+OnBootSec=10min
+OnCalendar=*:0/15
+Persistent=false
+RandomizedDelaySec=120s
+Unit=jarvis-slo.service
+
+[Install]
+WantedBy=timers.target

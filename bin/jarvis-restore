@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# jarvis-restore — recover JARVIS state from an encrypted off-box backup.
+#
+#   jarvis-restore --list                 show available bundles
+#   jarvis-restore [bundle]               decrypt+extract newest (or given) bundle
+#                                         into a scratch dir and PRINT how to apply
+#   jarvis-restore [bundle] --apply       also copy components back into place
+#                                         (prompts unless --yes)
+#
+# Default is SAFE: it stages the recovered files and shows you the exact copies
+# to run — it does not silently overwrite live state (a stale backup clobbering
+# a good keys.env is its own disaster). --apply does the copies after a prompt.
+set -uo pipefail
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BK_DIR="${HOME}/.jarvis/backup"
+for f in "${HOME}/.jarvis/keys.env" "${HOME}/.jarvis/alerts.env"; do
+  [ -f "$f" ] && { set -a; . "$f" 2>/dev/null || true; set +a; }
+done
+OFFSITE_DIR="${JARVIS_BACKUP_OFFSITE_DIR:-}"
+
+BUNDLE=""; APPLY=0; YES=0
+for a in "$@"; do
+  case "$a" in
+    --list) MODE=list ;;
+    --apply) APPLY=1 ;;
+    --yes|-y) YES=1 ;;
+    -*) echo "unknown flag: $a" >&2; exit 2 ;;
+    *) BUNDLE="$a" ;;
+  esac
+done
+
+list_bundles() {
+  for dir in "$OFFSITE_DIR" "$BK_DIR"; do
+    [ -n "$dir" ] && [ -d "$dir" ] || continue
+    ls -1t "$dir"/jarvis-backup-*.age "$dir"/jarvis-backup-*.gpg 2>/dev/null
+  done
+}
+
+if [ "${MODE:-}" = list ]; then
+  echo "Available encrypted bundles (newest first):"
+  list_bundles | sed 's/^/  /' || true
+  exit 0
+fi
+
+[ -n "$BUNDLE" ] || BUNDLE="$(list_bundles | head -1)"
+[ -n "$BUNDLE" ] && [ -f "$BUNDLE" ] || { echo "no bundle found — try: jarvis-restore --list" >&2; exit 1; }
+
+dest="${HOME}/.jarvis/restore-$(date +%Y-%m-%d-%H%M)"
+mkdir -p "$dest"; chmod 700 "$dest"
+echo "Restoring $(basename "$BUNDLE") -> ${dest}"
+
+case "$BUNDLE" in
+  *.age)
+    id="${BK_DIR}/age-identity.txt"
+    [ -f "$id" ] || { echo "age bundle but no identity at ${id} (restore it from your off-box copy first)" >&2; exit 1; }
+    age -d -i "$id" "$BUNDLE" > "${dest}/b.tar.gz" || { echo "age decrypt failed" >&2; exit 1; } ;;
+  *.gpg)
+    pass="${BK_DIR}/backup.pass"
+    [ -f "$pass" ] || { echo "gpg bundle but no passphrase at ${pass} (restore it from your off-box copy first)" >&2; exit 1; }
+    gpg --batch --yes --pinentry-mode loopback --passphrase-file "$pass" -d "$BUNDLE" > "${dest}/b.tar.gz" || { echo "gpg decrypt failed" >&2; exit 1; } ;;
+  *) echo "unknown bundle type" >&2; exit 1 ;;
+esac
+tar xzf "${dest}/b.tar.gz" -C "$dest" && rm -f "${dest}/b.tar.gz"
+
+echo "Recovered files:"; ls -1 "$dest" | sed 's/^/  /'
+
+# Map recovered files -> live destinations.
+map_dest() {
+  case "$1" in
+    turn_telemetry-latest.db) echo "${HOME}/.local/share/jarvis/turn_telemetry.db" ;;
+    hub_state-latest.db)      echo "${HOME}/.jarvis/hub/state.db" ;;
+    workspaces_meta-latest.json) echo "${HOME}/.jarvis/workspaces/_meta.json" ;;
+    keys.env)   echo "${HOME}/.jarvis/keys.env" ;;
+    alerts.env) echo "${HOME}/.jarvis/alerts.env" ;;
+    faces.json) echo "${HOME}/.jarvis/faces/faces.json" ;;
+    memory-latest.tar.gz) echo "TARBALL:${HOME}/.claude/projects/-home-ulrich-Documents-Projects-jarvis" ;;
+    *) echo "" ;;
+  esac
+}
+
+if [ "$APPLY" -ne 1 ]; then
+  echo; echo "Dry run. To put these back, run with --apply, or copy manually:"
+  for f in "$dest"/*; do
+    b="$(basename "$f")"; d="$(map_dest "$b")"; [ -n "$d" ] || continue
+    case "$d" in TARBALL:*) echo "  tar xzf '$f' -C '${d#TARBALL:}'" ;; *) echo "  cp '$f' '$d'" ;; esac
+  done
+  exit 0
+fi
+
+if [ "$YES" -ne 1 ]; then
+  printf 'Apply will OVERWRITE live state with this backup. Continue? [y/N] '
+  read -r ans; [ "$ans" = y ] || [ "$ans" = Y ] || { echo "aborted."; exit 0; }
+fi
+for f in "$dest"/*; do
+  b="$(basename "$f")"; d="$(map_dest "$b")"; [ -n "$d" ] || continue
+  case "$d" in
+    TARBALL:*) tgt="${d#TARBALL:}"; mkdir -p "$tgt"; tar xzf "$f" -C "$tgt" && echo "  restored memory -> $tgt" ;;
+    *) mkdir -p "$(dirname "$d")"; cp "$f" "$d" && echo "  restored $b -> $d" ;;
+  esac
+done
+echo "Done. Restart services if needed: bin/jarvis-restart-all"
+exit 0

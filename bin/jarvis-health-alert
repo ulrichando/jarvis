@@ -16,7 +16,10 @@ mkdir -p "$(dirname "$LOG")" "$(dirname "$STATE")"
 out="$("$HEALTH" 2>&1)"; rc=$?
 { printf '[%s] rc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc"; printf '%s\n' "$out"; } >> "$LOG"
 
-notify() { command -v notify-send >/dev/null 2>&1 && notify-send -u critical "$1" "$2" >/dev/null 2>&1 || true; }
+# Route through jarvis-notify so alerts reach the phone (ntfy/Telegram/email),
+# not just a desktop toast — the whole point of catching "JARVIS went silent"
+# while you're away. jarvis-notify does notify-send itself for local convenience.
+notify() { "${SELF_DIR}/jarvis-notify" "$1" "$2" "${3:-high}" >/dev/null 2>&1 || true; }
 
 # Strip ANSI colour, keep the [FAIL] lines as the failure signature.
 fails="$(printf '%s\n' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep '\[FAIL\]' || true)"
@@ -31,7 +34,7 @@ fi
 sig="$(printf '%s\n' "$fails" | sort)"
 if [ "$sig" != "$(cat "$STATE" 2>/dev/null || true)" ]; then
   n="$(printf '%s\n' "$fails" | grep -c '\[FAIL\]' || true)"
-  notify "JARVIS health: ${n} check(s) failing" "$(printf '%s\n' "$fails" | sed 's/^[[:space:]]*//')"
+  notify "JARVIS health: ${n} check(s) failing" "$(printf '%s\n' "$fails" | sed 's/^[[:space:]]*//')" urgent
   printf '%s' "$sig" > "$STATE"
 fi
 # Always exit 0: this is the ALERTER. Health status rides the notification +

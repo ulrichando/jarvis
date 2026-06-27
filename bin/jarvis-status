@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# jarvis-status — at-a-glance dashboard of the JARVIS stack.
+#
+# Surfaces what turn_telemetry.db has always collected but nothing ever showed:
+# service health, last-24h voice metrics (TTFW p50/p95, route mix, provider
+# fallback, tool errors, cost, RSS), SLO state, and backup freshness. Prints a
+# terminal report AND writes a self-contained HTML to ~/.jarvis/status.html.
+#   jarvis-status [--open]
+set -uo pipefail
+
+DB="${HOME}/.local/share/jarvis/turn_telemetry.db"
+HTML="${JARVIS_STATUS_HTML:-${HOME}/.jarvis/status.html}"
+SLO_LOG="${HOME}/.local/share/jarvis/logs/slo.log"
+HEALTH_LOG="${HOME}/.local/share/jarvis/logs/health.log"
+BK_DIR="${HOME}/.jarvis/backup"
+OFFSITE_DIR="${JARVIS_BACKUP_OFFSITE_DIR:-}"
+[ -f "${HOME}/.jarvis/alerts.env" ] && { set -a; . "${HOME}/.jarvis/alerts.env" 2>/dev/null || true; set +a; OFFSITE_DIR="${JARVIS_BACKUP_OFFSITE_DIR:-$OFFSITE_DIR}"; }
+OPEN=0; [ "${1:-}" = "--open" ] && OPEN=1
+
+q(){ sqlite3 "$DB" "$1" 2>/dev/null; }
+
+read -r N T50 T95 FB TE COST RSS < <(sqlite3 -separator ' ' "$DB" "
+WITH w AS (SELECT * FROM turns WHERE ts_utc > strftime('%Y-%m-%dT%H:%M:%SZ','now','-1 day'))
+SELECT (SELECT COUNT(*) FROM w),
+ IFNULL((SELECT ttfw_ms FROM (SELECT ttfw_ms FROM w WHERE ttfw_ms IS NOT NULL ORDER BY ttfw_ms) LIMIT 1 OFFSET (SELECT CAST(0.50*(COUNT(*)-1) AS INT) FROM w WHERE ttfw_ms IS NOT NULL)),0),
+ IFNULL((SELECT ttfw_ms FROM (SELECT ttfw_ms FROM w WHERE ttfw_ms IS NOT NULL ORDER BY ttfw_ms) LIMIT 1 OFFSET (SELECT CAST(0.95*(COUNT(*)-1) AS INT) FROM w WHERE ttfw_ms IS NOT NULL)),0),
+ IFNULL((SELECT ROUND(100.0*SUM(COALESCE(route_fallback,0))/COUNT(*),0) FROM w),0),
+ IFNULL((SELECT ROUND(100.0*SUM(COALESCE(had_tool_error,0))/COUNT(*),0) FROM w),0),
+ IFNULL((SELECT ROUND(SUM(COALESCE(cost_usd,0)),4) FROM w),0),
+ IFNULL((SELECT ROUND(MAX(rss_mb),0) FROM w),0);" 2>/dev/null)
+N="${N:-0}"
+LASTAGE=$(q "SELECT CAST((julianday('now')-julianday(MAX(ts_utc)))*86400 AS INT) FROM turns;"); LASTAGE="${LASTAGE:-?}"
+TOTAL=$(q "SELECT COUNT(*) FROM turns;"); TOTAL="${TOTAL:-0}"
+
+svc_line=""
+for u in livekit-server jarvis-voice-agent jarvis-voice-client jarvis-proxy; do
+  st=$(systemctl --user is-active "$u.service" 2>/dev/null || echo unknown)
+  svc_line+="$(printf '%-22s %s\n' "$u" "$st")"$'\n'
+done
+dock_line=""
+for c in kokoro-tts honcho-api; do
+  s=$(docker ps --filter "name=$c" --format '{{.Status}}' 2>/dev/null | head -1); dock_line+="$(printf '%-22s %s\n' "$c" "${s:-not running}")"$'\n'
+done
+routes=$(q "SELECT printf('%-16s %d', COALESCE(route,'(none)'), COUNT(*)) FROM turns WHERE ts_utc>strftime('%Y-%m-%dT%H:%M:%SZ','now','-1 day') GROUP BY route ORDER BY COUNT(*) DESC;" | head -6)
+slo_last=$(grep -v skip "$SLO_LOG" 2>/dev/null | tail -1 | sed 's/^\[[^]]*\] //')
+# newest off-box bundle age (hours)
+bk_age="(none)"; for d in "$OFFSITE_DIR" "$BK_DIR"; do
+  [ -n "$d" ] && [ -d "$d" ] || continue
+  f=$(ls -1t "$d"/jarvis-backup-*.gpg "$d"/jarvis-backup-*.age 2>/dev/null | head -1)
+  [ -n "$f" ] && { bk_age="$(( ($(date +%s) - $(stat -c %Y "$f")) / 3600 ))h ago ($(basename "$(dirname "$f")"))"; break; }
+done
+gen="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# ── terminal ─────────────────────────────────────────────────────────────────
+bold=$'\033[1m'; rst=$'\033[0m'
+printf '%s== JARVIS status ==%s  (%s)\n\n' "$bold" "$rst" "$gen"
+printf '%sServices%s\n%s' "$bold" "$rst" "$svc_line"
+printf '%s' "$dock_line"
+printf '\n%sVoice (last 24h)%s\n' "$bold" "$rst"
+printf '  turns=%s  last_turn=%ss ago  total_all_time=%s\n' "$N" "$LASTAGE" "$TOTAL"
+printf '  TTFW p50=%sms  p95=%sms   fallback=%s%%  tool_err=%s%%   cost=$%s  rss_max=%sMB\n' "$T50" "$T95" "$FB" "$TE" "$COST" "$RSS"
+printf '\n%sRoute mix (24h)%s\n%s\n' "$bold" "$rst" "${routes:-  (none)}"
+printf '\n%sSLO%s   %s\n' "$bold" "$rst" "${slo_last:-(no SLO run yet)}"
+printf '%sBackup%s off-box newest: %s\n' "$bold" "$rst" "$bk_age"
+
+# ── HTML ─────────────────────────────────────────────────────────────────────
+esc(){ printf '%s' "$1" | sed 's/&/\&amp;/g;s/</\&lt;/g;s/>/\&gt;/g'; }
+{
+cat <<HEAD
+<!doctype html><meta charset=utf-8><title>JARVIS status</title>
+<style>body{background:#0b0d10;color:#d6dde6;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;margin:0;padding:28px}
+h1{font-size:15px;letter-spacing:.08em;color:#9fb4c8;margin:0 0 18px}h2{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:#6f8296;margin:22px 0 8px;border-bottom:1px solid #1c2430;padding-bottom:4px}
+table{border-collapse:collapse}td{padding:2px 18px 2px 0}.ok{color:#6cc070}.bad{color:#e0635a}.warn{color:#d2a24c}.k{color:#7f93a8}.big{font-size:22px;color:#cfe3f5}small{color:#5f7187}</style>
+<h1>JARVIS &mdash; system status <small>generated $(esc "$gen")</small></h1>
+<h2>Services</h2><table>
+HEAD
+while IFS= read -r line; do [ -n "$line" ] || continue
+  name="${line%% *}"; state="${line##* }"
+  cls=bad; [ "$state" = active ] && cls=ok; case "$state" in *Up*|*running*) cls=ok;; *not*) cls=warn;; esac
+  printf '<tr><td class=k>%s</td><td class=%s>%s</td></tr>\n' "$(esc "$name")" "$cls" "$(esc "$state")"
+done <<< "${svc_line}${dock_line}"
+cat <<MET
+</table><h2>Voice &mdash; last 24h</h2>
+<table>
+<tr><td class=k>turns (24h)</td><td class=big>$(esc "$N")</td><td class=k>last turn</td><td>$(esc "$LASTAGE")s ago</td><td class=k>all-time</td><td>$(esc "$TOTAL")</td></tr>
+<tr><td class=k>TTFW p50</td><td>$(esc "$T50") ms</td><td class=k>TTFW p95</td><td>$(esc "$T95") ms</td><td class=k>cost 24h</td><td>\$$(esc "$COST")</td></tr>
+<tr><td class=k>provider fallback</td><td>$(esc "$FB")%</td><td class=k>tool error</td><td>$(esc "$TE")%</td><td class=k>rss max</td><td>$(esc "$RSS") MB</td></tr>
+</table>
+<h2>Route mix (24h)</h2><pre>$(esc "$routes")</pre>
+<h2>SLO</h2><pre>$(esc "${slo_last:-(no SLO run yet)}")</pre>
+<h2>Backup</h2><pre>off-box newest: $(esc "$bk_age")</pre>
+MET
+} > "$HTML" 2>/dev/null && printf '\nHTML: %s\n' "$HTML"
+
+[ "$OPEN" = 1 ] && command -v xdg-open >/dev/null 2>&1 && xdg-open "$HTML" >/dev/null 2>&1 &
+exit 0

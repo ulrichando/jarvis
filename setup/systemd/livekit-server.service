@@ -2,6 +2,8 @@
 Description=LiveKit SFU — bundled binary backing the JARVIS voice agent
 After=network-online.target
 Wants=network-online.target
+# Page off-box if the SFU crash-loops into a failed state (no SFU = no voice).
+OnFailure=jarvis-alert@%n.service
 
 [Service]
 Type=simple

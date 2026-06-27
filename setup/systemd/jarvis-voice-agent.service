@@ -4,6 +4,9 @@ Description=JARVIS voice agent (LiveKit worker: STT → LLM → TTS via Groq)
 After=network-online.target livekit-server.service
 Wants=network-online.target
 Requires=livekit-server.service
+# Page off-box (jarvis-notify) if this unit crash-loops into a failed state —
+# a silent dead voice-agent is the failure this whole hardening pass targets.
+OnFailure=jarvis-alert@%n.service
 
 [Service]
 Type=notify
