@@ -32,7 +32,6 @@ CLI_CMD=( "$BUN"
   --feature=AGENT_TRIGGERS_REMOTE
   --feature=COORDINATOR_MODE
   --feature=ULTRAPLAN
-  --feature=WORKFLOW_SCRIPTS
   --feature=WEB_BROWSER_TOOL
   --feature=MONITOR_TOOL
   --feature=UDS_INBOX
