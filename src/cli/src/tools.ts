@@ -215,7 +215,12 @@ export function getAllBaseTools(): Tools {
     AskUserQuestionTool,
     SkillTool,
     EnterPlanModeTool,
-    ...(process.env.USER_TYPE === 'ant' ? [ConfigTool] : []),
+    // ConfigTool enabled for JARVIS (external). Its writable surface is
+    // benign prefs (theme/model/language/auto-compact…); the one safety-
+    // relevant key (fileCheckpointingEnabled) is denied in
+    // ConfigTool/supportedSettings.ts::isSupported so the agent can't disable
+    // its own code-rewind safety net.
+    ConfigTool,
     ...(process.env.USER_TYPE === 'ant' ? [TungstenTool] : []),
     ...(SuggestBackgroundPRTool ? [SuggestBackgroundPRTool] : []),
     ...(WebBrowserTool ? [WebBrowserTool] : []),

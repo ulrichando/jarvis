@@ -185,8 +185,14 @@ export const SUPPORTED_SETTINGS: Record<string, SettingConfig> = {
     : {}),
 }
 
+// Safety-locked keys: in scope for the schema/UI but the model may NOT write
+// them via ConfigTool (a prompt injection shouldn't be able to disable the
+// agent's own code-rewind safety net). JARVIS-specific hardening since
+// ConfigTool is enabled for external builds here (it's ant-only upstream).
+const MODEL_WRITE_DENYLIST = new Set<string>(['fileCheckpointingEnabled'])
+
 export function isSupported(key: string): boolean {
-  return key in SUPPORTED_SETTINGS
+  return key in SUPPORTED_SETTINGS && !MODEL_WRITE_DENYLIST.has(key)
 }
 
 export function getConfig(key: string): SettingConfig | undefined {
