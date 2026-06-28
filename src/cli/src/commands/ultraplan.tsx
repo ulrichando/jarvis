@@ -463,7 +463,10 @@ export default {
   name: 'ultraplan',
   description: `~10–30 min · Jarvis on the web drafts an advanced plan you can edit and approve. See ${CCR_TERMS_URL}`,
   argumentHint: '<prompt>',
-  isEnabled: () => "external" === 'ant',
+  // Reachable in JARVIS (no USER_TYPE='ant' flip) but kept behind JARVIS_ULTRAPLAN
+  // until the jarvis-web remote backend lands — until then the command would
+  // teleport to Anthropic's (firewalled) cloud and error. Phase B flips this on.
+  isEnabled: () => process.env.JARVIS_ULTRAPLAN === '1',
   load: () => Promise.resolve({
     call
   })

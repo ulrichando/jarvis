@@ -93,14 +93,14 @@ async function main(): Promise<void> {
     profileCheckpoint('cli_claude_in_chrome_mcp_path');
     const {
       runClaudeInChromeMcpServer
-    } = await import('../utils/claudeInChrome/mcpServer.js');
+    } = await import('../utils/jarvisInChrome/mcpServer.js');
     await runClaudeInChromeMcpServer();
     return;
   } else if (process.argv[2] === '--chrome-native-host') {
     profileCheckpoint('cli_chrome_native_host_path');
     const {
       runChromeNativeHost
-    } = await import('../utils/claudeInChrome/chromeNativeHost.js');
+    } = await import('../utils/jarvisInChrome/chromeNativeHost.js');
     await runChromeNativeHost();
     return;
   } else if (feature('CHICAGO_MCP') && process.argv[2] === '--computer-use-mcp') {

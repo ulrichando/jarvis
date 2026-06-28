@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { Text } from '../ink.js';
 import { isClaudeAISubscriber } from '../utils/auth.js';
-import { isChromeExtensionInstalled, shouldEnableClaudeInChrome } from '../utils/claudeInChrome/setup.js';
+import { isChromeExtensionInstalled, shouldEnableClaudeInChrome } from '../utils/jarvisInChrome/setup.js';
 import { isRunningOnHomespace } from '../utils/envUtils.js';
 import { useStartupNotification } from './notifs/useStartupNotification.js';
 function getChromeFlag(): boolean | undefined {
@@ -24,7 +24,7 @@ async function _temp() {
   if (true && !isClaudeAISubscriber()) {
     return {
       key: "chrome-requires-subscription",
-      jsx: <Text color="error">Claude in Chrome requires a claude.ai subscription</Text>,
+      jsx: <Text color="error">Jarvis in Chrome requires a claude.ai subscription</Text>,
       priority: "immediate",
       timeoutMs: 5000
     };
@@ -41,7 +41,7 @@ async function _temp() {
   if (chromeFlag === undefined) {
     return {
       key: "claude-in-chrome-default-enabled",
-      text: "Claude in Chrome enabled \xB7 /chrome",
+      text: "Jarvis in Chrome enabled \xB7 /chrome",
       priority: "low"
     };
   }

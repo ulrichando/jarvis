@@ -9,7 +9,7 @@ import { execFileNoThrow } from '../execFileNoThrow.js'
 import { getPlatform } from '../platform.js'
 import { which } from '../which.js'
 
-export const CLAUDE_IN_CHROME_MCP_SERVER_NAME = 'claude-in-chrome'
+export const JARVIS_IN_CHROME_MCP_SERVER_NAME = 'claude-in-chrome'
 
 // Re-export ChromiumBrowser type for setup.ts
 export type { ChromiumBrowser } from './setupPortable.js'
@@ -356,7 +356,7 @@ export async function detectAvailableBrowser(): Promise<ChromiumBrowser | null> 
           const stats = await stat(appPath)
           if (stats.isDirectory()) {
             logForDebugging(
-              `[Claude in Chrome] Detected browser: ${config.name}`,
+              `[Jarvis in Chrome] Detected browser: ${config.name}`,
             )
             return browserId
           }
@@ -372,7 +372,7 @@ export async function detectAvailableBrowser(): Promise<ChromiumBrowser | null> 
         for (const binary of config.linux.binaries) {
           if (await which(binary).catch(() => null)) {
             logForDebugging(
-              `[Claude in Chrome] Detected browser: ${config.name}`,
+              `[Jarvis in Chrome] Detected browser: ${config.name}`,
             )
             return browserId
           }
@@ -391,7 +391,7 @@ export async function detectAvailableBrowser(): Promise<ChromiumBrowser | null> 
             const stats = await stat(dataPath)
             if (stats.isDirectory()) {
               logForDebugging(
-                `[Claude in Chrome] Detected browser: ${config.name}`,
+                `[Jarvis in Chrome] Detected browser: ${config.name}`,
               )
               return browserId
             }
@@ -409,7 +409,7 @@ export async function detectAvailableBrowser(): Promise<ChromiumBrowser | null> 
 }
 
 export function isClaudeInChromeMCPServer(name: string): boolean {
-  return normalizeNameForMCP(name) === CLAUDE_IN_CHROME_MCP_SERVER_NAME
+  return normalizeNameForMCP(name) === JARVIS_IN_CHROME_MCP_SERVER_NAME
 }
 
 const MAX_TRACKED_TABS = 200
@@ -433,7 +433,7 @@ export async function openInChrome(url: string): Promise<boolean> {
   const browser = await detectAvailableBrowser()
 
   if (!browser) {
-    logForDebugging('[Claude in Chrome] No compatible browser found')
+    logForDebugging('[Jarvis in Chrome] No compatible browser found')
     return false
   }
 
@@ -527,7 +527,7 @@ export function getAllSocketPaths(): string[] {
 }
 
 function getSocketName(): string {
-  // NOTE: This must match the one used in the Claude in Chrome MCP
+  // NOTE: This must match the one used in the Jarvis in Chrome MCP
   return `claude-mcp-browser-bridge-${getUsername()}`
 }
 
