@@ -14,7 +14,11 @@ BUN="$SCRIPT_DIR/bunw.sh"
 # real Anthropic quota is missing. Wiping them here keeps the proxy
 # route intact.
 unset CLAUDE_CODE_EXECPATH CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING CLAUDECODE
-for _v in $(env | awk -F= '/^CLAUDE_CODE_/{print $1}'); do unset "$_v"; done
+# Preserve CLAUDE_CODE_SESSION_* — those are set deliberately by `jarvis --bg`
+# (bg.ts) to mark a background tmux session (kind/name/log). Stripping them made
+# bg children register as kind:interactive, breaking `jarvis attach` (needs
+# kind:bg). Only the nested-session leak vars (EXECPATH/ENTRYPOINT/…) should go.
+for _v in $(env | awk -F= '/^CLAUDE_CODE_/ && !/^CLAUDE_CODE_SESSION_/{print $1}'); do unset "$_v"; done
 for _v in $(env | awk -F= '/^CLAUDE_DESKTOP_/{print $1}'); do unset "$_v"; done
 
 # Silence non-essential outbound calls to Anthropic / Statsig / Sentry.

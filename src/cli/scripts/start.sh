@@ -69,10 +69,24 @@ CLI_CMD=( "$BUN"
   --define 'MACRO.ISSUES_EXPLAINER="report the issue at https://github.com/anthropics/claude-code/issues"'
   --define 'MACRO.FEEDBACK_CHANNEL="https://github.com/anthropics/claude-code/issues"'
   --define 'MACRO.VERSION_CHANGELOG=null'
-  "$ROOT/src/entrypoints/cli.tsx"
-  --settings "$JARVIS_FLAG_SETTINGS"
-  --permission-mode "$JARVIS_PERMISSION_MODE"
-  "$@" )
+  "$ROOT/src/entrypoints/cli.tsx" )
+
+# User args MUST come before our injected --settings/--permission-mode flags.
+# cli.tsx's subcommand fast-paths read `process.argv.slice(2)[0]` (ps / logs /
+# attach / kill / daemon / remote-control / …); if --settings precedes them the
+# subcommand lands at args[4] and every fast-path silently misses, falling
+# through to the agent (e.g. `jarvis ps` ran a shell `ps` instead of listing
+# sessions). Inject our defaults AFTER "$@", and only when the user didn't pass
+# their own — so `jarvis --permission-mode plan` still wins.
+CLI_CMD+=( "$@" )
+case " $* " in
+  *" --permission-mode "*) ;;
+  *) CLI_CMD+=( --permission-mode "$JARVIS_PERMISSION_MODE" ) ;;
+esac
+case " $* " in
+  *" --settings "*) ;;
+  *) CLI_CMD+=( --settings "$JARVIS_FLAG_SETTINGS" ) ;;
+esac
 
 # NB: no `exec` here — see cleanup_proxy comment above. We must keep
 # this bash process alive so the EXIT trap fires when the CLI exits.
