@@ -80,3 +80,31 @@ SIZE="$(du -h "$OUTFILE" | cut -f1)"
 echo "[build] done: $OUTFILE ($SIZE)"
 echo "[build] smoke test: $OUTFILE --version"
 "$OUTFILE" --version || { echo "[build] FAIL: binary did not run" >&2; exit 1; }
+
+# ── Publish (optional) ────────────────────────────────────────────────────
+# JARVIS_PUBLISH=1 copies the binary into the releases dir the web /releases
+# route serves, and (re)generates manifest.json. Version + sha256 + size are
+# derived HERE so the manifest can never drift from the actual bytes — the
+# install.sh checksum gate depends on that agreement.
+if [ "${JARVIS_PUBLISH:-0}" = "1" ]; then
+  REL_DIR="${JARVIS_RELEASES_DIR:-$HOME/.jarvis/releases}"
+  asset="$(basename "$OUTFILE")"
+  mkdir -p "$REL_DIR"
+  install -m 0755 "$OUTFILE" "$REL_DIR/$asset"
+  sha="$(sha256sum "$REL_DIR/$asset" | cut -d' ' -f1)"
+  bytes="$(stat -c%s "$REL_DIR/$asset")"
+
+  # Merge this asset into any existing manifest (other platforms' entries
+  # survive). Tiny inline node — jq isn't a guaranteed dep.
+  node -e '
+    const fs=require("fs"); const [mf,ver,asset,sha,size]=process.argv.slice(1);
+    let m={version:ver,assets:{}};
+    try{m=JSON.parse(fs.readFileSync(mf,"utf8"));}catch{}
+    m.version=ver; m.assets=m.assets||{};
+    m.assets[asset]={sha256:sha,size:Number(size)};
+    fs.writeFileSync(mf, JSON.stringify(m,null,2)+"\n");
+  ' "$REL_DIR/manifest.json" "$VERSION" "$asset" "$sha" "$bytes"
+
+  echo "[build] published → $REL_DIR/$asset ($bytes bytes, sha ${sha:0:16}…)"
+  echo "[build] manifest  → $REL_DIR/manifest.json (version $VERSION)"
+fi

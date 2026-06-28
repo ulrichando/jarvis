@@ -53,7 +53,13 @@ const AUTH_DISABLED = process.env.JARVIS_AUTH_DISABLED === '1'
 // NOTE: '/signup' is intentionally NOT listed here — public registration is
 // disabled (single-user install). Any navigation to /signup is blocked here
 // and falls through to the cookie check → redirect to /login.
-const LOGIN_PUBLIC_PREFIXES = ['/login', '/forgot-password', '/share', '/a']
+// /install.sh (the `curl … | bash` installer) and /releases/<asset> (prebuilt
+// binaries + manifest) MUST be reachable without a login session — curl carries
+// no cookie. Both are read-only public distribution endpoints: install.sh is
+// generated text, /releases serves a strict filename allowlist confined to
+// JARVIS_RELEASES_DIR (no traversal, no source/secrets). Mirrors claude-code's
+// public installer.
+const LOGIN_PUBLIC_PREFIXES = ['/login', '/forgot-password', '/share', '/a', '/install.sh', '/releases']
 
 function hasSessionCookie(req: NextRequest): boolean {
   // http (dev) vs __Secure- prefix (https/prod).
