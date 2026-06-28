@@ -38,6 +38,11 @@ const TOKEN_KEY = 'JARVIS_BRIDGE_TOKEN'
 // are provisioned at login and removed at logout (see persistProxyToken).
 const PROXY_TOKEN_KEY = 'JARVIS_PROXY_TOKEN'
 const PROXY_AUTH_REQUIRED_KEY = 'JARVIS_PROXY_AUTH_REQUIRED'
+// The operator's public LLM-gateway base URL (from /api/bridge/proxy-token's
+// `gatewayUrl`). Persisted at login so the COMPILED binary — which never runs
+// run-cli.mjs's env mapping — can point ANTHROPIC_BASE_URL at the remote gateway
+// from keys.env. Consumed by src/cli/src/proxy/bootstrapEnv.ts.
+const GATEWAY_URL_KEY = 'JARVIS_GATEWAY_URL'
 
 function fail(message: string): never {
   process.stderr.write(message.endsWith('\n') ? message : message + '\n')
@@ -203,8 +208,21 @@ async function mintProxyToken(
       }
       return undefined
     }
-    const parsed = (await res.json()) as { token?: string }
-    return typeof parsed.token === 'string' ? parsed.token : undefined
+    const parsed = (await res.json()) as {
+      token?: string
+      gatewayUrl?: string | null
+    }
+    const token = typeof parsed.token === 'string' ? parsed.token : undefined
+    // Persist the operator's public gateway URL alongside the token (only when
+    // auth actually succeeded) so the compiled binary self-configures its
+    // ANTHROPIC_BASE_URL from keys.env. Older web apps omit gatewayUrl → no-op,
+    // and the binary falls back to the local-proxy default.
+    if (token && typeof parsed.gatewayUrl === 'string' && parsed.gatewayUrl.trim()) {
+      const gw = parsed.gatewayUrl.trim()
+      upsertKeysEnv({ [GATEWAY_URL_KEY]: gw })
+      process.env[GATEWAY_URL_KEY] = gw
+    }
+    return token
   } catch (err) {
     if (!opts?.quiet) {
       process.stderr.write(
@@ -404,9 +422,11 @@ export async function jarvisAuthLogout(opts?: {
     TOKEN_KEY,
     PROXY_TOKEN_KEY,
     PROXY_AUTH_REQUIRED_KEY,
+    GATEWAY_URL_KEY,
   ])
   delete process.env[BASE_URL_KEY]
   delete process.env[TOKEN_KEY]
+  delete process.env[GATEWAY_URL_KEY]
   // Dropping the proxy token + flag returns the local proxy to open
   // (loopback-only) on its next restart — logout never leaves a locked proxy.
   delete process.env[PROXY_TOKEN_KEY]

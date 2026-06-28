@@ -1,3 +1,8 @@
+// FIRST import: self-configure ANTHROPIC_BASE_URL/auth from keys.env for the
+// compiled binary (which never runs run-cli.mjs's launcher mapping), before any
+// module reads them. Idempotent no-op under the source-run launcher. See
+// proxy/bootstrapEnv.ts.
+import '../proxy/bootstrapEnv.js';
 import { feature } from 'bun:bundle';
 
 // Bridge-spawned children run WITHOUT the launcher's `--define MACRO.*` args:
