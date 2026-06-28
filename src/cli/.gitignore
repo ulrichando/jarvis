@@ -1,2 +1,5 @@
 vendor/bun/linux-x64/
 vendor/bun/windows-x64/
+
+# compiled binary build output (scripts/build-binary.sh)
+dist/
