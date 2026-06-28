@@ -14,7 +14,8 @@ const version = {
   name: 'version',
   description:
     'Print the version this session is running (not what autoupdate downloaded)',
-  isEnabled: () => process.env.USER_TYPE === 'ant',
+  // Enabled for JARVIS (external): harmless version readout. Was ant-only upstream.
+  isEnabled: () => true,
   supportsNonInteractive: true,
   load: () => Promise.resolve({ call }),
 } satisfies Command
