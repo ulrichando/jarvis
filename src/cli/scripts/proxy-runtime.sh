@@ -19,7 +19,10 @@ jarvis_proxy_start() {
   # same session-scoped proxy fallback, not prevent the CLI from opening.
   if command -v systemctl >/dev/null 2>&1 \
      && systemctl --user is-active --quiet jarvis-proxy.service 2>/dev/null; then
-    echo "[jarvis] proxy: using persistent jarvis-proxy.service on :4000"
+    # Happy path — stay silent unless explicitly debugging. The banner was
+    # noise on every launch; the degraded-mode messages below still print.
+    [ -n "${JARVIS_PROXY_VERBOSE:-}" ] && \
+      echo "[jarvis] proxy: using persistent jarvis-proxy.service on :4000"
     JARVIS_PROXY_STARTED_SESSION=0
     return 0
   fi
