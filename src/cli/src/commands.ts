@@ -248,7 +248,9 @@ export const INTERNAL_ONLY_COMMANDS = [
   ...(forceSnip ? [forceSnip] : []),
   mockLimits,
   bridgeKick,
-  version,
+  // version moved to the main COMMANDS list (enabled for JARVIS external builds
+  // — INTERNAL_ONLY_COMMANDS is eliminated for external, so it never surfaced
+  // here despite isEnabled()=true). See commands/version.ts.
   // ultraplan moved to the main COMMANDS list (gated by feature('ULTRAPLAN') +
   // its own JARVIS_ULTRAPLAN isEnabled check) so it's reachable in JARVIS
   // without the USER_TYPE='ant' identity flip. See commands/ultraplan.tsx.
@@ -294,6 +296,7 @@ const COMMANDS = memoize((): Command[] => [
   exit,
   fast,
   files,
+  version,
   heapDump,
   help,
   ide,
