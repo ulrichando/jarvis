@@ -167,6 +167,15 @@ export IS_DEMO=1
 export DISABLE_INSTALLATION_CHECKS=1
 export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1   # enable swarm/agent-teams
 
+# /ultraplan (Phase B): the command is compiled + registered, but its
+# isEnabled() gate is `process.env.JARVIS_ULTRAPLAN === '1'` (commands/
+# ultraplan.tsx) — so without this it's invisible in the slash menu. Phase B
+# left it OFF pending end-to-end verification; the CCR backend it drives is
+# now live on the local jarvis-web (api/bridge/v1 responds, auth-gated), so
+# surface it + point it there. Override JARVIS_CCR_BASE_URL for a non-local web.
+export JARVIS_ULTRAPLAN="${JARVIS_ULTRAPLAN:-1}"
+export JARVIS_CCR_BASE_URL="${JARVIS_CCR_BASE_URL:-http://127.0.0.1:3000/api}"
+
 if [ "$JARVIS_SANDBOX_ENABLED" = "1" ]; then
   JARVIS_FLAG_SETTINGS='{"sandbox":{"enabled":true}}'
 else
