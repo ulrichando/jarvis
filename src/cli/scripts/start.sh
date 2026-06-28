@@ -34,7 +34,6 @@ CLI_CMD=( "$BUN"
   --feature=ULTRAPLAN
   --feature=WORKFLOW_SCRIPTS
   --feature=WEB_BROWSER_TOOL
-  --feature=HISTORY_SNIP
   --feature=MONITOR_TOOL
   --feature=UDS_INBOX
   --feature=BUDDY
