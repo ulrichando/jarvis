@@ -10,7 +10,7 @@
 import type { Message } from '../types/message.js'
 import type { SystemPrompt } from './systemPromptType.js'
 import type { ToolUseContext } from '../Tool.js'
-import { updateSessionName } from './concurrentSessions.js'
+import { updateSessionSummary } from './concurrentSessions.js'
 import { logForDebugging } from './debug.js'
 import { errorMessage } from './errors.js'
 
@@ -63,7 +63,7 @@ export function maybeGenerateTaskSummary(opts: {
 
   if (!summary) return
 
-  void updateSessionName(summary).catch(e => {
+  void updateSessionSummary(summary).catch(e => {
     logForDebugging(`[taskSummary] write failed: ${errorMessage(e)}`)
   })
 }

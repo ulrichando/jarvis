@@ -136,6 +136,18 @@ export async function updateSessionName(
 }
 
 /**
+ * Record a volatile "what is this session working on" summary for `jarvis ps`.
+ * Kept SEPARATE from `name` (the stable session/tmux identifier) so a periodic
+ * task summary can't clobber the handle that `jarvis attach`/`kill` match on.
+ */
+export async function updateSessionSummary(
+  summary: string | undefined,
+): Promise<void> {
+  if (!summary) return
+  await updatePidFile({ summary })
+}
+
+/**
  * Record this session's Remote Control session ID so peer enumeration can
  * dedup: a session reachable over both UDS and bridge should only appear
  * once (local wins). Cleared on bridge teardown so stale IDs don't

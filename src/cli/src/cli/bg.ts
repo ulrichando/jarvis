@@ -27,6 +27,7 @@ interface SessionRecord {
   kind: SessionKind
   entrypoint?: string
   name?: string
+  summary?: string
   logPath?: string
   agent?: string
   status?: SessionStatus
@@ -117,12 +118,13 @@ export async function psHandler(_args: string[]): Promise<void> {
     return
   }
 
-  const headers = ['PID', 'KIND', 'STATUS', 'NAME', 'CWD', 'AGE']
+  const headers = ['PID', 'KIND', 'STATUS', 'NAME', 'TASK', 'CWD', 'AGE']
   const rows = live.map(s => [
     String(s.pid),
     s.kind,
     s.status ?? 'idle',
     s.name ?? '-',
+    s.summary ?? '-',
     s.cwd.replace(homedir(), '~'),
     fmtAge(s.startedAt),
   ])
@@ -233,14 +235,23 @@ export async function handleBgFlag(args: string[]): Promise<void> {
   // Shell-quote each arg (single-quote escaping)
   const shellQuote = (s: string) => `'${s.replace(/'/g, "'\\''")}'`
   const jarvisCmd = [bin, ...rest].map(shellQuote).join(' ')
+
+  // Export the session env INSIDE the shell command, not via execFileSync's
+  // env. tmux reuses an already-running server whose environment is fixed at
+  // server start, so a new-session's client env does NOT reach the spawned
+  // pane — the child would register as kind:interactive and `jarvis attach`
+  // (which requires kind:bg) would refuse it. Inlining the exports guarantees
+  // the child sees them regardless of server state.
+  const exports = [
+    `export CLAUDE_CODE_SESSION_KIND=bg`,
+    `export CLAUDE_CODE_SESSION_NAME=${shellQuote(tmuxName)}`,
+    `export CLAUDE_CODE_SESSION_LOG=${shellQuote(logPath)}`,
+  ].join('; ')
   // Tee to log so `jarvis logs` works after detach
-  const shellCmd = `${jarvisCmd} 2>&1 | tee ${shellQuote(logPath)}`
+  const shellCmd = `${exports}; ${jarvisCmd} 2>&1 | tee ${shellQuote(logPath)}`
 
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
-    CLAUDE_CODE_SESSION_KIND: 'bg',
-    CLAUDE_CODE_SESSION_NAME: tmuxName,
-    CLAUDE_CODE_SESSION_LOG: logPath,
   }
   // Unset TMUX so the child process can create its own tmux session
   delete env['TMUX']
