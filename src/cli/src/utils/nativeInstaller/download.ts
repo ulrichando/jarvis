@@ -22,7 +22,18 @@ import { sleep } from '../sleep.js'
 import { jsonStringify, writeFileSync_DEPRECATED } from '../slowOperations.js'
 import { getBinaryName, getPlatform } from './installer.js'
 
+// Self-update binary repo. JARVIS_RELEASES_URL repoints this at the jarvis web
+// /releases endpoint (e.g. https://0wlan.com/releases) so a native install
+// self-updates from OUR infra instead of Anthropic's bucket — the install.sh
+// distribution model. NOTE: jarvis web /releases currently serves a flat
+// manifest.json + jarvis-<os>-<arch>; the GCS-style version-pathed layout the
+// functions below expect is not yet mirrored, so full self-update parity needs
+// a protocol adapter (follow-up). Until then, re-running install.sh is the
+// update path. The Anthropic default is retained only as the upstream fallback
+// for unconfigured builds; source-run sets DISABLE_AUTOUPDATER=1 so it never
+// fires there.
 const GCS_BUCKET_URL =
+  process.env.JARVIS_RELEASES_URL ||
   'https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases'
 export const ARTIFACTORY_REGISTRY_URL =
   'https://artifactory.infra.ant.dev/artifactory/api/npm/npm-all/'
