@@ -1,0 +1,24 @@
+# JARVIS Hub Gateway — the CLI's :4000 proxy, containerized for the VPS.
+# Runs from source via Bun, exactly like bin/jarvis's proxy-runtime.sh. The
+# proxy's import graph is a clean subset (no React, no native/feature() modules),
+# so `bun run src/proxy/server.ts` never loads the heavy CLI graph.
+FROM oven/bun:1
+WORKDIR /app
+
+# Deps first for layer caching. (If a native/optional dep blocks the frozen
+# install in-container, the non-frozen retry resolves it — the proxy doesn't
+# import those modules at runtime anyway.)
+COPY package.json bun.lock* ./
+RUN bun install --frozen-lockfile || bun install
+
+COPY . .
+
+# Public deployment posture: bind all interfaces (only the stack's reverse proxy
+# reaches it — never a published host port) and REQUIRE the login JWT.
+ENV JARVIS_PROXY_HOST=0.0.0.0 \
+    JARVIS_ALLOW_PUBLIC_BIND=1 \
+    JARVIS_PROXY_AUTH_REQUIRED=1 \
+    JARVIS_PROXY_PORT=4000
+
+EXPOSE 4000
+CMD ["bun", "run", "src/proxy/server.ts"]
