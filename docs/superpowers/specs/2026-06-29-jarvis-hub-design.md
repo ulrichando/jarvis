@@ -62,11 +62,28 @@ Four sub-projects, each its own spec → plan → build, in dependency order:
 | # | Sub-project | What | Size |
 |---|---|---|---|
 | **1** | **Hub Gateway on the VPS** (this spec) | Deploy the Bun proxy as a container in the `src/web` stack behind Caddy at `/hub`; add **OpenAI-shaped ingress**; keep JWT auth + routing + streaming; add `GET /hub/config`. Keys live here. | L — foundation |
-| 2 | CLI → hub | Point CLI `ANTHROPIC_BASE_URL` at the VPS; `jarvis auth login` → VPS. Measure latency. | S |
+| 2 | CLI → hub (+ install onboarding) | Point CLI `ANTHROPIC_BASE_URL` at the VPS; `jarvis auth login` → VPS. A fresh `install.sh` box logs into the hub and **never needs local keys**. Measure latency. | S |
 | 3 | Voice → hub | Repoint `providers/llm.py` builders at the hub + JWT; fetch active mode at session start; circuit-breaker + optional local-direct fallback. | L |
 | 4 | Web → hub + modes on the VPS | Web calls the hub locally; promote `modes.json` to a VPS store so mode picks sync to all clients. | M |
+| 5 | GitHub agents → hub | The dormant `claude-code-action` workflows (`jarvis -p` as @claude / PR-review / security-review) route through the hub using a **minted CI token** (a GitHub secret), not a raw `ANTHROPIC_API_KEY` — raw provider keys never touch GitHub. Needs a CI-token mint + revoke path on the web. | M |
 
-Sub-projects 2–4 each get their own spec when sub-project 1 lands.
+Sub-projects 2–5 each get their own spec when sub-project 1 lands.
+
+**Clients beyond the three (the claude.ai parity payoff).** Because the hub is
+JWT-gated and internet-facing, *any* client that can present a token is a hub
+client — exactly how Claude Code works from a laptop, a fresh install, or CI:
+
+- **Fresh installs** (`curl 0wlan.com/install.sh | bash` → binary → `jarvis auth
+  login`): a brand-new box gets provider access from the hub and **never holds a
+  provider key**. (Folded into sub-project 2 — same base-URL + login wiring.)
+- **GitHub Actions** (sub-project 5): the agent runs `jarvis -p` against the hub
+  with a CI token in `${{ secrets.JARVIS_HUB_TOKEN }}`. This replaces "paste your
+  `ANTHROPIC_API_KEY` into GitHub secrets" (the current dormant-workflow plan)
+  with a **revocable, hub-scoped** token — the raw keys stay on the VPS.
+
+Neither changes sub-project 1's gateway code — they consume it. They do raise one
+gateway requirement, captured below: **token lifecycle + rate-limiting**, because
+the gateway is now an internet-facing endpoint that fronts every provider key.
 
 ---
 
@@ -170,6 +187,18 @@ client → https://0wlan.com/hub/v1/{messages|chat/completions}   (Bearer JWT)
 - **Key rotation:** once the local copies are removed (final cutover), keys sit
   only on the VPS — rotation becomes a single VPS env edit + `docker compose up
   -d hub`. Document in the runbook.
+- **Token lifecycle (gateway is internet-facing + fronts every key).** Offline
+  HS256 JWT verification can't revoke a leaked token on its own. Sub-project 1's
+  clients are all interactive, so #1 just enforces **token expiry** (the gate
+  already verifies the signature; add an `exp` check) → short-lived JWTs +
+  refresh, exactly like Claude Code's auto-refreshing `jarvis auth login`.
+  Revocation of long-lived **CI tokens** (a denylist the gateway consults) is
+  introduced in **sub-project 5**, alongside the only thing that mints them — no
+  revocation machinery before there's a revocable token (YAGNI).
+- **Rate-limiting via Cloudflare, not code (ponytail):** per-token / per-IP rate
+  limits on the `/hub` route are configured at the Cloudflare edge already in
+  front of the VPS — no proxy code. This caps the blast radius if a token leaks
+  (an attacker burns a rate-limited, revocable token, never the raw keys).
 
 ### Testing
 
@@ -187,6 +216,8 @@ client → https://0wlan.com/hub/v1/{messages|chat/completions}   (Bearer JWT)
 ### Out of scope (this sub-project)
 
 - Pointing the CLI / voice / web at the hub (sub-projects 2/3/4).
+- Install-onboarding wiring + a fresh box logging into the hub (sub-project 2).
+- GitHub CI-token mint/revoke + workflow re-wiring (sub-project 5).
 - Emptying local `keys.env` of provider keys (post-cutover step).
 - The VPS-side conversation-mode store + active-mode serving (sub-project 4).
 - The voice circuit-breaker + local-direct fallback (sub-project 3).
