@@ -4,6 +4,7 @@ import { getProvider, getProviderForModel, type Provider } from './providers.js'
 import { fetchWithRetry } from './retry.js'
 import { forwardAnthropicNative } from './anthropicPassthrough.js'
 import { logDeepseekCacheStats, logRequest, newRequestId, type RequestLog } from './logger.js'
+import { classifyChatCompletionsRequest } from './hubGateway.js'
 import {
   buildSyntheticWebSearchResponse,
   extractWebSearchQuery,
@@ -226,6 +227,11 @@ const server = Bun.serve({
 
     if (req.method === 'POST' && (url.pathname.endsWith('/messages') || url.pathname === '/v1/messages')) {
       return handleMessagesRequest(req, url)
+    }
+
+    if (req.method === 'POST' &&
+        (url.pathname.endsWith('/chat/completions') || url.pathname === '/v1/chat/completions')) {
+      return handleChatCompletionsRequest(req, url)
     }
 
     return new Response('Not found', { status: 404 })
@@ -547,6 +553,94 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
       'x-jarvis-fallback-used': String(outcome.fallbackUsed),
     },
   })
+}
+
+// OpenAI-shaped ingress. The proxy's upstream call is already
+// `<baseUrl>/chat/completions`, so OpenAI-shape in → OpenAI-shape out is a pure
+// PASSTHROUGH — no Anthropic<->OpenAI conversion (that's only the /v1/messages
+// path). Reuses the same auth gate, fallback chain, and request logger.
+async function handleChatCompletionsRequest(req: Request, url: URL): Promise<Response> {
+  const requestId = newRequestId()
+  const tsStart = Date.now()
+  const baseLog: RequestLog = {
+    ts: new Date().toISOString(), request_id: requestId, path: url.pathname,
+    provider: null, upstream_model: null, client_model: null, status: 200,
+    error_type: null, error_message: null, latency_ms: 0, ttfb_ms: null,
+    input_tokens: null, output_tokens: null, cache_read_tokens: null,
+    retries_used: 0, fallback_used: false, primary_provider_error: null,
+    stream: false, stop_reason: null,
+  }
+  const finish = (entry: Partial<RequestLog>) =>
+    logRequest({ ...baseLog, ...entry, latency_ms: Date.now() - tsStart })
+
+  const authErr = checkInboundAuth(req.headers)
+  if (authErr) {
+    finish({ status: authErr.status, error_type: 'unauthorized', error_message: authErr.message })
+    return new Response(
+      JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: authErr.message } }),
+      { status: authErr.status, headers: { 'Content-Type': 'application/json' } })
+  }
+
+  let openaiReq: any
+  try { openaiReq = await req.json() } catch {
+    finish({ status: 400, error_type: 'invalid_request_error', error_message: 'invalid JSON' })
+    return new Response(JSON.stringify({ error: { message: 'Invalid JSON', type: 'invalid_request_error' } }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } })
+  }
+
+  baseLog.client_model = openaiReq.model ?? null
+  const isStream = openaiReq.stream === true
+  baseLog.stream = isStream
+
+  const route = classifyChatCompletionsRequest(openaiReq.model)
+  if (route.kind === 'reject') {
+    finish({ status: route.status, error_type: 'invalid_request_error', error_message: route.message })
+    return new Response(JSON.stringify({ error: { message: route.message, type: 'invalid_request_error' } }),
+      { status: route.status, headers: { 'Content-Type': 'application/json' } })
+  }
+  baseLog.provider = route.provider.name
+  baseLog.upstream_model = route.provider.model
+
+  const outcome = await executeWithFallback(route.provider, openaiReq)
+  if (!outcome.response) {
+    const errMsg = outcome.errorMessage ?? 'upstream unreachable'
+    finish({ status: 502, error_type: 'upstream_unreachable', error_message: errMsg,
+      retries_used: outcome.retriesUsed, fallback_used: outcome.fallbackUsed,
+      primary_provider_error: outcome.primaryError, provider: outcome.provider.name,
+      upstream_model: outcome.provider.model })
+    return new Response(JSON.stringify({ error: { message: errMsg, type: 'api_error' } }),
+      { status: 502, headers: { 'Content-Type': 'application/json' } })
+  }
+
+  baseLog.retries_used = outcome.retriesUsed
+  baseLog.fallback_used = outcome.fallbackUsed
+  baseLog.primary_provider_error = outcome.primaryError
+  baseLog.ttfb_ms = outcome.ttfbMs
+  const stdHeaders = {
+    'x-jarvis-request-id': requestId,
+    'x-jarvis-provider': outcome.provider.name,
+    'x-jarvis-fallback-used': String(outcome.fallbackUsed),
+  }
+
+  if (isStream) {
+    // ponytail: per-token logging omitted on the stream passthrough — would
+    // require teeing the stream to parse the trailing `usage` chunk. Provider /
+    // status / latency are still logged via the flush hook. Upgrade path: tee +
+    // parse usage if stream token accounting is needed.
+    const logged = outcome.response.body!.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      flush() { finish({ provider: outcome.provider.name, upstream_model: outcome.provider.model }) },
+    }))
+    return new Response(logged, {
+      headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive', ...stdHeaders },
+    })
+  }
+
+  const rawText = await outcome.response.text()
+  let usage: any
+  try { usage = JSON.parse(rawText)?.usage } catch {}
+  finish({ input_tokens: usage?.prompt_tokens ?? null, output_tokens: usage?.completion_tokens ?? null })
+  return new Response(rawText, { headers: { 'Content-Type': 'application/json', ...stdHeaders } })
 }
 
 // Preflight: build the default provider at boot so missing env fails loud
