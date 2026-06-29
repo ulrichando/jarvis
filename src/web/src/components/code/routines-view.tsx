@@ -26,7 +26,7 @@ type Routine = {
   last_run_at: number | null;
 };
 
-const MODEL_ORDER: Provider[] = ["anthropic", "deepseek", "google", "groq", "kimi", "openai"];
+const MODEL_ORDER: Provider[] = ["anthropic", "deepseek", "google", "kimi", "openai"];
 
 const TEMPLATES = [
   "Summarize my open PRs every weekday morning",

@@ -16,7 +16,6 @@ export async function GET() {
       process.env.GOOGLE_API_KEY
     ),
     deepseek:  !!process.env.DEEPSEEK_API_KEY,
-    groq:      !!process.env.GROQ_API_KEY,
     kimi:      !!process.env.KIMI_API_KEY,
     // Local Ollama needs no key — always "available" (the daemon may or may
     // not be running, but there's no key to gate on).

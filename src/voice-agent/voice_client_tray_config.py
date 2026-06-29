@@ -199,20 +199,16 @@ SPEECH_MODELS_AVAILABLE: tuple[str, ...] = (
 
 
 # ── TTS provider switching ──────────────────────────────────────────
-# Format: "<provider>:<voice_id_or_name>". Only `groq:<voice>` is
-# supported post-2026-05-01 (ElevenLabs removed).
+# Format: "<provider>:<voice_id_or_name>". Engines: `kokoro:<voice>`
+# (on-device, the default) and `edge:<voice>` (Microsoft Edge-TTS,
+# auth-free). Groq Orpheus was removed 2026-06-29 (full-Groq-eradication
+# pass); ElevenLabs was removed 2026-05-01.
 TTS_PROVIDER_FILE: Path = Path.home() / ".jarvis" / "tts-provider"
 
 TTS_PROVIDERS_AVAILABLE: dict[str, str] = {
-    # Online · Groq Orpheus (canopylabs/orpheus-v1-english). Voice list verified
-    # against Groq's docs 2026-06-25 (autumn/diana/hannah female; austin/daniel/
-    # troy male). These gate the /tts-provider POST + label the GET response.
-    "groq:troy":   "Orpheus · Troy",
-    "groq:austin": "Orpheus · Austin",
-    "groq:daniel": "Orpheus · Daniel",
-    "groq:autumn": "Orpheus · Autumn",
-    "groq:diana":  "Orpheus · Diana",
-    "groq:hannah": "Orpheus · Hannah",
+    # On-device · Kokoro (af_heart) — the default; runs locally via the
+    # kokoro-tts container. These gate the /tts-provider POST + label GET.
+    "kokoro:af_heart": "Kokoro · Heart (local)",
     # Online · Microsoft Edge-TTS (auth-free, online).
     "edge:en-US-GuyNeural":         "Edge · Guy",
     "edge:en-US-ChristopherNeural": "Edge · Christopher",
@@ -224,7 +220,7 @@ TTS_PROVIDERS_AVAILABLE: dict[str, str] = {
 
 
 def default_tts_provider() -> str:
-    return "groq:troy"
+    return "kokoro:af_heart"
 
 
 def ensure_tts_provider_file() -> None:
@@ -238,8 +234,8 @@ def active_tts_provider(current: str) -> str:
 
     ``current`` is the ~/.jarvis/tts-provider spec written by the tray. As of
     2026-06-25 that spec is AUTHORITATIVE for the engine — build_tts_chain picks
-    Kokoro / Orpheus / Edge from its prefix (``kokoro:`` / ``groq:`` / ``edge:``)
-    — so report it as-is. Two exceptions:
+    Kokoro / Edge from its prefix (``kokoro:`` / ``edge:``) — so report it
+    as-is. Two exceptions:
       - ``JARVIS_LOCAL_TTS_ONLY=1`` forces on-device regardless of the pick.
       - an empty / prefix-less spec falls back to the local-first default when
         ``JARVIS_LOCAL_TTS_PRIMARY=1``, else returns ``current`` unchanged.
@@ -272,13 +268,14 @@ def active_stt_engine() -> str:
             or os.environ.get("JARVIS_STT_LOCAL_ONLY") == "1"):
         model = (os.environ.get("JARVIS_LOCAL_STT_MODEL") or "large-v3-turbo").strip() or "large-v3-turbo"
         # faster-whisper drops the family prefix (its model id is e.g.
-        # "large-v3-turbo"); show the familiar "whisper-…" spelling so the label
-        # matches the Groq model id (whisper-large-v3-turbo) — same model, local.
+        # "large-v3-turbo"); show the familiar "whisper-…" spelling.
         if not model.startswith("whisper"):
             model = f"whisper-{model}"
         return f"{model} (local)"
     if os.environ.get("JARVIS_DEEPGRAM_DISABLED") == "1" or not os.environ.get("DEEPGRAM_API_KEY"):
-        return "groq:whisper-large-v3-turbo"
+        # No Deepgram + local STT flags unset → the chain falls to the
+        # on-device faster-whisper rung (Groq Whisper was removed 2026-06-29).
+        return "whisper-large-v3-turbo (local)"
     return "deepgram:nova-3"
 
 

@@ -493,27 +493,6 @@ function applyProviderSpecificParams(out: any, req: any, provider: Provider): vo
     out.temperature = 1
   }
 
-  if (provider.name === 'groq') {
-    // Route through the highest service tier the account is entitled to.
-    // Without this, Groq silently buckets every request into `on_demand`
-    // (the strictest TPM cap) even for Dev-tier accounts. `auto` = server
-    // picks best available. Override via JARVIS_GROQ_TIER ("flex",
-    // "on_demand", etc.) if you want to pin one explicitly.
-    out.service_tier = process.env.JARVIS_GROQ_TIER ?? 'auto'
-
-    if (provider.model.includes('gpt-oss')) {
-      // Groq GPT-OSS exposes official reasoning_effort controls.
-      // Hide provider-specific reasoning traces to keep the proxy response
-      // aligned with the Anthropic-shaped UI expectations.
-      out.include_reasoning = false
-
-      const reasoningEffort = resolveReasoningEffort(req)
-      if (reasoningEffort) {
-        out.reasoning_effort = reasoningEffort
-      }
-    }
-  }
-
   if (provider.name === 'ollama' && provider.model.includes('gpt-oss')) {
     // Local gpt-oss on Ollama accepts the SAME top-level `reasoning_effort`
     // (low/medium/high) over the OpenAI-compat endpoint, mapped to its native
@@ -606,14 +585,9 @@ export function clampRequestForProvider(openaiReq: any, provider: Provider): any
     delete out.tool_choice
   }
 
-  // groq service_tier: inject for every groq request so it doesn't fall
-  // into on_demand rate limits (same logic as applyProviderSpecificParams).
-  if (provider.name === 'groq') {
-    out.service_tier = process.env.JARVIS_GROQ_TIER ?? 'auto'
-  } else {
-    // Remove service_tier if it was set for a previous (groq) provider.
-    delete out.service_tier
-  }
+  // Groq was removed 2026-06-29 (full-Groq-eradication pass) — no provider
+  // sets service_tier now; strip any stale value that slipped through.
+  delete out.service_tier
 
   return out
 }

@@ -11,7 +11,6 @@ const PROBE: Record<Provider, string> = {
   openai: "gpt-5-mini",
   google: "gemini-2.5-flash",
   deepseek: "deepseek-chat",
-  groq: "llama-3.3-70b",
   kimi: "moonshot-v1-128k",
   ollama: "ollama-qwen3-30b-a3b",
 };
@@ -22,7 +21,6 @@ const bodySchema = z.object({
     "openai",
     "google",
     "deepseek",
-    "groq",
     "kimi",
   ]),
 });

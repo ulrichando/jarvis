@@ -114,20 +114,22 @@ def test_task_override_wins_over_env(monkeypatch):
     assert labels["EMOTIONAL"] == "anthropic:claude-haiku-4-5"
 
 
-def test_no_anthropic_key_falls_back_to_groq_primaries(monkeypatch):
-    """When ANTHROPIC_API_KEY is unset, every route must still build —
-    the route's Groq legacy primary takes the rung-1 slot. Dispatcher
-    refuses to refuse-to-boot (no Anthropic key is a normal CI state)."""
+def test_no_anthropic_key_falls_back_to_deepseek_primary(monkeypatch):
+    """When ANTHROPIC_API_KEY is unset (DEEPSEEK_API_KEY set), every route
+    must still build — the shared DeepSeek instance takes the rung-1 slot.
+    (Was the Groq legacy rung before the 2026-06-29 full-Groq removal.)
+    Dispatcher refuses to refuse-to-boot."""
     _wipe_route_env(monkeypatch)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
 
     from providers.llm import build_dispatching_llm
 
     labels = _labels(build_dispatching_llm())
-    assert labels["BANTER"] == "groq:qwen/qwen3.6-27b"
-    assert labels["TASK"] == "groq:openai/gpt-oss-120b"
-    assert labels["REASONING"] == "groq:qwen/qwen3-32b"
-    assert labels["EMOTIONAL"] == "groq:qwen/qwen3.6-27b"
+    for route in ("BANTER", "TASK", "REASONING", "EMOTIONAL"):
+        assert labels[route].startswith("deepseek:"), (
+            f"route {route} expected deepseek primary, got {labels[route]!r}"
+        )
 
 
 def test_no_anthropic_key_with_task_override_still_wins(monkeypatch):
@@ -136,6 +138,7 @@ def test_no_anthropic_key_with_task_override_still_wins(monkeypatch):
 
     _wipe_route_env(monkeypatch)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
 
     pinned = MagicMock(spec=["_jarvis_label"])
     pinned._jarvis_label = "tray-pinned:gpt-5-mini"
@@ -144,14 +147,15 @@ def test_no_anthropic_key_with_task_override_still_wins(monkeypatch):
 
     labels = _labels(build_dispatching_llm(task_override=pinned))
     assert labels["TASK"] == "tray-pinned:gpt-5-mini"
-    assert labels["BANTER"] == "groq:qwen/qwen3.6-27b"
+    assert labels["BANTER"].startswith("deepseek:")
 
 
-def test_fallback_chain_includes_groq_and_deepseek(monkeypatch):
-    """A route built with Anthropic primary AND both DEEPSEEK_API_KEY +
-    GROQ_API_KEY set must be wrapped in a FallbackAdapter with at least
-    three rungs: [anthropic-primary, groq-legacy, deepseek-v4-flash].
-    Single-provider outage on any one rung cascades to the next."""
+def test_fallback_chain_includes_anthropic_and_deepseek(monkeypatch):
+    """A route built with Anthropic primary AND DEEPSEEK_API_KEY set must be
+    wrapped in a FallbackAdapter with two rungs: [anthropic-primary,
+    deepseek-v4-flash]. The Groq legacy middle rung was removed 2026-06-29
+    in the full-Groq-eradication pass. Single-provider outage on a rung
+    cascades to the next."""
     _wipe_route_env(monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
@@ -169,8 +173,7 @@ def test_fallback_chain_includes_groq_and_deepseek(monkeypatch):
         )
         # Walk the adapter's internal rung list. livekit-agents exposes
         # the LLM rungs via a private attribute, but the shape is
-        # stable in the pinned version. We look for both labels by
-        # asking each candidate rung for its _jarvis_label.
+        # stable in the pinned version.
         rungs = (
             getattr(inner, "_llm_instances", None)
             or getattr(inner, "_llms", None)
@@ -181,12 +184,12 @@ def test_fallback_chain_includes_groq_and_deepseek(monkeypatch):
         assert labels and labels[0].startswith("anthropic:"), (
             f"route {route} rung 1 expected anthropic, got {labels[0] if labels else 'none'}"
         )
-        # Groq legacy and DeepSeek must be present somewhere in the chain.
-        assert any(lbl.startswith("groq:") for lbl in labels), (
-            f"route {route} missing Groq rung; labels={labels}"
-        )
+        # DeepSeek must be present; Groq must NOT.
         assert any(lbl.startswith("deepseek:") for lbl in labels), (
             f"route {route} missing DeepSeek rung; labels={labels}"
+        )
+        assert not any(lbl.startswith("groq:") for lbl in labels), (
+            f"route {route} should have NO groq rung; labels={labels}"
         )
 
 

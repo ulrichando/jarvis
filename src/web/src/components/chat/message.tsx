@@ -924,9 +924,6 @@ const PRICING: Record<string, { inputPer1M: number; outputPer1M: number }> = {
   "deepseek-reasoner": { inputPer1M: 0.55, outputPer1M: 2.19 },
   "deepseek-v4-pro": { inputPer1M: 0.55, outputPer1M: 2.19 },
   "deepseek-v4-flash": { inputPer1M: 0.14, outputPer1M: 0.28 },
-  // Groq (free-tier, but shown for awareness)
-  "llama-3.3-70b": { inputPer1M: 0, outputPer1M: 0 },
-  "gpt-oss-120b": { inputPer1M: 0, outputPer1M: 0 },
 };
 
 function formatCost(cost: number): string {

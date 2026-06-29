@@ -59,7 +59,6 @@ const patchSchema = z.object({
       openai: providerPatchSchema,
       google: providerPatchSchema,
       deepseek: providerPatchSchema,
-      groq: providerPatchSchema,
       kimi: providerPatchSchema,
     })
     .partial()

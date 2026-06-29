@@ -120,11 +120,14 @@ class TestOpenRouterWithoutKey:
         or_keys = [k for k in self.llm_mod.SPEECH_MODELS if k.startswith("openrouter/")]
         assert not or_keys, f"OpenRouter keys appeared without a key: {or_keys}"
 
-    def test_default_groq_keys_still_present(self):
-        assert "llama-3.3-70b-versatile" in self.llm_mod.SPEECH_MODELS
-        assert "llama-3.1-8b-instant" in self.llm_mod.SPEECH_MODELS
+    def test_default_non_groq_keys_present(self):
+        # Groq SPEECH_MODELS entries were removed 2026-06-29 (full-Groq-
+        # eradication pass); the DeepSeek defaults are the always-present baseline.
+        assert "deepseek-chat" in self.llm_mod.SPEECH_MODELS
+        assert "deepseek-v4-flash" in self.llm_mod.SPEECH_MODELS
+        assert "llama-3.3-70b-versatile" not in self.llm_mod.SPEECH_MODELS
 
     def test_speech_models_module_loads_clean(self):
         """Importing providers.llm without OPENROUTER_API_KEY must not raise."""
         assert self.llm_mod.SPEECH_MODELS is not None
-        assert self.llm_mod.DEFAULT_SPEECH_MODEL == "openai/gpt-oss-120b"
+        assert self.llm_mod.DEFAULT_SPEECH_MODEL == "deepseek-chat"

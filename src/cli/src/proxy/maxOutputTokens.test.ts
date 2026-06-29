@@ -2,7 +2,6 @@ import { beforeAll, describe, expect, test } from 'bun:test'
 
 beforeAll(() => {
   process.env.DEEPSEEK_API_KEY = 'test-deepseek'
-  process.env.GROQ_API_KEY = 'test-groq'
   process.env.GOOGLE_API_KEY = 'test-gemini'
   process.env.GEMINI_API_KEY = 'test-gemini'
   process.env.OPENAI_API_KEY = 'test-openai'
@@ -45,11 +44,6 @@ describe('maxOutputTokens — provider defaults (post-2026-05-27 bumps)', () => 
     ['kimi-k2.6-thinking', 32768],
     ['kimi-k2.6-agent', 32768],
     ['kimi-k2.6-swarm', 32768],
-    // Groq provider default 32K applies to qwen3, llama-3.x, gpt-oss.
-    ['qwen/qwen3-32b', 32768],
-    ['llama-3.3-70b-versatile', 32768],
-    ['llama-3.1-8b-instant', 32768],
-    ['openai/gpt-oss-120b', 32768],
   ] as const)('%s → maxOutputTokens = %p', (modelId, expected) => {
     const p = getProviderForModel(modelId)
     expect(p).not.toBeNull()
@@ -58,7 +52,7 @@ describe('maxOutputTokens — provider defaults (post-2026-05-27 bumps)', () => 
 })
 
 describe('maxOutputTokens — per-model overrides (stricter than provider default)', () => {
-  // These three models have lower API caps than their provider family.
+  // These models have lower API caps than their provider family.
   // The override in the registry pins them so requests don't carry a
   // too-high max_tokens that the upstream would 400 on.
 
@@ -68,12 +62,6 @@ describe('maxOutputTokens — per-model overrides (stricter than provider defaul
 
   test('gpt-4o-mini → 16K (OpenAI provider default 32K → overridden)', () => {
     expect(getProviderForModel('gpt-4o-mini')?.maxOutputTokens).toBe(16384)
-  })
-
-  test('meta-llama/llama-4-scout → 8K (Groq provider default 32K → overridden)', () => {
-    expect(
-      getProviderForModel('meta-llama/llama-4-scout-17b-16e-instruct')?.maxOutputTokens,
-    ).toBe(8192)
   })
 
   test('claude-opus-4-8 → 128K (Anthropic provider default 64K → overridden upward)', () => {

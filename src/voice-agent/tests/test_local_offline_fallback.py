@@ -19,11 +19,12 @@ import pytest
 
 @pytest.fixture
 def cloud_keys(monkeypatch):
-    """Dummy Groq key so cloud primaries construct (no network call at
-    construction); no Anthropic/DeepSeek so the resolved chain is
-    deterministic."""
-    monkeypatch.setenv("GROQ_API_KEY", "test-dummy")
-    for k in ("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY"):
+    """Dummy DeepSeek key so cloud primaries construct (no network call at
+    construction); no Anthropic so the resolved rung-1 primary is
+    deterministically DeepSeek. (Was Groq before the 2026-06-29 full-Groq
+    removal — Groq is no longer a constructible rung.)"""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-dummy")
+    for k in ("ANTHROPIC_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.delenv("JARVIS_LOCAL_LLM_ASSUME_AVAILABLE", raising=False)
 
@@ -119,7 +120,6 @@ def test_stt_local_on_builds_adapter(monkeypatch):
 
 
 def test_stt_chain_appends_local_when_enabled(monkeypatch):
-    monkeypatch.setenv("GROQ_API_KEY", "dummy")
     monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
     from livekit.agents.stt import FallbackAdapter
     try:
@@ -129,16 +129,19 @@ def test_stt_chain_appends_local_when_enabled(monkeypatch):
         pytest.skip("Silero VAD unavailable for chain test")
     from providers.stt import build_stt_chain
 
+    # Deepgram absent + local off → no STT rung at all → raises (the Groq
+    # Whisper universal fallback was removed 2026-06-29).
     monkeypatch.setenv("JARVIS_LOCAL_STT_ENABLED", "0")
-    off = build_stt_chain(vad=vad)
-    # Deepgram absent + local off → single Groq Whisper rung, returned bare.
-    assert not isinstance(off, FallbackAdapter)
+    with pytest.raises(RuntimeError):
+        build_stt_chain(vad=vad)
 
+    # Deepgram present + local on → 2-rung FallbackAdapter [Deepgram, local].
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "dummy-deepgram")
     monkeypatch.setenv("JARVIS_LOCAL_STT_ENABLED", "1")
     monkeypatch.setenv("JARVIS_LOCAL_STT_MODEL", "base")
     on = build_stt_chain(vad=vad)
     assert isinstance(on, FallbackAdapter)
-    assert len(on._stt_instances) == 2  # Groq Whisper + local faster-whisper
+    assert len(on._stt_instances) == 2  # Deepgram + local faster-whisper
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -209,11 +212,10 @@ def test_tts_kokoro_needs_no_local_model_file(monkeypatch):
     assert isinstance(build_local_tts(), KokoroEndpointTTS)
 
 
-def test_tts_chain_appends_piper_when_enabled(monkeypatch, fake_piper_model, tmp_path):
-    monkeypatch.setenv("GROQ_API_KEY", "dummy")
+def test_tts_chain_local_is_primary_when_enabled(monkeypatch, fake_piper_model, tmp_path):
     from providers.tts import build_tts_chain
     from providers.piper_tts import PiperTTS
-    provider_file = tmp_path / "tts-provider"  # absent → default Orpheus
+    provider_file = tmp_path / "tts-provider"  # absent → default local/Edge
 
     monkeypatch.setenv("JARVIS_LOCAL_TTS_ENABLED", "0")
     off = build_tts_chain(provider_file)
@@ -221,7 +223,10 @@ def test_tts_chain_appends_piper_when_enabled(monkeypatch, fake_piper_model, tmp
 
     monkeypatch.setenv("JARVIS_LOCAL_TTS_ENABLED", "1")
     on = build_tts_chain(provider_file)
-    assert isinstance(on[-1], PiperTTS)  # appended LAST
+    # Orpheus was removed 2026-06-29 — the local engine is now the PRIMARY
+    # (first rung), with Edge-TTS appended as the fallback.
+    assert isinstance(on[0], PiperTTS)
+    assert any(isinstance(x, PiperTTS) for x in on)
 
 
 # ─────────────────────────────────────────────────────────────────────

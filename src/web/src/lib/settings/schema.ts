@@ -6,7 +6,6 @@ export const PROVIDER_KEYS: Provider[] = [
   "anthropic",
   "openai",
   "google",
-  "groq",
   "deepseek",
   "kimi",
 ];
@@ -64,7 +63,6 @@ export const settingsSchema = z.object({
       openai: providerSettingsSchema.default({}),
       google: providerSettingsSchema.default({}),
       deepseek: providerSettingsSchema.default({}),
-      groq: providerSettingsSchema.default({}),
       kimi: providerSettingsSchema.default({}),
     })
     .default({
@@ -72,7 +70,6 @@ export const settingsSchema = z.object({
       openai: {},
       google: {},
       deepseek: {},
-      groq: {},
       kimi: {},
     }),
   // Local model backends reachable by base URL (no API key). Ollama is the

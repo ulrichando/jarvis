@@ -5,7 +5,7 @@ const INFO = [
   { label: "Version", value: "0.0.1 · dev" },
   { label: "Framework", value: "Next.js 16 · Turbopack" },
   { label: "Runtime", value: "Bun + Node" },
-  { label: "Providers", value: "Anthropic · OpenAI · Google · Groq · DeepSeek · Kimi" },
+  { label: "Providers", value: "Anthropic · OpenAI · Google · DeepSeek · Kimi" },
 ];
 
 export function AboutSection() {

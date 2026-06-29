@@ -684,7 +684,6 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
   // - Regular chat turns (no workspace) keep 4K — answers rarely need
   //   more, and going higher just inflates cost on chatty providers.
   const PROVIDER_MAX_OUTPUT: Record<string, number> = {
-    groq: 8192,
     google: 8192,
     openai: 16384,
     anthropic: 16384,

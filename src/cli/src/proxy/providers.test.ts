@@ -5,7 +5,6 @@ import { beforeAll, describe, expect, test } from 'bun:test'
 // builder from throwing. Ollama has no key requirement.
 beforeAll(() => {
   process.env.DEEPSEEK_API_KEY = 'test-deepseek'
-  process.env.GROQ_API_KEY = 'test-groq'
   process.env.GOOGLE_API_KEY = 'test-gemini'
   process.env.OPENAI_API_KEY = 'test-openai'
   process.env.KIMI_API_KEY = 'test-kimi'
@@ -45,11 +44,6 @@ describe('providers — supportsVision plumbing', () => {
     ['deepseek-reasoner', false],
     ['deepseek-v4-flash', false],
     ['deepseek-v4-pro', false],
-    ['qwen/qwen3-32b', false],
-    ['llama-3.3-70b-versatile', false],
-    ['llama-3.1-8b-instant', false],
-    ['openai/gpt-oss-120b', false],
-    ['meta-llama/llama-4-scout-17b-16e-instruct', false],
   ] as const)('provider for %s has supportsVision: %p (default false)', (modelId, expected) => {
     const p = getProviderForModel(modelId)
     expect(p).not.toBeNull()

@@ -3,7 +3,6 @@ import { beforeAll, describe, expect, test } from 'bun:test'
 // Test-time env so the Provider builder doesn't throw on resolveApiKey.
 beforeAll(() => {
   process.env.DEEPSEEK_API_KEY = 'test-deepseek'
-  process.env.GROQ_API_KEY = 'test-groq'
   process.env.GOOGLE_API_KEY = 'test-gemini'
   process.env.OPENAI_API_KEY = 'test-openai'
   process.env.KIMI_API_KEY = 'test-kimi'

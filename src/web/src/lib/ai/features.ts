@@ -5,16 +5,13 @@ import {
   Code2,
   Compass,
   Crosshair,
-  Eye,
   FileText,
   Film,
   FolderKanban,
   FolderPlus,
   Globe,
   Image as ImageIcon,
-  Layers,
   ListTodo,
-  Mic,
   Monitor,
   MousePointer,
   Package,
@@ -172,30 +169,6 @@ export const PROVIDER_FEATURES: Record<Provider, Feature[]> = {
       icon: Film,
       description:
         "Generate short video clips from a prompt — animate stills, storyboard scenes.",
-    },
-  ],
-
-  groq: [
-    {
-      slug: "compound",
-      label: "Compound",
-      icon: Layers,
-      description:
-        "Groq's agent with built-in web search and code execution. Fast because Groq is fast.",
-    },
-    {
-      slug: "speech",
-      label: "Speech",
-      icon: Mic,
-      description:
-        "Whisper-grade transcription and Kokoro/PlayAI TTS at Groq speeds.",
-    },
-    {
-      slug: "vision",
-      label: "Vision",
-      icon: Eye,
-      description:
-        "Llama 4 + Vision models for image understanding — captions, OCR, diagrams.",
     },
   ],
 
