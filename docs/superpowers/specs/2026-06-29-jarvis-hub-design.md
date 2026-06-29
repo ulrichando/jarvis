@@ -189,9 +189,11 @@ client → https://0wlan.com/hub/v1/{messages|chat/completions}   (Bearer JWT)
   -d hub`. Document in the runbook.
 - **Token lifecycle (gateway is internet-facing + fronts every key).** Offline
   HS256 JWT verification can't revoke a leaked token on its own. Sub-project 1's
-  clients are all interactive, so #1 just enforces **token expiry** (the gate
-  already verifies the signature; add an `exp` check) → short-lived JWTs +
-  refresh, exactly like Claude Code's auto-refreshing `jarvis auth login`.
+  clients are all interactive, and **token expiry is already enforced** —
+  `verifyProxyToken` (`proxyJwt.ts:110`) checks `exp` (+ `aud`/`iss`/`sub`/
+  HS256-only), so #1 needs **no auth-code change**, only
+  `JARVIS_PROXY_AUTH_REQUIRED=1` in the container → short-lived JWTs + refresh,
+  exactly like Claude Code's auto-refreshing `jarvis auth login`.
   Revocation of long-lived **CI tokens** (a denylist the gateway consults) is
   introduced in **sub-project 5**, alongside the only thing that mints them — no
   revocation machinery before there's a revocable token (YAGNI).
