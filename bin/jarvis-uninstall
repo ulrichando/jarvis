@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Global uninstaller wrapper → repo-root uninstall.sh.
+# Usage: jarvis-uninstall [--cli|--voice|--desktop|--web|--all] [--purge] [--nuke] [-y]
+# (Run `jarvis-uninstall --help` for the full list.)
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bash "$HERE/../uninstall.sh" "$@"

@@ -995,6 +995,35 @@ EOF
 
 # ── Main ─────────────────────────────────────────────────────────────────
 main() {
+  # ── Channel selection (optional) ───────────────────────────────────────
+  # No flags (or --all) → install everything. Select specific channels with
+  # --cli / --voice / --desktop / --web (the rest are skipped). The
+  # JARVIS_SKIP_{CLI,VOICE,DESKTOP,WEB}=1 env vars still work and compose.
+  local _all=0 _sel=0 _cli=0 _voice=0 _desktop=0 _web=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --all)     _all=1 ;;
+      --cli)     _cli=1; _sel=1 ;;
+      --voice)   _voice=1; _sel=1 ;;
+      --desktop) _desktop=1; _sel=1 ;;
+      --web)     _web=1; _sel=1 ;;
+      -h|--help)
+        echo "Usage: ./install.sh [--all | --cli --voice --desktop --web]"
+        echo "  No flags or --all installs everything (CLI, Voice, Desktop, Web)."
+        echo "  Pass one or more channels to install only those; the rest skip."
+        echo "  Env: JARVIS_SKIP_{CLI,VOICE,DESKTOP,WEB}=1 also skips a channel."
+        exit 0 ;;
+      *) warn "ignoring unknown option: $1" ;;
+    esac
+    shift
+  done
+  if [ "$_all" = "0" ] && [ "$_sel" = "1" ]; then
+    [ "$_cli" = "1" ]     || export JARVIS_SKIP_CLI=1
+    [ "$_voice" = "1" ]   || export JARVIS_SKIP_VOICE=1
+    [ "$_desktop" = "1" ] || export JARVIS_SKIP_DESKTOP=1
+    [ "$_web" = "1" ]     || export JARVIS_SKIP_WEB=1
+  fi
+
   c_bold "JARVIS installer"
   detect_invocation
   check_prereqs
