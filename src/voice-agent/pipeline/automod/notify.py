@@ -11,6 +11,7 @@ Future channels (voice / web push) can hook the same entry point.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 
@@ -30,6 +31,14 @@ def notify_proposal_ready(automod_id: str, intent: str) -> bool:
     already no-ops builds when paused, but a re-finalize/announce path still
     fired desktop notifications past the pause flag.
     """
+    # Never fire a REAL notification from inside a test run. The automod
+    # finalize/cycle tests call this as a side-effect with throwaway intents
+    # ("test-001", "fix X", …) and would spam the desktop — and the phone, via
+    # desktop->mobile mirroring — with proposals that never enter the real queue.
+    # pytest sets PYTEST_CURRENT_TEST per test and child finalize subprocesses
+    # inherit it, so this one check covers in-process and subprocess callers.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
     try:
         from pipeline.automod._state import is_evolution_paused
         if is_evolution_paused():
