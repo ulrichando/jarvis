@@ -71,3 +71,39 @@ def test_apply_local_omits_voice_model(modes_path, tmp_path, monkeypatch):
     cm.apply("local")
     assert (tmp_path / "voice-mode").read_text().strip() == "local"
     assert vm.read_text().strip() == "stale-value"
+
+
+def test_active_allowed_tools_reads_file(tmp_path, monkeypatch):
+    from pipeline import conversation_modes as cm
+    f = tmp_path / "mode-allowed-tools"
+    monkeypatch.setattr(cm, "_F_MODE_ALLOWED_TOOLS", f)
+    f.write_text("computer_use\nbrowser_task\n")
+    assert cm.active_allowed_tools() == {"computer_use", "browser_task"}
+    f.write_text("")
+    assert cm.active_allowed_tools() is None
+    f.unlink()
+    assert cm.active_allowed_tools() is None
+
+
+def test_tool_is_mode_allowed(tmp_path, monkeypatch):
+    from pipeline import conversation_modes as cm
+    f = tmp_path / "mode-allowed-tools"
+    monkeypatch.setattr(cm, "_F_MODE_ALLOWED_TOOLS", f)
+    f.write_text("browser_task\n")
+    assert cm.tool_is_mode_allowed("browser_task") is True
+    assert cm.tool_is_mode_allowed("computer_use") is False
+    assert cm.tool_is_mode_allowed("clarify") is True   # CORE_TOOLS floor
+    f.write_text("")
+    assert cm.tool_is_mode_allowed("computer_use") is True
+
+
+def test_load_all_livekit_tools_honors_allowlist(tmp_path, monkeypatch):
+    from pipeline import conversation_modes as cm
+    f = tmp_path / "mode-allowed-tools"
+    monkeypatch.setattr(cm, "_F_MODE_ALLOWED_TOOLS", f)
+    f.write_text("clarify\n")  # restrict to clarify (+ CORE)
+    from tools._adapter import load_all_livekit_tools
+    names = {t.info.name for t in load_all_livekit_tools()}
+    assert "clarify" in names
+    assert "memory" in names             # CORE_TOOLS floor
+    assert "computer_use" not in names   # restricted out

@@ -123,3 +123,30 @@ def apply(mode_id: str) -> dict[str, Any]:
         _write_atomic(doc)
     logger.info("[modes] applied %s", mode_id)
     return m
+
+
+# ---------------------------------------------------------------------------
+# Per-mode tool allowlist helpers
+# ---------------------------------------------------------------------------
+
+# Tools ALWAYS available regardless of a mode's allowlist, so a mode can't brick
+# the assistant (it still needs to talk + clarify + remember).
+CORE_TOOLS: frozenset[str] = frozenset({"clarify", "memory"})
+
+
+def active_allowed_tools() -> Optional[set[str]]:
+    """The active mode's tool allowlist as a set, or None for 'no restriction'.
+    Read from the file (not load()) so it's cheap + restart-fresh."""
+    try:
+        raw = _F_MODE_ALLOWED_TOOLS.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    names = {ln.strip() for ln in raw.splitlines() if ln.strip()}
+    return names or None
+
+
+def tool_is_mode_allowed(name: str) -> bool:
+    allow = active_allowed_tools()
+    if allow is None:
+        return True
+    return name in allow or name in CORE_TOOLS
