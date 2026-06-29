@@ -32,6 +32,18 @@ if [ -r "$HOME/.jarvis/local-api-token.env" ]; then
   export JARVIS_LOCAL_API_TOKEN
 fi
 
+# Machine-local desktop overrides (NOT committed — per-machine, like
+# local-api-token.env above). Point the tray's "Open in Browser" at the
+# DEPLOYED web app instead of a local dev server:
+#   JARVIS_WEB_URL=https://0wlan.com   (main.rs returns it before probing localhost)
+#   JARVIS_WEB_AUTO_START=false        (skip spawning the local Next.js you don't need)
+if [ -r "$HOME/.jarvis/desktop.env" ]; then
+  # shellcheck disable=SC1091
+  . "$HOME/.jarvis/desktop.env"
+fi
+# Export (empty when unset → main.rs falls back to probing localhost, unchanged).
+export JARVIS_WEB_URL="${JARVIS_WEB_URL:-}"
+
 export JARVIS_DISPATCH_DISABLED JARVIS_ROUTER_ENABLED JARVIS_ROUTER_TIMEOUT_MS \
        JARVIS_ROUTER_MODEL \
        JARVIS_VOICE_BANTER JARVIS_VOICE_TASK JARVIS_VOICE_REASONING JARVIS_VOICE_EMOTIONAL \

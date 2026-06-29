@@ -2015,6 +2015,24 @@ fn list_screen_sources() -> Result<serde_json::Value, String> {
 
 // ── Browser-open helpers ───────────────────────────────────────────────────
 
+/// True when the configured (usually remote) web answers its public
+/// `/install.sh` route — the one path that is BOTH public in the app middleware
+/// AND excluded from the Cloudflare Access OTP gate, so it returns 200 without
+/// a session. Uses `curl` because std's `TcpStream` is plaintext-only and the
+/// remote is HTTPS. A VPS that's down/unreachable makes curl fail (timeout /
+/// 5xx / DNS) → the caller falls back to a local web.
+fn remote_web_healthy(url: &str) -> bool {
+    let base = url.trim_end_matches('/');
+    let probe = format!("{base}/install.sh");
+    std::process::Command::new("curl")
+        .args(["-fsS", "--max-time", "3", "-o", "/dev/null", probe.as_str()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Probe the standard JARVIS web ports and return the first URL that
 /// responds with a JARVIS-shaped response (200 + application/json on
 /// /api/conversations). Returns `None` when nothing matches —
@@ -2025,8 +2043,15 @@ fn list_screen_sources() -> Result<serde_json::Value, String> {
 /// useful UI instead of opening Chrome to a connection-refused page.
 fn probe_jarvis_web() -> Option<String> {
     if let Ok(url) = std::env::var("JARVIS_WEB_URL") {
-        if !url.trim().is_empty() {
-            return Some(url);
+        let url = url.trim();
+        if !url.is_empty() {
+            // Prefer the configured (remote) web, but only when it's actually
+            // reachable — otherwise fall through to a local instance so the
+            // desktop still works when the VPS is down.
+            if remote_web_healthy(url) {
+                return Some(url.to_string());
+            }
+            eprintln!("[JARVIS] JARVIS_WEB_URL ({url}) unreachable — falling back to local web");
         }
     }
     for port in [3001u16, 3002, 3000, 8765] {
