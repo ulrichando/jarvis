@@ -23,7 +23,20 @@ def notify_proposal_ready(automod_id: str, intent: str) -> bool:
     """Best-effort desktop notification for a newly-reviewable proposal.
 
     Returns True if a notifier was invoked, False otherwise. Never raises.
+
+    A paused evolution cycle suppresses the popup. This is the universal
+    chokepoint every proposal notification flows through, so gating it here
+    closes the 'pause didn't stop the popups' bug (2026-06-28): the spawner
+    already no-ops builds when paused, but a re-finalize/announce path still
+    fired desktop notifications past the pause flag.
     """
+    try:
+        from pipeline.automod._state import is_evolution_paused
+        if is_evolution_paused():
+            logger.debug("[automod] evolution paused — suppressing proposal notification")
+            return False
+    except Exception:  # noqa: BLE001 — the gate must never break notify
+        pass
     body = f"{(intent or '').strip()[:160]}\n({automod_id}) — review at /evolution"
     notifier = shutil.which("notify-send")
     if not notifier:
