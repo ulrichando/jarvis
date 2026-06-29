@@ -50,21 +50,76 @@ def _write_atomic(doc: dict[str, Any]) -> None:
     os.replace(tmp, MODES_FILE)
 
 
+def _load_unlocked() -> dict[str, Any]:
+    """Read/seed the modes doc. Caller must hold _LOCK."""
+    if not MODES_FILE.exists():
+        doc = _default_doc()
+        _write_atomic(doc)
+        return doc
+    try:
+        return json.loads(MODES_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("[modes] modes.json unreadable (%s); reseeding", e)
+        try:
+            MODES_FILE.replace(MODES_FILE.with_suffix(".json.bak"))
+        except OSError:
+            pass
+        doc = _default_doc()
+        _write_atomic(doc)
+        return doc
+
+
 def load() -> dict[str, Any]:
     """Return the modes doc, seeding built-ins if the file is missing/corrupt."""
     with _LOCK:
-        if not MODES_FILE.exists():
-            doc = _default_doc()
-            _write_atomic(doc)
-            return doc
-        try:
-            return json.loads(MODES_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning("[modes] modes.json unreadable (%s); reseeding", e)
-            try:
-                MODES_FILE.replace(MODES_FILE.with_suffix(".json.bak"))
-            except OSError:
-                pass
-            doc = _default_doc()
-            _write_atomic(doc)
-            return doc
+        return _load_unlocked()
+
+
+_JD = Path.home() / ".jarvis"
+_F_VOICE_MODE       = _JD / "voice-mode"
+_F_VOICE_MODEL      = _JD / "voice-model"
+_F_CLI_MODEL        = _JD / "cli-model"
+_F_TTS_PROVIDER     = _JD / "tts-provider"
+_F_VOICE_TTS_VOICE  = _JD / "voice-tts-voice"
+_F_MODE_ALLOWED_TOOLS = _JD / "mode-allowed-tools"
+
+
+def _write_setting(path: Path, value: Optional[str]) -> None:
+    """Write a single ~/.jarvis setting file atomically. None → leave untouched."""
+    if value is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(str(value) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def get_mode(mode_id: str) -> Optional[dict[str, Any]]:
+    return next((m for m in load()["modes"] if m["id"] == mode_id), None)
+
+
+def resolve(mode_id: str) -> dict[str, Any]:
+    """Return a mode dict; raise KeyError if unknown."""
+    m = get_mode(mode_id)
+    if m is None:
+        raise KeyError(f"unknown mode: {mode_id!r}")
+    return m
+
+
+def apply(mode_id: str) -> dict[str, Any]:
+    """Write all underlying setting files for `mode_id` + set it active.
+    Caller is responsible for restarting the agent."""
+    m = resolve(mode_id)
+    _write_setting(_F_VOICE_MODE, m.get("voice_mode") or "cloud")
+    _write_setting(_F_VOICE_MODEL, m.get("voice_model"))
+    _write_setting(_F_CLI_MODEL, m.get("cli_model"))
+    _write_setting(_F_TTS_PROVIDER, m.get("tts_provider"))
+    _write_setting(_F_VOICE_TTS_VOICE, m.get("tts_voice"))
+    allowed = m.get("allowed_tools")
+    _write_setting(_F_MODE_ALLOWED_TOOLS, "\n".join(allowed) if allowed else "")
+    with _LOCK:
+        doc = _load_unlocked()
+        doc["active"] = mode_id
+        _write_atomic(doc)
+    logger.info("[modes] applied %s", mode_id)
+    return m
