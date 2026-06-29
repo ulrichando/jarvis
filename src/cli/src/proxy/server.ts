@@ -4,7 +4,7 @@ import { getProvider, getProviderForModel, type Provider } from './providers.js'
 import { fetchWithRetry } from './retry.js'
 import { forwardAnthropicNative } from './anthropicPassthrough.js'
 import { logDeepseekCacheStats, logRequest, newRequestId, type RequestLog } from './logger.js'
-import { classifyChatCompletionsRequest } from './hubGateway.js'
+import { classifyChatCompletionsRequest, buildHubConfig } from './hubGateway.js'
 import {
   buildSyntheticWebSearchResponse,
   extractWebSearchQuery,
@@ -232,6 +232,18 @@ const server = Bun.serve({
     if (req.method === 'POST' &&
         (url.pathname.endsWith('/chat/completions') || url.pathname === '/v1/chat/completions')) {
       return handleChatCompletionsRequest(req, url)
+    }
+
+    if (req.method === 'GET' && (url.pathname === '/config' || url.pathname === '/hub/config')) {
+      const authErr = checkInboundAuth(req.headers)
+      if (authErr) {
+        return new Response(
+          JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: authErr.message } }),
+          { status: authErr.status, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response(JSON.stringify(buildHubConfig()), {
+        headers: { 'Content-Type': 'application/json' },
+      })
     }
 
     return new Response('Not found', { status: 404 })

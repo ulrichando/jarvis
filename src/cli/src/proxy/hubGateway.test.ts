@@ -11,7 +11,7 @@ beforeAll(() => {
   process.env.JARVIS_PROVIDER = 'deepseek'
 })
 
-import { classifyChatCompletionsRequest } from './hubGateway.js'
+import { classifyChatCompletionsRequest, buildHubConfig } from './hubGateway.js'
 
 describe('classifyChatCompletionsRequest', () => {
   test('OpenAI-family model routes to its provider', () => {
@@ -30,5 +30,21 @@ describe('classifyChatCompletionsRequest', () => {
     const r = classifyChatCompletionsRequest(undefined)
     expect(r.kind).toBe('route')
     if (r.kind === 'route') expect(r.provider.name).toBe('deepseek')
+  })
+})
+
+describe('buildHubConfig', () => {
+  test('reports provider key-presence from env', () => {
+    const cfg = buildHubConfig()
+    expect(cfg.status).toBe('ok')
+    expect(cfg.providers.deepseek).toBe(true)   // set in beforeAll
+    expect(cfg.default_provider).toBe('deepseek')
+  })
+
+  test('a provider with no key reads false', () => {
+    const saved = process.env.OPENAI_API_KEY
+    delete process.env.OPENAI_API_KEY
+    expect(buildHubConfig().providers.openai).toBe(false)
+    process.env.OPENAI_API_KEY = saved
   })
 })
