@@ -5956,6 +5956,18 @@ async function run(): Promise<CommanderCommand> {
       await authStatus(opts);
     });
 
+  program
+    .command("uninstall")
+    .description(
+      "Uninstall the JARVIS CLI from this computer (removes the binary + your login; the server is untouched)",
+    )
+    .option("--purge", "Also remove ~/.jarvis (keys, settings, conversations)")
+    .action(async (opts: { purge?: boolean }) => {
+      const { jarvisUninstall } = await import("./cli/handlers/uninstall.js");
+      await jarvisUninstall(opts);
+      process.exit(0);
+    });
+
   /**
    * Helper function to handle marketplace command errors consistently.
    * Logs the error and exits the process with status 1.
