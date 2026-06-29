@@ -50,7 +50,7 @@ JARVIS's `bash` tool runs as the local user (`ulrich`). **As of 2026-05-16 there
 
 **`src/cli/` is off-limits when working on desktop / voice-agent / web.** It's a separate codebase (the `jarvis` CLI agent). Ask before modifying.
 
-**`src/cli/src/utils/claudeInChrome/` is reserved** for future Firefox/Chrome extension work. Don't delete.
+**`src/cli/src/utils/jarvisInChrome/` is reserved** for future Firefox/Chrome extension work. Don't delete. (Renamed from `claudeInChrome/` in the 2026-06-27 Claude→Jarvis rebrand; the internal MCP wire id stays `claude-in-chrome` for protocol stability — only the directory, constant symbols, and user-facing strings were rebranded.)
 
 **Anthropic Claude is the primary LLM provider (Haiku 4.5 for BANTER/TASK/EMOTIONAL; Sonnet 4.6 for REASONING) — chosen for prompt caching (~700ms TTFW cached vs ~2s on Groq).** Groq is the cross-provider fallback rung (`llama-3.1-8b-instant` for BANTER, `llama-3.3-70b-versatile` for TASK, etc.) and DeepSeek-v4-flash is the third rung. Don't hardcode any single provider — JARVIS is multi-provider via `providers/llm.py::build_dispatching_llm` with per-route env overrides (`JARVIS_{BANTER,TASK,REASONING,EMOTIONAL}_MODEL`).
 
