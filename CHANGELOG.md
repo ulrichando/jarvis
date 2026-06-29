@@ -7,6 +7,30 @@ For the full commit-level history, run `git log --oneline`.
 
 ---
 
+## [2.1.108] — 2026-06-29
+
+### Added
+- **Hub Gateway** — the CLI's `:4000` proxy promoted to a VPS-hosted,
+  multi-provider LLM gateway at `proxy.0wlan.com` (a container behind the
+  cloudflared tunnel). Adds an OpenAI-shaped ingress (`POST /v1/chat/completions`,
+  passthrough) + a `/config` diagnostic on top of the Anthropic-shaped
+  `/v1/messages`. Clients route LLM traffic through it with a login JWT; provider
+  keys live only on the VPS.
+- **Conversation modes (backend)** — named presets bundling a voice LLM + CLI
+  model + TTS voice + tool allowlist, applied as one set (`~/.jarvis/modes.json`;
+  `/modes` + `/mode[/create|update|delete]` endpoints; built-ins DeepSeek /
+  Claude / Local).
+
+### Removed
+- **Groq** — removed entirely across voice-agent, web, and CLI (LLM / STT / TTS
+  provider + cost tables + health probe). DeepSeek is the default rung.
+
+### Changed
+- Version sources reconciled (`start.sh` / `cli.tsx` / `package.json`) so
+  `jarvis --version` matches for source-run and binary.
+
+---
+
 ## [Unreleased] — SDLC review pass (2026-06-11)
 
 Follow-ups from the full lifecycle review (CI un-red + docs truth):

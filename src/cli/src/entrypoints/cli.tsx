@@ -15,7 +15,7 @@ import { feature } from 'bun:bundle';
 // inlined at parse time, and `globalThis.MACRO` is not a define target.
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 (globalThis as unknown as { MACRO?: Record<string, unknown> }).MACRO ??= {
-  VERSION: '2.1.107',
+  VERSION: '2.1.108',
   BUILD_TIME: '',
   PACKAGE_URL: '@anthropic-ai/claude-code',
   NATIVE_PACKAGE_URL: '@anthropic-ai/claude-code-native',

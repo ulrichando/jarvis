@@ -1,7 +1,7 @@
 {
   "name": "jarvis-cli",
-  "version": "1.0.0",
-  "description": "Jarvis CLI - AI coding assistant with multi-provider support (DeepSeek, Groq, Gemini, Ollama, OpenAI, Anthropic)",
+  "version": "2.1.108",
+  "description": "Jarvis CLI - AI coding assistant with multi-provider support (DeepSeek, Gemini, Ollama, OpenAI, Anthropic)",
   "main": "index.js",
   "scripts": {
     "start": "node ./scripts/run-cli.mjs",
