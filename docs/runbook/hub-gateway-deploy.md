@@ -1,131 +1,120 @@
 # Runbook — deploy the JARVIS Hub Gateway (sub-project 1)
 
-Stands up the CLI's `:4000` proxy as the VPS **Hub Gateway** at
-`https://0wlan.com/hub`. After this, the gateway is live but **no client points
-at it yet** (sub-projects 2–5 do that). Provider keys already live on the VPS;
-this changes nothing local.
+Runs the CLI's `:4000` proxy as the VPS gateway behind **`proxy.0wlan.com`**, with
+the new **OpenAI-shaped ingress** (`/v1/chat/completions`) + **`/config`**. This
+is the endpoint your clients point at (`JARVIS_GATEWAY_URL`).
 
-**Prereqs:** the code is merged/present on the VPS checkout (commits `93bb7821`
-OpenAI ingress, `e2262821` `/config`, `3443c30a` `Dockerfile.hub`, `<task4>` the
-compose/Caddy wiring). Run everything from `src/web` on the VPS host.
+**Deployed shape (as of 2026-06-29):** the gateway is a **docker-compose container**
+(`hub`) publishing **host `127.0.0.1:4000`**; the host's **cloudflared tunnel**
+already routes `proxy.0wlan.com → http://localhost:4000` (see
+`/etc/cloudflared/config.yml`). It **replaced** the older `jarvis-gateway.service`
+host binary (now stopped + disabled). Caddy and `0wlan.com/hub` are **not** in the
+gateway path — `proxy.0wlan.com` is a dedicated subdomain straight through the
+tunnel.
+
+> Why not `0wlan.com/hub` via Caddy? That was the original design, but the box
+> already had `proxy.0wlan.com → localhost:4000` wired for the gateway, so the
+> container simply takes over that loopback port. One endpoint, no Caddy route,
+> and `proxy.0wlan.com` is **not** behind Cloudflare Access (no bypass needed).
+
+**Prereqs:** SSH as root to the VPS; repo at `/opt/jarvis`; provider keys +
+`JARVIS_PROXY_JWT_SECRET` in `src/web/.env.production` (verified present). Run from
+`/opt/jarvis/src/web`.
 
 ---
 
-## 1. Drop the stale Groq key (cleanup)
+## 1. Get the new proxy code + compose onto the box
 
-The Groq eradication left a dead `GROQ_API_KEY=` in `.env.production` — nothing
-reads it. Remove the line:
+The hub needs the new `src/cli/src/proxy/{server.ts,hubGateway.ts}`,
+`src/cli/Dockerfile.hub`, `src/cli/.dockerignore`, and the `hub` service in
+`src/web/docker-compose.yml`. Deliver by whichever path matches your setup:
 
-```bash
-sed -i '/^GROQ_API_KEY=/d' src/web/.env.production
+- **git:** `cd /opt/jarvis && git fetch && git checkout origin/cli-feature-unlock -- \
+  src/cli/src/proxy/server.ts src/cli/src/proxy/hubGateway.ts \
+  src/cli/Dockerfile.hub src/cli/.dockerignore` then add the `hub` service to
+  `src/web/docker-compose.yml` (see the committed version on that branch).
+- **scp** the five files directly (what the 2026-06-29 deploy did, since the box's
+  `docker-compose.yml`/`Caddyfile` are hand-modified and a `git pull` would clobber
+  them). Back up first: `cp docker-compose.yml docker-compose.yml.pre-hub.bak`.
+
+The `hub` service must publish host loopback `:4000`:
+```yaml
+  hub:
+    build: { context: ../cli, dockerfile: Dockerfile.hub }
+    restart: unless-stopped
+    env_file: [{ path: .env.production, required: false }]
+    environment:
+      JARVIS_PROXY_HOST: "0.0.0.0"
+      JARVIS_ALLOW_PUBLIC_BIND: "1"
+      JARVIS_PROXY_AUTH_REQUIRED: "1"
+      JARVIS_PROXY_PORT: "4000"
+      JARVIS_PROVIDER: "${JARVIS_PROVIDER:-deepseek}"
+    expose: ["4000"]
+    ports: ["127.0.0.1:4000:4000"]   # cloudflared tunnel reaches it here
+    healthcheck:
+      test: ["CMD","bun","-e","fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 ```
 
-## 2. Confirm the VPS env has what the hub needs
+## 2. Cut over from the old binary gateway to the container
 
+The old `jarvis-gateway.service` (a compiled binary) owns `:4000`. Swap it:
 ```bash
-grep -oE '^(JARVIS_PROXY_JWT_SECRET|[A-Z]+_API_KEY)' src/web/.env.production | sort -u
-```
-Expect `JARVIS_PROXY_JWT_SECRET` plus `ANTHROPIC_/DEEPSEEK_/GOOGLE_/KIMI_/OPENAI_API_KEY`.
-No action if present (verified locally 2026-06-29) — the hub container inherits
-them via `env_file: .env.production`.
-
-## 3. Cloudflare Access — exclude `/hub` (MANUAL, do this BEFORE traffic)
-
-Hub clients send the login JWT in the `Authorization` header; they do **not**
-carry the Cloudflare Access cookie. Without a bypass, Access 302-redirects every
-hub request to the login page and all clients fail.
-
-In the Cloudflare dashboard → **Zero Trust → Access → Applications**:
-- Either add a **path bypass** for `/hub/*` on the existing `0wlan.com` app,
-- **or** create a second self-hosted application scoped to `0wlan.com/hub` with a
-  single **Bypass** policy (Action: Bypass, Include: Everyone).
-
-This mirrors the existing `/install.sh` + `/releases` exclusions. The hub is not
-unprotected — it enforces its own JWT gate (`JARVIS_PROXY_AUTH_REQUIRED=1`); the
-bypass only removes the *cookie-based* Access wall so the *token-based* gate can
-do its job.
-
-## 4. Deploy
-
-```bash
-cd src/web
+cd /opt/jarvis/src/web
+systemctl stop jarvis-gateway          # frees host:4000 (~5-10s of proxy.0wlan.com downtime)
+sleep 2
 docker compose --env-file .env.production up -d --build hub
-docker compose --env-file .env.production up -d caddy   # reload with the /hub route
+sleep 5
+# GUARD — if the container isn't answering, roll back immediately:
+curl -sf http://127.0.0.1:4000/health >/dev/null 2>&1 \
+  && echo "container on :4000 ✓" \
+  || { docker compose --env-file .env.production stop hub; systemctl start jarvis-gateway; echo "ROLLED BACK"; }
+systemctl disable jarvis-gateway       # only after the container is confirmed — prevents a reboot :4000 conflict
 ```
 
-## 5. Health
+## 3. Smoke `proxy.0wlan.com`
 
+Mint a token with the real VPS secret (inside the container), then hit the tunnel:
 ```bash
-docker compose ps hub                 # State: healthy
-docker compose logs hub | tail -n 20  # expect: "inbound auth: REQUIRED (login token)"  and  "Ready — provider: …"
-```
-
-## 6. End-to-end smoke — BOTH shapes (through Caddy + Cloudflare)
-
-Get a valid login JWT (`jarvis auth login`, or read the current one from
-`~/.claude/.credentials.json`), then:
-
-```bash
-TOKEN=…   # a valid login JWT
-
-# Diagnostic — provider key-presence on the VPS:
-curl -s https://0wlan.com/hub/config -H "Authorization: Bearer $TOKEN" | head -c 300; echo
-
-# OpenAI shape (the voice/web client path):
-curl -sS https://0wlan.com/hub/v1/chat/completions -H "Authorization: Bearer $TOKEN" \
+TOKEN=$(docker exec web-hub-1 bun -e 'import {signProxyToken} from "/app/src/proxy/proxyJwt.ts"; console.log(signProxyToken({sub:"smoke",ttlSeconds:300}, process.env.JARVIS_PROXY_JWT_SECRET))')
+# Local (bypasses Cloudflare — the definitive backend check):
+curl -s  http://127.0.0.1:4000/config -H "Authorization: Bearer $TOKEN"        # 200 + providers{}
+curl -s  http://127.0.0.1:4000/v1/chat/completions -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"deepseek-v4-flash","stream":false,"messages":[{"role":"user","content":"say OK"}]}' | head -c 300; echo
-
-# Anthropic shape (the CLI client path):
-curl -sS https://0wlan.com/hub/v1/messages -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' -H 'anthropic-version: 2023-06-01' \
-  -d '{"model":"deepseek-v4-flash","max_tokens":64,"messages":[{"role":"user","content":"say OK"}]}' | head -c 300; echo
-
-# Negative — no token must be rejected:
-curl -s -o /dev/null -w 'no-token status: %{http_code}\n' https://0wlan.com/hub/config
+  -d '{"model":"deepseek-v4-flash","stream":false,"messages":[{"role":"user","content":"OK"}]}'  # 200 completion
+# Through the tunnel (real client path):
+curl -s -o /dev/null -w '%{http_code}\n' https://proxy.0wlan.com/health                            # 200
 ```
-Expect: `/hub/config` → JSON with `providers.*` true; both shapes → assistant
-text; the no-token request → `401`.
+Expect: local `:4000` returns 200 with a real completion; `proxy.0wlan.com/health` → 200.
 
-## 7. Latency probe (go/no-go input for voice, sub-project 3)
-
-Time first-token through the hub vs a direct provider call, from the box that
-runs voice:
-
-```bash
-# through the hub:
-time curl -sS https://0wlan.com/hub/v1/chat/completions -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"deepseek-v4-flash","stream":true,"messages":[{"role":"user","content":"hi"}]}' >/dev/null
-# direct (baseline):
-time curl -sS https://api.deepseek.com/v1/chat/completions -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"deepseek-chat","stream":true,"messages":[{"role":"user","content":"hi"}]}' >/dev/null
-```
-Record both numbers here. If the hub adds more than a few hundred ms, reconsider
-routing **voice** through it (the hybrid fallback in the spec) before doing
-sub-project 3 — web + CLI are latency-tolerant regardless.
-
----
+> **Cloudflare bot challenge:** `proxy.0wlan.com` is open (not behind Access), but
+> the zone has bot/rate protection. A burst of headless `curl`s from one IP can
+> trip a "Just a moment…" challenge (HTTP 403) that a browser passes and that
+> clears on its own. Don't judge liveness by hammering it with `curl` — check
+> `http://127.0.0.1:4000` locally (authoritative) or `proxy.0wlan.com` from a
+> browser. If real headless clients get challenged at normal volume, add a
+> Cloudflare WAF/Bot-Fight skip rule for `proxy.0wlan.com` (dashboard).
 
 ## Rollback
 
 ```bash
-cd src/web
+cd /opt/jarvis/src/web
 docker compose --env-file .env.production stop hub
-# revert Caddy: git revert the compose/Caddy commit (or comment the handle_path /hub block) + `docker compose up -d caddy`
+systemctl enable --now jarvis-gateway   # old binary back on proxy.0wlan.com
+# restore the compose backup if needed: cp docker-compose.yml.pre-hub.bak docker-compose.yml
 ```
-Nothing local depends on the hub yet, so stopping it is safe — only the public
-`/hub` route goes dark.
 
 ## Security notes
 
-- The `hub` service has **no `ports:`** mapping — it is reachable only by Caddy
-  on the compose network, never directly from the internet.
-- It binds `0.0.0.0` *inside the container* via the deliberate
-  `JARVIS_ALLOW_PUBLIC_BIND=1` + `JARVIS_PROXY_AUTH_REQUIRED=1` posture.
-- Keys now sit only on the VPS. **Do not** empty the local `~/.jarvis/keys.env`
-  provider keys until sub-projects 2–5 repoint voice/CLI/web — they still read
-  the local keys today; removing them now breaks both immediately.
-- Key rotation (post-cutover): edit `.env.production`, `docker compose
-  --env-file .env.production up -d hub`.
+- The `hub` container publishes **`127.0.0.1:4000` only** — never the public
+  interface; only the host's cloudflared reaches it. Same posture as the old
+  binary (loopback + tunnel + the JWT gate).
+- `JARVIS_PROXY_AUTH_REQUIRED=1` + `JARVIS_ALLOW_PUBLIC_BIND=1` are set in the
+  service env; every request needs a valid login JWT (`verifyProxyToken` checks
+  signature + `exp` + `aud`/`iss`).
+- Keys live only in the VPS `.env.production`; `.dockerignore` excludes `.env*` so
+  nothing secret is baked into the image (verified: rebuilt image is `.env`-free).
+- Key rotation: edit `.env.production`, then `docker compose --env-file
+  .env.production up -d hub`.

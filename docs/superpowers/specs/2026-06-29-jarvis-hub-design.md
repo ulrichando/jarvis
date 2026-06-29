@@ -1,8 +1,17 @@
 # JARVIS Hub — design (Sub-project 1: Hub Gateway)
 
 **Date:** 2026-06-29
-**Status:** Design — pending user review → plan
+**Status:** Shipped 2026-06-29 — plan executed, gateway live (see Deployment note).
 **Program:** JARVIS Hub (4 sub-projects). **This spec covers sub-project 1 only.**
+
+> **Deployment note (2026-06-29):** sub-project 1 shipped to the VPS, but via a
+> different endpoint than the `0wlan.com/hub`+Caddy design below. The box already
+> had `proxy.0wlan.com → localhost:4000` wired (cloudflared tunnel) for the
+> gateway, so the hub container took over that loopback port instead of a Caddy
+> `/hub` route. Net: the gateway is **`proxy.0wlan.com`** (open, not behind
+> Cloudflare Access — no bypass needed), the new code (OpenAI ingress + `/config`)
+> is live there, and Caddy is not in the path. See
+> `docs/runbook/hub-gateway-deploy.md`.
 
 ## Context
 
