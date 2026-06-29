@@ -1,6 +1,6 @@
 # Jarvis CLI
 
-Jarvis CLI is an AI coding assistant with multi-provider support for DeepSeek, Groq, Gemini, Ollama, OpenAI, and Anthropic models.
+Jarvis CLI is an AI coding assistant with multi-provider support for DeepSeek, Gemini, Ollama, OpenAI, and Anthropic models.
 
 ## Features
 
@@ -20,7 +20,6 @@ npm start
 
 # Or run with a specific provider
 npm run dev:deepseek
-npm run dev:groq
 npm run dev:gemini
 npm run dev:ollama
 npm run dev:openai
@@ -64,7 +63,6 @@ jarvis --help
 Set API keys in `.env` file:
 ```
 DEEPSEEK_API_KEY=your_key
-GROQ_API_KEY=your_key
 OPENAI_API_KEY=your_key
 ANTHROPIC_API_KEY=your_key
 GEMINI_API_KEY=your_key
