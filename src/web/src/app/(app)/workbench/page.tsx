@@ -57,25 +57,42 @@ export default function WorkbenchListPage() {
           rooted at <code className="font-mono text-xs">~/.jarvis/workspaces/</code>.
         </p>
 
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!name.trim()) return;
-            create.mutate(name.trim());
-          }}
-          className="flex gap-2 mb-6"
-        >
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Workspace name (e.g. landing-page)"
-            className="flex-1 rounded-md border border-border/60 bg-background px-3 py-2 text-sm"
-          />
-          <Button type="submit" disabled={!name.trim() || create.isPending}>
-            <Plus className="size-4" />
-            New workspace
-          </Button>
-        </form>
+        {/* Boxed + labeled so it reads as "name a NEW workspace", not a
+            search field hovering over the list below. */}
+        <div className="mb-6 rounded-lg border border-border/60 bg-muted/20 p-4">
+          <label
+            htmlFor="new-workspace-name"
+            className="mb-2 block text-xs font-medium uppercase tracking-wider text-muted-foreground"
+          >
+            Create a workspace
+          </label>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!name.trim()) return;
+              create.mutate(name.trim());
+            }}
+            className="flex gap-2"
+          >
+            <input
+              id="new-workspace-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Name it — e.g. landing-page"
+              autoFocus
+              className="flex-1 rounded-md border border-border/60 bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-foreground/30"
+            />
+            <Button type="submit" disabled={!name.trim() || create.isPending}>
+              <Plus className="size-4" />
+              {create.isPending ? "Creating…" : "Create"}
+            </Button>
+          </form>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {create.isError
+              ? "Couldn't create that workspace — try a different name."
+              : "Type a name, then Create — a project folder by that name appears below."}
+          </p>
+        </div>
 
         <div className="space-y-1">
           {isLoading ? (

@@ -38,8 +38,13 @@ die_soft() { log "$1"; exit 0; }   # never hard-fail the timer
 
 OFFSITE_DIR="${JARVIS_BACKUP_OFFSITE_DIR:-}"
 RCLONE_REMOTE="${JARVIS_BACKUP_RCLONE_REMOTE:-}"
-if [ -z "$OFFSITE_DIR" ] && [ -z "$RCLONE_REMOTE" ]; then
-  die_soft "no destination configured (set JARVIS_BACKUP_OFFSITE_DIR and/or JARVIS_BACKUP_RCLONE_REMOTE) — inert"
+# rsync-over-SSH destination, e.g. JARVIS_BACKUP_SSH_DEST="root@host:/srv/jarvis/backups"
+# (+ optional JARVIS_BACKUP_SSH_KEY=/path/to/key). Native + robust: fails LOUD if the
+# host is unreachable — unlike a mounted dir that silently writes to local disk instead.
+SSH_DEST="${JARVIS_BACKUP_SSH_DEST:-}"
+SSH_KEY="${JARVIS_BACKUP_SSH_KEY:-}"
+if [ -z "$OFFSITE_DIR" ] && [ -z "$RCLONE_REMOTE" ] && [ -z "$SSH_DEST" ]; then
+  die_soft "no destination configured (set JARVIS_BACKUP_OFFSITE_DIR / JARVIS_BACKUP_RCLONE_REMOTE / JARVIS_BACKUP_SSH_DEST) — inert"
 fi
 
 # ── stage: latest snapshots + un-snapshotted secrets/config ──────────────────
@@ -110,6 +115,23 @@ if [ -n "$RCLONE_REMOTE" ]; then
     fi
   else
     log "rclone remote set but rclone not installed"
+  fi
+fi
+if [ -n "$SSH_DEST" ]; then
+  # -F /dev/null: ignore system/user ssh_config. A bad-perm drop-in (e.g.
+  # /etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf) makes ssh refuse to run under
+  # the systemd service's strict context; the backup ssh is fully self-contained.
+  ssh_opts="-F /dev/null -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
+  [ -n "$SSH_KEY" ] && ssh_opts="$ssh_opts -i $SSH_KEY"
+  ssh_host="${SSH_DEST%%:*}"; ssh_path="${SSH_DEST#*:}"
+  if ssh $ssh_opts "$ssh_host" "mkdir -p '$ssh_path'" 2>>"$LOG" \
+     && rsync -q -e "ssh $ssh_opts" "$enc" "${SSH_DEST%/}/$encname" 2>>"$LOG" \
+     && ssh $ssh_opts "$ssh_host" "test -f '$ssh_path/$encname'" 2>>"$LOG"; then
+    pushed=$((pushed+1)); log "ssh OK: ${SSH_DEST}/${encname} (${encsize})"
+    # retain newest N on the remote, prune older
+    ssh $ssh_opts "$ssh_host" "ls -1t '$ssh_path'/jarvis-backup-*.age '$ssh_path'/jarvis-backup-*.gpg 2>/dev/null | tail -n +$((RETENTION+1)) | xargs -r rm -f" 2>>"$LOG" || true
+  else
+    log "ssh FAILED: ${SSH_DEST}"
   fi
 fi
 

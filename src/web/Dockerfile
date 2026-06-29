@@ -43,8 +43,9 @@ ENV NODE_ENV=production \
 WORKDIR /app
 # docker CLI *client* (no daemon) — talks to the socket-proxy over TCP. From
 # Alpine apk (apk-maintained + patched; no glibc static download needed on musl).
-# tini reaps zombies; ca-certificates for outbound TLS.
-RUN apk add --no-cache docker-cli tini ca-certificates
+# tini reaps zombies; ca-certificates for outbound TLS; git is required — the
+# workbench/`/code` features run `git init` (+ commits) in every new workspace.
+RUN apk add --no-cache docker-cli tini ca-certificates git
 # Non-root runtime user (Alpine's adduser).
 RUN adduser -D -u 10001 jarvis
 COPY --from=build --chown=10001:10001 /app ./
