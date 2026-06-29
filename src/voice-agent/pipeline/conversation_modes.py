@@ -150,3 +150,39 @@ def tool_is_mode_allowed(name: str) -> bool:
     if allow is None:
         return True
     return name in allow or name in CORE_TOOLS
+
+
+# ---------------------------------------------------------------------------
+# Store mutation helpers
+# ---------------------------------------------------------------------------
+
+
+def create(mode: dict[str, Any]) -> None:
+    """Append a new mode to the store. Raises ValueError if the id already exists."""
+    with _LOCK:
+        doc = _load_unlocked()
+        if any(m["id"] == mode["id"] for m in doc["modes"]):
+            raise ValueError(f"mode already exists: {mode['id']!r}")
+        doc["modes"].append(mode)
+        _write_atomic(doc)
+
+
+def update(mode_id: str, patch: dict[str, Any]) -> None:
+    """Merge `patch` into an existing mode (id field is immutable). Raises KeyError if not found."""
+    with _LOCK:
+        doc = _load_unlocked()
+        m = next((m for m in doc["modes"] if m["id"] == mode_id), None)
+        if m is None:
+            raise KeyError(mode_id)
+        m.update({k: v for k, v in patch.items() if k != "id"})
+        _write_atomic(doc)
+
+
+def delete(mode_id: str) -> None:
+    """Remove a mode. Raises ValueError if it is the currently active mode."""
+    with _LOCK:
+        doc = _load_unlocked()
+        if doc["active"] == mode_id:
+            raise ValueError("cannot delete the active mode; switch first")
+        doc["modes"] = [m for m in doc["modes"] if m["id"] != mode_id]
+        _write_atomic(doc)

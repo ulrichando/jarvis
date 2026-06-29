@@ -107,3 +107,22 @@ def test_load_all_livekit_tools_honors_allowlist(tmp_path, monkeypatch):
     assert "clarify" in names
     assert "memory" in names             # CORE_TOOLS floor
     assert "computer_use" not in names   # restricted out
+
+
+def test_create_update_delete(modes_path):
+    from pipeline import conversation_modes as cm
+    cm.create({"id": "focus", "label": "Focus", "voice_mode": "cloud",
+               "voice_model": "claude-haiku-4-5", "cli_model": "claude-sonnet-4-6",
+               "tts_provider": "kokoro:af_bella", "tts_voice": "af_bella",
+               "allowed_tools": ["clarify"]})
+    assert cm.get_mode("focus")["allowed_tools"] == ["clarify"]
+    cm.update("focus", {"label": "Deep Focus"})
+    assert cm.get_mode("focus")["label"] == "Deep Focus"
+    cm.delete("focus")
+    assert cm.get_mode("focus") is None
+
+
+def test_delete_active_rejected(modes_path):
+    from pipeline import conversation_modes as cm
+    with pytest.raises(ValueError):
+        cm.delete("deepseek")
