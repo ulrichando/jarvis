@@ -19,9 +19,23 @@
 	# auth; JARVIS_PTY_REQUIRE_AUTH=1 in compose) — so Access + app login + the
 	# socket token are three independent layers, not one.
 	@pty path /pty /pty/*
-	reverse_proxy @pty web:8772
+	handle @pty {
+		reverse_proxy web:8772
+	}
 
-	reverse_proxy web:3000
+	# Hub Gateway (JARVIS Hub sub-project 1): JWT-gated multi-provider LLM proxy.
+	# handle_path strips /hub ATOMICALLY so the proxy sees its native /v1/* (+
+	# /config) — avoids the classic strip-then-rematch bug of a looser matcher.
+	# Cloudflare Access EXCLUDES /hub (clients auth with the login JWT, not the
+	# Access cookie). See docs/runbook/hub-gateway-deploy.md.
+	handle_path /hub/* {
+		reverse_proxy hub:4000
+	}
+
+	# Everything else → the Next app.
+	handle {
+		reverse_proxy web:3000
+	}
 
 	# Baseline origin headers — Cloudflare WAF/Access are the primary edge layer.
 	header {

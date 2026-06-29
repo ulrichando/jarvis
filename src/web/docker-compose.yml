@@ -29,7 +29,7 @@ services:
       - ${JARVIS_ORIGIN_CERT_DIR:-./certs}:/etc/caddy/certs:ro
       - caddy_data:/data
       - caddy_config:/config
-    depends_on: [web]
+    depends_on: [web, hub]
 
   web:
     build:
@@ -70,6 +70,32 @@ services:
       docker-proxy: { condition: service_started }
       postgres: { condition: service_healthy }
     expose: ["3000"]
+
+  # Hub Gateway (JARVIS Hub sub-project 1): the CLI's :4000 proxy, holding the
+  # provider keys + verifying login JWTs. Binds 0.0.0.0 in-container so Caddy
+  # reaches it over the docker network; NOT published to the host (only the
+  # Caddy /hub route fronts it). Keys + JARVIS_PROXY_JWT_SECRET come from
+  # .env.production (already present). Build context is ../cli (cross-tree).
+  hub:
+    build:
+      context: ../cli
+      dockerfile: Dockerfile.hub
+    restart: unless-stopped
+    env_file:
+      - path: .env.production
+        required: false
+    environment:
+      JARVIS_PROXY_HOST: "0.0.0.0"
+      JARVIS_ALLOW_PUBLIC_BIND: "1"
+      JARVIS_PROXY_AUTH_REQUIRED: "1"
+      JARVIS_PROXY_PORT: "4000"
+      JARVIS_PROVIDER: "${JARVIS_PROVIDER:-deepseek}"
+    expose: ["4000"]
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # Tecnativa socket-proxy: the web app can create/exec/manage CONTAINERS +
   # NETWORKS + IMAGES, but is denied host-level / privileged Docker ops. This is
