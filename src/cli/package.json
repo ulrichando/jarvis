@@ -7,7 +7,6 @@
     "start": "node ./scripts/run-cli.mjs",
     "proxy": "node ./scripts/run-proxy.mjs",
     "dev:deepseek": "node ./scripts/start.mjs deepseek",
-    "dev:groq": "node ./scripts/start.mjs groq",
     "dev:gemini": "node ./scripts/start.mjs gemini",
     "dev:ollama": "node ./scripts/start.mjs ollama",
     "dev:openai": "node ./scripts/start.mjs openai",

@@ -1,73 +1,65 @@
 # Jarvis CLI
 
-Jarvis CLI is an AI coding assistant with multi-provider support for DeepSeek, Gemini, Ollama, OpenAI, and Anthropic models.
+A Claude-Code-shaped AI coding assistant (TypeScript / Bun). It runs **locally**
+and talks to your self-hosted **JARVIS gateway** for LLM access, with
+multi-provider support: DeepSeek, Anthropic, OpenAI, Gemini, Kimi, and Ollama.
 
-## Features
+It's a *client* of the JARVIS deployment — one `jarvis auth login` signs this
+machine in to your gateway (e.g. `proxy.0wlan.com`), and the gateway holds the
+provider keys. See the [root README](../../README.md) for the whole system.
 
-- **Multi-provider support**: Switch between different AI providers
-- **Plugin system**: Extend functionality with plugins
-- **Tool integration**: Built-in tools for coding, file operations, and web search
-- **Cross-platform**: Works on Linux, macOS, and Windows
+## Install
 
-## Quick Start
+### Prebuilt binary (recommended)
 
-```bash
-# Install dependencies
-npm install
-
-# Start the CLI
-npm start
-
-# Or run with a specific provider
-npm run dev:deepseek
-npm run dev:gemini
-npm run dev:ollama
-npm run dev:openai
+```
+curl -fsSL https://0wlan.com/install.sh | bash
+jarvis auth login
 ```
 
-## Installation
+Drops the `jarvis` binary into `~/.local/bin`; `jarvis auth login` opens your
+gateway in the browser to sign in. No clone, no Bun, no build.
 
-### Global Installation
-```bash
-npm install -g jarvis-cli
-jarvis
+**Uninstall:** `jarvis uninstall` (or `curl -fsSL https://0wlan.com/uninstall.sh | bash`).
+
+### From source (development)
+
+```
+git clone https://github.com/ulrichando/jarvis.git   # private — clone via gh / SSH
+cd jarvis
+bin/jarvis                                            # source-run launcher (Bun)
 ```
 
-### Development Setup
-```bash
-git clone https://github.com/ulrichando/jarvis.git
-cd jarvis/src/jarvis-cli
-npm install
-npm start
-```
+`bin/jarvis` is the launcher (`scripts/start.sh` → `bun … cli.tsx`); it starts a
+local proxy and the agent. Per-provider dev shells:
+`npm run dev:deepseek` / `dev:gemini` / `dev:openai` / `dev:ollama`.
 
 ## Usage
 
-```bash
-# Start interactive session
-jarvis
-
-# Run with a prompt
-jarvis "Help me debug this code"
-
-# Manage plugins
-jarvis plugin install <plugin-name>
-jarvis plugin list
-
-# Get help
-jarvis --help
+```
+jarvis                              # interactive session
+jarvis -p "fix the failing test"   # headless one-shot (prints, then exits)
+jarvis auth login                  # sign in to your gateway
+jarvis auth logout                 # sign out (clears the local token only)
 ```
 
-## Configuration
+In a session: `/model` switches the active model, `/help` lists commands. Your
+default model is persisted to `~/.jarvis/cli-model`.
 
-Set API keys in `.env` file:
+## Providers
+
+DeepSeek · Anthropic · OpenAI · Gemini (Google) · Kimi (Moonshot) · Ollama (local).
+The model registry is `src/utils/model/jarvisModelRegistry.ts`. Provider keys
+live on your **gateway** — a logged-in client never holds them. For a standalone
+/ from-source run without a gateway, set keys in `~/.jarvis/keys.env`:
+
 ```
-DEEPSEEK_API_KEY=your_key
-OPENAI_API_KEY=your_key
-ANTHROPIC_API_KEY=your_key
-GEMINI_API_KEY=your_key
+DEEPSEEK_API_KEY=…
+OPENAI_API_KEY=…
+ANTHROPIC_API_KEY=…
+GEMINI_API_KEY=…
 ```
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+Apache-2.0 — see [LICENSE](LICENSE).
