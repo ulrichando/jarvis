@@ -8,3 +8,9 @@ dist
 *.log
 *.tsbuildinfo
 .DS_Store
+# SECURITY: never bake local secrets into the image. .env.providers / .env.local
+# hold real provider keys and are NOT needed at runtime (the container gets its
+# env from compose's env_file). Matches src/web/.dockerignore.
+.env*
+*.pem
+.credentials.json

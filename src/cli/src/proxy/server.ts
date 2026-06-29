@@ -639,7 +639,13 @@ async function handleChatCompletionsRequest(req: Request, url: URL): Promise<Res
     // require teeing the stream to parse the trailing `usage` chunk. Provider /
     // status / latency are still logged via the flush hook. Upgrade path: tee +
     // parse usage if stream token accounting is needed.
-    const logged = outcome.response.body!.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    if (!outcome.response.body) {
+      finish({ status: 502, error_type: 'upstream_no_body', error_message: 'upstream returned no stream body' })
+      return new Response(
+        JSON.stringify({ error: { message: 'upstream returned no stream body', type: 'api_error' } }),
+        { status: 502, headers: { 'Content-Type': 'application/json', ...stdHeaders } })
+    }
+    const logged = outcome.response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
       flush() { finish({ provider: outcome.provider.name, upstream_model: outcome.provider.model }) },
     }))
     return new Response(logged, {
