@@ -7,7 +7,7 @@
  * provider keys on the VPS stay live for every other device. Config in
  * ~/.jarvis is preserved unless --purge (matching Claude Code keeping ~/.claude).
  */
-import { lstatSync, rmSync } from "node:fs";
+import { lstatSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -22,7 +22,7 @@ function present(p: string): boolean {
 }
 
 export async function jarvisUninstall(
-  opts: { purge?: boolean } = {},
+  opts: { purge?: boolean; force?: boolean } = {},
 ): Promise<void> {
   const home = homedir();
   const binDir = process.env.JARVIS_BIN_DIR || join(home, ".local", "bin");
@@ -58,13 +58,33 @@ export async function jarvisUninstall(
   }
   if (removed === 0) out(`  (no jarvis binary found in ${binDir})`);
 
-  // 3) --purge: also remove user config/data.
+  // 3) --purge: also remove user config/data — BUT ~/.jarvis is SHARED on a
+  //    host machine: the voice agent + web app read provider API keys from
+  //    ~/.jarvis/keys.env. Refuse to wipe it while those keys are present (that
+  //    would leave the voice agent with no providers), unless --force. A pure
+  //    CLI client only has a login token there, so it removes cleanly.
   if (opts.purge) {
+    let sharedProviderKeys = false;
     try {
-      rmSync(join(home, ".jarvis"), { recursive: true, force: true });
-      out("  ✓ removed ~/.jarvis (keys, settings, conversations)");
+      const env = readFileSync(join(home, ".jarvis", "keys.env"), "utf8");
+      sharedProviderKeys =
+        /^(export\s+)?(ANTHROPIC|OPENAI|DEEPSEEK|GROQ|GOOGLE|KIMI)_API_KEY=/m.test(
+          env,
+        );
     } catch {
-      /* ignore */
+      /* no keys.env → nothing shared to protect */
+    }
+    if (sharedProviderKeys && !opts.force) {
+      out("  ⚠ --purge skipped: ~/.jarvis holds provider API keys the JARVIS voice");
+      out("     agent + web app on THIS machine use — wiping it would break them.");
+      out("     Re-run with --force to wipe everything anyway.");
+    } else {
+      try {
+        rmSync(join(home, ".jarvis"), { recursive: true, force: true });
+        out("  ✓ removed ~/.jarvis (config + settings)");
+      } catch {
+        /* ignore */
+      }
     }
   }
 

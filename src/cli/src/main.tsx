@@ -5961,8 +5961,15 @@ async function run(): Promise<CommanderCommand> {
     .description(
       "Uninstall the JARVIS CLI from this computer (removes the binary + your login; the server is untouched)",
     )
-    .option("--purge", "Also remove ~/.jarvis (keys, settings, conversations)")
-    .action(async (opts: { purge?: boolean }) => {
+    .option(
+      "--purge",
+      "Also remove ~/.jarvis (settings; refused if it holds provider keys the voice agent/web use, unless --force)",
+    )
+    .option(
+      "--force",
+      "With --purge, wipe ~/.jarvis even when it holds provider keys",
+    )
+    .action(async (opts: { purge?: boolean; force?: boolean }) => {
       const { jarvisUninstall } = await import("./cli/handlers/uninstall.js");
       await jarvisUninstall(opts);
       process.exit(0);
