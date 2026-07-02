@@ -83,7 +83,14 @@ export function makeDispatch(deps: DispatchDeps) {
         agentDefinition: baseDef,
         promptMessages: [createUserMessage({ content: buildPrompt(prompt, opts) })],
         toolUseContext: deps.toolUseContext,
-        canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+        // Echo the tool's own input back. An empty updatedInput would CLOBBER
+        // the real args (e.g. Bash's `command`), so the tool then sees
+        // undefined → `command.includes(...)` throws. Workflow agents auto-run
+        // in acceptEdits, so allow unconditionally but preserve the input.
+        canUseTool: async (_tool: unknown, input: unknown) => ({
+          behavior: 'allow' as const,
+          updatedInput: input as Record<string, unknown>,
+        }),
         isAsync: true,
         querySource: 'agent:custom',
         model: opts.model as ModelAlias | undefined,
