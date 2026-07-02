@@ -240,14 +240,35 @@ _MAX_HISTORY = 40  # cap stored messages per session (trimmed at user boundaries
 
 
 def _trim_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Bound to the last _MAX_HISTORY messages, only ever cutting before a 'user'
-    message so tool_use/tool_result pairs are never split."""
+    """Bound stored history to ~_MAX_HISTORY messages without producing an
+    invalid conversation prefix.
+
+    The naive "keep the last N, cut at a user boundary" corrupts the Anthropic
+    format: mid-loop, *every* user turn is a ``tool_result`` turn (the only clean
+    user turn is the seed), so the tail almost always opens on a ``tool_result``
+    whose matching ``tool_use`` was trimmed away — which 400s the NEXT run
+    (``unexpected tool_result``).
+
+    Instead: pin the session's first turn (the seed — a clean user turn, the only
+    valid head) and append the most recent messages starting at an ``assistant``
+    turn. ``assistant`` (tool_use) is always immediately followed by its
+    ``user`` (tool_result), so starting the suffix on an assistant boundary keeps
+    every tool_use/tool_result pair whole and never leaves an orphan tool_result
+    at the head. Provider-safe: for the OpenAI export the pinned head is the
+    system message (also a valid head), and Gemini never persists (export → None).
+    """
     if len(messages) <= _MAX_HISTORY:
         return messages
-    start = len(messages) - _MAX_HISTORY
-    while start < len(messages) and messages[start].get("role") != "user":
-        start += 1
-    return messages[start:] if start < len(messages) else messages[-_MAX_HISTORY:]
+    head = messages[0]
+    budget = max(1, _MAX_HISTORY - 1)          # room for the pinned head
+    suffix_start = len(messages) - budget
+    # Back up to an assistant boundary so the suffix opens on a tool_use (whose
+    # tool_result follows), never on an orphan tool_result.
+    while suffix_start < len(messages) and messages[suffix_start].get("role") != "assistant":
+        suffix_start += 1
+    if suffix_start >= len(messages):
+        return [head]                          # no valid suffix; keep just the seed
+    return [head, *messages[suffix_start:]]
 
 
 async def run_loop(

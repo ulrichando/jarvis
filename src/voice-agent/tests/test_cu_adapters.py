@@ -144,3 +144,113 @@ def test_gemini_adapter_parses_function_calls():
     assert res.calls[0].action == "scroll" and res.calls[0].args["element"] == 2
     a.add_results([ToolResult("computer_use", "{}", _IMG)])
     assert len(a.contents) >= 2
+
+
+# ── computer_use_service._trim_history (plan 001: orphan tool_result guard) ────
+
+def _anthropic_history(steps):
+    """Simulate an Anthropic adapter message list after `steps` tool round-trips:
+    a seed user turn, then per step assistant(tool_use) + user(tool_result)."""
+    msgs = [{"role": "user", "content": [{"type": "text", "text": "do the thing"}]}]
+    for i in range(steps):
+        msgs.append({"role": "assistant", "content": [
+            {"type": "tool_use", "id": f"t{i}", "name": "computer_use",
+             "input": {"action": "capture"}}]})
+        msgs.append({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": f"t{i}",
+             "content": [{"type": "text", "text": "ok"}]}]})
+    return msgs
+
+
+def test_trim_never_starts_with_orphan_tool_result():
+    # 30 steps -> 61 messages, well over _MAX_HISTORY (40); forces a trim. The
+    # head must be a user turn that does NOT carry a tool_result block (that would
+    # 400 on Anthropic: "unexpected tool_result").
+    from computer_use_service import _trim_history, _MAX_HISTORY
+    trimmed = _trim_history(_anthropic_history(30))
+    assert trimmed, "trim must not empty the history"
+    head = trimmed[0]
+    assert head.get("role") == "user"
+    content = head.get("content") or []
+    assert not any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+    assert len(trimmed) <= _MAX_HISTORY
+
+
+def test_trim_short_history_untouched():
+    from computer_use_service import _trim_history
+    msgs = _anthropic_history(3)  # 7 messages, under the cap
+    assert _trim_history(msgs) is msgs
+
+
+# ── AnthropicCUAdapter caching / effort / image-cap (plan 002) ────────────────
+
+def _capturing_anthropic(model, system="sys prompt"):
+    """Build an AnthropicCUAdapter whose mock client records create() kwargs."""
+    from pipeline.cu_adapters.anthropic_adapter import AnthropicCUAdapter
+    captured = {}
+
+    class _Resp:
+        content = []
+
+    class _Msgs:
+        def create(self, **k):
+            captured.clear()
+            captured.update(k)
+            return _Resp()
+
+    class _Client:
+        messages = _Msgs()
+
+    return AnthropicCUAdapter(model, system, client=_Client()), captured
+
+
+def test_anthropic_adapter_caches_prefix_and_sets_effort():
+    a, captured = _capturing_anthropic("claude-sonnet-4-6")
+    a.seed("do it", "imgb64")
+    asyncio.run(a.next_step())
+    sysb = captured["system"]
+    assert isinstance(sysb, list) and sysb[-1]["cache_control"] == {"type": "ephemeral"}
+    assert captured["tools"][0]["cache_control"] == {"type": "ephemeral"}
+    assert captured["output_config"] == {"effort": "medium"}
+
+
+def test_anthropic_adapter_effort_by_model(monkeypatch):
+    def _effort(model):
+        a, captured = _capturing_anthropic(model)
+        a.seed("x", None)
+        asyncio.run(a.next_step())
+        return captured.get("output_config")
+    assert _effort("claude-opus-4-7") == {"effort": "high"}
+    assert _effort("claude-opus-4-8") == {"effort": "high"}
+    assert _effort("claude-sonnet-4-6") == {"effort": "medium"}
+    assert _effort("claude-haiku-4-5") is None       # unknown/haiku → API default
+    monkeypatch.setenv("JARVIS_CU_EFFORT_DISABLED", "1")
+    assert _effort("claude-sonnet-4-6") is None       # kill-switch
+
+
+def test_anthropic_adapter_caps_inrun_images():
+    a, _ = _capturing_anthropic("claude-sonnet-4-6")
+    a.seed("task", "seedimg")                          # 1 image-bearing user turn
+    for i in range(5):
+        a.add_results([ToolResult(f"t{i}", "{}", f"img{i}")])  # +5 image turns
+
+    def _has_img(m):
+        c = m.get("content")
+        if not isinstance(c, list):
+            return False
+        for b in c:
+            if isinstance(b, dict) and b.get("type") == "image":
+                return True
+            if isinstance(b, dict) and b.get("type") == "tool_result" and isinstance(b.get("content"), list):
+                if any(isinstance(x, dict) and x.get("type") == "image" for x in b["content"]):
+                    return True
+        return False
+
+    img_turns = [m for m in a.messages if m.get("role") == "user" and _has_img(m)]
+    assert len(img_turns) <= 3, "should keep at most the last 3 screenshots in-run"
+    # Pairing intact: every tool_result envelope still has non-empty content.
+    for m in a.messages:
+        if m.get("role") == "user" and isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if isinstance(b, dict) and b.get("type") == "tool_result":
+                    assert isinstance(b.get("content"), list) and b["content"]
