@@ -154,6 +154,16 @@ async function fetchJson(
   return fetch(url, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
 }
 
+/** A response is only usable if it's a direct 2xx from our own server. `fetch`
+ * follows redirects, so an edge gate (e.g. Cloudflare Access) that redirects
+ * /api/auth/* to its login returns a 200 HTML page with res.redirected=true —
+ * res.ok alone can't tell that apart from a real login. Treating it as success
+ * later crashes on res.json() ("Failed to parse JSON"). res.redirected is the
+ * discriminator: a real better-auth endpoint answers with JSON directly. */
+function isDirectOk(res: Response | undefined): res is Response {
+  return !!res && res.ok && !res.redirected
+}
+
 /** Cookie header value from a response's Set-Cookie headers. */
 function sessionCookie(res: Response): string | undefined {
   const headers = res.headers as Headers & { getSetCookie?: () => string[] }
@@ -315,24 +325,33 @@ export async function jarvisAuthLogin(opts: {
   }
 
   // Probe the resolved server before asking for credentials. If it's your
-  // configured remote server and it isn't responding (and you didn't force a
+  // configured remote server and it isn't usable (and you didn't force a
   // --url), fall back to the local dev server — local is the fallback, NOT the
-  // default. A probe that returns a redirect (e.g. Cloudflare Access) is also a
-  // non-ok, so an Access-gated /api/auth/* trips the same fallback.
+  // default. "Not usable" includes an edge-gate redirect: `fetch` follows the
+  // gate's 302 to a 200 HTML login page, so res.redirected (not res.ok) is what
+  // trips the fallback — see isDirectOk.
   let probe = await fetchJson(`${serverRoot}/api/auth/ok`).catch(() => undefined)
-  if (!probe?.ok && !opts.url && !isLoopback(serverRoot)) {
+  if (!isDirectOk(probe) && !opts.url && !isLoopback(serverRoot)) {
     process.stderr.write(
-      `${serverRoot} isn't responding` +
-        (probe ? ` (HTTP ${probe.status})` : '') +
-        ` — falling back to ${DEFAULT_SERVER_URL}.\n`,
+      `${serverRoot} ` +
+        (probe?.redirected
+          ? 'is behind an edge gate (its /api/auth/* redirects to a login — e.g. ' +
+            "Cloudflare Access); the CLI can't authenticate through it. Exclude " +
+            '/api/auth/* and /api/bridge/* from the gate to use this server.'
+          : "isn't responding" + (probe ? ` (HTTP ${probe.status})` : '')) +
+        `\nFalling back to ${DEFAULT_SERVER_URL}.\n`,
     )
     serverRoot = normalizeServerUrl(DEFAULT_SERVER_URL)
     probe = await fetchJson(`${serverRoot}/api/auth/ok`).catch(() => undefined)
   }
-  if (!probe?.ok) {
+  if (!isDirectOk(probe)) {
     fail(
       `Can't reach the JARVIS server at ${serverRoot}` +
-        (probe ? ` (HTTP ${probe.status} from /api/auth/ok)` : '') +
+        (probe?.redirected
+          ? ' — it redirects /api/auth/* to a login (an edge gate like Cloudflare Access)'
+          : probe
+            ? ` (HTTP ${probe.status} from /api/auth/ok)`
+            : '') +
         '.\nIs the web app running? Pass --url <https://your-domain> to use a different server.',
     )
   }
@@ -367,6 +386,14 @@ export async function jarvisAuthLogin(opts: {
   }).catch((err: unknown) =>
     fail(`Could not reach ${serverRoot}: ${err instanceof Error ? err.message : String(err)}`),
   )
+  if (signIn.redirected) {
+    fail(
+      `${serverRoot} is behind an edge gate (Cloudflare Access or similar) that ` +
+        'intercepted the sign-in and returned its login page instead of ' +
+        'authenticating.\nExclude /api/auth/* and /api/bridge/* from the gate, ' +
+        'or pass --url <server> for one that is not gated.',
+    )
+  }
   if (signIn.status === 401 || signIn.status === 403) {
     fail(
       'Invalid email or password.\n' +
