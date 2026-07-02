@@ -1,10 +1,24 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Copy, Check } from "lucide-react";
+import { Copy, Check, LogOut, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useSession, signOut } from "@/lib/auth-client";
+
+// Initials for the avatar fallback (mirrors layout/user-menu.tsx).
+function initials(name: string): string {
+  return (
+    name
+      .trim()
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((w) => w[0]?.toUpperCase() ?? "")
+      .join("") || "U"
+  );
+}
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
@@ -39,7 +53,25 @@ const INSTANCE_ID = "jarvis-local";
 
 export function AccountSection() {
   const qc = useQueryClient();
+  const router = useRouter();
+  const { data: session } = useSession();
   const [resetting, setResetting] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  // useSession() is empty during SSR and resolves on the client — gate the
+  // session-derived text behind a mount flag so the first client render matches
+  // the server (avoids a hydration mismatch). Same pattern as user-menu.tsx.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const name = (mounted && session?.user?.name) || "You";
+  const email = (mounted && session?.user?.email) || "Local account";
+
+  const logout = async () => {
+    if (signingOut) return;
+    setSigningOut(true);
+    await signOut().catch(() => {});
+    router.push("/login");
+    router.refresh();
+  };
   const resetSettings = async () => {
     if (resetting) return;
     if (
@@ -66,6 +98,22 @@ export function AccountSection() {
     <div className="space-y-10">
       <section>
         <SectionTitle>Account</SectionTitle>
+        {/* Signed-in identity + sign out — the core of an Account page, which
+            this section was missing (session was available via useSession all
+            along). */}
+        <div className="mb-4 flex items-center gap-3 rounded-xl border border-border/60 bg-card/40 px-4 py-3.5">
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/20 font-mono text-[13px] font-semibold tracking-wider text-primary">
+            {initials(name)}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[14px] font-medium">{name}</p>
+            <p className="truncate text-[12.5px] text-muted-foreground">{email}</p>
+          </div>
+          <Button variant="outline" size="sm" className="gap-1.5" onClick={logout} disabled={signingOut}>
+            {signingOut ? <Loader2 className="size-3.5 animate-spin" /> : <LogOut className="size-3.5" />}
+            Sign out
+          </Button>
+        </div>
         <div className="divide-y divide-border/60">
           <div className="flex items-center justify-between py-3.5">
             <div>
