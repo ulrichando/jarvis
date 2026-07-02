@@ -1022,14 +1022,20 @@ fn open_cli_terminal(login: bool) -> Result<(), String> {
 /// "Open jarvis CLI" / "Sign in to JARVIS Server…" menu items.
 fn spawn_cli_terminal(login: bool) -> Result<(), String> {
     let repo = repo_root();
+    // cwd is ~/Jarvis (auto-created), not the repo: the CLI is a general assistant, and
+    // opening inside the jarvis repo dragged in its project trust/context
+    // (user report 2026-07-02), and $HOME can never persist trust (upstream
+    // stores home-dir trust in memory only) so it nags every launch.
+    // ~/Jarvis persists trust like any project (one-time accept). Absolute bin.
+    let jarvis = repo.join("bin").join("jarvis");
     let inner = if login {
         // Keep the window up after the flow so the outcome is readable.
         format!(
-            "cd '{}' && bin/jarvis auth login; echo; read -n1 -s -p 'Done — press any key to close'",
-            repo.display()
+            "mkdir -p \"$HOME/Jarvis\" && cd \"$HOME/Jarvis\" && '{}' auth login; echo; read -n1 -s -p 'Done — press any key to close'",
+            jarvis.display()
         )
     } else {
-        format!("cd '{}' && exec bin/jarvis", repo.display())
+        format!("mkdir -p \"$HOME/Jarvis\" && cd \"$HOME/Jarvis\" && exec '{}'", jarvis.display())
     };
     let attempts: [(&str, Vec<String>); 7] = [
         ("x-terminal-emulator", vec!["-e".into(), "bash".into(), "-lc".into(), inner.clone()]),
