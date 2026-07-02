@@ -50,7 +50,7 @@ def _ddg_instant_answer(query: str) -> str | None:
     """Query the DDG Instant Answer JSON API (keyless, different rate-limit path).
 
     Returns a preformatted string on success, None when no useful answer is
-    available (so the caller can escalate to transfer_to_browser).
+    available (so the caller can escalate to browser_task).
 
     Useful for: Wikipedia-backed entities, calculator queries, definitions.
     Not useful for: multi-word ranked queries ("kids coding classes pricing"),
@@ -98,7 +98,7 @@ def _ddg_instant_answer(query: str) -> str | None:
     parts.append(
         "(Result from DuckDuckGo Instant Answer fallback — the main "
         "search backend is currently rate-limited. For ranked / "
-        "multi-source research, consider transfer_to_browser.)"
+        "multi-source research, consider browser_task.)"
     )
     return "\n".join(parts)
 
@@ -220,15 +220,15 @@ async def _handle_web_search(args: dict) -> str:
             "fallback also returned nothing for this query. DO NOT retry "
             "with a rephrased query — every variation hits the same block. "
             "Three honest options, in order of preference:\n"
-            "  (a) **Escalate to transfer_to_browser** — the browser "
-            "      subagent drives the user's real signed-in Chrome via "
-            "      the bridge extension, which bypasses server-side rate "
-            "      limits. Hand off with transfer_to_browser('search Google for <query>').\n"
+            "  (a) **Escalate to browser_task** — it drives the user's "
+            "      real signed-in Chrome via the bridge extension, which "
+            "      bypasses server-side rate limits. Call "
+            "      browser_task('search Google for <query>').\n"
             "  (b) Answer from your own knowledge with uncertainty marked "
             "      explicitly ('as of my training data' / 'I'm not sure').\n"
             "  (c) Ask the user for a specific URL and use web_fetch on it.\n"
             "Voice path: 'Search is currently blocked by the backend — "
-            "want me to have the browser subagent look it up in your Chrome, "
+            "want me to have the browser look it up in your Chrome, "
             "or answer from what I know?'"
         )
 
