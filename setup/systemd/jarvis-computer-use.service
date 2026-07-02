@@ -12,6 +12,8 @@
 [Unit]
 Description=JARVIS computer-use sidecar (:8771)
 After=default.target
+# Page off-box if this lands in a failed state (mirrors the voice units).
+OnFailure=jarvis-alert@%n.service
 
 [Service]
 Type=simple
