@@ -102,7 +102,8 @@ Your domain is already on Cloudflare, so:
 
 ## 6. Continuous deploy — push to master, the box self-updates
 
-Live since 2026-07-02. A systemd timer on the VPS polls `origin/master` every
+Live + verified 2026-07-02 (timer armed on the VPS; first cutover deployed the
+searx stack). A systemd timer on the VPS polls `origin/master` every
 5 minutes and, when it moves: ff-only pull → `docker compose build` + `up -d`
 (only when `src/web` or `src/cli` changed; Caddyfile changes also restart caddy)
 → health gate (hub `/health` + web HTTP + container states) → **automatic
