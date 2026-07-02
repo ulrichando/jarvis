@@ -984,6 +984,60 @@ fn keys_restart_agent() -> Result<(), String> {
     restart_voice_agent_cmd()
 }
 
+/// Whether this box is signed in to a JARVIS server — i.e. `jarvis auth
+/// login` has written a Remote Control token into ~/.jarvis/keys.env.
+/// Read-only; the chat panel renders Sign-in vs Signed-in from this.
+#[tauri::command]
+fn bridge_login_status() -> serde_json::Value {
+    let mut logged_in = false;
+    let mut base_url = String::new();
+    if let Ok(text) = std::fs::read_to_string(_keys_file()) {
+        for line in text.lines() {
+            let line = line.trim();
+            let line = line.strip_prefix("export ").unwrap_or(line);
+            if let Some(v) = line.strip_prefix("JARVIS_BRIDGE_TOKEN=") {
+                logged_in = !v.trim().trim_matches('"').is_empty();
+            } else if let Some(v) = line.strip_prefix("JARVIS_BRIDGE_BASE_URL=") {
+                base_url = v.trim().trim_matches('"').to_string();
+            }
+        }
+    }
+    serde_json::json!({ "loggedIn": logged_in, "baseUrl": base_url })
+}
+
+/// Open a terminal running the jarvis CLI (login=false) or the JARVIS
+/// server sign-in flow (login=true — `jarvis auth login` is interactive,
+/// so the terminal IS the login UI). Tries common emulators in order;
+/// DISPLAY is inherited from the tray process.
+#[tauri::command]
+fn open_cli_terminal(login: bool) -> Result<(), String> {
+    let repo = repo_root();
+    let inner = if login {
+        // Keep the window up after the flow so the outcome is readable.
+        format!(
+            "cd '{}' && bin/jarvis auth login; echo; read -n1 -s -p 'Done — press any key to close'",
+            repo.display()
+        )
+    } else {
+        format!("cd '{}' && exec bin/jarvis", repo.display())
+    };
+    let attempts: [(&str, Vec<String>); 7] = [
+        ("x-terminal-emulator", vec!["-e".into(), "bash".into(), "-lc".into(), inner.clone()]),
+        ("xfce4-terminal", vec!["-x".into(), "bash".into(), "-lc".into(), inner.clone()]),
+        ("gnome-terminal", vec!["--".into(), "bash".into(), "-lc".into(), inner.clone()]),
+        ("konsole", vec!["-e".into(), "bash".into(), "-lc".into(), inner.clone()]),
+        ("kitty", vec!["bash".into(), "-lc".into(), inner.clone()]),
+        ("alacritty", vec!["-e".into(), "bash".into(), "-lc".into(), inner.clone()]),
+        ("xterm", vec!["-e".into(), "bash".into(), "-lc".into(), inner]),
+    ];
+    for (bin, args) in attempts.iter() {
+        if std::process::Command::new(bin).args(args).spawn().is_ok() {
+            return Ok(());
+        }
+    }
+    Err("No terminal emulator found (tried x-terminal-emulator, xfce4-terminal, gnome-terminal, konsole, kitty, alacritty, xterm)".into())
+}
+
 /// Restart the ENTIRE JARVIS service stack — voice-agent + proxy + bridge
 /// + honcho (memory) + kokoro (TTS) — in one shot. Delegates to
 /// `bin/jarvis-restart-all`, the single source of truth for the restart
@@ -3545,6 +3599,8 @@ fn main() {
             keys_clear,
             keys_restart_agent,
             restart_all_services,
+            bridge_login_status,
+            open_cli_terminal,
             mcp_list,
             mcp_set_enabled,
             mcp_remove,

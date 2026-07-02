@@ -234,7 +234,33 @@ function ActivityBar({ active, onPick }) {
   )
 }
 
-function Sidebar({ view, sessions, currentSessionId, onNewChat, onPickSession }) {
+function SettingsAction({ label, hint, onClick, disabled }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        display: 'block', width: '100%', textAlign: 'left', background: 'none',
+        border: 'none', padding: '7px 12px', cursor: disabled ? 'default' : 'pointer',
+        color: C.text, fontSize: 12, fontFamily: FONT, opacity: disabled ? 0.6 : 1,
+      }}
+      onMouseEnter={e => { if (!disabled) e.currentTarget.style.background = C.hover }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+    >
+      <div>{label}</div>
+      {hint && <div style={{ fontSize: 11, color: C.textDim, marginTop: 2 }}>{hint}</div>}
+    </button>
+  )
+}
+
+function loginHost(login) {
+  return (login?.baseUrl || '')
+    .replace(/^https?:\/\//, '')
+    .replace(/\/api\/bridge\/?$/, '')
+}
+
+function Sidebar({ view, sessions, currentSessionId, onNewChat, onPickSession,
+                   login, onOpenCli, onRestartAgent, restarting }) {
   const title = view === 'history' ? 'HISTORY' : view === 'settings' ? 'SETTINGS' : 'CHAT'
   return (
     <div style={{
@@ -277,8 +303,28 @@ function Sidebar({ view, sessions, currentSessionId, onNewChat, onPickSession })
           >{s.title || 'Untitled'}</div>
         ))}
         {view === 'settings' && (
-          <div style={{ padding: '12px', fontSize: 12, color: C.textDim }}>
-            Settings panel pending.
+          <div style={{ padding: '8px 0', display: 'flex', flexDirection: 'column' }}>
+            <SettingsAction
+              label={login && login.loggedIn ? 'Re-sign in…' : 'Sign in to JARVIS server…'}
+              hint={login && login.loggedIn
+                ? `Signed in · ${loginHost(login) || 'server'}`
+                : 'Opens a terminal running `jarvis auth login`'}
+              onClick={() => onOpenCli(true)}
+            />
+            <SettingsAction
+              label="Open jarvis CLI…"
+              hint="Terminal running the jarvis agent"
+              onClick={() => onOpenCli(false)}
+            />
+            <SettingsAction
+              label={restarting ? 'Restarting voice agent…' : 'Restart voice agent'}
+              hint="Also clears any stuck request in this chat"
+              onClick={onRestartAgent}
+              disabled={restarting}
+            />
+            <div style={{ padding: '10px 12px', fontSize: 11, color: C.textDim, lineHeight: 1.5 }}>
+              API keys & MCP connectors live in the tray menu → Manage API Keys.
+            </div>
           </div>
         )}
         {view === 'chat' && (
@@ -391,7 +437,12 @@ function MainArea({ messages, onSend, isLoading, isConnected }) {
   )
 }
 
-function StatusBar({ isConnected, model, messageCount }) {
+function StatusBar({ isConnected, model, messageCount, login, onSignIn, onOpenCli, onRestart, restarting }) {
+  const chip = {
+    background: 'rgba(255,255,255,0.14)', border: 'none', color: '#fff',
+    borderRadius: 3, padding: '1px 8px', fontSize: 11, fontFamily: MONO,
+    cursor: 'pointer', height: 16, lineHeight: '14px',
+  }
   return (
     <div style={{
       height: 22, background: C.accent, color: '#fff', display: 'flex',
@@ -405,7 +456,25 @@ function StatusBar({ isConnected, model, messageCount }) {
         {isConnected ? 'Connected' : 'Disconnected'}
       </span>
       <span style={{ opacity: 0.8 }}>{model || 'JARVIS'}</span>
-      <span style={{ marginLeft: 'auto', opacity: 0.8 }}>{messageCount} msgs</span>
+      <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+        {login && !login.loggedIn && (
+          <button style={chip} onClick={onSignIn}
+            title="Sign in to your JARVIS server (opens a terminal running `jarvis auth login`)">
+            Sign in
+          </button>
+        )}
+        {login && login.loggedIn && (
+          <span style={{ opacity: 0.85 }} title={`Signed in · ${loginHost(login) || 'JARVIS server'}`}>
+            ✓ {loginHost(login) || 'signed in'}
+          </span>
+        )}
+        <button style={chip} onClick={onOpenCli} title="Open the jarvis CLI in a terminal">CLI</button>
+        <button style={{ ...chip, opacity: restarting ? 0.6 : 1 }} onClick={onRestart} disabled={restarting}
+          title="Restart the voice agent (also clears any stuck request here)">
+          {restarting ? '…' : '↻ agent'}
+        </button>
+        <span style={{ opacity: 0.8 }}>{messageCount} msgs</span>
+      </span>
     </div>
   )
 }
@@ -421,6 +490,40 @@ export default function ChatPanelVscode({
     { role: 'assistant', content: 'Online. How can I assist you?' }
   ])
   const [isLoading, setIsLoading] = useState(false)
+  const [login, setLogin] = useState(null)        // {loggedIn, baseUrl} | null
+  const [restarting, setRestarting] = useState(false)
+
+  // Login state comes from ~/.jarvis/keys.env (what `jarvis auth login`
+  // writes). Re-check when the Settings view opens so a login finished in
+  // the spawned terminal is reflected without an app restart.
+  useEffect(() => {
+    invoke('bridge_login_status').then(setLogin).catch(() => {})
+  }, [view])
+
+  const openCli = useCallback((asLogin) => {
+    invoke('open_cli_terminal', { login: !!asLogin }).catch((e) => {
+      setMessages(prev => [...prev, { role: 'assistant', content: `Could not open a terminal: ${e}` }])
+    })
+  }, [])
+
+  // Restart the agent AND reset this chat's in-flight state in one action,
+  // so the panel and the agent come back together instead of the UI holding
+  // a request the restarted agent will never answer.
+  const restartAgent = useCallback(async () => {
+    if (restarting) return
+    setRestarting(true)
+    clearTimeout(loadingTimerRef.current)
+    setIsLoading(false)
+    setMessages(prev => [...prev, { role: 'assistant', content: 'Restarting voice agent…' }])
+    try {
+      await invoke('keys_restart_agent')
+      setMessages(prev => [...prev, { role: 'assistant', content: 'Voice agent restarted — ready.' }])
+    } catch (e) {
+      setMessages(prev => [...prev, { role: 'assistant', content: `Restart failed: ${e}` }])
+    } finally {
+      setRestarting(false)
+    }
+  }, [restarting])
 
   // Safety timer: if no assistant_says arrives within 60s, clear the spinner
   // so the UI never stays stuck in "thinking…" forever (e.g. on dropped SSE).
@@ -450,9 +553,17 @@ export default function ChatPanelVscode({
   const send = useCallback((text) => {
     setMessages(prev => [...prev, { role: 'user', content: text }])
     setIsLoading(true)
-    // Arm a 60s safety timeout — clears the spinner if the SSE reply never arrives.
+    // Arm a 60s safety timeout — clears the spinner if the SSE reply never
+    // arrives, and SAYS WHY instead of going silently idle (the usual cause
+    // is the voice agent restarting mid-request).
     clearTimeout(loadingTimerRef.current)
-    loadingTimerRef.current = setTimeout(() => setIsLoading(false), 60000)
+    loadingTimerRef.current = setTimeout(() => {
+      setIsLoading(false)
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: 'No reply after 60 s — the voice agent may have restarted mid-request. Try again, or hit ↻ agent in the status bar.',
+      }])
+    }, 60000)
     wsSendMessage({ type: 'query', text })
   }, [wsSendMessage])
 
@@ -474,6 +585,10 @@ export default function ChatPanelVscode({
             currentSessionId={null}
             onNewChat={newChat}
             onPickSession={() => {}}
+            login={login}
+            onOpenCli={openCli}
+            onRestartAgent={restartAgent}
+            restarting={restarting}
           />
         )}
         <MainArea
@@ -487,6 +602,11 @@ export default function ChatPanelVscode({
         isConnected={wsConnected}
         model="JARVIS"
         messageCount={messages.length}
+        login={login}
+        onSignIn={() => openCli(true)}
+        onOpenCli={() => openCli(false)}
+        onRestart={restartAgent}
+        restarting={restarting}
       />
     </div>
   )
