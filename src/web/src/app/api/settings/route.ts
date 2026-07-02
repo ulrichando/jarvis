@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { loadSettings, redactForClient, saveSettings } from "@/lib/settings/store";
-import { DEFAULT_SETTINGS, settingsSchema } from "@/lib/settings/schema";
+import { DEFAULT_SETTINGS, settingsSchema, KOKORO_VOICE_ID_RE } from "@/lib/settings/schema";
 import { baseURLSchema } from "@/lib/settings/base-url";
 
 export const runtime = "nodejs";
@@ -29,6 +29,7 @@ const patchSchema = z.object({
       callName: z.string().optional(),
       jobTitle: z.string().optional(),
       preferences: z.string().optional(),
+      voice: z.string().regex(KOKORO_VOICE_ID_RE).optional(),
     })
     .partial()
     .optional(),
@@ -76,6 +77,13 @@ const patchSchema = z.object({
     .object({
       fontSize: z.enum(["sm", "md", "lg"]).optional(),
       density: z.enum(["compact", "cozy"]).optional(),
+    })
+    .partial()
+    .optional(),
+  chrome: z
+    .object({
+      defaultPolicy: z.enum(["allow", "block"]).optional(),
+      blockedSites: z.array(z.string()).optional(),
     })
     .partial()
     .optional(),
@@ -163,6 +171,7 @@ export async function PATCH(req: Request) {
     providers: nextProviders,
     connections: nextConnections,
     appearance: { ...current.appearance, ...(patch.appearance ?? {}) },
+    chrome: { ...current.chrome, ...(patch.chrome ?? {}) },
     integrations: nextIntegrations,
   });
 

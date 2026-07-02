@@ -26,10 +26,39 @@ const NIGHTLY_LOG = path.join(os.homedir(), '.local', 'share', 'jarvis', 'logs',
 // src/voice-agent/evolution/ledger.py::readings.
 const LEDGER_DB = path.join(os.homedir(), '.local', 'share', 'jarvis', 'evolution_ledger.db')
 const THROTTLE_FILE = path.join(AUTOMOD_DIR, 'throttle.json')
+const COST_LEDGER_FILE = path.join(AUTOMOD_DIR, 'cost-ledger.json')
+const HEARTBEAT_FILE = path.join(AUTOMOD_DIR, 'heartbeat.json')
+const TELEMETRY_DB = path.join(os.homedir(), '.local', 'share', 'jarvis', 'turn_telemetry.db')
+const IDLE_MIN = Number(process.env.JARVIS_EVOLUTION_IDLE_MIN ?? '10') || 10
+const COOLDOWN_MIN = Number(process.env.JARVIS_EVOLUTION_COOLDOWN_MIN ?? '60') || 60
+const NEEDS_HUMAN_FILE = path.join(AUTOMOD_DIR, 'needs-human.jsonl')
 const ACTIVE_DEPLOY_FILE = path.join(AUTOMOD_DIR, 'active-deploy.json')
 const AUTO_FLAG_FILE = path.join(AUTOMOD_DIR, '.evolution-auto')
 const DAILY_CAP = Number(process.env.JARVIS_AUTOMOD_DAILY_CAP ?? '5') || 5
+// Cost is the real spend brake since the 2026-06-27 governance redesign
+// (cost_ledger.py); the per-day build COUNT is only an emergency backstop.
+const DAILY_USD = Number(process.env.JARVIS_EVOLUTION_DAILY_USD ?? '6') || 6
 const TAIL_BYTES = 180_000
+
+// Failure classes — mirror introspection._FAILURE_CLASSES so the Failed tab can
+// triage a flat list into actionable groups (the recurring-target insight the
+// AutoData failure-digest lesson surfaces).
+const FAILURE_CLASSES: { label: string; needles: string[] }[] = [
+  { label: 'blocklist', needles: ['blocklist', 'blocked_path', 'plan_rejected'] },
+  { label: 'council_block', needles: ['council_block'] },
+  { label: 'tests_failed', needles: ['tests_failed', 'base_suite', 'test'] },
+  { label: 'no_commit', needles: ['no_commit'] },
+  { label: 'too_many_files', needles: ['too_many_files'] },
+]
+const PATH_RE = /src\/[\w./-]+\.\w+/g
+
+function classifyFailure(reason: string): string {
+  const r = (reason || '').toLowerCase()
+  for (const { label, needles } of FAILURE_CLASSES) {
+    if (needles.some((n) => r.includes(n))) return label
+  }
+  return 'other'
+}
 
 type ProposalPayload = {
   id: string
@@ -606,12 +635,16 @@ function readFitness(): {
   count: number
   trend: 'up' | 'down' | 'flat' | null
   perAxis: Record<string, number>
+  // Learnability (AutoData lesson): std over the window + whether the axis is
+  // flat (plateaued — needs a different approach) vs oscillating (learnable).
+  perAxisMeta: Record<string, { score: number; std: number; flat: boolean }>
   weakAxis: { axis: string; score: number } | null
   source: string
   error?: string
 } {
   const source = LEDGER_DB
-  const empty = { points: [], latest: null, latestAt: null, count: 0, trend: null, perAxis: {}, weakAxis: null, source }
+  const empty = { points: [], latest: null, latestAt: null, count: 0, trend: null, perAxis: {}, perAxisMeta: {}, weakAxis: null, source }
+  const FLAT_STD = 0.02 // mirror fitness_feedback.FLAT_STD
   try {
     const db = new Database(LEDGER_DB, { readonly: true, fileMustExist: true })
     try {
@@ -637,11 +670,31 @@ function readFitness(): {
       } catch {
         perAxis = {}
       }
+      // Per-axis series over the window (newest LOOKBACK_M=5) → std for the
+      // learnable-vs-plateaued badge.
+      const series: Record<string, number[]> = {}
+      for (const r of rows.slice(0, 5)) {
+        try {
+          const raw = asRecord(JSON.parse(r.per_axis_json ?? '{}'))
+          for (const [k, v] of Object.entries(raw)) (series[k] ??= []).push(Number(v))
+        } catch {
+          /* skip a malformed reading */
+        }
+      }
+      const perAxisMeta: Record<string, { score: number; std: number; flat: boolean }> = {}
+      for (const [axis, score] of Object.entries(perAxis)) {
+        const vals = series[axis] ?? [score]
+        const mean = vals.reduce((a, b) => a + b, 0) / vals.length
+        const std = vals.length >= 2
+          ? Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length)
+          : 0
+        perAxisMeta[axis] = { score, std: Math.round(std * 1e4) / 1e4, flat: std < FLAT_STD }
+      }
       const weakAxis = Object.entries(perAxis).reduce<{ axis: string; score: number } | null>(
         (lo, [axis, score]) => (lo === null || score < lo.score ? { axis, score } : lo),
         null,
       )
-      return { points, latest, latestAt, count: points.length, trend, perAxis, weakAxis, source }
+      return { points, latest, latestAt, count: points.length, trend, perAxis, perAxisMeta, weakAxis, source }
     } finally {
       db.close()
     }
@@ -660,6 +713,170 @@ async function readThrottle(): Promise<{ today: number; cap: number; remaining: 
     return { today, cap: DAILY_CAP, remaining: Math.max(0, DAILY_CAP - today) }
   } catch {
     return { today: 0, cap: DAILY_CAP, remaining: DAILY_CAP }
+  }
+}
+
+// Loop liveness — WHY the cycle is or isn't building right now, so "auto but
+// idle" never reads as "dead". Mirrors the gate ORDER in throttle.admit_intent /
+// heartbeat.compute_status (the Python source of truth). Prefers the in-process
+// heartbeat.json for the true last-tick age; derives the gate state from the
+// same files the throttle checks so it's correct even before the agent restarts
+// with the heartbeat-writing tick.
+type LoopStatus = {
+  mode: 'auto' | 'manual'
+  paused: boolean
+  state: string
+  reason: string
+  idleS: number | null
+  cooldownLeftS: number
+  budgetSpent: number
+  budgetCap: number
+  lastTickAgeS: number | null
+}
+
+async function readLoopStatus(
+  cost: { spentToday: number; dailyUsd: number },
+  autoMode: boolean,
+  paused: boolean,
+  deployInFlight: boolean,
+  building: number,
+): Promise<LoopStatus> {
+  // Idle: seconds since the last voice turn.
+  let idleS = 1e9
+  try {
+    const db = new Database(TELEMETRY_DB, { readonly: true, fileMustExist: true })
+    try {
+      const r = db
+        .prepare("SELECT (julianday('now') - julianday(MAX(ts_utc))) * 86400 AS s FROM turns")
+        .get() as { s: number | null }
+      if (r?.s != null) idleS = Number(r.s)
+    } finally {
+      db.close()
+    }
+  } catch {
+    /* no telemetry → treat as fully idle */
+  }
+  // Cooldown: minutes since the last admitted build (throttle.json last_build_ts).
+  let sinceBuildMin = 1e9
+  try {
+    const t = asRecord(JSON.parse(await fs.readFile(THROTTLE_FILE, 'utf-8')))
+    if (t.last_build_ts) sinceBuildMin = (Date.now() / 1000 - Number(t.last_build_ts)) / 60
+  } catch {
+    /* never built → no cooldown */
+  }
+  const cooldownLeftS = Math.max(0, (COOLDOWN_MIN - sinceBuildMin) * 60)
+  // Heartbeat: proof the in-process asyncio loop actually ticked.
+  let lastTickAgeS: number | null = null
+  try {
+    const h = asRecord(JSON.parse(await fs.readFile(HEARTBEAT_FILE, 'utf-8')))
+    if (typeof h.ts === 'string') lastTickAgeS = Math.max(0, (Date.now() - Date.parse(h.ts)) / 1000)
+  } catch {
+    /* no heartbeat yet (agent not restarted since the tick landed) */
+  }
+  let state = 'ready'
+  let reason = 'gates clear — will build the next queued intent'
+  if (paused) {
+    state = 'paused'; reason = 'evolution is paused'
+  } else if (!autoMode) {
+    state = 'manual'; reason = 'manual mode — detecting + queueing, not building'
+  } else if (deployInFlight) {
+    state = 'deploying'; reason = 'a deploy is live — watchdog is verifying health'
+  } else if (building > 0) {
+    state = 'building'; reason = 'a build is running now'
+  } else if (idleS < IDLE_MIN * 60) {
+    state = 'waiting'; reason = `you're active — builds wait for ${IDLE_MIN}m of quiet`
+  } else if (cost.spentToday >= cost.dailyUsd) {
+    state = 'budget'; reason = `today's build budget is spent ($${cost.spentToday.toFixed(2)}/$${cost.dailyUsd.toFixed(0)})`
+  } else if (cooldownLeftS > 0) {
+    state = 'cooldown'; reason = `cooling down — ${Math.round(cooldownLeftS / 60)}m until the next build`
+  }
+  return {
+    mode: autoMode ? 'auto' : 'manual',
+    paused,
+    state,
+    reason,
+    idleS: idleS < 1e8 ? Math.round(idleS) : null,
+    cooldownLeftS: Math.round(cooldownLeftS),
+    budgetSpent: cost.spentToday,
+    budgetCap: cost.dailyUsd,
+    lastTickAgeS: lastTickAgeS === null ? null : Math.round(lastTickAgeS),
+  }
+}
+
+async function readCost(): Promise<{ spentToday: number; dailyUsd: number; remaining: number }> {
+  const today = new Date().toISOString().slice(0, 10)
+  try {
+    const rec = asRecord(JSON.parse(await fs.readFile(COST_LEDGER_FILE, 'utf-8')))
+    const entries = Array.isArray(rec.entries) ? rec.entries : []
+    // Ledger rolls over per UTC day (mirrors cost_ledger._read); a stale date
+    // means zero spent today.
+    const spent = String(rec.date ?? '') === today
+      ? entries.reduce((sum, e) => sum + (Number(asRecord(e).cost_usd ?? 0) || 0), 0)
+      : 0
+    return { spentToday: Math.round(spent * 1e4) / 1e4, dailyUsd: DAILY_USD, remaining: Math.max(0, DAILY_USD - spent) }
+  } catch {
+    return { spentToday: 0, dailyUsd: DAILY_USD, remaining: DAILY_USD }
+  }
+}
+
+// Intents the queue-admission gate escalated to a human (self-loop targets that
+// aim at the blocklisted automod pipeline itself) — reviewable, never auto-built.
+// Written by patterns._reject_to_needs_human (2026-07-02).
+async function readNeedsHuman(): Promise<ActivityPayload[]> {
+  const lines = await readTailLines(NEEDS_HUMAN_FILE, 50)
+  const out: ActivityPayload[] = []
+  const seen = new Set<string>()
+  for (const line of lines) {
+    try {
+      const rec = asRecord(JSON.parse(line))
+      const intent = String(rec.intent ?? '').trim()
+      const id = String(rec.id ?? '')
+      if (id && seen.has(id)) continue
+      if (id) seen.add(id)
+      out.push({
+        id: id || `needs-human:${out.length}`,
+        status: 'needs_human',
+        kind: String(rec.kind ?? 'intent'),
+        title: (intent.split('\n')[0] || 'Escalated intent').slice(0, 120),
+        detail: String(rec.rejected_reason ?? rec.rationale ?? ''),
+        createdAt: typeof rec.created_at === 'string' ? rec.created_at : null,
+        automodId: id,
+        priority: typeof rec.priority === 'string' ? rec.priority : undefined,
+      })
+    } catch {
+      /* skip a malformed line */
+    }
+  }
+  return out.reverse() // newest first
+}
+
+// Triage the failed proposals into classes + the paths repeatedly targeted
+// across failures (the AutoData structured-failure lesson, surfaced for the UI).
+function buildFailureDigest(failed: ProposalPayload[]): {
+  total: number
+  byClass: { label: string; count: number }[]
+  repeatedPaths: { path: string; count: number }[]
+} {
+  const classCounts = new Map<string, number>()
+  const pathCounts = new Map<string, number>()
+  for (const f of failed) {
+    const cls = classifyFailure(f.rejectionReason)
+    classCounts.set(cls, (classCounts.get(cls) ?? 0) + 1)
+    const blob = `${f.intent} ${f.rejectionReason} ${f.files.join(' ')}`
+    for (const m of blob.match(PATH_RE) ?? []) {
+      pathCounts.set(m, (pathCounts.get(m) ?? 0) + 1)
+    }
+  }
+  return {
+    total: failed.length,
+    byClass: [...classCounts.entries()]
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count),
+    repeatedPaths: [...pathCounts.entries()]
+      .filter(([, c]) => c >= 2)
+      .map(([path, count]) => ({ path, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 6),
   }
 }
 
@@ -725,13 +942,15 @@ async function readInFlightBuilds(): Promise<{ count: number; builds: InFlightBu
 }
 
 export async function GET(): Promise<Response> {
-  const [artifacts, queued, audit, nightly, throttle, deployStatus, selfAssessment, paused, autoMode, buildModel, inFlight] =
+  const [artifacts, queued, audit, nightly, throttle, cost, needsHuman, deployStatus, selfAssessment, paused, autoMode, buildModel, inFlight] =
     await Promise.all([
       readArtifacts(),
       readQueue(),
       readAuditActivity(),
       readNightlyActivity(),
       readThrottle(),
+      readCost(),
+      readNeedsHuman(),
       readDeployStatus(),
       readSelfAssessment(),
       readPaused(),
@@ -740,6 +959,8 @@ export async function GET(): Promise<Response> {
       readInFlightBuilds(),
     ])
   const { proposals, failed, deployed, artifactActivity } = artifacts
+  const failureDigest = buildFailureDigest(failed)
+  const loopStatus = await readLoopStatus(cost, autoMode, paused, deployStatus.deployInFlight, inFlight.count)
   // Attach each pending proposal's 3-lens review council verdict (if reviewed).
   const proposalsReviewed = await Promise.all(
     proposals.map(async (p) => ({ ...p, review: await readReview(p.id) })),
@@ -796,6 +1017,10 @@ export async function GET(): Promise<Response> {
     proposals: proposalsReviewed,
     reviewAll: reviewAllStatus,
     failed,
+    failureDigest,
+    needsHuman,
+    cost,
+    loopStatus,
     deployed,
     queued,
     paused,
@@ -813,10 +1038,12 @@ export async function GET(): Promise<Response> {
     status: {
       pending: proposals.length,
       queued: queued.length,
+      needsHuman: needsHuman.length,
       failedCount: failed.length,
       deployed: artifactActivity.filter((a) => a.status === 'merged').length,
       failed: artifactActivity.filter((a) => a.status === 'failed').length,
       builds: throttle,
+      cost,
       autoMode,
       mode: autoMode ? 'auto' : 'manual',
       building: inFlight.count,

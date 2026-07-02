@@ -168,6 +168,11 @@ SPEECH_MODELS_AVAILABLE: tuple[str, ...] = (
     # showed "Speech: Haiku" while the agent actually ran DeepSeek. Listing it
     # makes /status report the real pinned model.
     "deepseek-v4-flash",
+    # deepseek-chat-v3 (2026-07-02): pinnable V3-chat alias — SAME trap as
+    # v4-flash above, hit again the very night the alias was added (agent ran
+    # V3-chat, tray "Models" header showed Haiku). Any new id added to
+    # providers/llm.py SPEECH_MODELS that users can pin MUST be mirrored here.
+    "deepseek-chat-v3",
     # Local (Ollama) — on-device voice brain; the tray offers these when the
     # model is pulled. Listed here so /status reports the active local pick
     # instead of falling back to the Haiku default.

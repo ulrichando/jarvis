@@ -78,14 +78,27 @@ CLI_CMD=( "$BUN"
 # sessions). Inject our defaults AFTER "$@", and only when the user didn't pass
 # their own — so `jarvis --permission-mode plan` still wins.
 CLI_CMD+=( "$@" )
-case " $* " in
-  *" --permission-mode "*) ;;
-  *) CLI_CMD+=( --permission-mode "$JARVIS_PERMISSION_MODE" ) ;;
+# …and NOT AT ALL for commander-parsed subcommands (auth/keys/plugin/…): they
+# reject unknown options, so appending agent-only defaults broke every one of
+# them ("error: unknown option '--permission-mode'" — live 2026-07-02, `jarvis
+# auth status`). The cli.tsx fast-paths (ps/logs/…) dispatch on args[0] before
+# commander and ignore trailing flags either way. Keep this list in sync with
+# the TOP-LEVEL program.command(...) registrations in src/main.tsx.
+AGENT_INVOCATION=1
+case "${1:-}" in
+  agents|assistant|auth|auto-mode|completion|doctor|error|export|gh-agent|install|keys|log|mcp|open|plugin|remote-control|rollback|server|setup-token|ssh|task|teleport|uninstall|up|update)
+    AGENT_INVOCATION=0 ;;
 esac
-case " $* " in
-  *" --settings "*) ;;
-  *) CLI_CMD+=( --settings "$JARVIS_FLAG_SETTINGS" ) ;;
-esac
+if [ "$AGENT_INVOCATION" = 1 ]; then
+  case " $* " in
+    *" --permission-mode "*) ;;
+    *) CLI_CMD+=( --permission-mode "$JARVIS_PERMISSION_MODE" ) ;;
+  esac
+  case " $* " in
+    *" --settings "*) ;;
+    *) CLI_CMD+=( --settings "$JARVIS_FLAG_SETTINGS" ) ;;
+  esac
+fi
 
 # NB: no `exec` here — see cleanup_proxy comment above. We must keep
 # this bash process alive so the EXIT trap fires when the CLI exits.

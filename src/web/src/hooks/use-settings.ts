@@ -33,7 +33,9 @@ export function useSettings() {
   return useQuery({
     queryKey: ["settings"],
     queryFn: () => fetchJson<RedactedSettings>("/api/settings"),
-    staleTime: Infinity,
+    // Was Infinity — a long-lived tab then NEVER saw settings changed from
+    // another tab/device, which reads as "settings don't work".
+    staleTime: 30_000,
   });
 }
 
@@ -43,6 +45,7 @@ export type SettingsPatch = {
     callName?: string;
     jobTitle?: string;
     preferences?: string;
+    voice?: string; // Kokoro voice id, e.g. "af_heart"
   };
   notifications?: { responseCompletions?: boolean };
   capabilities?: {
@@ -63,6 +66,10 @@ export type SettingsPatch = {
   appearance?: {
     fontSize?: "sm" | "md" | "lg";
     density?: "compact" | "cozy";
+  };
+  chrome?: {
+    defaultPolicy?: "allow" | "block";
+    blockedSites?: string[];
   };
   integrations?: {
     github?: {

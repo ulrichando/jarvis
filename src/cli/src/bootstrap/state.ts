@@ -1756,7 +1756,11 @@ export function setPromptId(id: string | null): void {
   STATE.promptId = id
 }
 
-// Re-export isReplBridgeActive so callers (ToolSearchTool, SendMessageTool)
-// can import it from bootstrap/state.js as they expect.
-export { isReplBridgeActive } from '../bridge/replBridgeHandle.js'
+// NOTE: do NOT re-export from bridge/replBridgeHandle.js here. bootstrap/state
+// is inside the low-level utils import web (concurrentSessions → state), and a
+// re-export edge state → replBridgeHandle → concurrentSessions → state grew the
+// donor's 3-module utils cycle to 13 modules — which deadlocked bun's async
+// module evaluation on interactive boot (blank REPL, headless unaffected;
+// root-caused 2026-07-02 via SCC diff against the donor tree). Callers import
+// isReplBridgeActive directly from bridge/replBridgeHandle.js.
 

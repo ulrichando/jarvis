@@ -9,8 +9,8 @@ import {
   Folder,
   Loader2,
   Palette,
+  Lightbulb,
   RefreshCw,
-  Sparkles,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -577,7 +577,7 @@ function TipBanner() {
   }, []);
   return (
     <div className="flex items-start gap-2 border-t border-border/50 bg-orange-500/5 px-5 py-3 text-[12px] leading-5 text-foreground/85">
-      <Sparkles className="mt-0.5 size-3.5 shrink-0 text-orange-400" />
+      <Lightbulb className="mt-0.5 size-3.5 shrink-0 text-orange-400" />
       <div>
         <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-orange-400">
           Tip

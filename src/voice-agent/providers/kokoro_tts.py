@@ -90,6 +90,18 @@ class KokoroEndpointTTS(tts.TTS):
             pass
         return self._voice
 
+    def _current_speed(self) -> float:
+        """Speed for THIS utterance — read fresh from the voice-style
+        store (~/.jarvis/tts-speed) so "Jarvis, speak slower" (the
+        voice_style tool) or the tray Speech-rate pick applies on the
+        very next sentence with NO restart. Falls back to the
+        construction-time speed (JARVIS_LOCAL_TTS_SPEED) when unset."""
+        try:
+            from pipeline.voice_style import get_speed
+            return get_speed(default=self._speed)
+        except Exception:
+            return self._speed
+
     def synthesize(
         self,
         text: str,
@@ -115,6 +127,14 @@ class _KokoroChunkedStream(tts.ChunkedStream):
         if not text:
             output_emitter.flush()
             return
+        # Pronunciation lexicon (2026-07-02) — applied HERE on the payload
+        # only, so `[word](/phonemes/)` markup never reaches the transcript
+        # / chat history (committed markup would teach the LLM to mimic it).
+        try:
+            from pipeline.pronunciation import apply as _pron_apply
+            text = _pron_apply(text, phonemes_ok=True)
+        except Exception:
+            pass
 
         import aiohttp
 
@@ -127,7 +147,7 @@ class _KokoroChunkedStream(tts.ChunkedStream):
             "input": text,
             "voice": k._current_voice(),  # read fresh → hot-swaps with no restart
             "response_format": "mp3",
-            "speed": k._speed,
+            "speed": k._current_speed(),  # read fresh → "speak slower" hot-swaps too
         }
         try:
             timeout = aiohttp.ClientTimeout(total=k._timeout)

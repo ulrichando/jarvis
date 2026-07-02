@@ -13,4 +13,17 @@ SCRIPTS="$JARVIS_ROOT/scripts"
 # exits 1 (esp. when TERM is unset), tripping `set -e` and killing the
 # launcher before the agent loop ever starts.
 [ -t 1 ] && clear || true
+
+# (2026-07-02) Single path again: source start.sh for EVERYTHING. The
+# interactive blank-REPL is root-caused and fixed — it was never a mode
+# thing or a bundling thing per se: feature-gated MODULE-LEVEL require()s
+# (WORKFLOW_SCRIPTS/MONITOR_TOOL in BackgroundTasksDialog.tsx) re-entered
+# the big import cycle while bun's source-run had promoted it to async
+# evaluation, deadlocking the REPL import wave silently. Converted to
+# React.lazy / on-demand import() there; source now paints in default,
+# acceptEdits, AND bypass. start.sh launches with bypass by default
+# (autonomous), which also keeps bypass in the Shift+Tab carousel
+# (donor-verified: only modes available at launch are cycled).
+# dist/jarvis-linux-x64 is the installer artifact only. A temporary
+# binary-for-interactive branch lived here while the bug was open.
 exec bash "$SCRIPTS/start.sh" "$@"

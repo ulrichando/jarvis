@@ -1983,7 +1983,15 @@ function PromptInput({
       key: 'effort-level',
       text: effortNotificationText,
       priority: 'high',
-      timeoutMs: Infinity
+      // Transient (default ~8s), NOT persistent: the notification queue is a
+      // single visible slot (NotificationContent renders only `current`), so
+      // pinning effort forever (the earlier timeoutMs:Infinity attempt) starved
+      // real notices — MCP connect + exit-plan-mode are 'high', StatusLine
+      // 'low' — which never clear past a pinned current. So effort shows
+      // bottom-right on startup and whenever it changes, then fades like every
+      // other notification. fold updates it in place if effort changes while
+      // still visible (else a same-key re-add is dropped as a dup → stale).
+      fold: (_prev, incoming) => incoming
     });
   }, [effortNotificationText, addNotification, removeNotification]);
   useBuddyNotification();

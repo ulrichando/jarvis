@@ -295,6 +295,17 @@ resilience.llm_idle_timeout.install()
 import resilience.track_guard as _track_guard
 _track_guard.install()
 
+# Turn rescue (2026-07-02): in echo-aware barge-in mode every speech is
+# formally allow_interruptions=False, so a user turn completing during
+# TTS was DISCARDED by the framework ("skipping reply to user input,
+# current speech generation cannot be interrupted" — 808 drops in one
+# day, incl. directed commands). The patch makes the speech interruptible
+# when the completed transcript is NOVEL (non-echo, same check as the
+# barge-in layer) so the framework's own interrupt-and-reply path runs;
+# echo transcripts stay dropped. Kill-switch JARVIS_TURN_RESCUE_DISABLED=1.
+import resilience.turn_rescue as _turn_rescue
+_turn_rescue.install()
+
 # ── Conversation persistence ──────────────────────────────────────────
 # Every voice turn is persisted to ~/.jarvis/conversations.db (or
 # $JARVIS_CONVERSATION_PATH) — see pipeline.conversation_store.
@@ -303,6 +314,37 @@ _track_guard.install()
 # Recent-session summaries are injected into the system prompt at session
 # start; deep lookup is available via the recall_conversation tool.
 # turn_telemetry.db is a SEPARATE path covering per-turn metrics only.
+#
+# Persistence must NOT depend on the dispatcher being alive. Live
+# incident 2026-07-01: `_jarvis_turn_count` is only incremented in the
+# dispatcher swap paths (turn_dispatcher.py) / graph prefix node
+# (turn_graph.py), and `_jarvis_turn_user_text` is stashed there too.
+# A tray-pinned model + JARVIS_PIN_ALL_ROUTES=1 skips the dispatcher →
+# count stuck at 0 → the persist gate never opened → zero messages all
+# day (sessions/auto-title/telemetry unaffected, so it was invisible).
+# These helpers read the dispatcher state AND a dispatcher-independent
+# stash maintained by `_on_item` itself (`_jarvis_convo_seq`, bumped per
+# user item; `_jarvis_convo_user_text`). max() keeps the sequence
+# monotonic across mixed states so UNIQUE(session, role, seq) never
+# silently drops a later turn as a "duplicate".
+
+
+def _convo_turn_seq(session) -> int:
+    """Turn sequence for conversations.db — dispatcher-independent."""
+    return max(
+        int(getattr(session, "_jarvis_turn_count", 0) or 0),
+        int(getattr(session, "_jarvis_convo_seq", 0) or 0),
+    )
+
+
+def _convo_user_text(session) -> str:
+    """This turn's user text — dispatcher stash first (raw transcript,
+    no [Route] prefix), else the chat-item stash from `_on_item`."""
+    return (
+        getattr(session, "_jarvis_turn_user_text", "")
+        or getattr(session, "_jarvis_convo_user_text", "")
+        or ""
+    )
 
 # ── Memory layer (durable user-facts that survive chat deletion) ──────
 # File-backed, deliberate-writes model. Two stores — MEMORY.md + USER.md
@@ -329,6 +371,7 @@ from pipeline.turn_router    import (
 )
 from pipeline.dispatching_llm import DispatchingLLM
 from pipeline.dispatching_tts import DispatchingTTS
+from pipeline.provider_errors import classify_provider_error
 from pipeline.lang_context import LangContext
 from pipeline.turn_telemetry import init_db, log_turn, log_launch_attempt, DEFAULT_DB_PATH
 # Pre-TTS confab gate — inspects supervisor reply text BEFORE TTS streams
@@ -712,9 +755,60 @@ def inject_handoff_refused_marker(session, chat_ctx) -> None:
         pass
 
 
+# Auth / billing / quota errors a restart can NEVER heal — bouncing the
+# voice-client just re-hits the same wall and loops forever (2026-07-01:
+# an Anthropic "credit balance too low" 400 spun the client in an infinite
+# restart loop for hours). Recoverability AND the explicit user-facing wording
+# ("I'm out of credits on Claude") both come from the shared provider-error
+# classifier (pipeline.provider_errors), so there's one source of truth.
+
+
+def _active_voice_model() -> "str | None":
+    """Best-effort read of the pinned voice model (``~/.jarvis/voice-model``),
+    used to sharpen provider detection in error messages. None if unreadable."""
+    try:
+        return (Path.home() / ".jarvis" / "voice-model").read_text(
+            encoding="utf-8"
+        ).strip() or None
+    except Exception:
+        return None
+
+
+_ERR_NOTIFY_TS = [0.0]  # boxed: throttle provider-error desktop notifications
+
+
+def _notify_error(classified, *, min_interval: float = 60.0) -> None:
+    """Throttled desktop notification for a classified provider error, so the
+    user SEES what broke ('out of credits on Claude') instead of nothing."""
+    now = time.time()
+    if now - _ERR_NOTIFY_TS[0] < min_interval:
+        return
+    _ERR_NOTIFY_TS[0] = now
+    try:
+        import subprocess as _sp
+        _sp.Popen(
+            ["notify-send", "-u", "critical", "-t", "10000",
+             classified.notify_title, classified.notify_body],
+            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+        )
+    except Exception:
+        pass  # notify-send absent / headless — the log line is the fallback
+
+
 def _session_close_needs_restart(ev) -> bool:
-    """True if the CloseEvent represents a crash (non-None error), False for clean shutdown."""
-    return getattr(ev, "error", None) is not None
+    """True if the CloseEvent is a crash a voice-client restart can heal.
+
+    A non-None error normally means the AgentSession died and a fresh room
+    + dispatch recovers it (a transient STT / network blip). But an
+    auth/billing/quota error is NOT healed by a restart — the fresh session
+    hits the same wall and we loop. Recoverability is decided by
+    ``classify_provider_error(...).recoverable``; the fix for those is credits
+    or a provider switch (``~/.jarvis/voice-model``), not a bounce.
+    """
+    err = getattr(ev, "error", None)
+    if err is None:
+        return False  # clean shutdown (model switch, tray quit)
+    return classify_provider_error(err, model=_active_voice_model()).recoverable
 
 
 async def _restart_voice_client_after_crash() -> None:
@@ -1362,15 +1456,47 @@ def _set_silent(on: bool) -> None:
         pass
 
 
+# Directed-only memory sync (2026-07-02). With the reply addressing gate
+# deliberately OFF on this box (always-answer room, 2026-06-25), honcho
+# was fed EVERY overheard utterance — bystander chatter became derived
+# "facts" (the fabricated "session with Zhaleh — she was watching
+# football" person). Memory applies a STRICTER bar than replying: only
+# turns explicitly addressed to JARVIS (vocative / wake phrase), or
+# within a short continuation window of one, are synced.
+# `_last_real_interaction` can't serve as the window stamp here — it is
+# touched by every ACCEPTED turn, and with the reply gate off, ambient
+# turns keep it warm forever. This stamp is touched only by addressed
+# turns (and refreshed by synced follow-ups, so a live directed exchange
+# keeps syncing; ponytail: refresh means a directed exchange that drifts
+# ambient rides until a 120s lull — the vocative entry bar is the filter).
+MEMORY_SYNC_DIRECTED_ONLY = (
+    os.environ.get("JARVIS_MEMORY_SYNC_DIRECTED_ONLY", "1") != "0"
+)
+MEMORY_SYNC_WINDOW_SEC = float(
+    os.environ.get("JARVIS_MEMORY_SYNC_WINDOW_SEC", "120")
+)
+_last_addressed_interaction = 0.0
+
+
+def _touch_addressed() -> None:
+    global _last_addressed_interaction
+    _last_addressed_interaction = time.monotonic()
+
+
+def _within_addressed_window() -> bool:
+    return (time.monotonic() - _last_addressed_interaction) < MEMORY_SYNC_WINDOW_SEC
+
+
 def _should_sync_memory_item(role: str, text: str) -> bool:
     """Whether a conversation item should be synced to the cloud memory
     provider (honcho).
 
-    Skips non-user/assistant roles and empty text; and — added 2026-06-18
-    (silent-mode token-leak fix) — skips entirely while JARVIS is silenced,
-    so a voice-muted JARVIS stops feeding honcho's OpenAI-backed deriver
-    with every overheard utterance. Spec:
-    docs/superpowers/specs/2026-06-18-silent-mode-token-leak-fix-design.md
+    Skips non-user/assistant roles and empty text; skips entirely while
+    JARVIS is silenced (2026-06-18 silent-mode token-leak fix, spec:
+    docs/superpowers/specs/2026-06-18-silent-mode-token-leak-fix-design.md);
+    and — 2026-07-02 — skips anything not directed at JARVIS (see the
+    directed-only block above). Kill-switch:
+    JARVIS_MEMORY_SYNC_DIRECTED_ONLY=0 restores sync-everything.
     """
     if role not in ("user", "assistant"):
         return False
@@ -1378,7 +1504,17 @@ def _should_sync_memory_item(role: str, text: str) -> bool:
         return False
     if _is_silent():
         return False
-    return True
+    if not MEMORY_SYNC_DIRECTED_ONLY:
+        return True
+    if role == "user" and (
+        _JARVIS_NAME_RE.search(text) or _is_command(text, _WAKE_PATTERNS)
+    ):
+        _touch_addressed()
+        return True
+    if _within_addressed_window():
+        _touch_addressed()  # a live directed exchange keeps syncing
+        return True
+    return False
 
 
 # Wake/mute voice-command matching lives in pipeline/voice_commands.py
@@ -3657,6 +3793,54 @@ async def cap_sir_count(text):
     yield "".join(out)
 
 
+# Markdown stage-direction emotes — `*(chuckles)*` / `*(soft laugh)` —
+# plus stray markdown chars the framework's filter_markdown lets
+# through (a bare `*` is not paired emphasis, so it passes untouched).
+# Live capture 2026-07-01 20:52 UTC: deepseek-v4-flash prefixed every
+# reply with an emote; Kokoro received the segment `*`, pushed zero
+# audio frames, the FallbackAdapter marked Kokoro unavailable and
+# flipped the voice to EdgeTTS mid-conversation, and only the `*(`
+# husk got committed to chat_ctx — which then taught the model to
+# emit more emotes (feedback loop).
+_EMOTE_PAREN_RE = re.compile(r"\*+\s*\([^)*]*\)?\s*\**")  # *(chuckles)* incl. unclosed "*("
+_MD_RESIDUE_RE = re.compile(r"[*_`#~]+")                  # stray markdown chars
+_SPEAKABLE_RE = re.compile(r"[^\W_]", re.UNICODE)         # any letter/digit, any script
+
+
+async def strip_emote_markup(text):
+    """Drop stage-direction emotes and guarantee TTS never receives a
+    letterless reply.
+
+    Asterisk-wrapped parentheticals are stage directions, not speech —
+    removed entirely. Bare emphasis (`*really*`) keeps its word; plain
+    parentheticals ("(about sixty)") pass through. If nothing speakable
+    remains, emit nothing: a letterless string makes the TTS push zero
+    frames, which the FallbackAdapter counts as a provider failure and
+    poisons the whole voice chain (voice flip + retry stalls).
+    """
+    buffer = ""
+    async for chunk in text:
+        buffer += chunk
+    if not buffer:
+        return
+    cleaned = _EMOTE_PAREN_RE.sub(" ", buffer)
+    cleaned = _MD_RESIDUE_RE.sub("", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+    if not _SPEAKABLE_RE.search(cleaned):
+        logger.info(f"[emote-strip] dropped unspeakable reply: {buffer[:80]!r}")
+        return  # emit nothing — actual silence beats a zero-frame TTS error
+    if cleaned != buffer.strip():
+        logger.info(f"[emote-strip] stripped emote/markdown markup: {buffer[:80]!r}")
+    else:
+        # Per-turn pre-TTS text capture (2026-07-01, punctuation-loss
+        # investigation): this is the exact text handed downstream to
+        # the tokenizer/TTS/transcript. Compare against the committed
+        # chat item / conversations.db row to locate text mutations.
+        # One INFO line per turn; log rotates daily — cheap to keep.
+        logger.info(f"[pre-tts] text: {cleaned[:140]!r}")
+    yield cleaned
+
+
 # Pre-TTS confab gate filter — sits at the HEAD of tts_text_transforms
 # (after stamp_first_token, which is at position 0 so TTFW telemetry
 # still reflects true LLM first-token time). The filter buffers the
@@ -4021,6 +4205,28 @@ class JarvisAgent(Agent):
             logger.debug(f"[conversation] end_session skipped: {e}")
         # Base Agent.on_exit is a no-op pass; preserve the contract.
         await super().on_exit()
+
+    def stt_node(self, audio, model_settings):
+        """Tee mic frames into the partial barge-in tap (2026-07-02).
+
+        The tap's first transport — a second rtc.AudioStream on the mic
+        track — STARVED after ~1 s live (first frames arrive, then the
+        task parks in `async for` forever). The STT feed is the one
+        audio path proven to flow continuously (it feeds whisper all
+        day), so the tap rides it: `feed_frame` only enqueues (bounded,
+        drop-on-overflow) and recognition happens in the tap's worker —
+        zero added latency on the transcription path.
+        """
+        tap = getattr(self.session, "_jarvis_partial_bargein_tap", None)
+        if tap is None:
+            return super().stt_node(audio, model_settings)
+
+        async def _teed():
+            async for frame in audio:
+                tap.feed_frame(frame)
+                yield frame
+
+        return super().stt_node(_teed(), model_settings)
 
     async def llm_node(self, chat_ctx, tools, model_settings):
         """Vision-feedback loop (P2a): before generating, inject the post-action
@@ -5083,7 +5289,29 @@ def _register_session_error_handlers(session) -> None:
             except ImportError:
                 pass  # framework's APIConnectionError import shape changed
 
+            # Non-TTS provider error (LLM / STT / session) that ISN'T the
+            # tool-call-validation bug handled above → classify it and SAY
+            # exactly what went wrong ("I'm out of credits on Claude") instead
+            # of going silent on a bare status code. Throttled 1 spoken alert/15s.
             if not isinstance(err, _lk_tts.TTSError):
+                now_ts = time.time()
+                if now_ts - _llm_fallback_last_ts[0] <= 15.0:
+                    return
+                _llm_fallback_last_ts[0] = now_ts
+                classified = classify_provider_error(
+                    err,
+                    model=_active_voice_model(),
+                    component="stt" if "stt_error" in (str(err) or "") else "llm",
+                )
+                try:
+                    session.say(classified.spoken, allow_interruptions=True)
+                except Exception as say_err:
+                    logger.debug(f"[provider-error] say() failed: {say_err}")
+                _notify_error(classified)
+                logger.warning(
+                    "[provider-error] spoke %s (%s): %s",
+                    classified.category, classified.provider, str(err)[:160],
+                )
                 return
             # Best-effort grab of the in-flight text — if we can't,
             # at least log the timestamp and error message.
@@ -5098,39 +5326,16 @@ def _register_session_error_handlers(session) -> None:
                         f.write(f"  text: {failed_text[:500]}\n")
             except Exception as _e:
                 logger.debug(f"[tts-fail] log write failed: {_e}")
-            # Classify the error so the desktop notification tells the
-            # user what's actually wrong instead of always saying
-            # "rate-limited" (the prior wording was misleading for
-            # network timeouts, which are most of what we see).
-            err_type_name = type(err).__name__
-            err_msg = str(err)
-            status_code = getattr(err, "status_code", None)
-            if "Timeout" in err_type_name or "timed out" in err_msg.lower():
-                title = "JARVIS — TTS slow / timing out"
-                body = (
-                    "Groq TTS isn't responding fast enough. JARVIS heard "
-                    "you but the speech synthesis call timed out. Often "
-                    "this is just transient Groq-side load — try again "
-                    "in a few seconds."
-                )
-            elif status_code == 429 or (
-                status_code == 400 and "quota" in err_msg.lower()
-            ):
-                title = "JARVIS — TTS rate-limited"
-                body = (
-                    "Groq TTS quota hit. Wait a minute or switch the "
-                    "speech model in the tray (anything but Orpheus uses "
-                    "a different quota bucket)."
-                )
-            elif status_code == 400:
-                title = "JARVIS — TTS bad request"
-                body = (
-                    "Groq TTS rejected the request payload. Usually "
-                    "transient on Groq's side; the framework will retry."
-                )
-            else:
-                title = "JARVIS — TTS error"
-                body = f"{err_type_name}: {err_msg[:160]}"
+            # Classify via the shared provider-error classifier so the
+            # notification says what actually broke (rate-limited / timed out /
+            # out of credits / bad request) instead of a generic label. TTS
+            # errors are notification-only — you can't SPEAK an error when
+            # speech synthesis itself is what failed.
+            classified = classify_provider_error(
+                err, model=_active_voice_model(), component="tts"
+            )
+            title = classified.notify_title
+            body = classified.notify_body
 
             # Throttle notifications to one per 60 s so a flood of
             # retries doesn't spam the desktop.
@@ -5162,11 +5367,25 @@ def _register_session_crash_watchdog(session, bg_tasks: set) -> None:
 
     @session.on("close")
     def _on_session_close(ev) -> None:
-        if not _session_close_needs_restart(ev):
+        err = getattr(ev, "error", None)
+        if err is None:
             return  # clean shutdown (model switch, tray quit) — don't restart
+        classified = classify_provider_error(err, model=_active_voice_model())
+        if not classified.recoverable:
+            # A restart can't heal billing/auth/quota. Tell the user EXACTLY
+            # what's wrong (explicit desktop notification) instead of silently
+            # giving up, and don't loop the voice-client.
+            logger.error(
+                "[session-watchdog] non-recoverable %s — NOT restarting "
+                "(a bounce can't add credits or fix a key). err=%s",
+                classified.category, str(err)[:200],
+            )
+            _notify_error(classified)
+            return
         logger.error(
-            f"[session-watchdog] AgentSession died with error: {getattr(ev, 'error', '?')}. "
-            "Scheduling voice-client restart in 3s."
+            "[session-watchdog] AgentSession died (%s): %s. "
+            "Scheduling voice-client restart in 3s.",
+            classified.category, str(err)[:160],
         )
         t = asyncio.create_task(
             _restart_voice_client_after_crash(), name="session-watchdog-restart"
@@ -6149,6 +6368,14 @@ async def _automod_tick() -> None:
     from pipeline.automod import patterns as _automod_patterns
     from pipeline.automod import spawner as _automod_spawner
     from pipeline.automod._state import is_auto_mode
+    # Stamp the heartbeat first — proves the in-process loop is alive and records
+    # WHY it will/won't build this tick (idle/cooldown/budget/mode), so the
+    # /evolution page can show "auto · waiting: cooldown 34m" instead of silence.
+    try:
+        from pipeline.automod import heartbeat as _automod_heartbeat
+        _automod_heartbeat.beat()
+    except Exception:  # noqa: BLE001 — liveness must never break the tick
+        pass
     _automod_patterns.scan_and_emit()
     if is_auto_mode():
         await _automod_spawner.drain_queue()
@@ -6415,6 +6642,15 @@ async def entrypoint(ctx: JobContext) -> None:
             # Kill switch: JARVIS_PRE_TTS_CONFAB_GATE=0.
             pre_tts_confab_gate_filter,
             strip_function_call_leakage,
+            # 2026-07-01: drop `*(chuckles)*`-style stage-direction
+            # emotes + stray markdown, and NEVER emit a letterless
+            # reply. A bare `*` reaching Kokoro pushes zero audio
+            # frames → APIError → FallbackAdapter marks the primary
+            # TTS unavailable → voice flips to EdgeTTS + retry stalls,
+            # and the truncated `*(` husk committed to chat_ctx taught
+            # the LLM to emit more emotes. Captured live with pinned
+            # deepseek-v4-flash.
+            strip_emote_markup,
             # Strip "Done.", "Anything else?", "Happy to help", etc.
             # gpt-oss-120b habitually appends these despite the system
             # prompt forbidding them; cheaper to peel post-LLM than to
@@ -6489,6 +6725,34 @@ async def entrypoint(ctx: JobContext) -> None:
     except Exception as e:
         logger.warning(f"[acoustic-tap] init failed: {e}")
         session._jarvis_acoustic_tap = None
+
+    # Partial-word barge-in tap (2026-07-02) — free local replacement for
+    # Deepgram streaming partials. A CPU Vosk recognizer listens ONLY
+    # while JARVIS speaks and interrupts on NOVEL partial words (~0.3-0.4s
+    # after voice onset; probe-verified), through the same echo_gate the
+    # finals-based layer uses. Whisper stays the turn STT; Vosk text never
+    # enters chat history. Kill-switch JARVIS_PARTIAL_BARGEIN=0; degrades
+    # to finals-only barge-in if vosk/model absent.
+    try:
+        from pipeline.bargein_tap import PartialBargeInTap
+
+        def _partial_bargein_interrupt(partial: str) -> None:
+            # force: speeches are non-interruptible in echo-aware mode —
+            # mirrors the kill-phrase + echo-bargein handlers.
+            session.interrupt(force=True)
+            _cancel_thinking_heartbeat(session)
+            session._jarvis_was_interrupted = True
+
+        _pb_tap = PartialBargeInTap(
+            session=session, on_interrupt=_partial_bargein_interrupt
+        )
+        # v2: frames arrive via the JarvisAgent.stt_node tee (a second
+        # rtc.AudioStream starved after ~1 s live); start() spins the
+        # recognition worker only.
+        _pb_tap.start()
+        session._jarvis_partial_bargein_tap = _pb_tap
+    except Exception as e:
+        logger.warning(f"[partial-bargein] init failed: {e}")
 
     # LiveKit screen-share consumer. Whenever the voice-client publishes
     # its SOURCE_SCREENSHARE track, this sink decodes the latest frame
@@ -6583,6 +6847,21 @@ async def entrypoint(ctx: JobContext) -> None:
                     memory_provider.sync_item_async(_mem_role, text)
             except Exception:
                 pass
+            # Dispatcher-independent turn tracking for conversations.db.
+            # Each user item = a new turn. The dispatcher's
+            # _jarvis_turn_count / _jarvis_turn_user_text only update in
+            # its swap paths, which never run when the dispatcher is
+            # skipped (pin + JARVIS_PIN_ALL_ROUTES=1, or
+            # JARVIS_DISPATCH_DISABLED=1) — the 2026-07-01 "sessions
+            # titled but zero messages" outage. See _convo_turn_seq.
+            if role == "user" and (text or "").strip():
+                try:
+                    session._jarvis_convo_seq = (
+                        int(getattr(session, "_jarvis_convo_seq", 0) or 0) + 1
+                    )
+                    session._jarvis_convo_user_text = text
+                except Exception:
+                    pass
             if role == "assistant":
                 _bump_turn_activity(session)  # assistant reply landed = turn progress
 
@@ -6596,12 +6875,12 @@ async def entrypoint(ctx: JobContext) -> None:
                     from pipeline import conversation_store
                     sid = getattr(session, "_jarvis_convo_session_id", None)
                     if sid:
-                        turn_n = int(getattr(session, "_jarvis_turn_count", 0))
+                        # Dispatcher-independent seq/user-text (2026-07-01
+                        # outage fix) — see _convo_turn_seq for the why.
+                        turn_n = _convo_turn_seq(session)
                         if turn_n > 0:
                             # User message
-                            user_text_val = getattr(
-                                session, "_jarvis_turn_user_text", ""
-                            ) or ""
+                            user_text_val = _convo_user_text(session)
                             if user_text_val.strip():
                                 conversation_store.log_turn(
                                     session_id=sid,

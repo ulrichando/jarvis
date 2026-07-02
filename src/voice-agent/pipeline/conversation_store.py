@@ -228,14 +228,21 @@ def _relative_time(iso_ts: str) -> str:
         return ""
 
 
+# Header reframed 2026-07-02: the old "your past sessions with the user"
+# framing taught the LLM to narrate ambient-chatter titles as social
+# events ("just finished a session with Zhaleh — she was watching
+# football" — a fabricated person from room audio). Titles come from the
+# FIRST mic utterance, which is often bystanders/TV, not conversation.
 _RECENT_SESSIONS_HEADER = (
-    "═══ RECENT CONVERSATIONS — your past sessions with the user ═══\n"
-    "These are your recent conversations. The user may reference them "
-    "casually (\"yesterday we talked about…\"). When they do, use "
-    "recall_conversation to search the full history.\n"
+    "═══ RECENT SESSION TITLES — topic hints, NOT a social log ═══\n"
+    "Titles are auto-taken from the first utterance the always-on mic "
+    "heard — often background chatter or TV, not Ulrich and not anyone "
+    "talking to you. Topic hints for recall_conversation only. NEVER "
+    "narrate one as something you did or a person you talked to.\n"
 )
 _MAX_TITLE_CHARS = 80
-_MAX_BLOCK_CHARS = 600
+# Budget covers the header (~370 chars) + ~5 title lines.
+_MAX_BLOCK_CHARS = 1000
 
 
 def get_recent_sessions(

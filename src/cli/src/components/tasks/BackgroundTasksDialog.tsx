@@ -105,19 +105,38 @@ type ListItem = {
 // WORKFLOW_SCRIPTS is ant-only (build_flags.yaml). Static imports would leak
 // ~1.3K lines into external builds. Gate with feature() + require so the
 // bundler can dead-code-eliminate the branch.
-/* eslint-disable @typescript-eslint/no-require-imports */
-const WorkflowDetailDialog = feature('WORKFLOW_SCRIPTS') ? (require('./WorkflowDetailDialog.js') as typeof import('./WorkflowDetailDialog.js')).WorkflowDetailDialog : null;
-const workflowTaskModule = feature('WORKFLOW_SCRIPTS') ? require('../../tasks/LocalWorkflowTask/LocalWorkflowTask.js') as typeof import('../../tasks/LocalWorkflowTask/LocalWorkflowTask.js') : null;
-const killWorkflowTask = workflowTaskModule?.killWorkflowTask ?? null;
-const skipWorkflowAgent = workflowTaskModule?.skipWorkflowAgent ?? null;
-const retryWorkflowAgent = workflowTaskModule?.retryWorkflowAgent ?? null;
+// (2026-07-02) These were module-level require()s. With the flags ENABLED
+// (jarvis start.sh turns WORKFLOW_SCRIPTS + MONITOR_TOOL on), bun's
+// source-run promotes the big import cycle to async evaluation and a
+// synchronous require() re-entering it can never be satisfied — the REPL
+// import wave deadlocked silently (blank TUI in every permission mode;
+// bundled builds are immune, which is why upstream never hits it — this
+// is the concrete mechanism behind ".claude/rules/cli.md: enabling a flag
+// can silently hang the REPL boot"). React.lazy defers the component
+// import to first render and the fn wrappers defer to first call; the
+// feature() gate stays outside so bundler DCE still strips dead branches.
+// Same lazy pattern as cli/handlers/util.tsx (DoctorLazy).
+const WorkflowDetailDialog = feature('WORKFLOW_SCRIPTS') ? React.lazy(() => import('./WorkflowDetailDialog.js').then(m => ({
+  default: m.WorkflowDetailDialog
+}))) : null;
+const killWorkflowTask = feature('WORKFLOW_SCRIPTS') ? (taskId: string, setAppState: Parameters<typeof import('../../tasks/LocalWorkflowTask/LocalWorkflowTask.js')['killWorkflowTask']>[1]) => {
+  void import('../../tasks/LocalWorkflowTask/LocalWorkflowTask.js').then(m => m.killWorkflowTask(taskId, setAppState));
+} : null;
+const skipWorkflowAgent = feature('WORKFLOW_SCRIPTS') ? (taskId: string, agentId: string, setAppState: Parameters<typeof import('../../tasks/LocalWorkflowTask/LocalWorkflowTask.js')['skipWorkflowAgent']>[2]) => {
+  void import('../../tasks/LocalWorkflowTask/LocalWorkflowTask.js').then(m => m.skipWorkflowAgent(taskId, agentId, setAppState));
+} : null;
+const retryWorkflowAgent = feature('WORKFLOW_SCRIPTS') ? (taskId: string, agentId: string, setAppState: Parameters<typeof import('../../tasks/LocalWorkflowTask/LocalWorkflowTask.js')['retryWorkflowAgent']>[2]) => {
+  void import('../../tasks/LocalWorkflowTask/LocalWorkflowTask.js').then(m => m.retryWorkflowAgent(taskId, agentId, setAppState));
+} : null;
 // Relative path, not `src/...` path-mapping — Bun's DCE can statically
 // resolve + eliminate `./` requires, but path-mapped strings stay opaque
 // and survive as dead literals in the bundle. Matches tasks.ts pattern.
-const monitorMcpModule = feature('MONITOR_TOOL') ? require('../../tasks/MonitorMcpTask/MonitorMcpTask.js') as typeof import('../../tasks/MonitorMcpTask/MonitorMcpTask.js') : null;
-const killMonitorMcp = monitorMcpModule?.killMonitorMcp ?? null;
-const MonitorMcpDetailDialog = feature('MONITOR_TOOL') ? (require('./MonitorMcpDetailDialog.js') as typeof import('./MonitorMcpDetailDialog.js')).MonitorMcpDetailDialog : null;
-/* eslint-enable @typescript-eslint/no-require-imports */
+const killMonitorMcp = feature('MONITOR_TOOL') ? (taskId: string, setAppState: Parameters<typeof import('../../tasks/MonitorMcpTask/MonitorMcpTask.js')['killMonitorMcp']>[1]) => {
+  void import('../../tasks/MonitorMcpTask/MonitorMcpTask.js').then(m => m.killMonitorMcp(taskId, setAppState));
+} : null;
+const MonitorMcpDetailDialog = feature('MONITOR_TOOL') ? React.lazy(() => import('./MonitorMcpDetailDialog.js').then(m => ({
+  default: m.MonitorMcpDetailDialog
+}))) : null;
 
 // Helper to get filtered background tasks (excludes foregrounded local_agent)
 function getSelectableBackgroundTasks(tasks: Record<string, TaskState> | undefined, foregroundedTaskId: string | undefined): TaskState[] {
@@ -388,10 +407,10 @@ export function BackgroundTasksDialog({
         } : undefined} key={`teammate-${task_0.id}`} />;
       case 'local_workflow':
         if (!WorkflowDetailDialog) return null;
-        return <WorkflowDetailDialog workflow={task_0} onDone={onDone} onKill={task_0.status === 'running' && killWorkflowTask ? () => killWorkflowTask(task_0.id, setAppState) : undefined} onSkipAgent={task_0.status === 'running' && skipWorkflowAgent ? agentId => skipWorkflowAgent(task_0.id, agentId, setAppState) : undefined} onRetryAgent={task_0.status === 'running' && retryWorkflowAgent ? agentId_0 => retryWorkflowAgent(task_0.id, agentId_0, setAppState) : undefined} onBack={goBackToList} key={`workflow-${task_0.id}`} />;
+        return <React.Suspense fallback={null}><WorkflowDetailDialog workflow={task_0} onDone={onDone} onKill={task_0.status === 'running' && killWorkflowTask ? () => killWorkflowTask(task_0.id, setAppState) : undefined} onSkipAgent={task_0.status === 'running' && skipWorkflowAgent ? agentId => skipWorkflowAgent(task_0.id, agentId, setAppState) : undefined} onRetryAgent={task_0.status === 'running' && retryWorkflowAgent ? agentId_0 => retryWorkflowAgent(task_0.id, agentId_0, setAppState) : undefined} onBack={goBackToList} key={`workflow-${task_0.id}`} /></React.Suspense>;
       case 'monitor_mcp':
         if (!MonitorMcpDetailDialog) return null;
-        return <MonitorMcpDetailDialog task={task_0} onKill={task_0.status === 'running' && killMonitorMcp ? () => killMonitorMcp(task_0.id, setAppState) : undefined} onBack={goBackToList} key={`monitor-mcp-${task_0.id}`} />;
+        return <React.Suspense fallback={null}><MonitorMcpDetailDialog task={task_0} onKill={task_0.status === 'running' && killMonitorMcp ? () => killMonitorMcp(task_0.id, setAppState) : undefined} onBack={goBackToList} key={`monitor-mcp-${task_0.id}`} /></React.Suspense>;
       case 'dream':
         return <DreamDetailDialog task={task_0} onDone={() => onDone('Background tasks dialog dismissed', {
           display: 'system'

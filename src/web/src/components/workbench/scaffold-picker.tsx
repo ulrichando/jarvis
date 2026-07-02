@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Loader2, Sparkles } from "lucide-react";
+import { Blocks, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Scaffold = {
@@ -74,7 +74,7 @@ export function ScaffoldPicker({ workspaceId, onApplied }: Props) {
   return (
     <div className="rounded-lg border border-border/50 bg-muted/10 p-4 space-y-3">
       <div className="flex items-center gap-2">
-        <Sparkles className="size-4 text-primary" />
+        <Blocks className="size-4 text-primary" />
         <p className="text-[13px] font-medium text-foreground/90">
           Start from a scaffold
         </p>

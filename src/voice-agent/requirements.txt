@@ -171,3 +171,4 @@ mutmut>=3.0
 # (pipeline.notification_listener) — pure-Python, no system deps. Lets JARVIS
 # read OS notifications via the notifications tool instead of a screenshot.
 jeepney>=0.9
+vosk>=0.3.45  # partial-word barge-in tap (pipeline/bargein_tap.py) — free local streaming partials, 2026-07-02

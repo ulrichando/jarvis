@@ -45,13 +45,9 @@ export function CookbookSection() {
       </div>
       {alive === false ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-[13px] text-muted-foreground">
-          <p>Cookbook service isn&apos;t reachable at {COOKBOOK_URL}.</p>
+          <p>The Cookbook sidecar isn&apos;t running at {COOKBOOK_URL}.</p>
           <p>
-            Start it with{" "}
-            <code className="rounded bg-muted px-1 py-0.5 text-[12px]">
-              start-jarvis-cookbook.ps1
-            </code>
-            , then{" "}
+            Start the local Cookbook service, then{" "}
             <button
               type="button"
               className="underline underline-offset-2 hover:text-foreground"
@@ -59,7 +55,8 @@ export function CookbookSection() {
             >
               retry
             </button>
-            .
+            . Models can also be pulled directly under Providers → Local
+            models.
           </p>
         </div>
       ) : (

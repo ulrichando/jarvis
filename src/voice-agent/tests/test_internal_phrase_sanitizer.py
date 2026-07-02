@@ -18,6 +18,30 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from sanitizers.internal_phrase import sanitize
 
 
+# ── Streaming punctuation chunks (2026-07-02 live incident) ────────
+
+
+class TestStreamingPunctuationChunks:
+    """BPE streams deliver punctuation as standalone deltas ("," / "."
+    as their own chunks). The old just-an-internal-phrase pre-check
+    stripped punctuation before matching and blanked the empty result —
+    which silently deleted every standalone . , ! ? token from every
+    voiced reply AND the conversation DB across ALL providers since
+    2026-05-25 ("no heart no pulse Just processing cycles"). Em-dashes
+    survived only because — isn't in the strip set. These chunks must
+    pass through verbatim."""
+
+    @pytest.mark.parametrize("chunk", [
+        ",", ".", "!", "?", " .", ", ", "?!", "...", '."',
+    ])
+    def test_punctuation_only_chunk_passes_through(self, chunk):
+        assert sanitize(chunk) == chunk
+
+    def test_whitespace_only_chunk_passes_through(self):
+        # Whitespace deltas are also legitimate stream padding.
+        assert sanitize(" ") == " "
+
+
 # ── Whole-reply blanking ───────────────────────────────────────────
 
 

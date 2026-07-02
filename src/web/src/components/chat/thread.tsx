@@ -236,7 +236,9 @@ export function Thread({
     // pushes line length above the readability sweet spot. Embedded chat
     // surfaces (design column, workbench panel) inherit the cap but the
     // parent panel is narrower, so the actual rendered width = parent.
-    <div className="mx-auto w-full max-w-3xl space-y-8 px-4 py-8">
+    // Spacing rides --chat-gap / --chat-pad-y (Settings → Appearance →
+    // Density, set via data-chat-density on the chat root); 2rem = "cozy".
+    <div className="mx-auto w-full max-w-3xl space-y-[var(--chat-gap,2rem)] px-4 py-[var(--chat-pad-y,2rem)]">
       {visible.map((m, i) => {
         const cards = artifactsByMessage.get(m.id);
         // Verify outcomes are keyed by the streaming assistantId. When

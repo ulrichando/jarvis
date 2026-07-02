@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import ToolProgress from './ToolProgress'
 import TodoBlock from './TodoBlock'
 import ContextBar from './ContextBar'
@@ -38,6 +39,22 @@ const Icon = {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
       <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
       <line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/>
+    </svg>
+  ),
+  Terminal: (p) => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+    </svg>
+  ),
+  Refresh: (p) => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>
+      <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>
+    </svg>
+  ),
+  User: (p) => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
     </svg>
   ),
 }
@@ -523,12 +540,66 @@ export default function ChatPanel({
     prevWsConnectedRef.current = wsConnected
   }, [wsConnected])
 
+  const resetInFlight = useCallback((notice) => {
+    setToolExecutions({}); setIsLoading(false); setStreamingMessage(''); setIsStreaming(false)
+    currentToolsRef.current = {}
+    if (notice) setMessages((prev) => [...prev, { role: 'jarvis', text: notice }])
+  }, [])
+
+  // ── In-flight stall watchdog ───────────────────────────────────────
+  // Chat rides the BRIDGE WS, but replies come from the VOICE AGENT. When
+  // the agent restarts mid-request the bridge socket never blips, so the
+  // reconnect reset above can't fire — isLoading stayed true forever and
+  // the input was dead (sendMessage guards on isLoading) until the app
+  // was relaunched. If we're loading and no WS event has landed for 75 s,
+  // unstick and say so. lastWsEventRef is bumped on every bridge event.
+  const lastWsEventRef = useRef(Date.now())
+  useEffect(() => { lastWsEventRef.current = Date.now() }, [wsMessages])
+  useEffect(() => {
+    if (!isLoading) return
+    const t = setInterval(() => {
+      if (Date.now() - lastWsEventRef.current > 75_000) {
+        resetInFlight('That request was lost — the voice agent may have restarted. Try again.')
+      }
+    }, 5000)
+    return () => clearInterval(t)
+  }, [isLoading, resetInFlight])
+
+  // ── Header actions: restart agent / open CLI ──────────────────────
+  // (Sign-in lives on the voice-agent UI — tray menu + VoiceChatPanel —
+  // per 2026-07-02 direction; deliberately NOT in the chat panels.)
+  const [agentBusy, setAgentBusy] = useState(false)
+
+  const restartAgent = useCallback(async () => {
+    if (agentBusy) return
+    setAgentBusy(true)
+    // Reset chat state IN THE SAME action so the panel and the agent
+    // come back together instead of the UI holding a dead request.
+    resetInFlight()
+    setMessages((prev) => [...prev, { role: 'jarvis', text: 'Restarting voice agent…' }])
+    try {
+      await invoke('keys_restart_agent')
+      setMessages((prev) => [...prev, { role: 'jarvis', text: 'Voice agent restarted — ready.' }])
+    } catch (e) {
+      setMessages((prev) => [...prev, { role: 'jarvis', text: `Restart failed: ${e}` }])
+    } finally {
+      setAgentBusy(false)
+    }
+  }, [agentBusy, resetInFlight])
+
+  const openCli = useCallback((asLogin) => {
+    invoke('open_cli_terminal', { login: !!asLogin }).catch((e) => {
+      setMessages((prev) => [...prev, { role: 'jarvis', text: `Could not open a terminal: ${e}` }])
+    })
+  }, [])
+
   const sendMessage = useCallback(() => {
     const text = input.trim()
     if (!text || isLoading) return
     setInput('')
     setMessages((prev) => [...prev, { role: 'user', text }])
     setIsLoading(true)
+    lastWsEventRef.current = Date.now()   // arm the stall watchdog from send time
     setStreamingMessage('')
     setToolExecutions({})
     currentToolsRef.current = {}
@@ -752,6 +823,12 @@ export default function ChatPanel({
             <span style={{ fontSize: '14px', fontWeight: 600, color: TEXT, letterSpacing: '-0.01em' }}>Jarvis</span>
           </div>
           <div style={{ display: 'flex', gap: '2px', alignItems: 'center' }}>
+            <HeaderButton title="Open the jarvis CLI in a terminal" onClick={() => openCli(false)}>
+              <Icon.Terminal />
+            </HeaderButton>
+            <HeaderButton title="Restart voice agent (also clears any stuck request)" onClick={restartAgent} active={agentBusy}>
+              <Icon.Refresh style={agentBusy ? { animation: 'tool-spin 1s linear infinite' } : undefined} />
+            </HeaderButton>
             <HeaderButton title="History" onClick={() => setSidebarOpen(v => !v)} active={sidebarOpen}>
               <Icon.History />
             </HeaderButton>

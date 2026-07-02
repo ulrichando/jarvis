@@ -14,6 +14,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useVoiceRead } from "@/stores/voice-read";
+import { useSettings } from "@/hooks/use-settings";
+import { KOKORO_ID_RE } from "@/lib/chat/voices";
 
 export type VoicePhase = "idle" | "connecting" | "listening" | "speaking";
 
@@ -43,6 +45,13 @@ export function useVoiceMode(opts: {
   const { onUtterance, onUnsupported } = opts;
   const [active, setActive] = useState(false);
   const [phase, setPhase] = useState<VoicePhase>("idle");
+
+  // Settings → General → Voice (a Kokoro voice id). Held in a ref because
+  // the TTS fetch fires inside long-lived closures.
+  const { data: settings } = useSettings();
+  const ttsVoiceRef = useRef<string | null>(null);
+  const prefVoice = settings?.user?.voice;
+  ttsVoiceRef.current = prefVoice && KOKORO_ID_RE.test(prefVoice) ? prefVoice : null;
 
   const activeRef = useRef(false);
   const phaseRef = useRef<VoicePhase>("idle");
@@ -367,7 +376,10 @@ export function useVoiceMode(opts: {
           res = await fetch("/api/tts", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ text }),
+            body: JSON.stringify({
+              text,
+              ...(ttsVoiceRef.current ? { voice: ttsVoiceRef.current } : {}),
+            }),
           });
         } catch {
           speakBrowser();

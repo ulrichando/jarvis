@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ShieldCheck, KeyRound, Smartphone, Copy, Check, RefreshCw, AlertTriangle } from "lucide-react";
+import { ShieldCheck, ShieldOff, KeyRound, Smartphone, Copy, Check, RefreshCw, AlertTriangle } from "lucide-react";
 import QRCode from "qrcode";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -397,12 +397,42 @@ function RegenerateFlow({ onDone }: { onDone: () => void }) {
   );
 }
 
+function DisableFlow({ onDone }: { onDone: () => void }) {
+  const [pending, setPending] = useState(false);
+
+  const handleDisable = async (password: string) => {
+    setPending(true);
+    try {
+      const result = await authClient.twoFactor.disable({ password });
+      if (result.error) {
+        toast.error(result.error.message ?? "Failed to remove authenticator");
+        return;
+      }
+      onDone();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to remove authenticator");
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <PasswordPrompt
+      label="Enter your current password to remove the authenticator"
+      buttonLabel="Remove authenticator"
+      pending={pending}
+      onSubmit={handleDisable}
+    />
+  );
+}
+
 // ─── SecuritySection (the exported section) ───────────────────────────────────
 
 export function SecuritySection() {
   const { data: session, isPending: sessionLoading } = useSession();
   const [enrolling, setEnrolling] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  const [disabling, setDisabling] = useState(false);
   // Force a local re-render after enrollment — useSession() updates
   // asynchronously; we track it ourselves to flip the UI immediately.
   const [localEnrolled, setLocalEnrolled] = useState<boolean | null>(null);
@@ -422,6 +452,12 @@ export function SecuritySection() {
   const handleRegenDone = () => {
     setRegenerating(false);
     toast.success("Backup codes replaced");
+  };
+
+  const handleDisableDone = () => {
+    setDisabling(false);
+    setLocalEnrolled(false);
+    toast.success("Authenticator removed");
   };
 
   return (
@@ -457,7 +493,7 @@ export function SecuritySection() {
                 </p>
               </div>
             </div>
-            {!enrolling && !regenerating && (
+            {!enrolling && !regenerating && !disabling && (
               <div className="ml-4 shrink-0">
                 {isEnrolled ? (
                   <div className="flex items-center gap-2">
@@ -545,6 +581,55 @@ export function SecuritySection() {
                 </button>
               </div>
               <RegenerateFlow onDone={handleRegenDone} />
+            </div>
+          )}
+
+          {/* Remove authenticator row — the "reset" this section is named for.
+              Password-gated; lets the user unenroll (e.g. new device) instead of
+              being permanently locked to one authenticator. */}
+          {isEnrolled && !enrolling && !regenerating && !disabling && (
+            <div className="flex items-start justify-between py-3.5">
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                  <ShieldOff className="size-4" />
+                </div>
+                <div>
+                  <p className="text-[14px] font-medium">Remove authenticator</p>
+                  <p className="mt-0.5 text-[13px] text-muted-foreground">
+                    Unenroll this authenticator app — for example to switch to a new device. You
+                    can set one up again afterwards.
+                  </p>
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="ml-4 shrink-0 gap-1.5 text-rose-600 hover:text-rose-600 dark:text-rose-400"
+                onClick={() => setDisabling(true)}
+              >
+                <ShieldOff className="size-3.5" />
+                Remove
+              </Button>
+            </div>
+          )}
+
+          {/* Inline disable flow */}
+          {disabling && isEnrolled && (
+            <div className="py-5">
+              <div className="mb-4 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <ShieldOff className="size-4 text-muted-foreground" />
+                  <span className="text-[14px] font-medium">Remove authenticator</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDisabling(false)}
+                  className="text-[13px] text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+              <DisableFlow onDone={handleDisableDone} />
             </div>
           )}
         </div>

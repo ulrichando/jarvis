@@ -68,8 +68,9 @@ export default function SettingsPage() {
   }, []);
 
   return (
-    <div className="flex h-full">
-      <aside className="flex w-52 shrink-0 flex-col border-r border-border/60 bg-sidebar/30 px-3 py-5">
+    <div className="flex h-full flex-col md:flex-row">
+      {/* Desktop: left rail */}
+      <aside className="hidden w-52 shrink-0 flex-col border-r border-border/60 bg-sidebar/30 px-3 py-5 md:flex">
         <h1 className="px-2 pb-3 text-[20px] font-semibold tracking-tight">
           Settings
         </h1>
@@ -94,6 +95,32 @@ export default function SettingsPage() {
         </nav>
       </aside>
 
+      {/* Mobile: title + horizontally scrollable tab strip */}
+      <div className="shrink-0 border-b border-border/60 md:hidden">
+        <h1 className="px-4 pb-1 pt-4 pl-12 text-[20px] font-semibold tracking-tight">
+          Settings
+        </h1>
+        <nav className="flex gap-1 overflow-x-auto px-3 pb-2 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {NAV.map((item) => {
+            const isActive = item.id === section;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setSection(item.id)}
+                className={cn(
+                  "shrink-0 whitespace-nowrap rounded-full border px-3 py-1.5 text-[13px] transition-colors",
+                  isActive
+                    ? "border-primary/50 bg-primary/10 font-medium text-primary"
+                    : "border-border/60 text-foreground/70 hover:text-foreground",
+                )}
+              >
+                {item.label}
+              </button>
+            );
+          })}
+        </nav>
+      </div>
+
       <div className="flex-1 overflow-hidden">
         {section === "cookbook" ? (
           // Full-bleed: the Cookbook is an embedded app, not a settings form,
@@ -101,7 +128,7 @@ export default function SettingsPage() {
           <CookbookSection />
         ) : (
           <div className="h-full overflow-y-auto">
-            <div className="mx-auto max-w-2xl px-8 py-8">
+            <div className="mx-auto max-w-2xl px-4 py-6 sm:px-8 sm:py-8">
               {section === "general" && <GeneralSection />}
               {section === "account" && <AccountSection />}
               {section === "security" && <SecuritySection />}

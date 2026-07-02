@@ -67,6 +67,24 @@ from voice_client_tray_config import (
 __all__ = ["STATUS_PORT", "VoiceClientHttpApi"]
 
 
+def _ollama_has_models(base: str = "http://127.0.0.1:11434", timeout: float = 1.5) -> bool:
+    """True when the local Ollama daemon is up AND has ≥1 pulled model.
+
+    Gates Local-mode applies (2026-07-02 user rule): switching to Local
+    with no model installed boots a dead on-device agent. Never raises —
+    an unreachable daemon counts as "no models".
+    """
+    # ponytail: fixed localhost default; honor OLLAMA_HOST if that ever matters.
+    try:
+        import json as _json
+        import urllib.request as _url
+        with _url.urlopen(f"{base}/api/tags", timeout=timeout) as r:
+            data = _json.loads(r.read().decode("utf-8", "replace"))
+        return bool(data.get("models"))
+    except Exception:
+        return False
+
+
 # Distinct port from bridge (8765) / speech sidecar (8766).
 STATUS_PORT: int = int(os.environ.get("JARVIS_VOICE_CLIENT_PORT", "8767"))
 
@@ -932,6 +950,27 @@ class VoiceClientHttpApi:
         mode_id = (body.get("id") or "").strip()
         if not mode_id:
             return web.json_response({"error": "missing id"}, status=400, headers=cors)
+        # Local mode needs an actually-pulled Ollama model (user rule
+        # 2026-07-02): applying it with none installed writes voice-mode=
+        # local and the on-device agent boots with no LLM — dead mic. The
+        # tray greys its Local item out for the same reason; this covers
+        # the desktop-window / HTTP path.
+        try:
+            _doc = conversation_modes.load()
+            _target = next(
+                (m for m in _doc.get("modes", []) if m.get("id") == mode_id), None
+            )
+        except Exception:
+            _target = None
+        if (
+            _target is not None
+            and _target.get("voice_mode") == "local"
+            and not _ollama_has_models()
+        ):
+            return web.json_response(
+                {"error": "Local mode needs an installed Ollama model — "
+                          "pull one first (e.g. `ollama pull qwen3:30b-a3b`)"},
+                status=409, headers=cors)
         try:
             conversation_modes.apply(mode_id)
             _t = asyncio.create_task(self.restart_agent_unit(), name="agent-restart")

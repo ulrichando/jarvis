@@ -499,6 +499,14 @@ Be CONSERVATIVE. Most turns warrant NOTHING — a one-off answer, banter, \
 or a failed/aborted attempt is not a reusable artifact. Only propose when \
 the turn clearly encodes a repeatable procedure or a stable fact.
 
+Propose ONLY when ALL three hold:
+  1. The artifact is useful in a FUTURE session with none of this \
+conversation's context.
+  2. It names a repeatable class of work or a stable fact — not this \
+turn's single instance.
+  3. The evidence is in the turn itself: an explicit save phrase, a \
+user correction, or a technique that actually worked.
+
 SIGNALS — what to route where:
   • STYLE / TONE / FORMAT / VERBOSITY corrections ("stop doing X", \
 "too verbose", "don't format like this", "just give me the answer") → \
