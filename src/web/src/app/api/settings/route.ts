@@ -80,6 +80,13 @@ const patchSchema = z.object({
     })
     .partial()
     .optional(),
+  chrome: z
+    .object({
+      defaultPolicy: z.enum(["allow", "block"]).optional(),
+      blockedSites: z.array(z.string()).optional(),
+    })
+    .partial()
+    .optional(),
   integrations: z
     .object({
       github: z
@@ -164,6 +171,7 @@ export async function PATCH(req: Request) {
     providers: nextProviders,
     connections: nextConnections,
     appearance: { ...current.appearance, ...(patch.appearance ?? {}) },
+    chrome: { ...current.chrome, ...(patch.chrome ?? {}) },
     integrations: nextIntegrations,
   });
 

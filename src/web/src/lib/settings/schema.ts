@@ -111,6 +111,15 @@ export const settingsSchema = z.object({
       density: z.enum(["compact", "cozy"]).default("cozy"),
     })
     .default({ fontSize: "md", density: "cozy" }),
+  // Jarvis in Chrome — browser-extension preferences. Persisted now and read by
+  // the extension (over the bridge) once it connects. defaultPolicy governs
+  // whether Jarvis may act on a site by default; blockedSites are always denied.
+  chrome: z
+    .object({
+      defaultPolicy: z.enum(["allow", "block"]).default("allow"),
+      blockedSites: z.array(z.string()).default([]),
+    })
+    .default({ defaultPolicy: "allow", blockedSites: [] }),
   integrations: z
     .object({
       github: z

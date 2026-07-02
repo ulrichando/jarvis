@@ -67,6 +67,10 @@ export type SettingsPatch = {
     fontSize?: "sm" | "md" | "lg";
     density?: "compact" | "cozy";
   };
+  chrome?: {
+    defaultPolicy?: "allow" | "block";
+    blockedSites?: string[];
+  };
   integrations?: {
     github?: {
       token?: string | null;
