@@ -86,7 +86,7 @@ CLI_CMD+=( "$@" )
 # the TOP-LEVEL program.command(...) registrations in src/main.tsx.
 AGENT_INVOCATION=1
 case "${1:-}" in
-  agents|assistant|auth|auto-mode|completion|doctor|error|export|install|keys|log|mcp|open|plugin|remote-control|rollback|server|setup-token|ssh|task|teleport|uninstall|up|update)
+  agents|assistant|auth|auto-mode|completion|doctor|error|export|gh-agent|install|keys|log|mcp|open|plugin|remote-control|rollback|server|setup-token|ssh|task|teleport|uninstall|up|update)
     AGENT_INVOCATION=0 ;;
 esac
 if [ "$AGENT_INVOCATION" = 1 ]; then
