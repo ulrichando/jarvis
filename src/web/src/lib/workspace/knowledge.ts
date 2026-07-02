@@ -1,6 +1,6 @@
 import "server-only";
 import path from "node:path";
-import { workspaceRoot } from "./storage";
+import { workspaceRoot, WORKSPACES_ROOT } from "./storage";
 import { createKnowledgeStore, type KnowledgeDoc } from "@/lib/knowledge/files";
 
 // Workspace-scoped knowledge documents. Stored as plaintext files
@@ -12,13 +12,21 @@ import { createKnowledgeStore, type KnowledgeDoc } from "@/lib/knowledge/files";
 
 export type { KnowledgeDoc };
 
-const store = (workspaceId: string) =>
-  createKnowledgeStore({
-    root: path.join(workspaceRoot(workspaceId), ".jarvis", "knowledge"),
+const store = (workspaceId: string) => {
+  // workspaceRoot() regex-validates the id (throws on separators / abs paths);
+  // re-prove the derived root stays inside WORKSPACES_ROOT anyway — the
+  // explicit path-injection barrier for every fs op in the store.
+  const wsRoot = path.resolve(workspaceRoot(workspaceId));
+  if (!wsRoot.startsWith(path.resolve(WORKSPACES_ROOT) + path.sep)) {
+    throw new Error(`workspace root escapes WORKSPACES_ROOT: ${workspaceId}`);
+  }
+  return createKnowledgeStore({
+    root: path.join(wsRoot, ".jarvis", "knowledge"),
     blockHeader: "Workspace knowledge",
     blockIntro:
       "The following documents are reference material for this project. Treat them as authoritative for facts about the project, brand, or domain.",
   });
+};
 
 export async function listKnowledge(workspaceId: string): Promise<KnowledgeDoc[]> {
   return store(workspaceId).list();

@@ -30,6 +30,19 @@ const MAX_TOTAL_DOCS = 50;
 
 type Meta = { disabled: string[] };
 
+// Containment barrier — same resolve+prefix idiom as workspace/storage.ts
+// resolveSafe(). Callers already validate `root` (workspaceRoot() regex /
+// os.homedir()) and `name` (safeName()), but every fs path is still re-proven
+// to land inside the store root before use (defense in depth).
+function contain(root: string, ...segs: string[]): string {
+  const base = path.resolve(root);
+  const resolved = path.resolve(base, ...segs);
+  if (resolved !== base && !resolved.startsWith(base + path.sep)) {
+    throw new Error("path escapes knowledge root");
+  }
+  return resolved;
+}
+
 // Sanitize document name: strip path traversal, illegal chars, leading
 // dots. Caller-supplied names go straight into the filesystem so this
 // is a security boundary.
@@ -49,7 +62,7 @@ export function createKnowledgeStore(opts: {
   blockIntro: string;
 }) {
   const { root, blockHeader, blockIntro } = opts;
-  const metaPath = path.join(root, "_meta.json");
+  const metaPath = contain(root, "_meta.json");
 
   async function loadMeta(): Promise<Meta> {
     try {
@@ -81,7 +94,7 @@ export function createKnowledgeStore(opts: {
       if (e.name === "_meta.json") continue;
       if (e.name.startsWith(".")) continue;
       try {
-        const stat = await fs.stat(path.join(root, e.name));
+        const stat = await fs.stat(contain(root, e.name));
         out.push({
           name: e.name,
           bytes: stat.size,
@@ -111,7 +124,7 @@ export function createKnowledgeStore(opts: {
       return { ok: false, error: `cap reached (max ${MAX_TOTAL_DOCS} docs)` };
     }
     await fs.mkdir(root, { recursive: true });
-    const target = path.join(root, safe);
+    const target = contain(root, safe);
     await fs.writeFile(target, content, "utf8");
     const stat = await fs.stat(target);
     const meta = await loadMeta();
@@ -130,7 +143,7 @@ export function createKnowledgeStore(opts: {
     const safe = safeName(name);
     if (!safe) return false;
     try {
-      await fs.unlink(path.join(root, safe));
+      await fs.unlink(contain(root, safe));
       // Also clear from disabled list if present.
       const meta = await loadMeta();
       if (meta.disabled.includes(safe)) {
@@ -172,7 +185,7 @@ export function createKnowledgeStore(opts: {
     const parts: string[] = [];
     for (const d of enabled) {
       try {
-        const raw = await fs.readFile(path.join(root, d.name), "utf8");
+        const raw = await fs.readFile(contain(root, d.name), "utf8");
         const trimmed = raw.length > 4096 ? raw.slice(0, 4096) + "\n…[truncated]" : raw;
         parts.push(`### ${d.name}\n${trimmed}`);
       } catch {
