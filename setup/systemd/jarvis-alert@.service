@@ -7,7 +7,7 @@ Description=JARVIS — push an off-box alert that %i failed
 Type=oneshot
 # %H = hostname, %i = the failed unit's name. jarvis-notify reads
 # ~/.jarvis/alerts.env for the ntfy topic and fans out to the phone channels.
-ExecStart=%h/Documents/Projects/jarvis/bin/jarvis-notify "JARVIS unit failed on %H" "%i entered a failed state (auto-restart exhausted). Inspect: journalctl --user -u %i -n 80 --no-pager — Recover: bin/jarvis-restart-all" urgent
+ExecStart=%h/Documents/Projects/jarvis/bin/jarvis-notify "JARVIS unit failed on %H" "%i entered a failed state. Inspect: journalctl --user -u %i -n 80 --no-pager — Recover: bin/jarvis-restart-all" urgent
 NoNewPrivileges=yes
 LockPersonality=yes
 RestrictSUIDSGID=yes

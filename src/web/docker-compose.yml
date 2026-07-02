@@ -121,6 +121,23 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     expose: ["2375"]
 
+  # SearXNG — self-hosted metasearch, JARVIS's credentialed-grade web_search
+  # backend (keyless, aggregates ~20 engines, immune to the DuckDuckGo IP CAPTCHA
+  # that blocks the local scraper). The voice-agent searxng plugin (local) reaches
+  # it via Caddy at a hostname EXCLUDED from Cloudflare Access — same pattern as
+  # /install.sh + /releases — and the web app can reach it in-network at
+  # http://searxng:8080. settings.yml enables the JSON API (else 403). Point
+  # SEARXNG_URL (voice-agent env / ~/.jarvis/keys.env) at the public hostname.
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-https://searx.0wlan.com/}
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET in .env.production}
+    expose: ["8080"]
+
   postgres:
     image: postgres:16
     restart: unless-stopped

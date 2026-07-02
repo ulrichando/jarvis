@@ -25,7 +25,7 @@ STAMP="/tmp/jarvis-voice-recover.stamp"
 DEBOUNCE_S="${JARVIS_RECOVER_DEBOUNCE_S:-15}"
 REASON="${1:-manual}"
 
-log() { logger -t jarvis-voice-recover "$*" 2>/dev/null || true; echo "[jarvis-voice-recover] $*"; }
+log() { logger -t jarvis-voice-recover "$*" 2>/dev/null || true; echo "[$(date -Is)] [jarvis-voice-recover] $*"; }
 
 # Run `systemctl --user` (and pactl) as the target user whether we were invoked
 # as root (the sleep/NM hooks) or already as the user (the timer). Mirrors the

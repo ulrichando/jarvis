@@ -8,6 +8,8 @@ Wants=network-online.target
 # (the old bash supervisor capped at 5/30s too). 0 disables rate limiting, so
 # Restart=always retries FOREVER. This is the single load-bearing line.
 StartLimitIntervalSec=0
+# Page off-box if this lands in a failed state (mirrors the voice units).
+OnFailure=jarvis-alert@%n.service
 
 [Service]
 # exec: unit is "started" only once execve() succeeds (a bad path fails loudly,

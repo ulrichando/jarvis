@@ -2,6 +2,8 @@
 Description=JARVIS — desktop notification listener (D-Bus monitor -> store, no vision)
 # Needs the user session bus + a notification daemon to observe.
 After=graphical-session.target
+# Page off-box if this lands in a failed state (mirrors the voice units).
+OnFailure=jarvis-alert@%n.service
 
 [Service]
 Type=simple

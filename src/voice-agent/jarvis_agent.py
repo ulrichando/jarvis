@@ -7747,6 +7747,13 @@ if __name__ == "__main__":
             # 24 kills in ~50 min). Resolved live so it also covers the
             # tray-Local flip. Env JARVIS_JOB_MEMORY_LIMIT_MB wins; 0 disables.
             job_memory_limit_mb=_job_memory_limit_mb(),
+            # Bound the SIGTERM drain (framework default: 1800 s). With the
+            # desktop voice-client connected a session is ~always "active",
+            # so a solo agent stop sat in drain until systemd's stop window
+            # (90 s default) SIGKILLed it → 'failed (timeout)' → OnFailure
+            # page (live 2026-07-01 16:50). 20 s still finishes an in-flight
+            # turn; the unit pairs this with TimeoutStopSec=45.
+            drain_timeout=int(os.environ.get("JARVIS_DRAIN_TIMEOUT_S", "20")),
             # livekit-agents binds a health HTTP server on 8081 by
             # default (prod_default in worker.py). Override to 8181
             # to dodge port collisions with other tooling on the same

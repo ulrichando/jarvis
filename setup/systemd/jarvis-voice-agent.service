@@ -95,6 +95,10 @@ ExecStart=%h/Documents/Projects/jarvis/src/voice-agent/.venv/bin/python %h/Docum
 # Auto-recover from crashes / Groq API hiccups / SFU restart.
 Restart=always
 RestartSec=5
+# Must outlast the worker's bounded drain (JARVIS_DRAIN_TIMEOUT_S, default
+# 20 s in jarvis_agent.py WorkerOptions) or systemd SIGKILLs a healthy
+# drain → spurious 'failed (timeout)' + OnFailure page (live 2026-07-01).
+TimeoutStopSec=45
 # The agents SDK emits JSON structured logs — append rather than
 # overwrite so we can scroll back across restarts during debugging.
 # Was /tmp/jarvis-voice-agent.log until 2026-05-07; switched because
