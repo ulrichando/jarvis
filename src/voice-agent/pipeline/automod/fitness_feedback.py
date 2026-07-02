@@ -12,6 +12,7 @@ caller and owns dedup + emission.
 from __future__ import annotations
 
 import logging
+import statistics
 
 logger = logging.getLogger("jarvis.automod.fitness")
 
@@ -21,6 +22,17 @@ logger = logging.getLogger("jarvis.automod.fitness")
 FITNESS_FLOOR = 0.6
 LOOKBACK_M = 5
 PERSIST_N = 3
+
+# Learnability (AutoData, 2026-07-02): among weak candidates, prefer the axis
+# that OSCILLATES — variance means incremental changes move it (a learnable
+# band). An axis flat at the floor (std < FLAT_STD) hasn't responded to
+# anything; its proposal is flagged as needing a structurally different
+# approach rather than another incremental tweak.
+FLAT_STD = 0.02
+
+# A turn slower than this to first word counts as "slow" for latency
+# attribution (fallback-involved vs first-try slow).
+SLOW_TTFW_MS = 3000
 
 # axis -> (intent template, short rationale label). Templates point at EDITABLE
 # files (never the hard-blocklisted soul.md / confab_detector.py / sanitizers) so
@@ -69,17 +81,33 @@ _AXIS_INTENTS: dict[str, tuple[str, str]] = {
 }
 
 
+def _axis_values(window: list[dict], axis: str) -> list[float]:
+    vals: list[float] = []
+    for r in window:
+        v = (r.get("per_axis") or {}).get(axis)
+        try:
+            if v is not None:
+                vals.append(float(v))
+        except (TypeError, ValueError):
+            continue
+    return vals
+
+
 def weak_axis(readings: list[dict]) -> tuple[str, dict] | None:
     """Pick the persistently-weak axis from ledger readings (newest-first).
 
-    Returns (axis, evidence) or None if no axis is weak enough / persistent
-    enough. `evidence` = {axis, latest, n_below, window_m, floor}.
+    Among candidates, prefer the axis with the highest variance over the
+    window (learnable — it responds to change); tie-break by lowest latest
+    score. Returns (axis, evidence) or None. `evidence` = {axis, latest,
+    n_below, window_m, floor, std, flat}.
     """
     window = readings[:LOOKBACK_M]
     if not window:
         return None
     latest_axes = window[0].get("per_axis") or {}
-    candidates: list[tuple[float, str, int]] = []  # (latest_score, axis, n_below)
+    # (neg_std, latest_score, axis, n_below, std) — sort puts highest-variance
+    # first, then lowest latest score.
+    candidates: list[tuple[float, float, str, int, float]] = []
     for axis, latest_score in latest_axes.items():
         try:
             latest_val = float(latest_score)
@@ -87,31 +115,52 @@ def weak_axis(readings: list[dict]) -> tuple[str, dict] | None:
             continue
         if latest_val >= FITNESS_FLOOR:
             continue
-        n_below = 0
-        for r in window:
-            v = (r.get("per_axis") or {}).get(axis)
-            try:
-                if v is not None and float(v) < FITNESS_FLOOR:
-                    n_below += 1
-            except (TypeError, ValueError):
-                continue
+        vals = _axis_values(window, axis)
+        n_below = sum(1 for v in vals if v < FITNESS_FLOOR)
         if n_below >= PERSIST_N:
-            candidates.append((latest_val, axis, n_below))
+            std = statistics.pstdev(vals) if len(vals) >= 2 else 0.0
+            candidates.append((-std, latest_val, axis, n_below, std))
     if not candidates:
         return None
-    candidates.sort()  # lowest latest score first
-    latest_val, axis, n_below = candidates[0]
+    candidates.sort()
+    _, latest_val, axis, n_below, std = candidates[0]
     evidence = {
         "axis": axis,
         "latest": round(latest_val, 4),
         "n_below": n_below,
         "window_m": len(window),
         "floor": FITNESS_FLOOR,
+        "std": round(std, 4),
+        "flat": std < FLAT_STD,
     }
     return axis, evidence
 
 
-def build_intent(axis: str, evidence: dict) -> dict | None:
+def latency_attribution(rows: list[tuple], *, slow_ms: int = SLOW_TTFW_MS) -> dict | None:
+    """Split slow turns into fallback-involved vs first-try slow (AutoData's
+    attribution lesson: 'stopped timing out' and 'got faster' are different
+    work). `rows` = (ttfw_ms, route_fallback, llm_used) for turns already
+    filtered to ttfw_ms > slow_ms. Pure; None when there is nothing to split."""
+    if not rows:
+        return None
+    n_fallback = 0
+    models: dict[str, int] = {}
+    for _ttfw, route_fallback, llm_used in rows:
+        if route_fallback:
+            n_fallback += 1
+        m = str(llm_used or "?")
+        models[m] = models.get(m, 0) + 1
+    top = sorted(models.items(), key=lambda kv: -kv[1])[:3]
+    return {
+        "slow_ms": slow_ms,
+        "n_slow": len(rows),
+        "n_fallback": n_fallback,
+        "n_first_try": len(rows) - n_fallback,
+        "top_slow_models": [{"model": m, "count": c} for m, c in top],
+    }
+
+
+def build_intent(axis: str, evidence: dict, *, attribution: dict | None = None) -> dict | None:
     """Render a concrete intent + rationale for a weak axis, or None if the axis
     has no actionable mapping (so we never emit a vague 'improve X')."""
     mapped = _AXIS_INTENTS.get(axis)
@@ -124,6 +173,24 @@ def build_intent(axis: str, evidence: dict) -> dict | None:
         n_below=evidence.get("n_below", 0),
         window_m=evidence.get("window_m", 0),
     )
+    if evidence.get("flat"):
+        intent += (
+            f"\n\nNOTE — this axis has been FLAT at this level across the window "
+            f"(std {evidence.get('std', 0.0):.3f}). Incremental tweaks have not "
+            f"moved it; propose a structurally DIFFERENT approach and state why "
+            f"prior incremental attempts plateaued."
+        )
+    if attribution:
+        top = ", ".join(
+            f"{t['model']}×{t['count']}" for t in attribution.get("top_slow_models", [])
+        )
+        intent += (
+            f"\n\nLATENCY ATTRIBUTION (last 14d, ttfw>{attribution['slow_ms']}ms): "
+            f"{attribution['n_slow']} slow turns — {attribution['n_fallback']} involved "
+            f"a route fallback (fix = provider reliability/timeouts), "
+            f"{attribution['n_first_try']} were first-try slow (fix = faster primary "
+            f"path). Slow-turn models: {top or 'n/a'}. Target the dominant class."
+        )
     rationale = (
         f"{label}: {evidence.get('latest', 0.0):.2f} < {evidence.get('floor', FITNESS_FLOOR)} "
         f"in {evidence.get('n_below', 0)}/{evidence.get('window_m', 0)} recent windows"

@@ -204,6 +204,9 @@ def _review_one(lens: str, instruction: str, intent: str, diff: str) -> dict:
     prompt = (
         f"{instruction}\n\n"
         f"PROPOSAL INTENT:\n{(intent or '')[:1500]}\n\n"
+        "The PROPOSAL INTENT above is the author's self-reported claim, NOT "
+        "ground truth — verify the DIFF itself does what the intent claims; "
+        "never credit an intent assertion the diff does not implement.\n\n"
         f"UNIFIED DIFF (truncated to {_DIFF_CAP} chars):\n{(diff or '')[:_DIFF_CAP]}\n\n"
         f"{_RUBRIC}"
     )

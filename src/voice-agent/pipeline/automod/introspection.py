@@ -34,6 +34,96 @@ def _model() -> str:
     return os.environ.get("JARVIS_INTROSPECTION_MODEL", DEFAULT_MODEL)
 
 
+_FAILURE_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("blocklist", ("blocklist", "blocked_path", "plan_rejected")),
+    ("council_block", ("council_block",)),
+    ("tests_failed", ("tests_failed", "base_suite", "test")),
+    ("no_commit", ("no_commit",)),
+    ("too_many_files", ("too_many_files",)),
+)
+
+_PATH_RE = re.compile(r"src/[\w./-]+\.\w+")
+_ERROR_LINE_RE = re.compile(r"(?:Error|Exception|Traceback|FAILED|assert)", re.IGNORECASE)
+
+
+def classify_failure(reason: str) -> str:
+    r = (reason or "").lower()
+    for label, needles in _FAILURE_CLASSES:
+        if any(n in r for n in needles):
+            return label
+    return "other"
+
+
+def extract_failure_digest(failed: list[dict]) -> dict:
+    """Structured digest of failed builds (AutoData lesson: structure the
+    trajectories BEFORE reasoning over them — outcome codes alone hide
+    systematic patterns like 'the builder keeps targeting blocklisted paths').
+    Pure function; items are {id, reason, intent, attempt, log_tail}."""
+    by_class: dict[str, int] = {}
+    path_counts: dict[str, int] = {}
+    error_lines: list[str] = []
+    seen_errors: set[str] = set()
+    self_loop = 0
+    from pipeline.automod.patterns import _SELF_LOOP_RE
+    for item in failed:
+        reason = str(item.get("reason") or "")
+        cls = classify_failure(reason)
+        by_class[cls] = by_class.get(cls, 0) + 1
+        blob = f"{item.get('intent') or ''} {reason}"
+        for path in _PATH_RE.findall(blob):
+            path_counts[path] = path_counts.get(path, 0) + 1
+        if _SELF_LOOP_RE.search(str(item.get("intent") or "")[:240]):
+            self_loop += 1
+        for line in str(item.get("log_tail") or "").splitlines():
+            line = line.strip()
+            if _ERROR_LINE_RE.search(line) and line[:60] not in seen_errors:
+                seen_errors.add(line[:60])
+                error_lines.append(line[:200])
+    repeated_paths = sorted(
+        ((p, c) for p, c in path_counts.items() if c >= 2),
+        key=lambda pc: -pc[1],
+    )
+    return {
+        "n_failed": len(failed),
+        "by_class": by_class,
+        "repeated_target_paths": [{"path": p, "count": c} for p, c in repeated_paths[:6]],
+        "self_loop_targets": self_loop,
+        "sample_error_lines": error_lines[:5],
+    }
+
+
+def gather_failure_digest(limit: int = 15) -> dict | None:
+    """IO wrapper: newest `limit` failed artifacts + their build-log tails →
+    extract_failure_digest. Best-effort; None when nothing failed."""
+    from pipeline.automod._state import artifact_log_path
+    items: list[dict] = []
+    try:
+        paths = sorted(_automod_home().glob("automod-*.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    for p in paths:
+        if p.name.endswith(".review.json") or len(items) >= limit:
+            continue
+        try:
+            art = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if art.get("status") != "failed":
+            continue
+        tail = ""
+        try:
+            log = artifact_log_path(str(art.get("id") or p.stem))
+            if log.exists():
+                tail = log.read_text(encoding="utf-8", errors="replace")[-4000:]
+        except OSError:
+            pass
+        items.append({"id": art.get("id"), "reason": art.get("rejection_reason"),
+                      "intent": art.get("intent"), "attempt": art.get("attempt", 1),
+                      "log_tail": tail})
+    return extract_failure_digest(items) if items else None
+
+
 def gather_evidence() -> dict:
     """Collect the self-reflection evidence bundle from existing signals."""
     evidence: dict = {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
@@ -66,6 +156,15 @@ def gather_evidence() -> dict:
             failed.append({"id": a.get("id"), "reason": a.get("rejection_reason"),
                            "intent": str(a.get("intent", ""))[:160]})
     evidence["recent_failed_builds"] = failed[-8:]
+
+    # Structured failure digest over the same artifacts + their build logs —
+    # gives the model failure CLASSES and repeated targets, not just codes.
+    try:
+        digest = gather_failure_digest()
+        if digest:
+            evidence["failure_digest"] = digest
+    except Exception as e:  # noqa: BLE001
+        logger.debug("introspection: failure digest failed: %s", e)
 
     # Recurring corrections / confab signals from telemetry (best-effort).
     try:
@@ -203,45 +302,24 @@ def read_self_assessment() -> dict | None:
         return None
 
 
-def _norm(s: str) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", "", (s or "").lower())).strip()
-
-
 def enqueue_improvements(result: dict, *, max_items: int = 3) -> int:
     """Queue the assessment's improvements as automod intents (the closed loop:
-    self-assessment → queued proposals). Deduped against the live queue so a
-    daily run doesn't pile up the same item. Returns how many were queued."""
-    from pipeline.automod import criteria
+    self-assessment → queued proposals). Admission is the shared
+    patterns.queue_admission gate: exact + PARAPHRASE dedup against the live
+    queue and recent artifacts (LLM re-phrasings of an already-attempted goal
+    were the June duplicate storm), and the self-loop filter (goals targeting
+    the blocklisted automod pipeline route to needs-human.jsonl — the
+    assessment's favourite unbuildable suggestion). Returns how many queued."""
+    from pipeline.automod import criteria, patterns
     improvements = result.get("improvements") or []
     if not improvements:
         return 0
     qp = queue_path()
-    existing: set[str] = set()
-    # Dedup against the live queue AND already-built proposals (pending OR
-    # failed). Without the artifact check, a drained or FAILED improvement gets
-    # re-queued every assessment — the assessment resurrects already-attempted
-    # goals faster than the serial build loop can drain them, so the queue never
-    # empties (the "queue won't drop" root cause). The retry mechanism already
-    # gives each goal MAX_RETRY_ATTEMPTS; the assessment must not re-add it.
-    if qp.exists():
-        for line in qp.read_text(encoding="utf-8").splitlines():
-            try:
-                existing.add(_norm(str(json.loads(line).get("intent", "")).split("\n")[0]))
-            except json.JSONDecodeError:
-                continue
-    for af in _automod_home().glob("*.json"):
-        if af.name.endswith(".review.json"):
-            continue
-        try:
-            built = json.loads(af.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        existing.add(_norm(str(built.get("intent", "")).split("\n")[0]))
     qp.parent.mkdir(parents=True, exist_ok=True)
     queued = 0
     for im in improvements[:max_items]:
         title = str(im.get("title", "")).strip()
-        if not title or _norm(title) in existing:
+        if not title:
             continue
         rationale = str(im.get("rationale", "")).strip() or "From JARVIS self-assessment."
         axis = str(im.get("target_axis", "") or "general")
@@ -254,9 +332,13 @@ def enqueue_improvements(result: dict, *, max_items: int = 3) -> int:
             "root_cause": f"improve_{axis}",
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         })
+        admit, reason = patterns.queue_admission(rec)
+        if not admit:
+            logger.info("[introspection] improvement rejected (%s): %s",
+                        reason, title[:80])
+            continue
         with qp.open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        existing.add(_norm(title))
         queued += 1
     if queued:
         logger.info("[introspection] queued %d improvement(s) from self-assessment", queued)

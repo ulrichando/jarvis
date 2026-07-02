@@ -28,18 +28,20 @@ import time
 from pathlib import Path
 
 from pipeline.automod import criteria
-from pipeline.automod._state import queue_path, _automod_home
+from pipeline.automod._state import (
+    _automod_home,
+    is_blocked_path,
+    needs_human_path,
+    queue_path,
+)
 
 logger = logging.getLogger("jarvis.automod.patterns")
 
 THRESHOLD = 3
 CONFAB_WINDOW_DAYS = 7
 
-# Failure-driven retry: a failed build is re-queued with the failure lesson and
-# a directive to try a DIFFERENT, narrower approach. Retries are open-ended by
-# default; the 5/day evolution budget is the hard brake, so P0-P3 work keeps
-# coming back across days until it produces a functional, reviewable proposal.
-MAX_RETRY_ATTEMPTS = None
+# Failure-driven retry: a failed build is re-queued once (marked `retried`) with
+# the failure lesson threaded in; the per-goal attempt cap is cycle.MAX_RETRY_ATTEMPTS.
 RETRY_RECENCY_DAYS = 7
 
 # Light root-cause scaffold: collapse near-duplicate correction phrases onto a
@@ -90,14 +92,147 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _emit(record: dict) -> None:
+# ── Queue admission (AutoData lessons, 2026-07-02) ──────────────────────
+# Two rejection classes BEFORE an intent reaches the build queue:
+#   self-loop targets — goals aimed at the automod pipeline itself are
+#     unbuildable (HARD_BLOCKLIST) yet each burned a real build before failing
+#     at the plan/diff gates on 2026-06-25; they belong to a human, so they go
+#     to needs-human.jsonl instead of the queue.
+#   near-duplicates — exact-text dedup missed LLM paraphrases (five
+#     "circuit-breaker for the automod agent" variants each got a full build);
+#     token-set Jaccard on the normalized first line catches those, compared
+#     within the same intent kind so distinct errors never collide on their
+#     shared boilerplate.
+SIMILARITY_THRESHOLD = 0.6
+# ponytail: token-set Jaccard @0.6 on first lines; upgrade to embedding
+# similarity only if paraphrase dupes recur past it.
+
+# Kinds whose goal text is LLM-phrased and prone to paraphrase spam. `error`
+# intents are excluded on purpose — they share boilerplate but are already
+# deduped upstream by recurring_errors.signature.
+_DEDUP_KINDS = {"self_improvement", "correction", "fitness", "confab"}
+
+# `automod(?!-\d)` skips artifact-id mentions ("build automod-2026-06-25-c74ed6
+# attempted this") — citing a prior build is not targeting the loop.
+_SELF_LOOP_RE = re.compile(
+    r"\b(automod(?!-\d)|auto-mod(?!-\d)|self-?evolution\s+(?:loop|pipeline|agent|orchestrator)|"
+    r"evolution\s+(?:loop|pipeline|agent|orchestrator))\b",
+    re.IGNORECASE,
+)
+
+
+def _norm_tokens(text: str, *, chars: int = 200) -> frozenset[str]:
+    head = (text or "").strip().splitlines()[0][:chars] if (text or "").strip() else ""
+    # Punctuation splits tokens ("sentence-boundary" → two words); removing it
+    # instead would merge them and undercount overlap.
+    return frozenset(re.sub(r"[^a-z0-9]+", " ", head.lower()).split())
+
+
+def _similar(a: frozenset[str], b: frozenset[str]) -> bool:
+    if not a or not b:
+        return False
+    return len(a & b) / len(a | b) >= SIMILARITY_THRESHOLD
+
+
+def _is_retry(record: dict) -> bool:
+    head = str(record.get("intent", "")).strip()[:8].upper()
+    return bool(record.get("lineage")) or int(record.get("attempt", 1) or 1) > 1 \
+        or head.startswith("RETRY")
+
+
+def _corpus(kind: str | None) -> tuple[set[str], list[frozenset[str]]]:
+    """(exact normalized texts of queued intents, first-line token sets of
+    queued intents + recent artifacts matching `kind` or kindless)."""
+    exact: set[str] = set()
+    heads: list[frozenset[str]] = []
+    qp = queue_path()
+    if qp.exists():
+        try:
+            for ln in qp.read_text(encoding="utf-8").splitlines():
+                try:
+                    rec = json.loads(ln)
+                except json.JSONDecodeError:
+                    continue
+                text = str(rec.get("intent", ""))
+                exact.add(re.sub(r"\s+", " ", text).strip().lower())
+                if not kind or rec.get("kind") in (kind, None, ""):
+                    heads.append(_norm_tokens(text))
+        except OSError:
+            pass
+    cutoff = time.time() - RETRY_RECENCY_DAYS * 86400
+    try:
+        for p in _automod_home().glob("automod-*.json"):
+            if p.name.endswith(".review.json"):
+                continue
+            try:
+                if p.stat().st_mtime < cutoff:
+                    continue
+                art = json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not kind or art.get("kind") in (kind, None, ""):
+                heads.append(_norm_tokens(str(art.get("intent", ""))))
+    except OSError:
+        pass
+    return exact, heads
+
+
+def _reject_to_needs_human(record: dict, reason: str) -> None:
+    try:
+        nh = needs_human_path()
+        nh.parent.mkdir(parents=True, exist_ok=True)
+        with nh.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({**record, "rejected_reason": reason},
+                               ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    try:
+        from pipeline.automod import artifact
+        artifact.audit("automod_intent_needs_human", id=record.get("id"),
+                       reason=reason)
+    except Exception:  # noqa: BLE001 — audit must never break admission
+        pass
+
+
+def queue_admission(record: dict) -> tuple[bool, str]:
+    """(admit, reason) for an intent headed to the build queue. Retries are
+    exempt from dedup (bounded upstream by cycle.MAX_RETRY_ATTEMPTS + the
+    `retried` marker) and from the self-loop check (a retried goal built once,
+    so its paths were legal)."""
+    text = str(record.get("intent", "")).strip()
+    if not text:
+        return False, "empty-intent"
+    if _is_retry(record):
+        return True, ""
+    hint = record.get("proposed_paths_hint") or []
+    if _SELF_LOOP_RE.search(text[:240]) or any(is_blocked_path(str(p)) for p in hint):
+        _reject_to_needs_human(record, "self-loop-target")
+        return False, "self-loop-target"
+    kind = record.get("kind")
+    exact, heads = _corpus(kind if kind in _DEDUP_KINDS else "\x00never")
+    if re.sub(r"\s+", " ", text).lower() in exact:
+        return False, "exact-duplicate"
+    if kind in _DEDUP_KINDS:
+        mine = _norm_tokens(text)
+        if any(_similar(mine, h) for h in heads):
+            return False, "near-duplicate"
+    return True, ""
+
+
+def _emit(record: dict) -> bool:
     record = criteria.enrich_record(record)
+    admit, reason = queue_admission(record)
+    if not admit:
+        logger.info("[automod] intent rejected (%s): %s", reason,
+                    str(record.get("intent", ""))[:80])
+        return False
     _ensure_queue_dir()
     line = json.dumps(record, ensure_ascii=False)
     with queue_path().open("a", encoding="utf-8") as f:
         f.write(line + "\n")
     logger.info("[automod] pattern detected: kind=%s id=%s",
                 record["kind"], record["id"])
+    return True
 
 
 def _next_id(kind: str) -> str:
@@ -136,7 +271,7 @@ def _scan_corrections(conn: sqlite3.Connection) -> int:
                 (signal, first_seen, last_seen, count),
             )
         rec_id = _next_id("correction")
-        _emit({
+        ok = _emit({
             "id": rec_id,
             "kind": "correction",
             "intent": f"Investigate the recurring correction: {signal!r}. "
@@ -149,11 +284,14 @@ def _scan_corrections(conn: sqlite3.Connection) -> int:
                          "first_seen": first_seen, "last_seen": last_seen},
             "created_at": _now_iso(),
         })
+        # Stamp even on an admission reject — a duplicate must not re-emit
+        # on every scan.
         conn.execute(
             "UPDATE recurring_corrections SET proposed_at=? WHERE signal=?",
             (_now_iso(), signal),
         )
-        emitted += 1
+        if ok:
+            emitted += 1
     conn.commit()
     return emitted
 
@@ -186,7 +324,7 @@ def _scan_confabs(conn: sqlite3.Connection) -> int:
     if existing and existing[0]:
         return 0
     rec_id = _next_id("confab")
-    _emit({
+    ok = _emit({
         "id": rec_id,
         "kind": "confab",
         "intent": "Investigate recurring confabulation failures. "
@@ -213,7 +351,7 @@ def _scan_confabs(conn: sqlite3.Connection) -> int:
             (signal, last_seen, last_seen, count, _now_iso()),
         )
     conn.commit()
-    return 1
+    return 1 if ok else 0
 
 
 def _iso_offset(seconds_delta: int) -> str:
@@ -295,7 +433,7 @@ def _scan_errors(conn: sqlite3.Connection) -> int:
             f"it cannot be prevented. Do NOT add a broad except: that "
             f"hides the underlying bug."
         )
-        _emit({
+        ok = _emit({
             "id": rec_id,
             "kind": "error",
             "intent": intent_body,
@@ -318,7 +456,8 @@ def _scan_errors(conn: sqlite3.Connection) -> int:
             )
         except sqlite3.Error as e:
             logger.warning("[automod] proposed_at update failed: %s", e)
-        emitted += 1
+        if ok:
+            emitted += 1
     conn.commit()
     return emitted
 
@@ -342,7 +481,24 @@ def _scan_fitness(conn: sqlite3.Connection) -> int:
     if not hit:
         return 0
     axis, evidence = hit
-    built = fitness_feedback.build_intent(axis, evidence)
+    # AutoData attribution lesson: for the latency axis, split the slow turns
+    # into fallback-involved ("stopped timing out" work) vs first-try slow
+    # ("faster path" work) so the proposal targets the dominant class.
+    attribution = None
+    if axis == "latency":
+        try:
+            cutoff = _iso_offset(-14 * 86400)
+            rows = conn.execute(
+                "SELECT ttfw_ms, route_fallback, llm_used FROM turns "
+                "WHERE ts_utc >= ? AND ttfw_ms IS NOT NULL AND ttfw_ms > ?",
+                (cutoff, fitness_feedback.SLOW_TTFW_MS),
+            ).fetchall()
+            attribution = fitness_feedback.latency_attribution(rows)
+        except sqlite3.Error:
+            attribution = None
+        if attribution:
+            evidence = {**evidence, "latency_attribution": attribution}
+    built = fitness_feedback.build_intent(axis, evidence, attribution=attribution)
     if not built:
         return 0
     signal = f"__fitness_axis_{axis}__"
@@ -353,7 +509,7 @@ def _scan_fitness(conn: sqlite3.Connection) -> int:
     if existing and existing[0]:
         return 0
     rec_id = _next_id("fitness")
-    _emit({
+    ok = _emit({
         "id": rec_id,
         "kind": "fitness",
         "intent": built["intent"],
@@ -376,7 +532,7 @@ def _scan_fitness(conn: sqlite3.Connection) -> int:
             (signal, now, now, evidence["n_below"], now),
         )
     conn.commit()
-    return 1
+    return 1 if ok else 0
 
 
 def _retry_hint(reason: str) -> str:
@@ -397,11 +553,34 @@ def _retry_hint(reason: str) -> str:
     return "Take a fundamentally different, narrower approach than the previous attempt."
 
 
+def _gate_feedback(art: dict) -> str:
+    """Structured feedback from the gates + review council for the retry brief.
+    AutoData lesson: thread the judge's actual findings into the next attempt
+    (their `suggestion_for_challenger`), not just a canned hint class."""
+    parts: list[str] = []
+    stress = art.get("stress")
+    if isinstance(stress, dict) and stress.get("verdict") == "fail":
+        parts.append(f"stress gate: {str(stress.get('summary', ''))[:200]}")
+    try:
+        rev = json.loads(
+            (_automod_home() / f"{art.get('id')}.review.json").read_text(encoding="utf-8"))
+        for lens, v in sorted((rev.get("lenses") or {}).items()):
+            if isinstance(v, dict) and v.get("verdict") in ("block", "concern"):
+                for finding in (v.get("findings") or [])[:2]:
+                    parts.append(f"{lens} reviewer: {str(finding)[:200]}")
+    except (OSError, json.JSONDecodeError):
+        pass
+    if not parts:
+        return ""
+    return ("\n\nGATE FEEDBACK — address each point in the new approach:\n"
+            + "\n".join(f"- {p}" for p in parts[:5]))
+
+
 def build_retry_intent(art: dict) -> dict | None:
     """Build a learn-and-retry intent from a failed artifact, with the failure
-    lesson + a directive to try a DIFFERENT, narrower approach. Returns None if
-    the artifact is ineligible (not failed / fixture).
-    Shared by the nightly scanner and the immediate build cycle."""
+    lesson + the gate/council findings + a directive to try a DIFFERENT,
+    narrower approach. Returns None if the artifact is ineligible (not failed /
+    fixture). Shared by the nightly scanner and the immediate build cycle."""
     if art.get("status") != "failed":
         return None
     ident = str(art.get("lineage") or art.get("id") or "")
@@ -419,6 +598,7 @@ def build_retry_intent(art: dict) -> dict | None:
         "PREVIOUS FAILURES — do NOT repeat these approaches:\n"
         + "\n".join(f"- {x}" for x in prior)
         + f"\n\n{_retry_hint(reason)}"
+        + _gate_feedback(art)
     )
     return {
         "id": _next_id("retry"),
@@ -463,13 +643,16 @@ def _scan_failed_retries() -> int:
         intent = build_retry_intent(art)
         if not intent:
             continue
-        _emit(intent)
+        ok = _emit(intent)
+        # Mark retried even on an admission reject, so a rejected retry isn't
+        # re-attempted every scan.
         try:
             art["retried"] = True
             p.write_text(json.dumps(art, indent=2, ensure_ascii=False), encoding="utf-8")
         except OSError:
             pass
-        emitted += 1
+        if ok:
+            emitted += 1
     return emitted
 
 
