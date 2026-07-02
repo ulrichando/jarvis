@@ -5956,6 +5956,28 @@ async function run(): Promise<CommanderCommand> {
       await authStatus(opts);
     });
 
+  // jarvis keys — provider API keys, synced FROM the JARVIS server (server =
+  // source of truth; ~/.jarvis/keys.env = the local cache every launcher, the
+  // tray, and the voice agent read). Needs `jarvis auth login` first.
+  const keysCmd = program
+    .command("keys")
+    .description("Manage provider API keys (synced from your JARVIS server)")
+    .configureHelp(createSortedHelpConfig());
+  keysCmd
+    .command("pull")
+    .description(
+      "Fetch provider keys from the server into ~/.jarvis/keys.env (restart services to apply)",
+    )
+    .option(
+      "--url <url>",
+      "JARVIS server URL (default: $JARVIS_BRIDGE_BASE_URL or saved value)",
+    )
+    .action(async ({ url }: { url?: string }) => {
+      const { jarvisKeysPull } = await import("./cli/handlers/jarvisKeys.js");
+      await jarvisKeysPull({ url });
+      process.exit(0);
+    });
+
   program
     .command("uninstall")
     .description(
