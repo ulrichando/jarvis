@@ -129,9 +129,11 @@ export function JarvisInChromeSection() {
             </div>
             <p className="mt-1 text-[13px] leading-5 text-muted-foreground">{statusText}</p>
             <p className="mt-1.5 text-[12.5px] leading-5 text-muted-foreground/80">
-              Jarvis acts on web pages through a browser extension that connects to the local
-              bridge. The extension isn&apos;t published yet — the preferences below are saved now
-              and take effect the moment it connects.
+              Jarvis acts on web pages through the <span className="font-mono">jarvis-screen</span>{" "}
+              extension. It isn&apos;t on the Chrome Web Store — load it unpacked from{" "}
+              <span className="font-mono">src/extensions/jarvis-screen</span> (see its README), then
+              paste the bridge token in the extension&apos;s side panel. Your preferences below apply
+              once it connects.
             </p>
           </div>
         </div>
