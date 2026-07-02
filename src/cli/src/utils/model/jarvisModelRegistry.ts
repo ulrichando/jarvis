@@ -1,6 +1,5 @@
 export type JarvisProviderName =
   | 'deepseek'
-  | 'groq'
   | 'gemini'
   | 'openai'
   | 'ollama'
@@ -81,19 +80,6 @@ const JARVIS_PROVIDER_DEFINITIONS: Record<
     // + visible output + tool args. Bumped from 32K on 2026-05-27 after
     // doc verification.
     maxOutputTokens: 65536,
-  },
-  groq: {
-    baseUrl: 'https://api.groq.com/openai/v1',
-    apiKeyEnvVar: 'GROQ_API_KEY',
-    defaultModel: 'qwen/qwen3-32b',
-    supportsToolChoice: true,
-    maxTools: 20,
-    // 32K covers the majority of Groq-hosted models per console.groq.com/docs/models
-    // (qwen3-32b=40K, llama-3.3-70b=32K, llama-3.1-8b=131K, gpt-oss-120b=64K).
-    // llama-4-scout (8K model-side cap) uses a per-model override below
-    // so its requests don't carry a too-high max_tokens that Groq would
-    // 400 on. Bumped from 8K on 2026-05-27.
-    maxOutputTokens: 32768,
   },
   gemini: {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
@@ -215,7 +201,6 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     upstreamModel: 'deepseek-v4-flash',
     tiers: ['fast', 'balanced'],
     capabilities: [],
-    fallback: ['qwen/qwen3-32b'],
     visibleInPicker: true,
   },
   {
@@ -224,71 +209,10 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     description: 'V4 · Strongest reasoning',
     provider: 'deepseek',
     upstreamModel: 'deepseek-v4-pro',
-    tiers: ['reasoning', 'long_context'],
+    tiers: ['default', 'reasoning', 'long_context', 'orchestration'],
     capabilities: ['effort', 'thinking'],
     visibleInPicker: true,
-    fallback: ['deepseek-v4-flash', 'qwen/qwen3-32b'],
-  },
-  {
-    // The newer qwen3.6-27b is BLOCKED at this Groq org (403
-    // model_permission_blocked_org, verified live 2026-06-23) — enable it at
-    // console.groq.com/settings/limits, then bump upstreamModel to
-    // 'qwen/qwen3.6-27b'. Until then, stay on the working qwen3-32b.
-    id: 'qwen/qwen3-32b',
-    label: 'Groq Qwen3 32B',
-    description: 'Primary · Best for everyday tasks',
-    provider: 'groq',
-    upstreamModel: 'qwen/qwen3-32b',
-    tiers: ['default', 'balanced', 'orchestration'],
-    capabilities: [],
-    visibleInPicker: true,
     fallback: ['deepseek-v4-flash'],
-  },
-  {
-    id: 'llama-3.3-70b-versatile',
-    label: 'Groq Llama 3.3 70B',
-    description: 'Chat & reasoning · limited tool use',
-    provider: 'groq',
-    upstreamModel: 'llama-3.3-70b-versatile',
-    tiers: ['reasoning'],
-    capabilities: [],
-    visibleInPicker: true,
-  },
-  {
-    id: 'meta-llama/llama-4-scout-17b-16e-instruct',
-    label: 'Groq Llama 4 Scout',
-    description: 'Fast · Llama 4 lightweight',
-    provider: 'groq',
-    upstreamModel: 'meta-llama/llama-4-scout-17b-16e-instruct',
-    tiers: ['fast'],
-    capabilities: [],
-    // Scout's model-side cap is 8192 per Groq docs (lower than the rest
-    // of the Groq family). Pin here so requests don't carry max_tokens
-    // > 8K (which Groq would 400 on).
-    maxOutputTokens: 8192,
-    visibleInPicker: true,
-  },
-  {
-    // Arbiter / gating model — tiny, fast, cheap. Not exposed in /model
-    // picker since it's a utility target, not meant for main chat.
-    id: 'llama-3.1-8b-instant',
-    label: 'Groq Llama 3.1 8B Instant',
-    description: 'Small · Fast · Gating / classification',
-    provider: 'groq',
-    upstreamModel: 'llama-3.1-8b-instant',
-    tiers: ['fast'],
-    capabilities: [],
-    visibleInPicker: false,
-  },
-  {
-    id: 'openai/gpt-oss-120b',
-    label: 'Groq GPT-OSS 120B',
-    description: 'Open-source GPT · strong reasoning',
-    provider: 'groq',
-    upstreamModel: 'openai/gpt-oss-120b',
-    tiers: ['reasoning'],
-    capabilities: ['effort', 'max_effort'],
-    visibleInPicker: true,
   },
   // Gemini upstream ids re-verified live 2026-06-23 against the OpenAI-compat
   // endpoint the proxy actually uses. Flash → gemini-3.5-flash (stable,
@@ -553,7 +477,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     tiers: ['default', 'balanced', 'reasoning', 'long_context', 'orchestration'],
     capabilities: ['adaptive_thinking', 'effort', 'max_effort'],
     visibleInPicker: true,
-    fallback: ['deepseek-v4-pro', 'qwen/qwen3-32b'],
+    fallback: ['deepseek-v4-pro'],
   },
   {
     id: 'claude-haiku-4-5',

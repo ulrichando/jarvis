@@ -38,11 +38,6 @@ const PROVIDERS: Array<{
     help: "AIza… — Google AI Studio",
   },
   {
-    id: "groq",
-    docs: "https://console.groq.com/keys",
-    help: "gsk_… — Groq console (free tier)",
-  },
-  {
     id: "deepseek",
     docs: "https://platform.deepseek.com/api_keys",
     help: "sk-… — DeepSeek platform",

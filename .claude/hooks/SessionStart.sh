@@ -8,8 +8,17 @@ set -u
 echo "## JARVIS state at session start"
 echo
 
-vstatus=$(systemctl --user is-active jarvis-voice-agent.service 2>/dev/null || echo "unknown")
-bstatus=$(systemctl --user is-active jarvis-bridge.service 2>/dev/null || echo "unknown")
+# is-active prints the state AND exits non-zero when not active, so
+# `|| echo unknown` would emit a second line. Capture, then default.
+vstatus=$(systemctl --user is-active jarvis-voice-agent.service 2>/dev/null) || true
+[[ -n "$vstatus" ]] || vstatus="unknown"
+# The bridge has no systemd unit by design — start-desktop.sh launches it
+# and it dies with the desktop. Probe the process, not a unit.
+if pgrep -f 'bridge/server.ts' >/dev/null 2>&1; then
+    bstatus="running (desktop-launched process; no systemd unit by design)"
+else
+    bstatus="not running (starts with the desktop)"
+fi
 echo "- voice-agent: $vstatus"
 echo "- bridge:      $bstatus"
 

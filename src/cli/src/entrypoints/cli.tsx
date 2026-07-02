@@ -1,3 +1,8 @@
+// FIRST import: self-configure ANTHROPIC_BASE_URL/auth from keys.env for the
+// compiled binary (which never runs run-cli.mjs's launcher mapping), before any
+// module reads them. Idempotent no-op under the source-run launcher. See
+// proxy/bootstrapEnv.ts.
+import '../proxy/bootstrapEnv.js';
 import { feature } from 'bun:bundle';
 
 // Bridge-spawned children run WITHOUT the launcher's `--define MACRO.*` args:
@@ -10,7 +15,7 @@ import { feature } from 'bun:bundle';
 // inlined at parse time, and `globalThis.MACRO` is not a define target.
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 (globalThis as unknown as { MACRO?: Record<string, unknown> }).MACRO ??= {
-  VERSION: '2.1.107',
+  VERSION: '2.1.108',
   BUILD_TIME: '',
   PACKAGE_URL: '@anthropic-ai/claude-code',
   NATIVE_PACKAGE_URL: '@anthropic-ai/claude-code-native',

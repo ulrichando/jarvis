@@ -580,15 +580,16 @@ LLMFn = Callable[["TurnSnapshot"], Awaitable[str]]
 
 
 async def _call_review_llm(snapshot: TurnSnapshot) -> str:
-    """Call llama-3.1-8b-instant via Groq with the review prompt.
+    """Call deepseek-chat via DeepSeek with the review prompt (repointed from
+    Groq llama-3.1-8b-instant 2026-06-29 in the full-Groq-eradication pass).
     Isolated so tests monkeypatch it without an API key. Degrades to an
     empty-proposal payload on missing key / timeout / non-2xx — identical
     failure handling to memory_extractor / memory_consolidator."""
     import httpx
 
-    api_key = os.environ.get("GROQ_API_KEY")
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
-        logger.debug("[skill_review] GROQ_API_KEY missing — skipping review")
+        logger.debug("[skill_review] DEEPSEEK_API_KEY missing — skipping review")
         return '{"proposals": []}'
 
     def _clip(s: str, n: int) -> str:
@@ -604,10 +605,10 @@ async def _call_review_llm(snapshot: TurnSnapshot) -> str:
     async with httpx.AsyncClient(timeout=8.0) as client:
         try:
             resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
+                "https://api.deepseek.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
                 json={
-                    "model": "llama-3.1-8b-instant",
+                    "model": "deepseek-chat",
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 700,
                     "temperature": 0.0,

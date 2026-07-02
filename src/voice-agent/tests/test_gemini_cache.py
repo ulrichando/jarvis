@@ -393,10 +393,12 @@ def test_dispatcher_with_gemini_route_uses_cache(monkeypatch):
 def test_dispatcher_without_google_key_degrades(monkeypatch):
     """When `JARVIS_REASONING_MODEL=gemini-2.5-flash` is set but
     GOOGLE_API_KEY is MISSING, the dispatcher must still boot, and
-    the REASONING route must fall back to its Groq legacy primary
-    (qwen3-32b). NO Gemini construction is attempted in this path."""
+    the REASONING route must fall back to the shared DeepSeek instance
+    (the Groq legacy rung it used was removed 2026-06-29). NO Gemini
+    construction is attempted in this path."""
     _wipe_route_env(monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.setenv("JARVIS_REASONING_MODEL", "gemini-2.5-flash")
 
@@ -410,7 +412,7 @@ def test_dispatcher_without_google_key_degrades(monkeypatch):
     # gate short-circuits before we reach `from providers.gemini_llm`.
     assert len(instances) == 0
 
-    # REASONING falls back to the route's Groq legacy.
+    # REASONING falls back to the shared DeepSeek instance.
     from livekit.agents.llm import FallbackAdapter
     reasoning = d.pick("REASONING")
     if isinstance(reasoning, FallbackAdapter):
@@ -422,19 +424,21 @@ def test_dispatcher_without_google_key_degrades(monkeypatch):
         label = getattr(rungs[0], "_jarvis_label", "") if rungs else ""
     else:
         label = getattr(reasoning, "_jarvis_label", "")
-    assert label == "groq:qwen/qwen3-32b", (
-        f"REASONING degraded fallback expected groq:qwen/qwen3-32b, got {label!r}"
+    assert label.startswith("deepseek:"), (
+        f"REASONING degraded fallback expected deepseek, got {label!r}"
     )
 
 
 def test_dispatcher_with_gemini_plugin_missing_degrades(monkeypatch):
     """When `GOOGLE_API_KEY` is set but the Gemini wrapper can't import
     (missing `livekit-plugins-google`), the dispatcher catches the
-    ImportError and falls back to Groq legacy. The plugin now ships in
+    ImportError and falls back to the shared DeepSeek instance (the Groq
+    legacy rung it used was removed 2026-06-29). The plugin now ships in
     requirements, so simulate the failure: `None` in sys.modules makes
     `import providers.gemini_llm` raise ImportError deterministically."""
     _wipe_route_env(monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
     monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
     monkeypatch.setenv("JARVIS_REASONING_MODEL", "gemini-2.5-flash")
     monkeypatch.setitem(sys.modules, "providers.gemini_llm", None)
@@ -454,9 +458,9 @@ def test_dispatcher_with_gemini_plugin_missing_degrades(monkeypatch):
         label = getattr(rungs[0], "_jarvis_label", "") if rungs else ""
     else:
         label = getattr(reasoning, "_jarvis_label", "")
-    # The Gemini route degraded to Groq qwen3-32b, but everything else
-    # still built — dispatcher is functional, no Gemini-pin crash.
-    assert label == "groq:qwen/qwen3-32b"
+    # The Gemini route degraded to DeepSeek, but everything else still
+    # built — dispatcher is functional, no Gemini-pin crash.
+    assert label.startswith("deepseek:")
 
 
 def test_speech_models_gemini_entries_present():

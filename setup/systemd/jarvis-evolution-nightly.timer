@@ -2,11 +2,14 @@
 Description=JARVIS self-evolution - periodic AUTO cycle trigger
 
 [Timer]
-# Historical unit name, new cadence: check throughout the day. Manual mode skips
-# immediately; Auto mode runs the bounded proposal cycle. User-activity and
-# deploy-in-flight guards still skip unsafe moments.
-OnBootSec=5min
-OnUnitActiveSec=30min
+# Every 4 hours (00/04/08/12/16/20). The governance gate (idle + cost budget +
+# cooldown + a worthwhile queued intent) decides whether each tick actually
+# builds — most ticks no-op cheaply. Was OnUnitActiveSec=30min, which drove the
+# token burn the 2026-06-27 governance redesign fixed.
+OnBootSec=10min
+OnCalendar=*-*-* 00,04,08,12,16,20:00:00
+Persistent=false
+RandomizedDelaySec=300s
 AccuracySec=2min
 Unit=jarvis-evolution-nightly.service
 

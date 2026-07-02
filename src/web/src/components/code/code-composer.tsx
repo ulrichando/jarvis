@@ -125,7 +125,6 @@ const MODEL_PROVIDER_ORDER: Provider[] = [
   "anthropic",
   "deepseek",
   "google",
-  "groq",
   "kimi",
   "openai",
 ];

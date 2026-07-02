@@ -24,8 +24,6 @@ export function providerEnvKey(provider: Provider): string | undefined {
       );
     case "deepseek":
       return process.env.DEEPSEEK_API_KEY;
-    case "groq":
-      return process.env.GROQ_API_KEY;
     case "kimi":
       return process.env.KIMI_API_KEY;
     case "ollama":

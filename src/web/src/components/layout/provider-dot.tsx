@@ -7,7 +7,6 @@ const COLORS: Record<Provider, string> = {
   google: "bg-sky-400",
   deepseek: "bg-indigo-400",
   kimi: "bg-fuchsia-400",
-  groq: "bg-amber-400",
   ollama: "bg-teal-400",
 };
 

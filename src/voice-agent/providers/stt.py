@@ -1,53 +1,30 @@
-"""STT chain — Deepgram Nova-3 (streaming) primary, Groq Whisper backup.
+"""STT chain — Deepgram Nova-3 (streaming) primary, local faster-whisper backup.
 
 Why a chain (added 2026-05-18 per docs/superpowers/specs/2026-05-18-
 barge-in-interrupt-fix-design.md):
 
-  Groq Whisper Large v3 Turbo is non-streaming — it delivers transcripts
-  only AFTER the user stops talking. That broke STT-confirmed barge-in
-  entirely: by the time the framework knew the user had spoken, the
-  utterance was complete and the framework treated it as the next turn
-  instead of an interruption. Deepgram Nova-3 streams partials every
-  ~150 ms over a WebSocket, so barge-in detection has a real-time
-  signal to act on AND the user's turn boundaries are detected as
-  speech is happening, not retroactively.
+  Deepgram Nova-3 streams partial transcripts every ~150 ms over a
+  WebSocket, so barge-in detection has a real-time signal to act on AND
+  the user's turn boundaries are detected as speech happens, not
+  retroactively. A non-streaming STT (finals-only) breaks STT-confirmed
+  barge-in — by the time the framework sees the utterance it's already
+  the next turn — so streaming is the primary.
 
-  Groq Whisper stays in the chain as the failover — if Deepgram's WS
-  drops, runs out of credit, or errors, the FallbackAdapter cascades
-  to Whisper and the conversation continues (slower barge-in, but
-  alive). If `DEEPGRAM_API_KEY` is unset entirely — or `JARVIS_DEEPGRAM_DISABLED`
-  is set to deliberately stop spending Deepgram credit — the chain degrades
-  gracefully to Groq Whisper Large v3 Turbo as the primary STT (the
-  pre-2026-05-18 behaviour; barge-in stays alive via the VAD-direct path).
-
-Breaker behaviour on the STT path:
-  * `_recognize_impl` is the only override — it routes the upstream
-    call through the breaker so the open-circuit short-cut bypasses
-    the underlying socket timeout (~30 s) and fails fast (~ms) into
-    FallbackAdapter's next STT.
-  * `CircuitOpenError` → `APIConnectionError`,
-    `asyncio.TimeoutError` → `APITimeoutError`. Same conversion the
-    other breakered provider classes use so livekit-agents' retry
-    ladder handles every breaker uniformly.
-
-Hoisted out of `jarvis_agent.py` 2026-05-10 (Step 5a of the 10/10
-refactor). The class + factory are re-exported under their legacy
-underscored names in jarvis_agent so the ~24 in-file references and
-the existing test suite are untouched.
+  Local faster-whisper is the offline failover: if Deepgram's WS drops,
+  runs out of credit, or errors, the FallbackAdapter cascades to the
+  on-device model and the conversation continues (slower barge-in via
+  the VAD-direct path, but alive). JARVIS_STT_LOCAL_ONLY=1 strips every
+  cloud rung so STT is 100% on-device. (The Groq Whisper rung was
+  removed 2026-06-29 in the full-Groq-eradication pass.)
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 
-from livekit.agents import APIConnectionError, APITimeoutError
 from livekit.agents.stt import FallbackAdapter
-from livekit.plugins import groq
 
 from providers.faster_whisper_stt import build_local_stt
-from resilience import STT_BREAKER
-from resilience.circuit_breaker import CircuitOpenError
 
 
 logger = logging.getLogger("jarvis.stt")
@@ -98,63 +75,8 @@ def _stt_language():
 
 
 __all__ = [
-    "BreakeredGroqSTT",
-    "build_breakered_stt",
     "build_stt_chain",
 ]
-
-
-class BreakeredGroqSTT(groq.STT):
-    """groq.STT wrapped by `STT_BREAKER`. On `CircuitOpenError`, raises
-    `APIConnectionError` so FallbackAdapter (if any STT fallback is
-    configured) takes over without waiting the full upstream timeout."""
-
-    async def _recognize_impl(self, *args, **kw):
-        try:
-            return await STT_BREAKER.call(super()._recognize_impl, *args, **kw)
-        except CircuitOpenError as e:
-            raise APIConnectionError() from e
-        except asyncio.TimeoutError:
-            # Breaker's own 8 s timeout fired (separate from the
-            # underlying STT's timeout). Surface as `APITimeoutError`
-            # so livekit-agents' retry / fallback path handles it
-            # uniformly with other timeout sources.
-            raise APITimeoutError() from None
-
-    async def _call_with_breaker_for_test(self):
-        """Test seam — instance method so the test exercises
-        `build_breakered_stt()` construction, catching factory regressions
-        (wrong model string, broken constructor signature) at test time
-        rather than at production startup. The body itself only probes
-        the breaker-open path; production calls go through
-        `_recognize_impl`."""
-        async def _no_op():
-            return None
-        try:
-            return await STT_BREAKER.call(_no_op)
-        except CircuitOpenError as e:
-            raise APIConnectionError() from e
-        except asyncio.TimeoutError:
-            raise APITimeoutError() from None
-
-
-def build_breakered_stt() -> BreakeredGroqSTT:
-    """Constructor used by the JarvisAgent wiring at session.start().
-
-    When _stt_language() is None (auto-detect default), we pass
-    detect_language=True instead of language=None — Groq's OpenAI-
-    compatible wrapper calls LanguageCode(language) unconditionally
-    and LanguageCode(None) raises AttributeError. detect_language=True
-    internally sets language="" (empty string), which LanguageCode
-    accepts and which tells Whisper to auto-detect.
-
-    When _stt_language() is "en" (kill-switch), we pin language="en"
-    with detect_language=False (Groq default) for pre-spec behaviour.
-    """
-    lang = _stt_language()
-    if lang is None:
-        return BreakeredGroqSTT(model="whisper-large-v3-turbo", detect_language=True)
-    return BreakeredGroqSTT(model="whisper-large-v3-turbo", language=lang)
 
 
 # Deepgram Nova-3 keyterm prompting — boosts recognition of specific
@@ -192,8 +114,8 @@ def _stt_keyterms() -> list[str]:
 def _build_deepgram_stt():
     """Build a Deepgram Nova-3 streaming STT. Returns None if Deepgram is
     disabled via JARVIS_DEEPGRAM_DISABLED, if no API key is set, or if the
-    import fails (so the caller can fall through to Groq Whisper alone —
-    graceful degradation).
+    import fails (so the caller can fall through to local faster-whisper
+    alone — graceful degradation).
 
     Configuration tuned for barge-in responsiveness:
       - model="nova-3-general" — latest model as of 2026-05-18.
@@ -209,7 +131,7 @@ def _build_deepgram_stt():
         "Jarvis" (+ operator vocab) so accent mishears resolve at STT.
     """
     # Kill-switch: skip Deepgram even when a key is present, so the chain
-    # falls through to Groq Whisper Large v3 Turbo as the primary STT. Set
+    # falls through to local faster-whisper as the primary STT. Set
     # JARVIS_DEEPGRAM_DISABLED=1 to stop spending Deepgram credit while keeping
     # the key in .env for later. Default off → unchanged behaviour. Barge-in is
     # unaffected (VAD-direct since 2026-05-18); only the now-dormant
@@ -222,13 +144,13 @@ def _build_deepgram_stt():
     ):
         logger.info(
             "[stt] JARVIS_DEEPGRAM_DISABLED set — skipping Deepgram; "
-            "Groq Whisper Large v3 Turbo is the primary STT."
+            "local faster-whisper is the primary STT."
         )
         return None
     api_key = os.environ.get("DEEPGRAM_API_KEY")
     if not api_key:
         logger.info(
-            "[stt] DEEPGRAM_API_KEY not set — falling back to Groq Whisper "
+            "[stt] DEEPGRAM_API_KEY not set — falling back to local faster-whisper "
             "only (slower barge-in; final transcripts only). Set "
             "DEEPGRAM_API_KEY in src/voice-agent/.env to enable streaming STT."
         )
@@ -236,12 +158,12 @@ def _build_deepgram_stt():
     if _DeepgramSTT is None:
         logger.warning(
             "[stt] livekit-plugins-deepgram not installed; "
-            "falling back to Groq Whisper only. "
+            "falling back to local faster-whisper only. "
             "Run: pip install livekit-plugins-deepgram"
         )
         return None
-    # Deepgram STREAMING does NOT support language auto-detection (unlike Groq
-    # Whisper): a None/auto language raises "language detection is not supported
+    # Deepgram STREAMING does NOT support language auto-detection (unlike
+    # faster-whisper): a None/auto language raises "language detection is not supported
     # in streaming mode" in SpeechStream.__init__, which kills every session
     # (stt_error, recoverable=False). _stt_language() returns None for the
     # auto-detect default, so pin a concrete language for Deepgram — default
@@ -267,35 +189,35 @@ def _build_deepgram_stt():
     except Exception as e:
         logger.warning(
             f"[stt] Deepgram STT construction failed ({type(e).__name__}: {e}); "
-            f"falling back to Groq Whisper only."
+            f"falling back to local faster-whisper only."
         )
         return None
 
 
 def build_stt_chain(vad=None):
-    """Build the production STT chain — Deepgram primary, Groq Whisper
-    failover. Falls through to Whisper-only when Deepgram is unavailable
-    (no API key, plugin missing, construction error).
+    """Build the production STT chain — Deepgram primary, local
+    faster-whisper failover. Falls through to local-only when Deepgram is
+    unavailable (no API key, plugin missing, construction error).
 
     Returns a `FallbackAdapter` when multi-provider, a single STT when
-    only Whisper is available. Both shapes are accepted by AgentSession's
+    only one rung is available. Both shapes are accepted by AgentSession's
     `stt=` parameter.
 
     `vad` is the prewarmed Silero VAD instance (from
     `proc.userdata["vad"]`). The FallbackAdapter uses it to auto-wrap
-    the non-streaming Groq Whisper with `stt.StreamAdapter` so the
+    the non-streaming faster-whisper with `stt.StreamAdapter` so the
     chain treats both providers uniformly. Required when Deepgram is
-    in the chain; ignored when returning Whisper alone.
+    in the chain; ignored when returning a single rung.
     """
     deepgram_stt = _build_deepgram_stt()
-    whisper_stt = build_breakered_stt()
     # Offline last rung: local faster-whisper. None unless
     # JARVIS_LOCAL_STT_ENABLED=1, so this is a no-op by default.
     local_stt = build_local_stt()
 
-    # Ordered rungs: Deepgram (primary, streaming) → Groq Whisper Turbo →
-    # local faster-whisper (offline last resort). Drop any unavailable.
-    rungs = [s for s in (deepgram_stt, whisper_stt, local_stt) if s is not None]
+    # Ordered rungs: Deepgram (primary, streaming) → local faster-whisper
+    # (offline last resort). Drop any unavailable. (The Groq Whisper rung
+    # was removed 2026-06-29 in the full-Groq-eradication pass.)
+    rungs = [s for s in (deepgram_stt, local_stt) if s is not None]
     # Local-first override: JARVIS_LOCAL_STT_PRIMARY=1 promotes the local
     # faster-whisper rung to PRIMARY so the voice path runs on-device, with the
     # cloud STTs demoted to fallback (FallbackAdapter only cascades on failure,
@@ -314,14 +236,21 @@ def build_stt_chain(vad=None):
     if os.environ.get("JARVIS_STT_LOCAL_ONLY", "0") == "1" and local_stt is not None:
         rungs = [local_stt]
         logger.info("[stt] JARVIS_STT_LOCAL_ONLY=1 — cloud STT fallback removed; on-device faster-whisper only")
-    if not rungs:  # whisper is always built — defensive
-        return whisper_stt
+    if not rungs:
+        # No STT available at all — neither Deepgram (key/plugin) nor the
+        # on-device faster-whisper rung built. Fatal config error now that
+        # the Groq Whisper universal fallback is gone: surface it loudly
+        # rather than returning a non-STT.
+        raise RuntimeError(
+            "build_stt_chain: no STT available — set DEEPGRAM_API_KEY or "
+            "JARVIS_LOCAL_STT_ENABLED=1"
+        )
     if len(rungs) == 1:
         # Single rung: return bare. AgentSession wraps a non-streaming STT
         # with its own StreamAdapter + VAD, so no vad is needed here.
         return rungs[0]
     # Multi-rung FallbackAdapter needs the prewarmed Silero VAD to wrap the
-    # non-streaming members (Groq Whisper, faster-whisper) as streaming.
+    # non-streaming faster-whisper rung as streaming.
     if vad is None:
         logger.warning(
             "[stt] build_stt_chain called without vad — can't wrap non-streaming "

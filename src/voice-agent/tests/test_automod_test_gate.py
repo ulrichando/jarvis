@@ -182,3 +182,72 @@ def test_env_overrides_max_files(monkeypatch):
     ]
     ok, reason = validate_diff("\n".join(parts))
     assert not ok
+
+
+# --- path-extraction bypass hardening (2026-06-27) ---------------------------
+
+def test_rejects_rename_into_blocked_path():
+    """A rename whose DESTINATION is a blocked path must be rejected — the gate
+    must inspect both the a/ (source) and b/ (destination) sides."""
+    from pipeline.automod.test_gate import validate_diff
+    diff = (
+        "diff --git a/src/voice-agent/foo.py b/src/voice-agent/sanitizers/x.py\n"
+        "rename from src/voice-agent/foo.py\n"
+        "rename to src/voice-agent/sanitizers/x.py\n"
+    )
+    ok, reason = validate_diff(diff)
+    assert not ok
+    assert "block" in reason.lower()
+
+
+def test_rejects_quoted_blocked_path_in_mixed_diff():
+    """A git-quoted path (spaces/special chars) into a blocked dir must not be
+    invisible to the gate, even alongside a clean file."""
+    from pipeline.automod.test_gate import validate_diff
+    diff = (
+        "diff --git a/src/voice-agent/clean.py b/src/voice-agent/clean.py\n"
+        "--- a/x\n+++ b/x\n@@\n+x\n"
+        'diff --git "a/src/voice-agent/sanitizers/ev il.py" "b/src/voice-agent/sanitizers/ev il.py"\n'
+        "--- a/x\n+++ b/x\n@@\n+p\n"
+    )
+    ok, reason = validate_diff(diff)
+    assert not ok
+
+
+def test_rejects_dotdot_traversal_path():
+    """`..` traversal that escapes the allowed prefix back into a blocked dir."""
+    from pipeline.automod.test_gate import validate_diff
+    diff = (
+        "diff --git a/src/voice-agent/../sanitizers/dsml.py "
+        "b/src/voice-agent/../sanitizers/dsml.py\n"
+        "--- a/x\n+++ b/x\n@@\n+x\n"
+    )
+    ok, reason = validate_diff(diff)
+    assert not ok
+
+
+def test_unparseable_header_fails_closed():
+    """A `diff --git` header that can't be parsed into a path pair must REJECT,
+    never be silently skipped."""
+    from pipeline.automod.test_gate import validate_diff
+    diff = "diff --git a/onlyone\n--- a/x\n+++ b/x\n@@\n+y\n"
+    ok, reason = validate_diff(diff)
+    assert not ok
+    assert reason == "unparseable_diff_header"
+
+
+def test_files_changed_uses_destination_for_rename():
+    """files_changed reports the destination (b/) path for a rename."""
+    from pipeline.automod.test_gate import files_changed
+    diff = (
+        "diff --git a/src/voice-agent/foo.py b/src/voice-agent/sanitizers/x.py\n"
+        "rename from src/voice-agent/foo.py\n"
+        "rename to src/voice-agent/sanitizers/x.py\n"
+    )
+    assert files_changed(diff) == ["src/voice-agent/sanitizers/x.py"]
+
+
+def test_is_blocked_path_normalizes_traversal():
+    from pipeline.automod._state import is_blocked_path
+    assert is_blocked_path("src/voice-agent/../sanitizers/dsml.py") is True
+    assert is_blocked_path("src/voice-agent/ok.py") is False

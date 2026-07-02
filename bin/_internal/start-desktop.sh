@@ -42,6 +42,14 @@ if [ -f "$HOME/.jarvis/keys.env" ]; then
   source "$HOME/.jarvis/keys.env"
   set +a
 fi
+# Machine-local desktop overrides (gitignored). e.g. JARVIS_WEB_URL=https://0wlan.com
+# so the tray's "Open in Browser" opens the deployed web app instead of probing
+# localhost. `set -a` exports them to the desktop binary launched below.
+if [ -f "$HOME/.jarvis/desktop.env" ]; then
+  set -a
+  source "$HOME/.jarvis/desktop.env"
+  set +a
+fi
 
 case "${1:-}" in
   deepseek|groq|openai|gemini|ollama)

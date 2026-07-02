@@ -63,6 +63,34 @@ BRANCH="automod/$ID"
     fi
   fi
 
+  # Layer-1 blocklist is DERIVED from pipeline.automod._state.HARD_BLOCKLIST_PATHS
+  # (the same tuple finalize/merge enforce) so this prompt can never drift from
+  # the enforced truth. Fallback keeps it blocklist-safe if the import ever fails;
+  # tests/test_automod_impl_blocklist_synced.py guards that the fallback is complete.
+  # `|| true` so a missing venv degrades to the fallback instead of aborting (set -e).
+  BLOCKLIST_LINES="$(PYTHONPATH="$TOOLING_ROOT/src/voice-agent" \
+    "$TOOLING_ROOT/src/voice-agent/.venv/bin/python" -c \
+    'from pipeline.automod._state import HARD_BLOCKLIST_PATHS as B; print("\n".join("   - "+p for p in B))' \
+    2>/dev/null || true)"
+  if [ -z "$BLOCKLIST_LINES" ]; then
+    BLOCKLIST_LINES="   - src/voice-agent/desktop-tauri/
+   - src/voice-agent/sanitizers/
+   - src/voice-agent/confab_detector.py
+   - src/voice-agent/pipeline/automod/
+   - src/voice-agent/evolution/
+   - src/voice-agent/pipeline/skill_review.py
+   - src/voice-agent/prompts/soul.md
+   - CLAUDE.md
+   - .claude/rules/regression-prevention.md
+   - MEMORY.md
+   - USER.md
+   - bin/jarvis-automod-impl
+   - bin/jarvis-automod
+   - bin/jarvis-evolution-watchdog
+   - bin/jarvis-evolution-nightly
+   - bin/jarvis-evolution-ondemand"
+  fi
+
   PROMPT="You are JARVIS auto-mod. A targeted code change has been
 requested:
 
@@ -72,15 +100,7 @@ ${RESEARCH_SECTION}HARD RULES (violating ANY means the spawner will reject your 
 
 1. Edit ONLY files under src/voice-agent/.
 2. Do NOT touch ANY of these paths:
-   - src/voice-agent/sanitizers/
-   - src/voice-agent/confab_detector.py
-   - src/voice-agent/pipeline/automod/
-   - src/voice-agent/pipeline/skill_review.py
-   - src/voice-agent/prompts/soul.md
-   - CLAUDE.md
-   - .claude/rules/regression-prevention.md
-   - MEMORY.md
-   - USER.md
+${BLOCKLIST_LINES}
 3. Do NOT delete tests or weaken assertions. You MAY add tests.
 4. Do NOT add @pytest.mark.skip / @pytest.mark.skipif / @pytest.mark.xfail.
 5. Before committing, run the test suite via the HERMETIC runner below (this
@@ -121,7 +141,17 @@ committing."
   # 25 min for the coding agent itself; the spawner's SPAWN_TIMEOUT_S (30 min)
   # is the outer bound, leaving ~5 min for finalize (diff-gate + test re-run +
   # commit check) to run after. 10 min was too short → no_commit_landed.
-  timeout "${JARVIS_AUTOMOD_BUILD_TIMEOUT_S:-1500}" "$TOOLING_ROOT/bin/jarvis" -p "$PROMPT" || true
+  # Per-build hard spend cap = the day's REMAINING budget (the cost brake): one
+  # runaway build can't blow the whole day. Capture the agent's JSON result (it
+  # carries total_cost_usd) to a sidecar, then record it to the daily ledger
+  # regardless of pass/fail — a failed build still spent tokens.
+  _PYBIN="$TOOLING_ROOT/src/voice-agent/.venv/bin/python"
+  _RESULT="$JARVIS_HOME_DIR/auto-mods/$ID.result.json"
+  _REMAIN="$("$_PYBIN" -c "import sys; sys.path.insert(0, '$TOOLING_ROOT/src/voice-agent'); from pipeline.automod import cost_ledger; print('%.2f' % max(0.5, cost_ledger.daily_usd() - cost_ledger.spent_today()))" 2>/dev/null || echo 6)"
+  echo "[$(date -u +%FT%TZ)] [automod-impl] per-build budget cap=\$$_REMAIN (daily remaining)"
+  timeout "${JARVIS_AUTOMOD_BUILD_TIMEOUT_S:-1500}" "$TOOLING_ROOT/bin/jarvis" -p "$PROMPT" \
+      --output-format json --max-budget-usd "$_REMAIN" > "$_RESULT" 2>>"$LOG" || true
+  "$_PYBIN" -c "import sys; sys.path.insert(0, '$TOOLING_ROOT/src/voice-agent'); from pipeline.automod import cost_ledger; print('[automod-impl] build cost \$%.4f recorded' % cost_ledger.record_from_result('$ID', '$_RESULT'))" 2>>"$LOG" || true
 
   "$TOOLING_ROOT/src/voice-agent/.venv/bin/python" \
     "$REPO_ROOT/src/voice-agent/pipeline/automod/finalize.py" \

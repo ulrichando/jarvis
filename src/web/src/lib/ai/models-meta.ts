@@ -9,7 +9,6 @@ export type Provider =
   | "google"
   | "deepseek"
   | "kimi"
-  | "groq"
   | "ollama";
 
 export type ModelMeta = {
@@ -35,14 +34,13 @@ export type ModelMeta = {
 // text-only model (otherwise the model just replies "I don't see a picture"
 // and the user has no idea why). Errs toward "no" so we warn rather than
 // silently fail: the big multimodal providers (Anthropic/OpenAI/Google) are
-// trusted; Kimi/Groq are pattern-gated; DeepSeek/Ollama assumed text-only.
+// trusted; Kimi is pattern-gated; DeepSeek/Ollama assumed text-only.
 export function modelSupportsVision(id: string): boolean {
   const lid = id.toLowerCase();
   const provider = MODELS_META[id]?.provider;
   if (provider === "anthropic" || provider === "openai" || provider === "google")
     return true;
   if (provider === "kimi") return lid.includes("vision");
-  if (provider === "groq") return /scout|maverick|vision|llama-4/.test(lid);
   return false; // deepseek, ollama, unknown → assume text-only
 }
 
@@ -52,7 +50,6 @@ export const PROVIDER_LABEL: Record<Provider, string> = {
   google: "Google",
   deepseek: "DeepSeek",
   kimi: "Kimi",
-  groq: "Groq",
   ollama: "Local (Ollama)",
 };
 
@@ -222,48 +219,6 @@ export const MODELS_META: Record<string, ModelMeta> = {
     contextWindow: 128_000,
   },
 
-  "llama-3.3-70b": {
-    id: "llama-3.3-70b",
-    label: "Llama 3.3 70B (Groq)",
-    description: "Fast Llama on Groq. Free tier.",
-    provider: "groq",
-    contextWindow: 128_000,
-  },
-  "gpt-oss-120b": {
-    id: "gpt-oss-120b",
-    label: "GPT-OSS 120B (Groq)",
-    description: "Largest Groq model. Used as the JARVIS voice LLM.",
-    provider: "groq",
-    contextWindow: 128_000,
-  },
-  "qwen3-32b": {
-    id: "qwen3-32b",
-    label: "Qwen 3 32B (Groq)",
-    description: "Mid-tier reasoning on Groq.",
-    provider: "groq",
-    contextWindow: 128_000,
-  },
-  "qwen3.6-27b": {
-    id: "qwen3.6-27b",
-    label: "Qwen 3.6 27B (Groq)",
-    description: "Newer Qwen on Groq. Fast, strong tool calling.",
-    provider: "groq",
-    contextWindow: 128_000,
-  },
-  "llama-4-scout-17b": {
-    id: "llama-4-scout-17b",
-    label: "Llama 4 Scout 17B (Groq)",
-    description: "Small multimodal MoE. Vision-capable.",
-    provider: "groq",
-    contextWindow: 128_000,
-  },
-  "llama-3.1-8b-instant": {
-    id: "llama-3.1-8b-instant",
-    label: "Llama 3.1 8B Instant (Groq)",
-    description: "Smallest, fastest. Limited tool reasoning.",
-    provider: "groq",
-    contextWindow: 128_000,
-  },
   // Local (Ollama) — on-device, no API key. Served from the local ollama
   // daemon at :11434. qwen3-30b-a3b is the CPU sweet spot (MoE, ~3B active);
   // gpt-oss-120b is heavier + slower on CPU.
@@ -284,10 +239,10 @@ export const MODELS_META: Record<string, ModelMeta> = {
 };
 
 export type ModelId = keyof typeof MODELS_META;
-// Default = Llama 3.3 70B on Groq. Real, free, works without
-// requiring keys you may not have. Was claude-sonnet-4-6 which
-// errored on every fresh session because there's no Anthropic key.
-export const DEFAULT_MODEL: ModelId = "llama-3.3-70b";
+// Default = DeepSeek chat. Set 2026-06-29 (full-Groq-eradication pass);
+// was llama-3.3-70b on Groq — a model Groq discontinued AND a provider
+// we removed. DeepSeek is cheap, reliable, and the box's de-facto primary.
+export const DEFAULT_MODEL: ModelId = "deepseek-chat";
 
 export function modelsByProvider(): Array<{
   provider: Provider;
@@ -298,7 +253,6 @@ export function modelsByProvider(): Array<{
     "anthropic",
     "openai",
     "google",
-    "groq",
     "deepseek",
     "kimi",
     "ollama",

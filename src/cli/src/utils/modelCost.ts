@@ -120,48 +120,8 @@ const COST_DEEPSEEK_V4_PRO = {
   webSearchRequests: 0,
 } as const satisfies ModelCosts
 
-const COST_GROQ_LLAMA_33_70B = {
-  inputTokens: 0.59,
-  outputTokens: 0.79,
-  promptCacheWriteTokens: 0.59,
-  promptCacheReadTokens: 0.59,
-  webSearchRequests: 0,
-} as const satisfies ModelCosts
-
-const COST_GROQ_LLAMA_31_8B_INSTANT = {
-  inputTokens: 0.05,
-  outputTokens: 0.08,
-  promptCacheWriteTokens: 0.05,
-  promptCacheReadTokens: 0.05,
-  webSearchRequests: 0,
-} as const satisfies ModelCosts
-
-const COST_GROQ_QWEN3_32B = {
-  inputTokens: 0.29,
-  outputTokens: 0.59,
-  promptCacheWriteTokens: 0.29,
-  promptCacheReadTokens: 0.29,
-  webSearchRequests: 0,
-} as const satisfies ModelCosts
-
-const COST_GROQ_GPT_OSS_120B = {
-  inputTokens: 0.15,
-  outputTokens: 0.60,
-  promptCacheWriteTokens: 0.15,
-  promptCacheReadTokens: 0.15,
-  webSearchRequests: 0,
-} as const satisfies ModelCosts
-
-const COST_GROQ_LLAMA_4_SCOUT = {
-  inputTokens: 0.11,
-  outputTokens: 0.34,
-  promptCacheWriteTokens: 0.11,
-  promptCacheReadTokens: 0.11,
-  webSearchRequests: 0,
-} as const satisfies ModelCosts
-
 // Literal-keyed lookup. Consulted BEFORE the canonical-name table in
-// getModelCosts(). DeepSeek and Groq models aren't in Anthropic's
+// getModelCosts(). DeepSeek models aren't in Anthropic's
 // first-party canonical namespace, so getCanonicalName() can't reach
 // them — but the proxy returns the upstream model id verbatim in the
 // response (server.ts → convert.ts), which we match here.
@@ -174,11 +134,6 @@ const JARVIS_MODEL_COSTS: Record<string, ModelCosts> = {
   'deepseek-reasoner':                          COST_DEEPSEEK_V4_FLASH,
   'deepseek-v4-flash':                          COST_DEEPSEEK_V4_FLASH,
   'deepseek-v4-pro':                            COST_DEEPSEEK_V4_PRO,
-  'llama-3.3-70b-versatile':                    COST_GROQ_LLAMA_33_70B,
-  'llama-3.1-8b-instant':                       COST_GROQ_LLAMA_31_8B_INSTANT,
-  'qwen/qwen3-32b':                             COST_GROQ_QWEN3_32B,
-  'openai/gpt-oss-120b':                        COST_GROQ_GPT_OSS_120B,
-  'meta-llama/llama-4-scout-17b-16e-instruct':  COST_GROQ_LLAMA_4_SCOUT,
 }
 
 /**
@@ -234,7 +189,7 @@ function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
 }
 
 export function getModelCosts(model: string, usage: Usage): ModelCosts {
-  // JARVIS proxy-routed models (DeepSeek, Groq) live outside Anthropic's
+  // JARVIS proxy-routed models (DeepSeek) live outside Anthropic's
   // canonical namespace, so getCanonicalName() returns nothing useful
   // for them. Match by literal model id first — that's what the proxy
   // returns verbatim in the response.

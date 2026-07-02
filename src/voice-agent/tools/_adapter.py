@@ -233,6 +233,13 @@ def load_all_livekit_tools(tools_dir=None) -> List[RawFunctionTool]:
         if entry.check_fn is not None and not registry.is_available(entry.name):
             logger.warning("Skipping tool %s — check_fn returned False (unavailable)", entry.name)
             continue
+        # Conversation-mode tool allowlist (on top of check_fn availability).
+        # When the active mode restricts tools, skip any not in its allowlist
+        # (CORE_TOOLS always pass). No active restriction → no-op.
+        from pipeline.conversation_modes import tool_is_mode_allowed
+        if not tool_is_mode_allowed(entry.name):
+            logger.info("Skipping tool %s — not in the active conversation mode's allowlist", entry.name)
+            continue
         try:
             tools.append(to_livekit_tool(entry))
         except Exception as exc:  # noqa: BLE001 — one bad tool must not break the surface

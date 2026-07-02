@@ -7,7 +7,6 @@ beforeAll(() => {
   // Provide non-Gemini keys so the rest of the registry doesn't throw
   // on import. Gemini suite below mutates GEMINI/GOOGLE specifically.
   process.env.DEEPSEEK_API_KEY = 'test-deepseek'
-  process.env.GROQ_API_KEY = 'test-groq'
   process.env.OPENAI_API_KEY = 'test-openai'
   process.env.KIMI_API_KEY = 'test-kimi'
   process.env.ANTHROPIC_API_KEY = 'test-anthropic'
@@ -310,31 +309,9 @@ describe('Qwen <think> tag strip — streaming (Fix 7b)', () => {
   })
 })
 
-describe('gpt-oss-120b reasoning-budget floor (Fix 4)', () => {
-  // Groq's openai/gpt-oss-120b is a hidden-reasoning model — it burns
-  // input tokens on chain-of-thought that the proxy then strips via
-  // include_reasoning=false. With max_tokens=30 the response budget is
-  // gone before any visible text. Treat gpt-oss-* like requiresReasoning
-  // models: always get the provider.maxOutputTokens floor.
-
-  test('gpt-oss-120b: max_tokens is provider.maxOutputTokens regardless of client request', () => {
-    const p = getProviderForModel('openai/gpt-oss-120b')!
-    const out = convertRequest(
-      { messages: [{ role: 'user', content: 'hi' }], max_tokens: 30 },
-      p,
-    )
-    expect(out.max_tokens).toBe(p.maxOutputTokens)
-  })
-
-  test('non-reasoning groq model (qwen3-32b) respects client max_tokens', () => {
-    const p = getProviderForModel('qwen/qwen3-32b')!
-    const out = convertRequest(
-      { messages: [{ role: 'user', content: 'hi' }], max_tokens: 30 },
-      p,
-    )
-    expect(out.max_tokens).toBe(30)
-  })
-})
+// The "gpt-oss-120b reasoning-budget floor (Fix 4)" describe block was removed
+// 2026-06-29 (full-Groq-eradication pass) — both tests targeted the Groq
+// openai/gpt-oss-120b + qwen3-32b models, which no longer exist.
 
 // ── Fix 8: clampRequestForProvider — fallback re-shaping ─────────────────────
 //
@@ -354,8 +331,8 @@ describe('gpt-oss-120b reasoning-budget floor (Fix 4)', () => {
 
 describe('clampRequestForProvider — fallback re-shaping (Fix 8)', () => {
   // Scenario: deepseek-v4-pro primary (cap 65536, no maxTools limit) fails;
-  // fallback is qwen/qwen3-32b (groq, cap 32768, maxTools 20).
-  // The already-converted body has max_tokens=65536 + 25 tools.
+  // fallback is a kimi model (cap 32768, maxTools 16) — re-pointed from the
+  // removed Groq qwen3-32b 2026-06-29. Body has max_tokens=65536 + 25 tools.
 
   function makeFatOpenAIBody(maxTokens: number, toolCount: number) {
     const tools = Array.from({ length: toolCount }, (_, i) => ({
@@ -374,27 +351,27 @@ describe('clampRequestForProvider — fallback re-shaping (Fix 8)', () => {
   }
 
   test('clamps max_tokens to fallback provider cap', () => {
-    const groq = getProviderForModel('qwen/qwen3-32b')!
-    expect(groq.maxOutputTokens).toBe(32768)
+    const prov = getProviderForModel('kimi-k2.6-instant')!
+    expect(prov.maxOutputTokens).toBe(32768)
     const body = makeFatOpenAIBody(65536, 5)
-    const out = clampRequestForProvider({ ...body, model: groq.model }, groq)
-    expect(out.max_tokens).toBeLessThanOrEqual(groq.maxOutputTokens)
-    expect(out.max_tokens).toBe(groq.maxOutputTokens)
+    const out = clampRequestForProvider({ ...body, model: prov.model }, prov)
+    expect(out.max_tokens).toBeLessThanOrEqual(prov.maxOutputTokens)
+    expect(out.max_tokens).toBe(prov.maxOutputTokens)
   })
 
   test('truncates tools to fallback provider maxTools', () => {
-    const groq = getProviderForModel('qwen/qwen3-32b')!
-    expect(groq.maxTools).toBe(20)
+    const prov = getProviderForModel('kimi-k2.6-instant')!
+    expect(prov.maxTools).toBe(16)
     const body = makeFatOpenAIBody(65536, 25)
-    const out = clampRequestForProvider({ ...body, model: groq.model }, groq)
-    expect(out.tools.length).toBeLessThanOrEqual(groq.maxTools!)
-    expect(out.tools.length).toBe(groq.maxTools)
+    const out = clampRequestForProvider({ ...body, model: prov.model }, prov)
+    expect(out.tools.length).toBeLessThanOrEqual(prov.maxTools!)
+    expect(out.tools.length).toBe(prov.maxTools)
   })
 
   test('does not over-truncate tools when count is already within cap', () => {
-    const groq = getProviderForModel('qwen/qwen3-32b')!
+    const prov = getProviderForModel('kimi-k2.6-instant')!
     const body = makeFatOpenAIBody(65536, 10)
-    const out = clampRequestForProvider({ ...body, model: groq.model }, groq)
+    const out = clampRequestForProvider({ ...body, model: prov.model }, prov)
     expect(out.tools.length).toBe(10)
   })
 
@@ -409,14 +386,14 @@ describe('clampRequestForProvider — fallback re-shaping (Fix 8)', () => {
   })
 
   test('uses max_tokens (not max_completion_tokens) when fallback is a non-GPT-5 provider', () => {
-    const groq = getProviderForModel('qwen/qwen3-32b')!
+    const prov = getProviderForModel('kimi-k2.6-instant')!
     // Body was shaped for gpt-5 (max_completion_tokens field)
     const body = { ...makeFatOpenAIBody(65536, 3), max_completion_tokens: 65536 }
     delete (body as any).max_tokens
-    const out = clampRequestForProvider({ ...body, model: groq.model }, groq)
+    const out = clampRequestForProvider({ ...body, model: prov.model }, prov)
     expect(out.max_tokens).toBeDefined()
     expect(out.max_completion_tokens).toBeUndefined()
-    expect(out.max_tokens).toBeLessThanOrEqual(groq.maxOutputTokens)
+    expect(out.max_tokens).toBeLessThanOrEqual(prov.maxOutputTokens)
   })
 
   test('kimi fallback pins temperature to 1', () => {
@@ -427,9 +404,9 @@ describe('clampRequestForProvider — fallback re-shaping (Fix 8)', () => {
   })
 
   test('non-kimi non-gpt5 fallback keeps temperature', () => {
-    const groq = getProviderForModel('qwen/qwen3-32b')!
+    const prov = getProviderForModel('claude-haiku-4-5')!
     const body = { ...makeFatOpenAIBody(65536, 2), temperature: 0.7 }
-    const out = clampRequestForProvider({ ...body, model: groq.model }, groq)
+    const out = clampRequestForProvider({ ...body, model: prov.model }, prov)
     expect(out.temperature).toBe(0.7)
   })
 
@@ -455,10 +432,10 @@ describe('clampRequestForProvider — fallback re-shaping (Fix 8)', () => {
   // Idempotency: primary went through executeWithFallback → clampRequestForProvider;
   // running clamp again for the same provider must not change values.
   test('idempotent when applied twice with the same provider', () => {
-    const groq = getProviderForModel('qwen/qwen3-32b')!
+    const prov = getProviderForModel('kimi-k2.6-instant')!
     const body = makeFatOpenAIBody(65536, 25)
-    const once = clampRequestForProvider({ ...body, model: groq.model }, groq)
-    const twice = clampRequestForProvider({ ...once }, groq)
+    const once = clampRequestForProvider({ ...body, model: prov.model }, prov)
+    const twice = clampRequestForProvider({ ...once }, prov)
     expect(twice.max_tokens).toBe(once.max_tokens)
     expect(twice.tools.length).toBe(once.tools.length)
   })
@@ -468,24 +445,24 @@ describe('clampRequestForProvider — fallback re-shaping (Fix 8)', () => {
   // same provider. This confirms that executeWithFallback's clamp (applied to
   // the primary at index 0) produces the same result as convertRequest alone.
   test('convertRequest primary output equals clampRequestForProvider output for same provider', () => {
-    const groq = getProviderForModel('qwen/qwen3-32b')!
+    const prov = getProviderForModel('kimi-k2.6-instant')!
     const anthropicReq = {
       messages: [{ role: 'user', content: 'hi' }],
       max_tokens: 65536,
       temperature: 0.3,
       stream: false,
     }
-    const viaConvertRequest = convertRequest(anthropicReq, groq)
+    const viaConvertRequest = convertRequest(anthropicReq, prov)
     // Simulate what executeWithFallback passes to clampRequestForProvider:
-    // an already-converted body with the groq model already set.
+    // an already-converted body with the model already set.
     const rawBody = {
-      model: groq.model,
+      model: prov.model,
       messages: viaConvertRequest.messages,
       max_tokens: 65536,    // unclamped primary value
       temperature: 0.3,
       stream: false,
     }
-    const viaClamped = clampRequestForProvider(rawBody, groq)
+    const viaClamped = clampRequestForProvider(rawBody, prov)
     // Both must produce the same clamped max_tokens.
     expect(viaClamped.max_tokens).toBe(viaConvertRequest.max_tokens)
     expect(viaClamped.max_completion_tokens).toBe(viaConvertRequest.max_completion_tokens)

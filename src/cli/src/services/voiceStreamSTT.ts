@@ -46,7 +46,6 @@ const PCM_CHANNELS = 1
 const PCM_BITS_PER_SAMPLE = 16
 
 const PROVIDER_VOICE_MODELS = {
-  groq: 'whisper-large-v3-turbo',
   openai: 'gpt-4o-mini-transcribe',
 } as const
 
@@ -106,7 +105,7 @@ type VoiceStreamMessage =
   | VoiceStreamTranscriptError
   | { type: 'error'; message?: string }
 
-type ExternalVoiceProviderName = Extract<JarvisProviderName, 'groq' | 'openai'>
+type ExternalVoiceProviderName = Extract<JarvisProviderName, 'openai'>
 
 type VoiceBackend =
   | { kind: 'anthropic' }
@@ -127,7 +126,6 @@ function parseVoiceProviderName(
     case '':
       return null
     case 'anthropic':
-    case 'groq':
     case 'openai':
       return provider
     default:
@@ -188,12 +186,11 @@ function getVoiceBackend(): VoiceBackend | null {
   }
 
   if (isEnvTruthy(process.env.JARVIS_DISABLE_AUTH)) {
-    return getProviderVoiceBackend('groq') ?? getProviderVoiceBackend('openai')
+    return getProviderVoiceBackend('openai')
   }
 
   return (
     getAnthropicVoiceBackend() ??
-    getProviderVoiceBackend('groq') ??
     getProviderVoiceBackend('openai')
   )
 }
@@ -202,14 +199,12 @@ export function getVoiceUnavailableMessage(): string {
   const forcedProvider = parseVoiceProviderName(process.env.JARVIS_VOICE_PROVIDER)
 
   if (process.env.JARVIS_VOICE_PROVIDER && forcedProvider === null) {
-    return 'Voice mode requires a supported JARVIS_VOICE_PROVIDER (groq, openai, or anthropic).'
+    return 'Voice mode requires a supported JARVIS_VOICE_PROVIDER (openai or anthropic).'
   }
 
   switch (forcedProvider) {
     case 'anthropic':
       return 'Voice mode requires Anthropic auth when JARVIS_VOICE_PROVIDER=anthropic.'
-    case 'groq':
-      return 'Voice mode requires GROQ_API_KEY when JARVIS_VOICE_PROVIDER=groq.'
     case 'openai':
       return 'Voice mode requires OPENAI_API_KEY when JARVIS_VOICE_PROVIDER=openai.'
     default:
@@ -217,10 +212,10 @@ export function getVoiceUnavailableMessage(): string {
   }
 
   if (isEnvTruthy(process.env.JARVIS_DISABLE_AUTH)) {
-    return 'Voice mode requires GROQ_API_KEY or OPENAI_API_KEY.'
+    return 'Voice mode requires OPENAI_API_KEY.'
   }
 
-  return 'Voice mode requires Anthropic auth, GROQ_API_KEY, or OPENAI_API_KEY.'
+  return 'Voice mode requires Anthropic auth or OPENAI_API_KEY.'
 }
 
 function pcmChunksToWav(audioChunks: Buffer[]): Buffer {

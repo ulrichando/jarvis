@@ -1,0 +1,16 @@
+# Hub Gateway image (Dockerfile.hub) build context. node_modules is reinstalled
+# inside the image by `bun install`, and the proxy runs from source (src/), so
+# none of these are needed in the COPY — excluding them cuts the build context
+# from ~600MB to a few MB and speeds the VPS build.
+node_modules
+dist
+.git
+*.log
+*.tsbuildinfo
+.DS_Store
+# SECURITY: never bake local secrets into the image. .env.providers / .env.local
+# hold real provider keys and are NOT needed at runtime (the container gets its
+# env from compose's env_file). Matches src/web/.dockerignore.
+.env*
+*.pem
+.credentials.json

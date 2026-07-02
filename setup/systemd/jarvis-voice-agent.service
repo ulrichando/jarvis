@@ -79,6 +79,15 @@ Environment=JARVIS_SKILL_REVIEW_APPLY=1
 # Spec: docs/superpowers/specs/2026-05-24-jarvis-source-code-self-mod-design.md
 Environment=JARVIS_AUTOMOD_ENABLED=1
 Environment=JARVIS_AUTOMOD_SPAWN_LIVE=1
+# Evolution governance (2026-06-27 redesign,
+# docs/superpowers/specs/2026-06-27-evolution-governance-redesign-design.md):
+# the daily COST budget is the brake, not a build count. A build is admitted
+# only when idle (no voice turn in IDLE_MIN), under the daily USD budget, and
+# past the COOLDOWN since the last build. JARVIS_AUTOMOD_DAILY_CAP left UNSET so
+# the old count cap stays off (emergency backstop only).
+Environment=JARVIS_EVOLUTION_DAILY_USD=6
+Environment=JARVIS_EVOLUTION_IDLE_MIN=10
+Environment=JARVIS_EVOLUTION_COOLDOWN_MIN=60
 # `start` (not `dev`) — production mode, no file-watch, JSON logs.
 # Uses the venv's interpreter directly so we don't need `source
 # .venv/bin/activate` in the ExecStart.
@@ -86,6 +95,10 @@ ExecStart=%h/Documents/Projects/jarvis/src/voice-agent/.venv/bin/python %h/Docum
 # Auto-recover from crashes / Groq API hiccups / SFU restart.
 Restart=always
 RestartSec=5
+# Must outlast the worker's bounded drain (JARVIS_DRAIN_TIMEOUT_S, default
+# 20 s in jarvis_agent.py WorkerOptions) or systemd SIGKILLs a healthy
+# drain → spurious 'failed (timeout)' + OnFailure page (live 2026-07-01).
+TimeoutStopSec=45
 # The agents SDK emits JSON structured logs — append rather than
 # overwrite so we can scroll back across restarts during debugging.
 # Was /tmp/jarvis-voice-agent.log until 2026-05-07; switched because

@@ -1,0 +1,23 @@
+[Unit]
+Description=JARVIS — restore last-active conversation mode (Claude / Gemini / OpenAI)
+# Run after voice-client is up so the mute/unmute side-effects inside
+# jarvis-mode actually reach the HTTP API. voice-client is the gate;
+# voice-agent doesn't strictly need to be up because the direct modes
+# (gemini/openai) don't require it.
+After=jarvis-voice-client.service
+Wants=jarvis-voice-client.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+# 60s cap — voice-client HTTP server can take a while on cold boot
+# (PortAudio init + LiveKit room join + HTTP server bind). Falls
+# through either way — mute syncs later via the tray-poll path.
+TimeoutStartSec=60s
+ExecStart=%h/Documents/Projects/jarvis/bin/jarvis-mode-resume
+# Don't fail the unit if jarvis-mode-resume returns non-zero — we never
+# want this to block boot.
+SuccessExitStatus=0 1 2
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=JARVIS — auto-route voice to a Bluetooth headset (A2DP) when connected
+Documentation=file://%h/Documents/Projects/jarvis/bin/jarvis-bt-route-watch
+After=pipewire-pulse.service wireplumber.service
+Wants=pipewire-pulse.service
+
+[Service]
+Type=simple
+ExecStart=%h/Documents/Projects/jarvis/bin/jarvis-bt-route-watch watch
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

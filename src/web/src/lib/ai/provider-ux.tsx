@@ -9,7 +9,6 @@
 import type { ReactNode } from "react";
 import {
   Apple,
-  AudioLines,
   BookOpen,
   Brain,
   Camera,
@@ -167,16 +166,6 @@ function DeepSeekGreeting(_ctx: GreetingCtx) {
       <span className="text-4xl">🐳</span>
       <h1 className="text-2xl font-medium tracking-tight text-foreground md:text-3xl">
         Start chatting with <span className="text-primary">DeepSeek</span>
-      </h1>
-    </div>
-  );
-}
-
-function GroqGreeting(_ctx: GreetingCtx) {
-  return (
-    <div className="flex flex-col items-center">
-      <h1 className="font-mono text-2xl font-semibold uppercase tracking-[0.2em] text-foreground md:text-3xl">
-        At Groq speed
       </h1>
     </div>
   );
@@ -514,56 +503,12 @@ const DEEPSEEK_UX: ProviderUX = {
   // "DeepSeek V4 Pro" / "DeepSeek V3" etc., matching every other provider.
 };
 
-const GROQ_UX: ProviderUX = {
-  placeholder: "Ask — instantly",
-  renderGreeting: GroqGreeting,
-  chips: [
-    {
-      label: "Compound",
-      icon: AudioLines,
-      prompt: "Use Compound to ",
-      description: "Multi-step AI workflows",
-      tasks: [
-        "Use Compound to research and summarize…",
-        "Use Compound to analyze and report on…",
-        "Use Compound to plan and execute…",
-      ],
-    },
-    {
-      label: "Code",
-      icon: Code2,
-      prompt: "Write a function that ",
-      description: "Functions, scripts, debug",
-      tasks: [
-        "Write a function that…",
-        "Debug my code",
-        "Create a script to…",
-        "Explain this code",
-      ],
-    },
-    {
-      label: "Summarize",
-      icon: FileText,
-      prompt: "Summarize this: ",
-      description: "Condense any content",
-      tasks: [
-        "Summarize this article",
-        "Give me the key points of…",
-        "TL;DR this for me",
-        "Extract the action items from…",
-      ],
-    },
-  ],
-  plus: DEFAULT_UX.plus,
-};
-
 export const PROVIDER_UX: Record<Provider, ProviderUX> = {
   anthropic: DEFAULT_UX,
   openai: OPENAI_UX,
   google: GEMINI_UX,
   kimi: KIMI_UX,
   deepseek: DEEPSEEK_UX,
-  groq: GROQ_UX,
   ollama: DEFAULT_UX,
 };
 

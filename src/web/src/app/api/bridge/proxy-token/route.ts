@@ -62,6 +62,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({
       token,
       expiresAt: (nowS + TTL_SECONDS) * 1000,
+      // The public LLM-gateway base URL the CLI should point ANTHROPIC_BASE_URL
+      // at (the deployed proxy/server.ts, e.g. https://proxy.0wlan.com). `null`
+      // when unset → a remotely-installed CLI keeps its local-proxy default, so
+      // this is fully back-compatible with older web deployments.
+      gatewayUrl: process.env.JARVIS_GATEWAY_PUBLIC_URL?.trim() || null,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

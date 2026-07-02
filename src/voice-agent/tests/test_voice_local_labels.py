@@ -111,10 +111,12 @@ def test_stt_label_does_not_double_prefix(monkeypatch):
     assert active_stt_engine() == "whisper-large-v3-turbo (local)"
 
 
-def test_stt_label_groq_when_deepgram_disabled(monkeypatch):
+def test_stt_label_local_when_deepgram_disabled(monkeypatch):
+    # Groq Whisper was removed 2026-06-29; the no-Deepgram fallback label
+    # is now the on-device faster-whisper.
     _clear(monkeypatch, _STT_ENVS)
     monkeypatch.setenv("JARVIS_DEEPGRAM_DISABLED", "1")
-    assert active_stt_engine() == "groq:whisper-large-v3-turbo"
+    assert active_stt_engine() == "whisper-large-v3-turbo (local)"
 
 
 def test_stt_label_deepgram_when_key_present(monkeypatch):

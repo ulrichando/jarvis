@@ -1,20 +1,16 @@
 "use client";
 
 // Voice mode — the /chat live-conversation loop (#53).
-//   STT: we capture mic audio with the standard browser stack
-//        (getUserMedia + MediaRecorder) and transcribe each utterance
-//        server-side via /api/stt (Groq Whisper Large v3 Turbo). We do NOT use
-//        the Web Speech API: it leans on Google's speech servers that aren't
-//        bundled in Chromium builds, so it fails there with "not-allowed". The
-//        standard stack works on every Chromium/Firefox/Safari with no model
-//        assets to load — important because this is verified blind (no browser
-//        introspection on our side). End-of-utterance is detected with an
-//        energy-based endpointer (Web Audio AnalyserNode RMS) — the same
-//        technique neural-VAD libraries wrap; swap in Silero (@ricky0123/vad)
-//        later if ambient noise demands it.
-//   TTS: Orpheus via /api/tts (natural voice, like the voice agent), with a
-//        browser speechSynthesis fallback. The gray→white highlight rides the
-//        real audio.currentTime (exact) or a time estimate for the fallback.
+//   STT: REMOVED 2026-06-29 (full-Groq-eradication pass). Web speech-to-text
+//        was Groq-only (/api/stt → Groq Whisper); that route is gone and there
+//        is no non-Groq web STT, so voice INPUT is unavailable — `transcribe`
+//        warns once and feeds nothing. The mic-capture + energy-endpointer
+//        machinery below is kept intact (dormant) so wiring a replacement
+//        /api/stt back in is a small change, not a rebuild.
+//   TTS: Kokoro via /api/tts (local, natural voice — same engine the voice
+//        agent uses), with a browser speechSynthesis fallback. The gray→white
+//        highlight rides the real audio.currentTime (exact) or a time estimate
+//        for the fallback. (Was Groq Orpheus before 2026-06-29.)
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useVoiceRead } from "@/stores/voice-read";
@@ -64,6 +60,9 @@ export function useVoiceMode(opts: {
   const lastVoiceTsRef = useRef(0);
   const lastTickTsRef = useRef(0);
   const endpointingRef = useRef(false);
+  // Warn once (not per-utterance) when STT is unavailable — /api/stt was
+  // Groq-only and removed 2026-06-29, so it 404s.
+  const sttWarnedRef = useRef(false);
 
   // TTS machinery: read the reply aloud + drive the gray→white highlight.
   const intervalRef = useRef<number | null>(null);
@@ -92,8 +91,11 @@ export function useVoiceMode(opts: {
       return; // network hiccup — the next utterance will try again
     }
     if (!res.ok) {
-      if (res.status === 503) {
-        toast.error("Speech-to-text isn't configured on the server.");
+      // /api/stt was Groq-only and removed 2026-06-29 (full-Groq-eradication
+      // pass); it now 404s. Warn once so the mic toggle isn't a silent dead end.
+      if (!sttWarnedRef.current) {
+        sttWarnedRef.current = true;
+        toast.error("Voice input isn't available on the web (speech-to-text was removed).");
       }
       return;
     }

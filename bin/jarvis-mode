@@ -376,7 +376,24 @@ stop_all_direct() {
     set_jarvis_mute "false" || true
     echo "✓ back on JARVIS."
     write_mode_state "jarvis"
-    notify "Switched to JARVIS · Claude" "Whisper → Claude → Orpheus. Full tool registry, mic unmuted."
+    notify "Switched to $(jarvis_llm_name)" "Audio + vision + tools. Full tool registry, mic unmuted."
+}
+
+# Family name of the JARVIS agent's current Tool LLM (from ~/.jarvis/cli-model),
+# so the mode notification reflects what's actually running, not a stale
+# "Claude". Family-level for the toast; the tray menu shows the full model.
+jarvis_llm_name() {
+    local id
+    id="$(tr -d '[:space:]' < "$HOME/.jarvis/cli-model" 2>/dev/null)"
+    case "$id" in
+        claude-*)      echo "Claude" ;;
+        gpt-*)         echo "OpenAI" ;;
+        deepseek-*)    echo "DeepSeek" ;;
+        qwen*|*/qwen*) echo "Qwen" ;;
+        ollama/*)      echo "Local" ;;
+        "")            echo "JARVIS" ;;
+        *)             echo "$id" ;;
+    esac
 }
 
 show_status() {
@@ -394,8 +411,8 @@ show_status() {
             notify "Current mode: OpenAI Realtime" "Audio + vision + tools. Voice: ${JARVIS_GPT_TOOLS_VOICE:-cedar}."
             ;;
         *)
-            echo "mode: jarvis (Claude STT/LLM/TTS pipeline, full tool registry)"
-            notify "Current mode: JARVIS · Claude" "Default STT/LLM/TTS pipeline with full tool registry."
+            echo "mode: jarvis ($(jarvis_llm_name) — audio + vision + tools, full tool registry)"
+            notify "Current mode: $(jarvis_llm_name)" "Audio + vision + tools. Full tool registry."
             ;;
     esac
 }

@@ -71,6 +71,37 @@ services:
       postgres: { condition: service_healthy }
     expose: ["3000"]
 
+  # Hub Gateway (JARVIS Hub sub-project 1): the CLI's :4000 proxy, holding the
+  # provider keys + verifying login JWTs. Published on host 127.0.0.1:4000 so the
+  # host's cloudflared tunnel (proxy.0wlan.com → localhost:4000) reaches it,
+  # replacing the old jarvis-gateway binary. 127.0.0.1 only — never the public
+  # interface; the tunnel + the JWT gate are the security layers. Keys +
+  # JARVIS_PROXY_JWT_SECRET come from .env.production. Build context is ../cli.
+  hub:
+    build:
+      context: ../cli
+      dockerfile: Dockerfile.hub
+    restart: unless-stopped
+    env_file:
+      - path: .env.production
+        required: false
+    environment:
+      JARVIS_PROXY_HOST: "0.0.0.0"
+      JARVIS_ALLOW_PUBLIC_BIND: "1"
+      JARVIS_PROXY_AUTH_REQUIRED: "1"
+      JARVIS_PROXY_PORT: "4000"
+      JARVIS_PROVIDER: "${JARVIS_PROVIDER:-deepseek}"
+    expose: ["4000"]
+    # Host-loopback publish so the host's cloudflared tunnel reaches this
+    # container at proxy.0wlan.com → localhost:4000 (never the public interface).
+    ports:
+      - "127.0.0.1:4000:4000"
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # Tecnativa socket-proxy: the web app can create/exec/manage CONTAINERS +
   # NETWORKS + IMAGES, but is denied host-level / privileged Docker ops. This is
   # the enterprise alternative to mounting /var/run/docker.sock into the app
@@ -89,6 +120,23 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     expose: ["2375"]
+
+  # SearXNG — self-hosted metasearch, JARVIS's credentialed-grade web_search
+  # backend (keyless, aggregates ~20 engines, immune to the DuckDuckGo IP CAPTCHA
+  # that blocks the local scraper). The voice-agent searxng plugin (local) reaches
+  # it via Caddy at a hostname EXCLUDED from Cloudflare Access — same pattern as
+  # /install.sh + /releases — and the web app can reach it in-network at
+  # http://searxng:8080. settings.yml enables the JSON API (else 403). Point
+  # SEARXNG_URL (voice-agent env / ~/.jarvis/keys.env) at the public hostname.
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-https://searx.0wlan.com/}
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET in .env.production}
+    expose: ["8080"]
 
   postgres:
     image: postgres:16

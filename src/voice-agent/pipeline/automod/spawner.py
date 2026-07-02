@@ -401,6 +401,12 @@ async def _spawn_one(intent: dict) -> str:
         _cleanup_worktree(worktree)
 
 
+# Rejection reasons that are TRANSIENT — keep the ranked intent queued for a
+# later tick (idle returns / budget rolls over / cooldown ends). Permanent
+# reasons (empty_intent / blocked_path) drop the intent from the queue instead.
+_DEFER_REASONS = {"daily_cap_reached", "budget_exhausted", "not_idle", "cooldown"}
+
+
 async def drain_queue(*, only_id: str | None = None, force: bool = False) -> int:
     """Drain queue.jsonl: for each intent, gate via throttle; on admit,
     spawn the wrapper. Returns count of successfully launched spawns.
@@ -436,7 +442,7 @@ async def drain_queue(*, only_id: str | None = None, force: bool = False) -> int
                                 intent.get("id"), reason)
                     artifact.audit("automod_rejected", id=intent.get("id"),
                                    reason=reason)
-                    if reason == "daily_cap_reached":
+                    if reason in _DEFER_REASONS:
                         remaining.append(intent)
                     continue
             status = await _spawn_one(intent)

@@ -6,7 +6,7 @@
 #   source .venv/bin/activate
 #   pip install -r requirements.txt
 
-livekit-agents[silero,openai,groq,anthropic,google]~=1.5
+livekit-agents[silero,openai,anthropic,google]~=1.5
 
 # Deepgram Nova-3 streaming STT — primary STT path as of 2026-05-18
 # for fast barge-in. Without this, Groq Whisper Turbo (final-only)
@@ -121,7 +121,6 @@ setuptools>=78.1.1,<82
 langgraph~=1.0
 langgraph-checkpoint-sqlite~=3.0
 langchain~=1.0
-langchain-groq~=1.0
 langchain-openai~=1.2
 
 # MCP (Model Context Protocol) client SDK. Powers tools/mcp_client.py, which
@@ -167,3 +166,8 @@ coverage>=7.0
 # now so Phase 2 is ready; not yet wired. See
 # docs/superpowers/specs/2026-06-23-evolution-mutation-test-gate-design.md.
 mutmut>=3.0
+
+# D-Bus session-bus monitor for the desktop-notification listener
+# (pipeline.notification_listener) — pure-Python, no system deps. Lets JARVIS
+# read OS notifications via the notifications tool instead of a screenshot.
+jeepney>=0.9

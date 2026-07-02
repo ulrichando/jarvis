@@ -22,7 +22,7 @@ out="$("$HEALTH" 2>&1)"; rc=$?
 notify() { "${SELF_DIR}/jarvis-notify" "$1" "$2" "${3:-high}" >/dev/null 2>&1 || true; }
 
 # Strip ANSI colour, keep the [FAIL] lines as the failure signature.
-fails="$(printf '%s\n' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep '\[FAIL\]' || true)"
+fails="$(printf '%s\n' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^[[:space:]]+\[FAIL\]' || true)"
 
 if [ "$rc" -eq 0 ]; then
   # Healthy now. If we were failing, announce recovery + clear the latch.
@@ -33,7 +33,7 @@ fi
 # Failing. Notify only when the failure SET changed since the last alert.
 sig="$(printf '%s\n' "$fails" | sort)"
 if [ "$sig" != "$(cat "$STATE" 2>/dev/null || true)" ]; then
-  n="$(printf '%s\n' "$fails" | grep -c '\[FAIL\]' || true)"
+  n="$(printf '%s\n' "$fails" | grep -cE '^[[:space:]]+\[FAIL\]' || true)"
   notify "JARVIS health: ${n} check(s) failing" "$(printf '%s\n' "$fails" | sed 's/^[[:space:]]*//')" urgent
   printf '%s' "$sig" > "$STATE"
 fi

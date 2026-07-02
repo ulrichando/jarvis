@@ -193,6 +193,57 @@ def _notify(event: str, **fields) -> None:
         pass
 
 
+def _verify_rollback(marker: dict, automod_id: str) -> str:
+    """Second-stage gate (OPS-04): after a rollback applied, confirm the
+    rolled-back code is ACTUALLY healthy before believing the safety net worked.
+    Heal → confirm + clear. Unhealthy past the window → escalate (the last-good
+    SHA is bad; a human is needed) — never loop, re-rolling to the same SHA is
+    pointless."""
+    rollback_sha = marker.get("rollback_sha", "") or ""
+    rolled_back_at = _parse_iso(marker.get("rolled_back_at", "")) or time.time()
+    verify_deadline_s = int(marker.get("verify_deadline_s", _deploy.DEFAULT_DEADLINE_S))
+    elapsed = time.time() - rolled_back_at
+
+    if elapsed < BOOT_GRACE_S:
+        return "rollback-boot-grace"
+
+    if _liveness() and (_real_turn_since(rolled_back_at) or _smoke_turn()):
+        _deploy.clear_marker()
+        try:
+            from pipeline.automod import artifact
+            artifact.audit("automod_rollback_confirmed", id=automod_id,
+                           rollback_sha=rollback_sha)
+        except Exception:  # noqa: BLE001
+            pass
+        _notify("evolution_rollback_confirmed", automod_id=automod_id,
+                rollback_sha=rollback_sha[:8],
+                detail="rolled-back code is healthy")
+        logger.info("[watchdog] rollback of %s CONFIRMED healthy", automod_id)
+        return "rollback-healthy"
+
+    if elapsed <= verify_deadline_s:
+        return "rollback-verifying"
+
+    # Past the verify window and still unhealthy: the rollback target itself is
+    # bad. Escalate loudly + stop (do NOT re-roll to the same SHA).
+    try:
+        from pipeline.automod import artifact
+        artifact.update_status(automod_id, "rollback-unhealthy",
+                               rollback_sha=rollback_sha)
+        artifact.audit("automod_rollback_unhealthy", id=automod_id,
+                       rollback_sha=rollback_sha)
+    except Exception:  # noqa: BLE001
+        pass
+    _notify("evolution_rollback_unhealthy", automod_id=automod_id,
+            rollback_sha=rollback_sha[:8],
+            detail="rolled back but STILL unhealthy — last-good SHA is bad; "
+                   "manual intervention needed")
+    logger.critical("[watchdog] rollback of %s did NOT restore health — escalating",
+                    automod_id)
+    _deploy.clear_marker()
+    return "rollback-unhealthy"
+
+
 # ── main tick ───────────────────────────────────────────────────────────
 
 @fault_boundary.supervised("watchdog_run_once", fallback="crashed")
@@ -203,6 +254,10 @@ def run_once() -> str:
         return "no-marker"
 
     automod_id = marker.get("automod_id", "?")
+    # OPS-04: a prior tick rolled back and we're confirming the rolled-back code
+    # is healthy. Handle BEFORE the normal deploy-health path.
+    if marker.get("state") == "rolled-back-verifying":
+        return _verify_rollback(marker, automod_id)
     rollback_sha = marker.get("rollback_sha")
     deployed_at = _parse_iso(marker.get("deployed_at", "")) or time.time()
     deadline_s = int(marker.get("deadline_s", _deploy.DEFAULT_DEADLINE_S))
@@ -307,7 +362,12 @@ def run_once() -> str:
             except Exception as e:  # noqa: BLE001
                 logger.warning("[watchdog] github rollback-publish failed for %s: %s",
                                automod_id, e)
-        _deploy.clear_marker()
+        marker["state"] = "rolled-back-verifying"
+        marker["rolled_back_at"] = _deploy._now_iso()
+        marker["verify_deadline_s"] = int(
+            marker.get("deadline_s", _deploy.DEFAULT_DEADLINE_S)
+        )
+        _deploy.write_marker(marker)
         return "rolled-back"
     # Reset failed — keep the marker so the next tick retries.
     return "rollback-failed"

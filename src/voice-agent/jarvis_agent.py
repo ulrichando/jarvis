@@ -159,7 +159,7 @@ def _apply_voice_mode() -> None:
 
 _apply_voice_mode()
 
-from livekit.plugins import groq, openai as lk_openai, silero
+from livekit.plugins import openai as lk_openai, silero
 # ElevenLabs removed 2026-05-01 — see _build_dispatching_tts comment.
 
 # Round-trip DeepSeek's reasoning_content field. livekit-plugins-openai
@@ -382,15 +382,6 @@ from livekit.agents import APIError as _APIError
 from livekit.agents import APIStatusError as _APIStatusError
 from livekit.agents import APITimeoutError as _APITimeoutError
 from livekit.agents import utils as _lk_utils
-from livekit.plugins.groq.tts import ChunkedStream as _GroqChunkedStream
-
-# Extracted to providers/tts.py 2026-05-10 (Step 6 of the 10/10
-# refactor). Re-exported under the legacy underscored name so the
-# constructor call site inside _LoggingGroqTTS.synthesize is
-# untouched (the wrapper itself moved too).
-from providers.tts import (
-    LoggingGroqChunkedStream as _LoggingGroqChunkedStream,
-)
 
 
 # ── Per-upstream circuit breakers ────────────────────────────────────
@@ -441,17 +432,11 @@ def _build_skill_catalog_block() -> str:
     return build_skill_catalog_block(SKILLS)
 
 
-# Re-export from providers/tts.py (Step 6 of the 10/10 refactor).
-from providers.tts import LoggingGroqTTS as _LoggingGroqTTS
-
-
 # Extracted to providers/stt.py 2026-05-10 (Step 5a of the 10/10
-# refactor). Re-exported under the legacy underscored names so the
-# call sites + test (test_breaker_shims.py exercises
-# _build_breakered_stt) stay untouched.
+# refactor; the Groq Whisper STT class + breakered factory were removed
+# 2026-06-29 in the full-Groq-eradication pass). build_stt_chain is
+# re-exported under its legacy underscored name so call sites stay untouched.
 from providers.stt import (
-    BreakeredGroqSTT as _BreakeredGroqSTT,
-    build_breakered_stt as _build_breakered_stt,
     build_stt_chain as _build_stt_chain,
 )
 
@@ -474,7 +459,6 @@ from providers.llm import (
     LAST_PREFLIGHT             as _LAST_PREFLIGHT,
     ctx_items_token_estimate   as _ctx_items_token_estimate,
     prune_chat_ctx_for_budget  as _prune_chat_ctx_for_budget,
-    BreakeredGroqLLM           as _BreakeredGroqLLM,
 )
 
 
@@ -825,9 +809,9 @@ def _build_tts_chain() -> list:
 
 # The voice-side STT/TTS labels — kept here so the dynamic system-
 # prompt builder can tell the user the full stack on demand.
-VOICE_STT_LABEL = "Whisper Large v3 Turbo on Groq"
+VOICE_STT_LABEL = "Whisper Large v3 Turbo (on-device faster-whisper)"
 VOICE_TTS_LABEL = (
-    f"Orpheus on Groq (voice {os.getenv('JARVIS_TTS_VOICE', 'troy')}), "
+    f"Kokoro on-device (voice {os.getenv('JARVIS_LOCAL_TTS_VOICE', 'af_heart')}), "
     f"with Edge-TTS ({os.getenv('JARVIS_EDGE_VOICE', 'en-US-GuyNeural')}) as fallback"
 )
 
@@ -7763,6 +7747,13 @@ if __name__ == "__main__":
             # 24 kills in ~50 min). Resolved live so it also covers the
             # tray-Local flip. Env JARVIS_JOB_MEMORY_LIMIT_MB wins; 0 disables.
             job_memory_limit_mb=_job_memory_limit_mb(),
+            # Bound the SIGTERM drain (framework default: 1800 s). With the
+            # desktop voice-client connected a session is ~always "active",
+            # so a solo agent stop sat in drain until systemd's stop window
+            # (90 s default) SIGKILLed it → 'failed (timeout)' → OnFailure
+            # page (live 2026-07-01 16:50). 20 s still finishes an in-flight
+            # turn; the unit pairs this with TimeoutStopSec=45.
+            drain_timeout=int(os.environ.get("JARVIS_DRAIN_TIMEOUT_S", "20")),
             # livekit-agents binds a health HTTP server on 8081 by
             # default (prod_default in worker.py). Override to 8181
             # to dodge port collisions with other tooling on the same

@@ -128,7 +128,10 @@ def test_rollback_when_unhealthy_past_deadline(home, monkeypatch):
                         lambda sha: seen.setdefault("sha", sha) or True)
     assert watchdog.run_once() == "rolled-back"
     assert seen["sha"] == "0123456789abcdef"   # reset to the recorded last-good
-    assert deploy.read_marker() is None         # cleared after successful rollback
+    # OPS-04: the marker is NOT cleared — it transitions to a verify state so the
+    # next tick confirms the rolled-back code is actually healthy.
+    m = deploy.read_marker()
+    assert m is not None and m["state"] == "rolled-back-verifying"
 
 
 def test_rollback_impossible_without_sha(home, monkeypatch):
@@ -191,3 +194,43 @@ def test_rollback_resets_a_real_git_repo(tmp_path, monkeypatch):
     assert git("rev-parse", "HEAD").stdout.strip() == good   # reset to last-good
     assert (repo / "f.txt").read_text(encoding="utf-8") == "good"
     assert restarts, "rollback must restart the agent onto the reverted code"
+
+
+# ── rollback health re-verification (OPS-04) ───────────────────────────────
+
+def _verify_marker(home, **over):
+    m = {
+        "automod_id": "automod-test-001",
+        "rollback_sha": "0123456789abcdef",
+        "state": "rolled-back-verifying",
+        "rolled_back_at": _iso_ago(60),   # past boot-grace, inside verify window
+        "verify_deadline_s": 300,
+    }
+    m.update(over)
+    deploy.write_marker(m)
+
+
+def test_rollback_verify_healthy_confirms_and_clears(home, monkeypatch):
+    _verify_marker(home)
+    monkeypatch.setattr(watchdog, "_liveness", lambda: True)
+    monkeypatch.setattr(watchdog, "_real_turn_since", lambda d: True)
+    assert watchdog.run_once() == "rollback-healthy"
+    assert deploy.read_marker() is None   # rolled-back code is healthy → done
+
+
+def test_rollback_verify_within_window_keeps_watching(home, monkeypatch):
+    _verify_marker(home, rolled_back_at=_iso_ago(60), verify_deadline_s=300)
+    monkeypatch.setattr(watchdog, "_liveness", lambda: False)
+    monkeypatch.setattr(watchdog, "_real_turn_since", lambda d: False)
+    monkeypatch.setattr(watchdog, "_smoke_turn", lambda: False)
+    assert watchdog.run_once() == "rollback-verifying"
+    assert deploy.read_marker() is not None   # still confirming → keep the marker
+
+
+def test_rollback_verify_unhealthy_past_window_escalates(home, monkeypatch):
+    _verify_marker(home, rolled_back_at=_iso_ago(9999), verify_deadline_s=300)
+    monkeypatch.setattr(watchdog, "_liveness", lambda: False)
+    monkeypatch.setattr(watchdog, "_real_turn_since", lambda d: False)
+    monkeypatch.setattr(watchdog, "_smoke_turn", lambda: False)
+    assert watchdog.run_once() == "rollback-unhealthy"
+    assert deploy.read_marker() is None   # last-good is bad → escalate + stop, no loop

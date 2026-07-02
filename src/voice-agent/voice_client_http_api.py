@@ -46,6 +46,7 @@ from typing import Any, Awaitable, Callable, Optional
 from aiohttp import web
 
 from _task_utils import log_task_exception
+import pipeline.conversation_modes as conversation_modes
 from voice_client_tray_config import (
     CLI_MODEL_FILE,
     CLI_MODELS_AVAILABLE,
@@ -232,6 +233,11 @@ class VoiceClientHttpApi:
         app.router.add_post("/tts-provider", self.tts_provider)
         app.router.add_get("/audio-devices",  self.audio_devices)
         app.router.add_post("/audio-devices", self.audio_devices)
+        app.router.add_get("/modes",          self.modes)
+        app.router.add_post("/mode",          self.mode)
+        app.router.add_post("/mode/create",   self.mode_create)
+        app.router.add_post("/mode/update",   self.mode_update)
+        app.router.add_post("/mode/delete",   self.mode_delete)
         app.router.add_get("/events",      self.events)
         app.router.add_route("OPTIONS", "/{tail:.*}", self.cors)
         return app
@@ -897,6 +903,106 @@ class VoiceClientHttpApi:
                     pass
             return web.json_response(
                 {"kind": kind, "name": name, "saved": True}, headers=cors)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500, headers=cors)
+
+    async def modes(self, _: web.Request) -> web.Response:
+        """GET /modes → {"active": "<id>", "modes": [...]}
+
+        Returns the full conversation-modes document so the tray / desktop
+        can populate a mode-picker without knowing the on-disk format."""
+        cors = {"Access-Control-Allow-Origin": "*"}
+        try:
+            doc = conversation_modes.load()
+            return web.json_response(doc, headers=cors)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500, headers=cors)
+
+    async def mode(self, req: web.Request) -> web.Response:
+        """POST /mode {"id": "<mode_id>"} → apply the mode + restart agent.
+
+        Applies all underlying setting files (voice_model, cli_model, tts, …)
+        and triggers the same restart that /voice-model uses, so the new LLM
+        + TTS chain is live on the next session."""
+        cors = {"Access-Control-Allow-Origin": "*"}
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        mode_id = (body.get("id") or "").strip()
+        if not mode_id:
+            return web.json_response({"error": "missing id"}, status=400, headers=cors)
+        try:
+            conversation_modes.apply(mode_id)
+            _t = asyncio.create_task(self.restart_agent_unit(), name="agent-restart")
+            _t.add_done_callback(log_task_exception)
+            return web.json_response({"ok": True, "id": mode_id, "restarting": True},
+                                     headers=cors)
+        except KeyError:
+            return web.json_response(
+                {"error": f"unknown mode: {mode_id!r}"}, status=404, headers=cors)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500, headers=cors)
+
+    async def mode_create(self, req: web.Request) -> web.Response:
+        """POST /mode/create {mode dict} → add a new mode to the store."""
+        cors = {"Access-Control-Allow-Origin": "*"}
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict) or not body.get("id"):
+            return web.json_response({"error": "body must be a mode object with an id"},
+                                     status=400, headers=cors)
+        try:
+            conversation_modes.create(body)
+            return web.json_response({"ok": True}, headers=cors)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=409, headers=cors)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500, headers=cors)
+
+    async def mode_update(self, req: web.Request) -> web.Response:
+        """POST /mode/update {"id": "<id>", "patch": {...}} → merge patch into mode."""
+        cors = {"Access-Control-Allow-Origin": "*"}
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        mode_id = (body.get("id") or "").strip()
+        patch = body.get("patch") or {}
+        if not mode_id:
+            return web.json_response({"error": "missing id"}, status=400, headers=cors)
+        if not isinstance(patch, dict):
+            return web.json_response({"error": "patch must be an object"},
+                                     status=400, headers=cors)
+        try:
+            conversation_modes.update(mode_id, patch)
+            return web.json_response({"ok": True}, headers=cors)
+        except KeyError:
+            return web.json_response(
+                {"error": f"unknown mode: {mode_id!r}"}, status=404, headers=cors)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500, headers=cors)
+
+    async def mode_delete(self, req: web.Request) -> web.Response:
+        """POST /mode/delete {"id": "<id>"} → remove a mode from the store."""
+        cors = {"Access-Control-Allow-Origin": "*"}
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        mode_id = (body.get("id") or "").strip()
+        if not mode_id:
+            return web.json_response({"error": "missing id"}, status=400, headers=cors)
+        try:
+            conversation_modes.delete(mode_id)
+            return web.json_response({"ok": True}, headers=cors)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=409, headers=cors)
+        except KeyError:
+            return web.json_response(
+                {"error": f"unknown mode: {mode_id!r}"}, status=404, headers=cors)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500, headers=cors)
 

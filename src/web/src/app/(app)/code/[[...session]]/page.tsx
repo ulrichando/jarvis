@@ -15,6 +15,7 @@ import { CodeComposer, type Attachment } from "@/components/code/code-composer";
 import { CodeSession } from "@/components/code/code-session";
 import { CodePanels, type PanelName } from "@/components/code/code-panels";
 import { RoutinesView } from "@/components/code/routines-view";
+import { shouldAutoOpenSession } from "@/components/code/session-liveness";
 
 type Machine = {
   environment_id: string;
@@ -129,6 +130,15 @@ export default function CodePage() {
   const [machines, setMachines] = useState<Machine[] | null>(null);
   const [selected, setSelected] = useState<Machine | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  // Gates the URL-restore below: we only reconcile the deep-linked session once
+  // the session list has loaded at least once (so an unknown id is truly
+  // unknown, not just not-yet-fetched). Set even on fetch failure.
+  const [sessionsLoaded, setSessionsLoaded] = useState(false);
+  // True when the most recent list fetch FAILED (network/5xx). The restore gate
+  // reads these to tell "confirmed missing" from "couldn't look up" so a transient
+  // failure on reload doesn't silently wipe a valid deep-linked session URL.
+  const [sessionsLoadFailed, setSessionsLoadFailed] = useState(false);
+  const [machinesLoadFailed, setMachinesLoadFailed] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   // Routines view (path /code/routines) — distinct from a session.
   const [showRoutines, setShowRoutines] = useState(false);
@@ -181,11 +191,14 @@ export default function CodePage() {
             j.environments.find((e) => e.worker_type === "container") ??
             (j.environments.length === 1 ? j.environments[0] : null),
         );
+        setMachinesLoadFailed(false);
       } else {
         setMachines([]);
+        setMachinesLoadFailed(true);
       }
     } catch {
       setMachines([]);
+      setMachinesLoadFailed(true);
     }
   }, []);
 
@@ -195,9 +208,14 @@ export default function CodePage() {
       if (r.ok) {
         const j = (await r.json()) as { sessions: SessionSummary[] };
         setSessions(j.sessions);
+        setSessionsLoadFailed(false);
+      } else {
+        setSessionsLoadFailed(true);
       }
     } catch {
-      /* keep prior */
+      setSessionsLoadFailed(true); // keep prior sessions
+    } finally {
+      setSessionsLoaded(true);
     }
   }, []);
 
@@ -230,32 +248,69 @@ export default function CodePage() {
     };
   }, [loadMachines, loadSessions]);
 
-  // Path-based session URL (/code/session_<id>, like claude). Restore from the
-  // path on load, then keep the URL in sync as the session changes — linkable
-  // and survives refresh. First run RESTORES without writing (so it can't strip
-  // the incoming id before sessionId catches up → every refresh went to the
-  // welcome view). `?s=<id>` is still honored as a legacy fallback.
+  // Path-based session URL (/code/session_<id>, like claude). Three phases:
+  //   capture  → grab the deep-linked id on mount, before any state write can
+  //              strip it from the URL.
+  //   restore  → once sessions + machines have loaded, reopen it ONLY if it's a
+  //              live session. A sticky tab pointing at a dead `/remote-control`
+  //              session (its CLI bridge exited → env offline) must not silently
+  //              reopen that old conversation — it drops to the welcome view and
+  //              the stale id is cleared from the URL. See session-liveness.ts.
+  //   sync     → thereafter keep the URL in step with the open session (linkable,
+  //              survives refresh). `?s=<id>` is still honored as a legacy form.
   const routeParams = useParams();
-  const urlSynced = useRef(false);
+  const urlPhase = useRef<"capture" | "restore" | "sync">("capture");
+  const urlCandidate = useRef<string | null>(null);
   useEffect(() => {
-    if (!urlSynced.current) {
-      urlSynced.current = true;
+    if (urlPhase.current === "capture") {
       const segRaw = routeParams?.session;
       const seg = Array.isArray(segRaw) ? segRaw[0] : segRaw;
-      if (seg === "routines") {
+      urlCandidate.current =
+        seg === "routines"
+          ? "routines"
+          : (fromSeg(seg) ?? new URLSearchParams(window.location.search).get("s"));
+      urlPhase.current = "restore";
+    }
+    if (urlPhase.current === "restore") {
+      const cand = urlCandidate.current;
+      // Routines is data-independent — restore it BEFORE the liveness gate so a
+      // /code/routines deep link doesn't flash the welcome view while the machine
+      // + session fetches are still in flight.
+      if (cand === "routines") {
+        urlPhase.current = "sync";
         setShowRoutines(true);
         return;
       }
-      const fromUrl =
-        fromSeg(seg) ?? new URLSearchParams(window.location.search).get("s");
-      if (fromUrl && fromUrl !== sessionId) setSessionId(fromUrl);
-      return;
+      // Wait for the liveness inputs (machines starts null). Returning early
+      // here also preserves the deep link — the sync branch can't strip it
+      // until we've reconciled.
+      if (machines === null || !sessionsLoaded) return;
+      // A transient fetch failure leaves the lists empty-but-"loaded", which is
+      // indistinguishable from confirmed-missing. Treat it like still-loading:
+      // keep the deep link and retry on the next (hopefully successful) poll
+      // rather than wiping a valid URL. Stays in "restore" on purpose.
+      if (sessionsLoadFailed || machinesLoadFailed) return;
+      urlPhase.current = "sync";
+      if (cand) {
+        const s = sessions.find((x) => x.session_id === cand);
+        const m = machines.find((mm) => mm.environment_id === s?.environment_id);
+        if (shouldAutoOpenSession(s, m)) {
+          setSessionId(cand);
+        } else {
+          // Confirmed stale/zombie deep link → welcome view; drop it so the
+          // sticky tab stops reopening the old conversation.
+          window.history.replaceState(null, "", "/code");
+        }
+        return;
+      }
+      // No deep link → fall through to sync (welcome view).
     }
     const url = showRoutines ? "/code/routines" : sessionId ? toPath(sessionId) : "/code";
     if (window.location.pathname !== url) {
       window.history.replaceState(null, "", url);
     }
-  }, [sessionId, showRoutines, routeParams]);
+  }, [sessionId, showRoutines, routeParams, machines, sessions, sessionsLoaded,
+      sessionsLoadFailed, machinesLoadFailed]);
 
   const changeMode = (m: string) => {
     setMode(m);

@@ -4,7 +4,6 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createDeepSeek } from "@ai-sdk/deepseek";
-import { createGroq } from "@ai-sdk/groq";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModel } from "ai";
 import {
@@ -70,12 +69,6 @@ const MODEL_IDS: Record<string, { provider: Provider; modelId: string }> = {
   "kimi-vision-32k": { provider: "kimi", modelId: "moonshot-v1-32k-vision-preview" },
   "kimi-vision-128k": { provider: "kimi", modelId: "moonshot-v1-128k-vision-preview" },
 
-  "llama-3.3-70b": { provider: "groq", modelId: "llama-3.3-70b-versatile" },
-  "gpt-oss-120b": { provider: "groq", modelId: "openai/gpt-oss-120b" },
-  "qwen3-32b": { provider: "groq", modelId: "qwen/qwen3-32b" },
-  "qwen3.6-27b": { provider: "groq", modelId: "qwen/qwen3.6-27b" },
-  "llama-4-scout-17b": { provider: "groq", modelId: "meta-llama/llama-4-scout-17b-16e-instruct" },
-  "llama-3.1-8b-instant": { provider: "groq", modelId: "llama-3.1-8b-instant" },
   // Local Ollama — upstream model is the exact ollama tag, routed to :11434/v1.
   "ollama-qwen3-30b-a3b": { provider: "ollama", modelId: "qwen3:30b-a3b" },
   "ollama-gpt-oss-120b": { provider: "ollama", modelId: "gpt-oss:120b" },
@@ -95,8 +88,6 @@ export function buildProvider(
       return createGoogleGenerativeAI({ apiKey });
     case "deepseek":
       return createDeepSeek({ apiKey });
-    case "groq":
-      return createGroq({ apiKey });
     case "kimi":
       return createOpenAICompatible({
         name: "kimi",

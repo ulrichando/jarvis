@@ -1178,6 +1178,18 @@ fn read_picker_current(file: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Pretty name of the JARVIS agent's current Tool LLM (from
+/// `~/.jarvis/cli-model`) for the Conversation-mode label, so it reflects what
+/// is actually running (e.g. "DeepSeek · V4 Pro" / "Claude · Sonnet 4.6")
+/// instead of a static "JARVIS". Falls back to the raw id, then "JARVIS".
+fn jarvis_llm_label() -> String {
+    let id = read_picker_current("cli-model");
+    if id.is_empty() {
+        return "JARVIS".to_string();
+    }
+    cli_model_pretty(&id).map(|s| s.to_string()).unwrap_or(id)
+}
+
 /// restarts needed. Spawned via curl to avoid pulling reqwest.
 fn switch_cli_model(app: &tauri::AppHandle, id: &'static str) {
     let body = format!(r#"{{"model":"{id}"}}"#);
@@ -1575,36 +1587,28 @@ fn get_active_mode() -> &'static str {
 /// active mode: rewrites the disabled header line ("Active: …") and
 /// adds/removes a "✓ " prefix on the three mode items.
 fn refresh_mode_menu(app: &tauri::AppHandle) {
-    let (header_text, jarvis_label, local_label, gemini_label, openai_label) = match detect_active_mode() {
-        ActiveMode::Jarvis => (
-            "Active: JARVIS (cloud)",
-            "✓  JARVIS (audio + vision + tools)",
-            "Local (audio + vision + tools)",
-            "Gemini Live (audio + vision + tools)",
-            "OpenAI Realtime (audio + vision + tools)",
-        ),
-        ActiveMode::Local => (
-            "Active: Local (on-device)",
-            "JARVIS (audio + vision + tools)",
-            "✓  Local (audio + vision + tools)",
-            "Gemini Live (audio + vision + tools)",
-            "OpenAI Realtime (audio + vision + tools)",
-        ),
-        ActiveMode::Gemini => (
-            "Active: Gemini Live",
-            "JARVIS (audio + vision + tools)",
-            "Local (audio + vision + tools)",
-            "✓  Gemini Live (audio + vision + tools)",
-            "OpenAI Realtime (audio + vision + tools)",
-        ),
-        ActiveMode::Openai => (
-            "Active: OpenAI Realtime",
-            "JARVIS (audio + vision + tools)",
-            "Local (audio + vision + tools)",
-            "Gemini Live (audio + vision + tools)",
-            "✓  OpenAI Realtime (audio + vision + tools)",
-        ),
+    // The JARVIS cloud pipeline's "brain" is whichever Tool LLM is picked, so
+    // Claude and DeepSeek are surfaced as distinct conversation modes (both
+    // visible, one-click selectable). Mark whichever the cloud agent is
+    // currently running — by what ~/.jarvis/cli-model holds — as active.
+    // Local/Gemini/OpenAI are their own fixed backends.
+    let active = detect_active_mode();
+    let llm_id = read_picker_current("cli-model");
+    let in_jarvis = matches!(active, ActiveMode::Jarvis);
+    let claude_on = in_jarvis && llm_id.starts_with("claude");
+    let deepseek_on = in_jarvis && llm_id.starts_with("deepseek");
+    let header_text = match active {
+        ActiveMode::Jarvis => format!("Active: {}", jarvis_llm_label()),
+        ActiveMode::Local => "Active: Local (on-device)".to_string(),
+        ActiveMode::Gemini => "Active: Gemini Live".to_string(),
+        ActiveMode::Openai => "Active: OpenAI Realtime".to_string(),
     };
+    let mark = |on: bool, base: &str| if on { format!("✓  {base}") } else { base.to_string() };
+    let claude_label = mark(claude_on, "Claude (audio + vision + tools)");
+    let deepseek_label = mark(deepseek_on, "DeepSeek (audio + vision + tools)");
+    let local_label = mark(matches!(active, ActiveMode::Local), "Local (audio + vision + tools)");
+    let gemini_label = mark(matches!(active, ActiveMode::Gemini), "Gemini Live (audio + vision + tools)");
+    let openai_label = mark(matches!(active, ActiveMode::Openai), "OpenAI Realtime (audio + vision + tools)");
     if let Some(label_state) = app.try_state::<ModeLabel>() {
         if let Ok(guard) = label_state.0.lock() {
             if let Some(item) = guard.as_ref() {
@@ -1614,11 +1618,12 @@ fn refresh_mode_menu(app: &tauri::AppHandle) {
     }
     if let Some(items_state) = app.try_state::<ModeItems>() {
         if let Ok(guard) = items_state.0.lock() {
-            // Order: [jarvis, local, gemini, openai]
-            if let Some(it) = guard.get(0) { let _ = it.set_text(jarvis_label); }
-            if let Some(it) = guard.get(1) { let _ = it.set_text(local_label); }
-            if let Some(it) = guard.get(2) { let _ = it.set_text(gemini_label); }
-            if let Some(it) = guard.get(3) { let _ = it.set_text(openai_label); }
+            // Order: [claude, deepseek, local, gemini, openai]
+            if let Some(it) = guard.get(0) { let _ = it.set_text(claude_label); }
+            if let Some(it) = guard.get(1) { let _ = it.set_text(deepseek_label); }
+            if let Some(it) = guard.get(2) { let _ = it.set_text(local_label); }
+            if let Some(it) = guard.get(3) { let _ = it.set_text(gemini_label); }
+            if let Some(it) = guard.get(4) { let _ = it.set_text(openai_label); }
         }
     }
 }
@@ -2015,6 +2020,24 @@ fn list_screen_sources() -> Result<serde_json::Value, String> {
 
 // ── Browser-open helpers ───────────────────────────────────────────────────
 
+/// True when the configured (usually remote) web answers its public
+/// `/install.sh` route — the one path that is BOTH public in the app middleware
+/// AND excluded from the Cloudflare Access OTP gate, so it returns 200 without
+/// a session. Uses `curl` because std's `TcpStream` is plaintext-only and the
+/// remote is HTTPS. A VPS that's down/unreachable makes curl fail (timeout /
+/// 5xx / DNS) → the caller falls back to a local web.
+fn remote_web_healthy(url: &str) -> bool {
+    let base = url.trim_end_matches('/');
+    let probe = format!("{base}/install.sh");
+    std::process::Command::new("curl")
+        .args(["-fsS", "--max-time", "3", "-o", "/dev/null", probe.as_str()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Probe the standard JARVIS web ports and return the first URL that
 /// responds with a JARVIS-shaped response (200 + application/json on
 /// /api/conversations). Returns `None` when nothing matches —
@@ -2025,8 +2048,15 @@ fn list_screen_sources() -> Result<serde_json::Value, String> {
 /// useful UI instead of opening Chrome to a connection-refused page.
 fn probe_jarvis_web() -> Option<String> {
     if let Ok(url) = std::env::var("JARVIS_WEB_URL") {
-        if !url.trim().is_empty() {
-            return Some(url);
+        let url = url.trim();
+        if !url.is_empty() {
+            // Prefer the configured (remote) web, but only when it's actually
+            // reachable — otherwise fall through to a local instance so the
+            // desktop still works when the VPS is down.
+            if remote_web_healthy(url) {
+                return Some(url.to_string());
+            }
+            eprintln!("[JARVIS] JARVIS_WEB_URL ({url}) unreachable — falling back to local web");
         }
     }
     for port in [3001u16, 3002, 3000, 8765] {
@@ -2688,11 +2718,17 @@ fn main() {
                 "mode_current", "Active: (checking…)",
             ).enabled(false).build(app)?;
             let mode_header_sep = PredefinedMenuItem::separator(app)?;
-            let mode_jarvis_item = MenuItemBuilder::with_id(
-                "mode_jarvis", "JARVIS (audio + vision + tools)",
+            // The JARVIS cloud brain = whichever Tool LLM is picked. Surface the
+            // ones the user switches between (Claude / DeepSeek) as distinct,
+            // both-visible conversation modes; refresh_mode_menu marks the active.
+            let mode_claude_item = MenuItemBuilder::with_id(
+                "mode_claude", "Claude (audio + vision + tools)",
             ).build(app)?;
-            // Local = the same JARVIS-Claude pipeline (tools + vision), but with
-            // on-device STT (faster-whisper) + LLM (qwen3) + TTS (Kokoro).
+            let mode_deepseek_item = MenuItemBuilder::with_id(
+                "mode_deepseek", "DeepSeek (audio + vision + tools)",
+            ).build(app)?;
+            // Local = the same JARVIS pipeline (tools + vision) but fully
+            // on-device: faster-whisper STT + Ollama LLM + Kokoro TTS.
             let mode_local_item = MenuItemBuilder::with_id(
                 "mode_local", "Local (audio + vision + tools)",
             ).build(app)?;
@@ -2709,7 +2745,8 @@ fn main() {
             let mode_submenu = SubmenuBuilder::new(app, "Conversation mode ▸")
                 .item(&mode_current_item)
                 .item(&mode_header_sep)
-                .item(&mode_jarvis_item)
+                .item(&mode_claude_item)
+                .item(&mode_deepseek_item)
                 .item(&mode_local_item)
                 .item(&mode_gemini_item)
                 .item(&mode_openai_item)
@@ -2722,8 +2759,10 @@ fn main() {
             }
             {
                 let mi: State<ModeItems> = app.state();
+                // Order must match refresh_mode_menu: [claude, deepseek, local, gemini, openai]
                 *mi.0.lock().unwrap() = vec![
-                    mode_jarvis_item.clone(),
+                    mode_claude_item.clone(),
+                    mode_deepseek_item.clone(),
                     mode_local_item.clone(),
                     mode_gemini_item.clone(),
                     mode_openai_item.clone(),
@@ -3119,21 +3158,36 @@ fn main() {
                         // Shell out to bin/jarvis-mode <arg>; the script
                         // handles the systemd-scope + JARVIS-mic-mute
                         // dance idempotently.
-                        id @ ("mode_jarvis" | "mode_local" | "mode_gemini" | "mode_openai" | "mode_status") => {
-                            // mode_jarvis + mode_local are BOTH the JARVIS-Claude
-                            // pipeline; they differ only in ~/.jarvis/voice-mode
-                            // (cloud vs on-device), read by the agent at startup.
-                            // Write it first; both route through "jarvis" (which
+                        id @ ("mode_claude" | "mode_deepseek" | "mode_local" | "mode_gemini" | "mode_openai" | "mode_status") => {
+                            // Claude / DeepSeek / Local are all the JARVIS
+                            // pipeline: Claude + DeepSeek pick the cloud Tool LLM,
+                            // Local is the on-device pipeline. They differ only in
+                            // ~/.jarvis/voice-mode (cloud vs on-device), read by the
+                            // agent at startup; all route through "jarvis" (which
                             // also stops any Gemini/OpenAI direct mode).
-                            let is_jarvis_pipeline = id == "mode_jarvis" || id == "mode_local";
+                            let is_jarvis_pipeline =
+                                matches!(id, "mode_claude" | "mode_deepseek" | "mode_local");
+                            // Claude/DeepSeek also set the supervisor Tool LLM.
+                            // switch_cli_model writes ~/.jarvis/cli-model + repaints
+                            // the Tool-model ✓ — no restart (it's read per-turn).
+                            // Default Claude = Sonnet 4.6 (the supervisor default).
+                            match id {
+                                "mode_claude"   => switch_cli_model(app, "claude-sonnet-4-6"),
+                                "mode_deepseek" => switch_cli_model(app, "deepseek-v4-pro"),
+                                _ => {}
+                            }
+                            // Only a cloud↔on-device flip needs a restart; remember
+                            // whether voice-mode actually changes before writing it.
+                            let mut voice_mode_changed = false;
                             if is_jarvis_pipeline {
+                                let new_vmode = if id == "mode_local" { "local" } else { "cloud" };
+                                voice_mode_changed = read_voice_mode() != new_vmode;
                                 let dir = jarvis_home().join(".jarvis");
                                 let _ = std::fs::create_dir_all(&dir);
-                                let vmode = if id == "mode_local" { "local" } else { "cloud" };
-                                let _ = std::fs::write(dir.join("voice-mode"), vmode);
+                                let _ = std::fs::write(dir.join("voice-mode"), new_vmode);
                             }
                             let arg = match id {
-                                "mode_jarvis" | "mode_local" => "jarvis",
+                                "mode_claude" | "mode_deepseek" | "mode_local" => "jarvis",
                                 "mode_gemini" => "gemini",
                                 "mode_openai" => "openai",
                                 _             => "status",
@@ -3173,11 +3227,12 @@ fn main() {
                                     .spawn();
                                 println!("[JARVIS] tray → jarvis-mode {arg}");
                             }
-                            // JARVIS-Claude pipeline (jarvis/local): restart the
-                            // voice stack so the new voice-mode (cloud/on-device)
-                            // takes effect — jarvis-mode only stops direct modes,
-                            // it doesn't re-read voice-mode.
-                            if is_jarvis_pipeline {
+                            // Restart the voice stack ONLY when the cloud/on-device
+                            // split changed (the agent re-reads voice-mode at
+                            // startup). Switching back from Gemini/OpenAI is handled
+                            // by `jarvis-mode jarvis` (unmute + stop the direct
+                            // unit); a Claude↔DeepSeek swap needs no restart.
+                            if is_jarvis_pipeline && voice_mode_changed {
                                 std::thread::spawn(|| {
                                     std::thread::sleep(std::time::Duration::from_millis(900));
                                     let _ = restart_voice_agent_cmd();
