@@ -204,4 +204,10 @@
 [data-chat-density="compact"] {
   --chat-gap: 1rem;
   --chat-pad-y: 1rem;
+  /* App-wide density: Tailwind v4 spacing utilities resolve
+     calc(var(--spacing) * N). This attribute sits on the app-shell root and
+     custom properties cascade, so overriding --spacing here tightens EVERY
+     padding / gap / margin / space-y under the shell — not just chat. Default
+     is 0.25rem; ~-12% is noticeable without breaking tight layouts. */
+  --spacing: 0.22rem;
 }
