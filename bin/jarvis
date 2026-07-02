@@ -27,6 +27,13 @@ if [ -t 1 ] && [ $# -eq 0 ] && [ -x "$JARVIS_BIN" ]; then
   source "$SCRIPTS/start-env.sh"
   source "$SCRIPTS/proxy-runtime.sh"
   jarvis_proxy_start "$JARVIS_ROOT" "$SCRIPTS/bunw.sh"
-  exec "$JARVIS_BIN"
+  # Launch in bypass ("autonomous") like the source path always did — AND
+  # launching WITH bypass is what puts it in the Shift+Tab carousel
+  # (getNextPermissionMode only offers bypassPermissions when
+  # isBypassPermissionsModeAvailable, i.e. it was enabled at launch;
+  # verified byte-identical with the claude-code donor). So this restores
+  # autonomous-by-default while keeping default/auto/plan one Shift+Tab away.
+  # start-env.sh always sets both vars (bypass default + sandbox settings).
+  exec "$JARVIS_BIN" --permission-mode "$JARVIS_PERMISSION_MODE" --settings "$JARVIS_FLAG_SETTINGS"
 fi
 exec bash "$SCRIPTS/start.sh" "$@"
