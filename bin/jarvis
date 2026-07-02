@@ -13,4 +13,22 @@ SCRIPTS="$JARVIS_ROOT/scripts"
 # exits 1 (esp. when TERM is unset), tripping `set -e` and killing the
 # launcher before the agent loop ever starts.
 [ -t 1 ] && clear || true
+
+# Interactive REPL (tty + no args) runs the COMPILED binary: source-run
+# (bun cli.tsx) currently deadlocks pre-render inside the REPL screen's
+# dynamic-import graph — blank terminal, idle event loop, headless -p
+# unaffected (isolated 2026-07-02 via in-boot import bisection; the
+# single-file bundle has no import-order to deadlock). Headless and
+# subcommand paths stay on start.sh, which carries newer features
+# (keys pull, subcommand skip-list) and is proven working. start-env.sh
+# self-resolves via BASH_SOURCE and was designed to be sourced here
+# (see its header); with jarvis-proxy.service active the proxy hook is
+# a silent no-op.
+JARVIS_BIN="$JARVIS_ROOT/dist/jarvis-linux-x64"
+if [ -t 1 ] && [ $# -eq 0 ] && [ -x "$JARVIS_BIN" ]; then
+  source "$SCRIPTS/start-env.sh"
+  source "$SCRIPTS/proxy-runtime.sh"
+  jarvis_proxy_start "$JARVIS_ROOT" "$SCRIPTS/bunw.sh"
+  exec "$JARVIS_BIN"
+fi
 exec bash "$SCRIPTS/start.sh" "$@"

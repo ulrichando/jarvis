@@ -163,7 +163,11 @@ export ENABLE_TOOL_SEARCH=true
 # Non-Claude backends (Groq, DeepSeek) don't know the ToolSearch protocol
 # and fail to call deferred tools (WebFetch, etc.) — ship every schema up front.
 export JARVIS_DISABLE_TOOL_DEFERRAL="${JARVIS_DISABLE_TOOL_DEFERRAL:-1}"
-export IS_DEMO=1
+# IS_DEMO=1 (added f9ccc58d to skip onboarding) SILENTLY HANGS the
+# interactive REPL before first render — blank screen, idle event loop,
+# headless -p unaffected (live 2026-07-02, isolated by env-bisect: unset
+# IS_DEMO alone restores the TUI). Onboarding is already complete in
+# ~/.claude.json, so the skip bought nothing. Do not re-add.
 export DISABLE_INSTALLATION_CHECKS=1
 export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1   # enable swarm/agent-teams
 
