@@ -49,7 +49,12 @@ export function useNotifications(): {
       if (prev.notifications.current !== null || !next) {
         return prev;
       }
-      currentTimeoutId = setTimeout((setAppState, nextKey, processQueue) => {
+      // Non-finite timeoutMs (e.g. Infinity = persistent indicator like the
+      // effort level) must NOT be scheduled: setTimeout clamps Infinity to 1ms
+      // in bun/node ("Timeout duration was set to 1"), which cleared the
+      // notification ~immediately (verified 2026-07-02 — why /effort never
+      // showed bottom-right). Skip the timer; it persists until removeNotification.
+      if (Number.isFinite(next.timeoutMs ?? DEFAULT_TIMEOUT_MS)) currentTimeoutId = setTimeout((setAppState, nextKey, processQueue) => {
         currentTimeoutId = null;
         setAppState(prev => {
           // Compare by key instead of reference to handle re-created notifications
@@ -85,7 +90,8 @@ export function useNotifications(): {
       }
 
       // Set up timeout for the immediate notification
-      currentTimeoutId = setTimeout((setAppState, notif, processQueue) => {
+      // See the non-finite guard note in processQueue above.
+      if (Number.isFinite(notif.timeoutMs ?? DEFAULT_TIMEOUT_MS)) currentTimeoutId = setTimeout((setAppState, notif, processQueue) => {
         currentTimeoutId = null;
         setAppState(prev => {
           // Compare by key instead of reference to handle re-created notifications
@@ -128,7 +134,8 @@ export function useNotifications(): {
             clearTimeout(currentTimeoutId);
             currentTimeoutId = null;
           }
-          currentTimeoutId = setTimeout((setAppState, foldedKey, processQueue) => {
+          // See the non-finite guard note in processQueue above.
+          if (Number.isFinite(folded.timeoutMs ?? DEFAULT_TIMEOUT_MS)) currentTimeoutId = setTimeout((setAppState, foldedKey, processQueue) => {
             currentTimeoutId = null;
             setAppState(p => {
               if (p.notifications.current?.key !== foldedKey) {

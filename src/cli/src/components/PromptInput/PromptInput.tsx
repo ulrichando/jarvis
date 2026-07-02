@@ -1983,7 +1983,11 @@ function PromptInput({
       key: 'effort-level',
       text: effortNotificationText,
       priority: 'high',
-      timeoutMs: Infinity
+      timeoutMs: Infinity,
+      // Persistent indicator: without fold, a same-key re-add (when the user
+      // changes /effort) is dropped as a dup and the shown text goes stale.
+      // fold replaces the current content in place.
+      fold: (_prev, incoming) => incoming
     });
   }, [effortNotificationText, addNotification, removeNotification]);
   useBuddyNotification();
