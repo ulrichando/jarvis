@@ -329,6 +329,7 @@ from pipeline.turn_router    import (
 )
 from pipeline.dispatching_llm import DispatchingLLM
 from pipeline.dispatching_tts import DispatchingTTS
+from pipeline.provider_errors import classify_provider_error
 from pipeline.lang_context import LangContext
 from pipeline.turn_telemetry import init_db, log_turn, log_launch_attempt, DEFAULT_DB_PATH
 # Pre-TTS confab gate — inspects supervisor reply text BEFORE TTS streams
@@ -712,9 +713,60 @@ def inject_handoff_refused_marker(session, chat_ctx) -> None:
         pass
 
 
+# Auth / billing / quota errors a restart can NEVER heal — bouncing the
+# voice-client just re-hits the same wall and loops forever (2026-07-01:
+# an Anthropic "credit balance too low" 400 spun the client in an infinite
+# restart loop for hours). Recoverability AND the explicit user-facing wording
+# ("I'm out of credits on Claude") both come from the shared provider-error
+# classifier (pipeline.provider_errors), so there's one source of truth.
+
+
+def _active_voice_model() -> "str | None":
+    """Best-effort read of the pinned voice model (``~/.jarvis/voice-model``),
+    used to sharpen provider detection in error messages. None if unreadable."""
+    try:
+        return (Path.home() / ".jarvis" / "voice-model").read_text(
+            encoding="utf-8"
+        ).strip() or None
+    except Exception:
+        return None
+
+
+_ERR_NOTIFY_TS = [0.0]  # boxed: throttle provider-error desktop notifications
+
+
+def _notify_error(classified, *, min_interval: float = 60.0) -> None:
+    """Throttled desktop notification for a classified provider error, so the
+    user SEES what broke ('out of credits on Claude') instead of nothing."""
+    now = time.time()
+    if now - _ERR_NOTIFY_TS[0] < min_interval:
+        return
+    _ERR_NOTIFY_TS[0] = now
+    try:
+        import subprocess as _sp
+        _sp.Popen(
+            ["notify-send", "-u", "critical", "-t", "10000",
+             classified.notify_title, classified.notify_body],
+            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+        )
+    except Exception:
+        pass  # notify-send absent / headless — the log line is the fallback
+
+
 def _session_close_needs_restart(ev) -> bool:
-    """True if the CloseEvent represents a crash (non-None error), False for clean shutdown."""
-    return getattr(ev, "error", None) is not None
+    """True if the CloseEvent is a crash a voice-client restart can heal.
+
+    A non-None error normally means the AgentSession died and a fresh room
+    + dispatch recovers it (a transient STT / network blip). But an
+    auth/billing/quota error is NOT healed by a restart — the fresh session
+    hits the same wall and we loop. Recoverability is decided by
+    ``classify_provider_error(...).recoverable``; the fix for those is credits
+    or a provider switch (``~/.jarvis/voice-model``), not a bounce.
+    """
+    err = getattr(ev, "error", None)
+    if err is None:
+        return False  # clean shutdown (model switch, tray quit)
+    return classify_provider_error(err, model=_active_voice_model()).recoverable
 
 
 async def _restart_voice_client_after_crash() -> None:
@@ -5083,7 +5135,29 @@ def _register_session_error_handlers(session) -> None:
             except ImportError:
                 pass  # framework's APIConnectionError import shape changed
 
+            # Non-TTS provider error (LLM / STT / session) that ISN'T the
+            # tool-call-validation bug handled above → classify it and SAY
+            # exactly what went wrong ("I'm out of credits on Claude") instead
+            # of going silent on a bare status code. Throttled 1 spoken alert/15s.
             if not isinstance(err, _lk_tts.TTSError):
+                now_ts = time.time()
+                if now_ts - _llm_fallback_last_ts[0] <= 15.0:
+                    return
+                _llm_fallback_last_ts[0] = now_ts
+                classified = classify_provider_error(
+                    err,
+                    model=_active_voice_model(),
+                    component="stt" if "stt_error" in (str(err) or "") else "llm",
+                )
+                try:
+                    session.say(classified.spoken, allow_interruptions=True)
+                except Exception as say_err:
+                    logger.debug(f"[provider-error] say() failed: {say_err}")
+                _notify_error(classified)
+                logger.warning(
+                    "[provider-error] spoke %s (%s): %s",
+                    classified.category, classified.provider, str(err)[:160],
+                )
                 return
             # Best-effort grab of the in-flight text — if we can't,
             # at least log the timestamp and error message.
@@ -5098,39 +5172,16 @@ def _register_session_error_handlers(session) -> None:
                         f.write(f"  text: {failed_text[:500]}\n")
             except Exception as _e:
                 logger.debug(f"[tts-fail] log write failed: {_e}")
-            # Classify the error so the desktop notification tells the
-            # user what's actually wrong instead of always saying
-            # "rate-limited" (the prior wording was misleading for
-            # network timeouts, which are most of what we see).
-            err_type_name = type(err).__name__
-            err_msg = str(err)
-            status_code = getattr(err, "status_code", None)
-            if "Timeout" in err_type_name or "timed out" in err_msg.lower():
-                title = "JARVIS — TTS slow / timing out"
-                body = (
-                    "Groq TTS isn't responding fast enough. JARVIS heard "
-                    "you but the speech synthesis call timed out. Often "
-                    "this is just transient Groq-side load — try again "
-                    "in a few seconds."
-                )
-            elif status_code == 429 or (
-                status_code == 400 and "quota" in err_msg.lower()
-            ):
-                title = "JARVIS — TTS rate-limited"
-                body = (
-                    "Groq TTS quota hit. Wait a minute or switch the "
-                    "speech model in the tray (anything but Orpheus uses "
-                    "a different quota bucket)."
-                )
-            elif status_code == 400:
-                title = "JARVIS — TTS bad request"
-                body = (
-                    "Groq TTS rejected the request payload. Usually "
-                    "transient on Groq's side; the framework will retry."
-                )
-            else:
-                title = "JARVIS — TTS error"
-                body = f"{err_type_name}: {err_msg[:160]}"
+            # Classify via the shared provider-error classifier so the
+            # notification says what actually broke (rate-limited / timed out /
+            # out of credits / bad request) instead of a generic label. TTS
+            # errors are notification-only — you can't SPEAK an error when
+            # speech synthesis itself is what failed.
+            classified = classify_provider_error(
+                err, model=_active_voice_model(), component="tts"
+            )
+            title = classified.notify_title
+            body = classified.notify_body
 
             # Throttle notifications to one per 60 s so a flood of
             # retries doesn't spam the desktop.
@@ -5162,11 +5213,25 @@ def _register_session_crash_watchdog(session, bg_tasks: set) -> None:
 
     @session.on("close")
     def _on_session_close(ev) -> None:
-        if not _session_close_needs_restart(ev):
+        err = getattr(ev, "error", None)
+        if err is None:
             return  # clean shutdown (model switch, tray quit) — don't restart
+        classified = classify_provider_error(err, model=_active_voice_model())
+        if not classified.recoverable:
+            # A restart can't heal billing/auth/quota. Tell the user EXACTLY
+            # what's wrong (explicit desktop notification) instead of silently
+            # giving up, and don't loop the voice-client.
+            logger.error(
+                "[session-watchdog] non-recoverable %s — NOT restarting "
+                "(a bounce can't add credits or fix a key). err=%s",
+                classified.category, str(err)[:200],
+            )
+            _notify_error(classified)
+            return
         logger.error(
-            f"[session-watchdog] AgentSession died with error: {getattr(ev, 'error', '?')}. "
-            "Scheduling voice-client restart in 3s."
+            "[session-watchdog] AgentSession died (%s): %s. "
+            "Scheduling voice-client restart in 3s.",
+            classified.category, str(err)[:160],
         )
         t = asyncio.create_task(
             _restart_voice_client_after_crash(), name="session-watchdog-restart"
