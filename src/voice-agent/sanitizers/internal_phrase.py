@@ -166,7 +166,16 @@ def sanitize(text: str) -> str:
 
     stripped = text.strip(" \t\n.,!?'\"()")
     if not stripped:
-        return ""
+        # Punctuation/whitespace-only CHUNK — a legitimate BPE streaming
+        # delta (models emit "," / "." as standalone tokens). Blanking
+        # these (the pre-2026-07-02 behavior) silently deleted every
+        # standalone . , ! ? from every voiced reply and the conversation
+        # DB across ALL providers since 2026-05-25 — "no heart no pulse
+        # Just processing cycles". Em-dashes survived only because — is
+        # not in the strip set above. Pass through verbatim; a whole
+        # reply that is letterless is dropped downstream by
+        # strip_emote_markup's unspeakable-reply guard.
+        return text
     if _INTERNAL_RE.fullmatch(stripped):
         return ""
     # Fast path: no internal phrase in this chunk → return as-is so we

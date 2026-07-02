@@ -20,7 +20,10 @@ _LOCK = threading.Lock()
 _BUILTINS: list[dict[str, Any]] = [
     {
         "id": "deepseek", "label": "DeepSeek", "voice_mode": "cloud",
-        "voice_model": "deepseek-v4-flash", "cli_model": "deepseek-v4-pro",
+        # voice_model: V3-chat (2026-07-01, was v4-flash) — same pinned
+        # tool_choice="auto" mechanics, better conversational quality
+        # (flash trades accuracy for latency: emote markup, lang drift).
+        "voice_model": "deepseek-chat-v3", "cli_model": "deepseek-v4-pro",
         "tts_provider": "kokoro:af_bella", "tts_voice": "af_bella",
         "allowed_tools": None,
     },

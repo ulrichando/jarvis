@@ -125,11 +125,23 @@ def build_local_stt() -> FasterWhisperSTT | None:
     compute = os.environ.get("JARVIS_LOCAL_STT_COMPUTE", "int8").strip() or "int8"
     if device == "auto":
         device = "cpu"
+    # Language pin — mirrors stt.py::_stt_language (same env knob, same
+    # default; duplicated 2 lines rather than imported, to avoid a
+    # providers.stt <-> faster_whisper_stt cycle — keep them in sync).
+    # JARVIS_LANG_AUTODETECT falsy -> pin 'en'; default/truthy -> auto.
+    # Live 2026-07-01 (multilingual room): auto-detect transcribed the
+    # user's ENGLISH as Portuguese ("Jarvis, contem de um para dez,
+    # lentamente.", detect prob 0.21) and the supervisor refused it as
+    # non-English input; .env now ships JARVIS_LANG_AUTODETECT=0.
+    raw = os.environ.get("JARVIS_LANG_AUTODETECT", "1").strip().lower()
+    lang = "en" if raw in ("0", "false", "off", "no", "") else None
     try:
-        inst = FasterWhisperSTT(model=model, device=device, compute_type=compute)
+        inst = FasterWhisperSTT(
+            model=model, device=device, compute_type=compute, language=lang,
+        )
         logger.info(
-            "[stt.local] faster-whisper rung armed: model=%s device=%s compute=%s",
-            model, device, compute,
+            "[stt.local] faster-whisper rung armed: model=%s device=%s compute=%s lang=%s",
+            model, device, compute, lang or "auto",
         )
         return inst
     except Exception as e:

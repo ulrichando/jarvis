@@ -137,6 +137,24 @@ SPEECH_MODELS: dict[str, dict] = {
             temperature=0.6,
         ),
     },
+    # Same upstream model as "deepseek-chat", under a DISTINCT id so it is
+    # pinnable: pin detection is `active_speech_id != DEFAULT_SPEECH_MODEL`
+    # and deepseek-chat IS the default, so picking it un-pins and hands the
+    # routes back to the per-route dispatcher (Anthropic primaries). Added
+    # 2026-07-01: user wants V3-chat pinned all-routes for voice — v4-flash
+    # (the only pinnable DeepSeek before this) is the latency-optimized
+    # rung and audibly weaker in conversation (emote markup, language
+    # drift, instruction slips). Deliberate exception to the "ids match
+    # upstream names verbatim" convention above.
+    "deepseek-chat-v3": {
+        "label": "DeepSeek · chat (V3, pinned)",
+        "build": lambda: lk_openai.LLM(
+            model="deepseek-chat",
+            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+            base_url="https://api.deepseek.com/v1",
+            temperature=0.6,
+        ),
+    },
     # deepseek-v4-pro RETIRED 2026-05-16 per global review §P0-3.
     # Telemetry: 66 of 200 recent turns through v4-pro; 22 took >30s;
     # three took >700s; turn 160 produced a hallucinated Bosnian reply.

@@ -24,7 +24,9 @@ def test_seeds_builtins_when_missing(modes_path):
 def test_deepseek_builtin_is_internally_consistent(modes_path):
     from pipeline import conversation_modes as cm
     ds = next(m for m in cm.load()["modes"] if m["id"] == "deepseek")
-    assert ds["voice_model"] == "deepseek-v4-flash"
+    # V3-chat since 2026-07-01 (was v4-flash): better conversation, same
+    # pinned tool_choice="auto" mechanics. See conversation_modes._BUILTINS.
+    assert ds["voice_model"] == "deepseek-chat-v3"
     assert ds["cli_model"] == "deepseek-v4-pro"
     assert ds["voice_mode"] == "cloud"
 
