@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Sparkles } from "lucide-react";
+import { Brush } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -112,7 +112,7 @@ export function RefineForm({
       <header className="flex items-center justify-between border-b border-border/60 px-6 py-3">
         <div className="flex items-center gap-2">
           <span className="flex size-6 items-center justify-center rounded-md bg-orange-500/15 text-orange-400">
-            <Sparkles className="size-3.5" />
+            <Brush className="size-3.5" />
           </span>
           <div>
             <div className="text-[14px] font-semibold">Refine the brief</div>

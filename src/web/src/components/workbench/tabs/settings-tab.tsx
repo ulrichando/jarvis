@@ -25,7 +25,7 @@ import {
   Users,
   HardDrive,
   BookOpen,
-  Sparkles,
+  Wrench,
   Archive,
   KeyRound,
   type LucideIcon,
@@ -197,7 +197,7 @@ const SECTIONS: SectionDef[] = [
   { id: "user-management", label: "User Management", icon: Users, working: true },
   { id: "file-storage", label: "File Storage", icon: HardDrive, working: true },
   { id: "knowledge", label: "Knowledge", icon: BookOpen, working: true },
-  { id: "skills", label: "Skills", icon: Sparkles, working: true },
+  { id: "skills", label: "Skills", icon: Wrench, working: true },
   { id: "backups", label: "Backups", icon: Archive, working: true },
   { id: "danger", label: "Danger zone", icon: AlertTriangle, working: true },
 ];
@@ -2275,7 +2275,7 @@ function SkillsSection({ workspaceId }: { workspaceId: string }) {
   return (
     <Section
       title="Skills"
-      icon={<Sparkles className="size-3.5" />}
+      icon={<Wrench className="size-3.5" />}
       hint="Reusable prompt templates + shell macros stored at .jarvis/skills/. V1: store + edit in this UI; V2 wires them to slash commands in the composer."
     >
       <div className="mb-3 flex items-center justify-between">
@@ -2356,7 +2356,7 @@ function SkillEditor({
   return (
     <Section
       title={initial ? `Edit /${initial.name}` : "New skill"}
-      icon={<Sparkles className="size-3.5" />}
+      icon={<Wrench className="size-3.5" />}
     >
       <div className="space-y-3">
         <div>

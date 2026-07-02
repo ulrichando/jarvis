@@ -805,13 +805,15 @@ function StageTabs({
             {st.n !== undefined && (
               <span
                 className={cn(
-                  "rounded-full px-1.5 py-px text-[11px] tabular-nums",
+                  // Uniform pill for every count — same shape/min-width so the
+                  // strip reads even; tone changes text color only.
+                  "inline-flex min-w-5 items-center justify-center rounded-full px-1.5 py-px text-[11px] tabular-nums",
                   st.attn
                     ? "bg-primary/15 text-primary"
                     : st.tone === "emerald" && st.n > 0
-                      ? "text-emerald-500"
+                      ? "bg-emerald-500/15 text-emerald-500"
                       : st.tone === "amber" && st.n > 0
-                        ? "text-amber-500"
+                        ? "bg-amber-500/15 text-amber-500"
                         : "bg-muted/50 text-muted-foreground",
                 )}
               >

@@ -71,10 +71,10 @@ export function AccountSection() {
             <div>
               <p className="text-[14px] font-medium">Settings file</p>
               <p className="mt-0.5 font-mono text-[12px] text-muted-foreground">
-                .jarvis/settings.json
+                ~/.jarvis/settings.json
               </p>
             </div>
-            <CopyButton value=".jarvis/settings.json" />
+            <CopyButton value="~/.jarvis/settings.json" />
           </div>
           <div className="flex items-center justify-between py-3.5">
             <div>

@@ -14,7 +14,7 @@ export function IntegrationsSection() {
 
   return (
     <SettingsSection
-      description="Tokens stay local in .jarvis/settings.json. Used to push workspaces to GitHub from the Workbench's History tab."
+      description="Tokens stay local in ~/.jarvis/settings.json. Used to push workspaces to GitHub from the Workbench's History tab."
     >
       <GitHubRow />
     </SettingsSection>
