@@ -14,14 +14,16 @@ function stub(stdout: string): { run: GhRunner; calls: string[][] } {
 describe('gh-agent gh wrappers', () => {
   test('listMentions parses comments and keeps only trigger matches', async () => {
     const api = JSON.stringify([
-      { id: 1, body: 'hello', user: { login: 'bob' }, created_at: '2026-07-01T10:00:00Z', issue_url: 'https://api.github.com/repos/o/r/issues/12', html_url: 'https://github.com/o/r/issues/12#c1' },
-      { id: 2, body: '@jarvis add tests', user: { login: 'alice' }, created_at: '2026-07-01T11:00:00Z', issue_url: 'https://api.github.com/repos/o/r/issues/13', html_url: 'https://github.com/o/r/issues/13#c2' },
+      { id: 1, body: 'hello', user: { login: 'bob' }, created_at: '2026-07-01T10:00:00Z', updated_at: '2026-07-01T10:00:00Z', issue_url: 'https://api.github.com/repos/o/r/issues/12', html_url: 'https://github.com/o/r/issues/12#c1' },
+      { id: 2, body: '@jarvis add tests', user: { login: 'alice' }, created_at: '2026-07-01T11:00:00Z', updated_at: '2026-07-01T11:30:00Z', issue_url: 'https://api.github.com/repos/o/r/issues/13', html_url: 'https://github.com/o/r/issues/13#c2' },
     ])
     const { run } = stub(api)
     const mentions = await listMentions('o/r', '@jarvis', '2026-07-01T00:00:00Z', run)
     expect(mentions).toHaveLength(1)
     expect(mentions[0]).toMatchObject({ id: 2, author: 'alice', issueNumber: 13 })
     expect(mentions[0].body).toContain('@jarvis')
+    // ?since= filters on updated_at, so the cursor math needs it verbatim.
+    expect(mentions[0].updatedAt).toBe('2026-07-01T11:30:00Z')
   })
 
   test('listMentions passes the since cursor to gh api', async () => {

@@ -13,6 +13,9 @@ export type Mention = {
   body: string
   author: string
   createdAt: string
+  // GitHub's ?since= filters on updated_at (inclusive), so cursor math must
+  // use this field, not createdAt.
+  updatedAt: string
   issueNumber: number
   url: string
 }
@@ -22,6 +25,7 @@ type RawComment = {
   body: string
   user?: { login?: string }
   created_at: string
+  updated_at: string
   issue_url: string
   html_url: string
 }
@@ -57,6 +61,7 @@ export async function listMentions(
       body: c.body,
       author: c.user?.login ?? '',
       createdAt: c.created_at,
+      updatedAt: c.updated_at,
       issueNumber: issueNumberFromUrl(c.issue_url),
       url: c.html_url,
     }))

@@ -1,6 +1,6 @@
 // src/cli/src/gh-agent/main.ts
 import { type GhAgentConfig, isAllowedAuthor, loadGhAgentConfig } from './config.js'
-import { advanceCursor, readCursor } from './cursor.js'
+import { addHandledIds, advanceCursor, readCursor, readHandledIds } from './cursor.js'
 import { type GhRunner, listMentions, postComment, type Mention } from './gh.js'
 
 export type RunOnceArgs = { repo?: string; dryRun: boolean }
@@ -26,12 +26,16 @@ export async function runGhAgentOnce(args: RunOnceArgs, deps: RunOnceDeps = {}):
     const since = readCursor(repo, deps.cursorDir)
     const mentions: Mention[] = await listMentions(repo, cfg.trigger, since, deps.run)
     log(`${repo}: ${mentions.length} new mention(s) since ${since}`)
-    // Oldest-first so the cursor advances monotonically.
+    // Oldest-first for deterministic handling order.
     const ordered = [...mentions].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-    for (const m of ordered) {
+    // GitHub's ?since= is INCLUSIVE (updated_at >= since): the last handled
+    // mention re-enters every sweep. Comment-id dedupe is the real no-replay
+    // guarantee; the cursor only narrows the fetch window.
+    const handled = readHandledIds(repo, deps.cursorDir)
+    const fresh = ordered.filter(m => !handled.has(m.id))
+    for (const m of fresh) {
       if (!isAllowedAuthor(cfg, m.author)) {
         log(`  #${m.issueNumber} ignored — @${m.author} not in allowlist`)
-        advanceCursor(repo, m.createdAt, deps.cursorDir)
         continue
       }
       const task = taskText(m.body, cfg.trigger)
@@ -46,7 +50,17 @@ export async function runGhAgentOnce(args: RunOnceArgs, deps: RunOnceDeps = {}):
         )
         log(`  #${m.issueNumber} ${ok ? 'acked' : 'ACK FAILED'} @${m.author}`)
       }
-      advanceCursor(repo, m.createdAt, deps.cursorDir)
+    }
+    if (fresh.length > 0) {
+      addHandledIds(repo, fresh.map(m => m.id), deps.cursorDir)
+      // Advance ONCE to the max updated_at across the FETCHED mentions, with
+      // the sweep's own `since` as the floor — never regresses (advanceCursor
+      // is monotonic besides).
+      advanceCursor(
+        repo,
+        mentions.reduce((mx, m) => (m.updatedAt > mx ? m.updatedAt : mx), since),
+        deps.cursorDir,
+      )
     }
   }
 }
