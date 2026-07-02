@@ -500,7 +500,9 @@ export const Markdown = memo(function Markdown({
     // default margin so paragraph spacing matches the inter-turn gap.
     <div
       className={cn(
-        "prose prose-neutral dark:prose-invert max-w-none text-[15px] leading-[1.7]",
+        // Font size rides --chat-fs (Settings → Appearance, set via
+        // data-chat-font on the chat root); 15px is the "md" default.
+        "prose prose-neutral dark:prose-invert max-w-none text-[length:var(--chat-fs,15px)] leading-[1.7]",
         "[&_p]:my-4 [&_ul]:my-3 [&_ol]:my-3 [&_li]:my-1 [&_h1]:mt-8 [&_h2]:mt-7 [&_h3]:mt-6",
         className,
       )}

@@ -190,3 +190,18 @@
     scroll-behavior: auto !important;
   }
 }
+/* Settings → General → Appearance. chat.tsx sets data-chat-font / data-chat-density
+   on the chat root; message text + thread rhythm consume these variables
+   (markdown.tsx, message.tsx, thread.tsx). Fallbacks in the consumers match "md"/"cozy". */
+[data-chat-font="sm"] {
+  --chat-fs: 13.5px;
+  --chat-fs-user: 13px;
+}
+[data-chat-font="lg"] {
+  --chat-fs: 17px;
+  --chat-fs-user: 16px;
+}
+[data-chat-density="compact"] {
+  --chat-gap: 1rem;
+  --chat-pad-y: 1rem;
+}

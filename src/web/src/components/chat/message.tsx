@@ -481,7 +481,7 @@ export function Message({
             );
           })()}
           {text && (
-            <p className="whitespace-pre-wrap text-[14.5px] leading-6">{text}</p>
+            <p className="whitespace-pre-wrap text-[length:var(--chat-fs-user,14.5px)] leading-6">{text}</p>
           )}
         </div>
       ) : (
@@ -516,7 +516,7 @@ export function Message({
           {text ? (
             voiceReadChar >= 0 ? (
               // Voice mode: plain text, revealed gray→white as it's read aloud.
-              <p className="whitespace-pre-wrap text-[15px] leading-7">
+              <p className="whitespace-pre-wrap text-[length:var(--chat-fs,15px)] leading-7">
                 <span className="text-foreground">{text.slice(0, voiceReadChar)}</span>
                 <span className="text-muted-foreground">{text.slice(voiceReadChar)}</span>
               </p>

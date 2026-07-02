@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DEFAULT_SETTINGS } from '@/lib/settings/schema'
+import { DEFAULT_MODEL } from '@/lib/ai/models-meta'
 
 let origCwd: string
 const tmps: string[] = []
@@ -68,5 +69,31 @@ describe('settings store path + migration', () => {
     const cwd = await mktmp()
     const { loadSettings } = await loadStore(home, cwd)
     expect((await loadSettings()).user.name).toBe(DEFAULT_SETTINGS.user.name)
+  })
+
+  // Regression: a model id that was valid when saved but has since been
+  // removed from MODELS_META (live case: llama-3.3-70b after the Groq
+  // removal) must NOT discard the whole file — before the schema .catch()
+  // fix, loadSettings silently served DEFAULT_SETTINGS, dropping stored
+  // API keys, and the next save destroyed them on disk.
+  test('salvages file with stale model id — keys survive, model coerces', async () => {
+    const home = await mktmp()
+    const cwd = await mktmp()
+    await fs.mkdir(path.join(home, '.jarvis'), { recursive: true })
+    await fs.writeFile(
+      path.join(home, '.jarvis', 'settings.json'),
+      JSON.stringify({
+        ...DEFAULT_SETTINGS,
+        defaults: { ...DEFAULT_SETTINGS.defaults, model: 'llama-3.3-70b' },
+        providers: {
+          ...DEFAULT_SETTINGS.providers,
+          openai: { apiKey: 'sk-keep-me' },
+        },
+      }),
+    )
+    const { loadSettings } = await loadStore(home, cwd)
+    const loaded = await loadSettings()
+    expect(loaded.providers.openai.apiKey).toBe('sk-keep-me')
+    expect(loaded.defaults.model).toBe(DEFAULT_MODEL)
   })
 })
