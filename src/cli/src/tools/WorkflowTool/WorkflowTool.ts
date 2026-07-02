@@ -21,6 +21,7 @@ import type { SdkWorkflowProgress } from '../../types/tools.js'
 import type { PermissionResult } from '../../types/permissions.js'
 import { parseWorkflowMeta, checkDeterminism } from './meta.js'
 import { runWorkflow } from './runWorkflow.js'
+import type { JournalEntry } from './journal.js'
 import { makeDispatch } from './dispatch.js'
 import { resolveWorkflowByName } from './namedWorkflows.js'
 import { WORKFLOW_TOOL_PROMPT } from './prompt.js'
@@ -328,32 +329,82 @@ export const WorkflowTool = buildTool({
         })
       }
 
+      let tokensSpent = 0
       const onProgress = (p: SdkWorkflowProgress) => {
+        if (p.type === 'workflow_agent') tokensSpent += p.tokens ?? 0
         pending.push(p)
         flushTimer ??= setTimeout(flush, 16)
       }
+
+      // jarvis has no session-level TOKEN budget (only a USD cap), so total is
+      // null → remaining() is Infinity — the correct "unlimited" value when no
+      // budget is configured. spent() reports real tokens used across this run.
+      const getBudget = () => ({
+        total: null as number | null,
+        spent: () => tokensSpent,
+        remaining: () => Infinity,
+      })
 
       const dispatch = makeDispatch({
         toolUseContext: context,
         defaultModel: context.options.mainLoopModel,
         runId,
         agentControllers: (taskState as LocalWorkflowTaskState).agentControllers,
-        resolveAgentType: () => undefined,
+        resolveAgentType: (name: string) =>
+          context.options.agentDefinitions.activeAgents.find(
+            a => a.agentType === name,
+          ),
       })
+
+      // Nested workflow() — resolve a named workflow and run it inline, sharing
+      // this run's dispatch + progress stream. Depth-capped against runaway
+      // recursion (a workflow that keeps calling workflow()).
+      const makeResolveWorkflow =
+        (depth: number) =>
+        async (name: string, subArgs?: unknown): Promise<unknown> => {
+          if (depth <= 0) return null
+          const wf = await resolveWorkflowByName(name, getCwd())
+          if (!wf) return null
+          const subParsed = parseWorkflowMeta(wf.script)
+          if ('error' in subParsed) return null
+          const subOut = await runWorkflow({
+            scriptBody: subParsed.scriptBody,
+            args: subArgs,
+            dispatch,
+            getBudget,
+            resolveWorkflow: makeResolveWorkflow(depth - 1),
+            onProgress,
+            signal: runController.signal,
+            syncTimeoutMs: 30_000,
+          })
+          return subOut.result
+        }
+
+      // Resume: replay the prior journal so unchanged agent() calls return
+      // cached results instead of re-running (prefix semantics in WorkflowJournal).
+      let priorJournal: JournalEntry[] | undefined
+      if (input.resumeFromRunId) {
+        try {
+          const raw = await readFile(join(sessionDir, 'journal.jsonl'), 'utf-8')
+          priorJournal = raw
+            .split('\n')
+            .filter(Boolean)
+            .map(l => JSON.parse(l) as JournalEntry)
+        } catch {
+          // No prior journal on disk → full re-run.
+        }
+      }
 
       const out = await runWorkflow({
         scriptBody: parsed.scriptBody,
         args: input.args,
         dispatch,
-        getBudget: () => ({
-          total: null,
-          spent: () => 0,
-          remaining: () => Infinity,
-        }),
-        resolveWorkflow: async () => null,
+        getBudget,
+        resolveWorkflow: makeResolveWorkflow(3),
         onProgress,
         signal: runController.signal,
         syncTimeoutMs: 30_000,
+        priorJournal,
       })
 
       // Drain any tail batch before writing the terminal status.

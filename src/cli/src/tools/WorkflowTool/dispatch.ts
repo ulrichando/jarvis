@@ -7,6 +7,12 @@ import { createSyntheticOutputTool } from '../SyntheticOutputTool/SyntheticOutpu
 import { createUserMessage, extractTextContent } from '../../utils/messages.js'
 import { assembleToolPool } from '../../tools.js'
 import { createAgentId } from '../../utils/uuid.js'
+import { runWithCwdOverride } from '../../utils/cwd.js'
+import {
+  createAgentWorktree,
+  removeAgentWorktree,
+  hasWorktreeChanges,
+} from '../../utils/worktree.js'
 import type { AgentId } from '../../types/ids.js'
 import type { ModelAlias } from '../../utils/model/aliases.js'
 import type { DispatchResult, AgentOpts } from './agentCall.js'
@@ -50,9 +56,29 @@ export function makeDispatch(deps: DispatchDeps) {
     const availableTools =
       schemaTool && 'tool' in schemaTool ? [...workerTools, schemaTool.tool] : workerTools
 
+    // Optional git-worktree isolation for file-mutating parallel agents.
+    // Created in the ORIGINAL cwd (before the override) so the git root resolves
+    // correctly; the agent then runs inside the worktree via runWithCwdOverride.
+    let worktreeInfo:
+      | {
+          worktreePath: string
+          worktreeBranch?: string
+          headCommit?: string
+          gitRoot?: string
+          hookBased?: boolean
+        }
+      | null = null
+    if (opts.isolation === 'worktree') {
+      try {
+        worktreeInfo = await createAgentWorktree(`agent-${agentId.slice(0, 8)}`)
+      } catch {
+        worktreeInfo = null // fall back to the shared cwd rather than fail the agent
+      }
+    }
+
     const startTime = Date.now()
     const collected: Message[] = []
-    try {
+    const runIteration = async () => {
       for await (const msg of runAgent({
         agentDefinition: baseDef,
         promptMessages: [createUserMessage({ content: buildPrompt(prompt, opts) })],
@@ -64,12 +90,42 @@ export function makeDispatch(deps: DispatchDeps) {
         availableTools,
         description: opts.label ?? prompt.slice(0, 60),
         transcriptSubdir: `workflows/${deps.runId}`,
+        worktreePath: worktreeInfo?.worktreePath,
         override: { agentId: agentId as AgentId, abortController: controller },
       })) {
         collected.push(msg)
       }
+    }
+    try {
+      // AsyncLocalStorage-based override propagates across the whole iteration.
+      if (worktreeInfo?.worktreePath) {
+        await runWithCwdOverride(worktreeInfo.worktreePath, runIteration)
+      } else {
+        await runIteration()
+      }
     } finally {
       deps.agentControllers?.delete(agentId)
+      // Remove an unchanged worktree; keep it if the agent left changes.
+      if (worktreeInfo && !worktreeInfo.hookBased) {
+        try {
+          const changed = worktreeInfo.headCommit
+            ? await hasWorktreeChanges(
+                worktreeInfo.worktreePath,
+                worktreeInfo.headCommit,
+              )
+            : true
+          if (!changed) {
+            await removeAgentWorktree(
+              worktreeInfo.worktreePath,
+              worktreeInfo.worktreeBranch,
+              worktreeInfo.gitRoot,
+              worktreeInfo.hookBased,
+            )
+          }
+        } catch {
+          // Leave the worktree in place on cleanup failure.
+        }
+      }
     }
 
     if (controller.signal.aborted && signal.aborted) {
