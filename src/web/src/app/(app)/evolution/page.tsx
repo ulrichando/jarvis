@@ -13,22 +13,24 @@ import {
   AlertTriangle,
   Brain,
   CheckCircle2,
+  Copy,
   ExternalLink,
   FileCode2,
+  Flag,
   GitPullRequest,
   Hammer,
   Loader2,
-  Pause,
-  Play,
   Radar,
   RotateCcw,
   ShieldCheck,
+  TrendingUp,
+  Wallet,
   XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
-import { cn } from "@/lib/utils";
+import { cn, formatRelativeTime } from "@/lib/utils";
 import { categorize, CATEGORIES, CATEGORY_TONE, type Category } from "@/lib/evolution/categorize";
 import { Sparkline } from "./Sparkline";
 
@@ -87,10 +89,12 @@ type Activity = {
   detail: string;
   createdAt: string | null;
   automodId?: string;
+  priority?: string;
 };
 
 type Criterion = { id: string; group: string; label: string; description: string };
 
+type AxisMeta = { score: number; std: number; flat: boolean };
 type Fitness = {
   points: { ts: string; composite: number; passed: boolean }[];
   latest: number | null;
@@ -98,8 +102,27 @@ type Fitness = {
   count: number;
   trend: "up" | "down" | "flat" | null;
   perAxis: Record<string, number>;
+  perAxisMeta: Record<string, AxisMeta>;
   weakAxis: { axis: string; score: number } | null;
   error?: string;
+};
+
+type Cost = { spentToday: number; dailyUsd: number; remaining: number };
+type LoopStatus = {
+  mode: "auto" | "manual";
+  paused: boolean;
+  state: string; // paused|manual|deploying|building|waiting|budget|cooldown|ready
+  reason: string;
+  idleS: number | null;
+  cooldownLeftS: number;
+  budgetSpent: number;
+  budgetCap: number;
+  lastTickAgeS: number | null;
+};
+type FailureDigest = {
+  total: number;
+  byClass: { label: string; count: number }[];
+  repeatedPaths: { path: string; count: number }[];
 };
 
 type Graduation = {
@@ -133,6 +156,10 @@ function assessmentText(x: unknown): { head: string; body: string } {
 type EvolutionData = {
   proposals: Proposal[];
   failed: Proposal[];
+  failureDigest: FailureDigest;
+  needsHuman: Activity[];
+  cost: Cost;
+  loopStatus: LoopStatus;
   deployed: Deployed[];
   queued: Activity[];
   paused: boolean;
@@ -150,10 +177,12 @@ type EvolutionData = {
   status: {
     pending: number;
     queued: number;
+    needsHuman: number;
     failedCount: number;
     deployed: number;
     failed: number;
     builds: { today: number; cap: number; remaining: number };
+    cost: Cost;
     building: number;
     buildingDetail: InFlightBuild[];
     deployInFlight: boolean;
@@ -170,15 +199,12 @@ const BUILD_MODELS = [
   { value: "kimi-k2.7-code", label: "Kimi K2.7 Code" },
 ];
 
+// Null-safe adapter over the shared formatRelativeTime (lib/utils) — was a 6th
+// hand-rolled copy of the same min/hour/day math; now delegates.
 function timeAgo(iso: string | null): string {
   if (!iso) return "";
-  const d = new Date(iso).getTime();
-  if (Number.isNaN(d)) return "";
-  const s = Math.max(0, (Date.now() - d) / 1000);
-  if (s < 90) return "just now";
-  if (s < 3600) return `${Math.round(s / 60)}m ago`;
-  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
-  return `${Math.round(s / 86400)}d ago`;
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? "" : formatRelativeTime(t);
 }
 
 const stripPrefix = (f: string) => f.replace(/^src\/voice-agent\//, "");
@@ -231,6 +257,7 @@ export default function EvolutionPage() {
     if (!data || didDefaultRef.current) return;
     didDefaultRef.current = true;
     if (data.status.pending > 0) setTab("review");
+    else if (data.status.needsHuman > 0) setTab("needs");
     else if (data.status.building > 0) setTab("building");
     else if (data.queued.length > 0) setTab("queue");
   }, [data]);
@@ -317,115 +344,64 @@ export default function EvolutionPage() {
     act("pause", "/api/evolution/pause", { paused }, paused ? "Evolution paused." : "Evolution resumed.");
   const setMode = (mode: "manual" | "auto") =>
     act("mode", "/api/evolution/mode", { mode }, `Switched to ${mode} mode.`);
+  // ONE control for the loop's run state. "Off" is a hard pause; "Manual" and
+  // "Auto" are the build mode (unpausing first if needed). Replaces the old
+  // pause button + resume button + manual/auto toggle — three controls for what
+  // is really one three-state choice.
+  const setLoopMode = async (m: "off" | "manual" | "auto") => {
+    if (m === "off") {
+      void setPaused(true);
+      return;
+    }
+    if (data?.paused) await setPaused(false);
+    void setMode(m);
+  };
   const setBuildModel = (model: string) =>
     act("buildModel", "/api/evolution/build-model", { model }, "Build model updated.");
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto w-full max-w-3xl px-4 py-10">
-        {/* Header */}
-        <div className="flex items-center gap-2.5">
+      <div className="mx-auto w-full max-w-4xl px-4 py-10">
+        {/* Header — title only. The run-state control lives in the status card
+            below, next to the state it changes (one control, one place). */}
+        <div className="flex items-center gap-x-3">
           <GitPullRequest className="size-5 text-primary" />
-          <h1 className="font-serif text-[22px] font-semibold tracking-tight">Evolution</h1>
-          {data && (
-            <ModePill
-              mode={data.mode}
-              paused={data.paused}
-              busy={busy === "mode" || busy === "pause"}
-              onMode={setMode}
-              onPause={() => setPaused(!data.paused)}
-            />
-          )}
-        </div>
-        <p className="mt-1.5 text-[14px] leading-6 text-muted-foreground">
-          Changes JARVIS has proposed to its own source, and the health of the loop that
-          produces them. Review a diff, then approve — approving deploys it and restarts
-          him into the new code.
-        </p>
-
-        {/* Safety-net reassurance — the defining, trust-building detail */}
-        <div className="mt-5 flex items-start gap-3 rounded-xl border border-border/60 bg-card/50 px-4 py-3">
-          <ShieldCheck className="mt-0.5 size-4 shrink-0 text-emerald-500" />
-          <p className="text-[13px] leading-5 text-muted-foreground">
-            <span className="font-medium text-foreground">Auto-rollback is on.</span>{" "}
-            After a deploy, an external watchdog checks JARVIS comes back healthy. If he
-            doesn&apos;t, it reverts to the last-good version and restarts him — automatically,
-            within a few minutes. Nothing you approve can leave him broken.
-          </p>
+          <div className="min-w-0">
+            <h1 className="font-serif text-[22px] font-semibold leading-none tracking-tight">Evolution</h1>
+            <p className="mt-1 text-[12px] uppercase tracking-wider text-muted-foreground">
+              Self-modification console
+            </p>
+          </div>
         </div>
 
-        {/* Pipeline — the loop at a glance. These counts ARE the stages a
-            proposal moves through: queued → building → review → deployed, with
-            failed as the drop-off. Each stage opens its tab. */}
+        {/* System status — one card: run state + the single Off/Manual/Auto
+            control (top), health outcomes (bottom). */}
+        {data?.loopStatus && (
+          <SystemStatusCard
+            data={data}
+            busy={busy === "mode" || busy === "pause"}
+            onSetMode={setLoopMode}
+            onHealth={() => goTab("health")}
+          />
+        )}
+
+        {/* Stage tabs — the work stages double as navigation. Light tab bar
+            (not a second metrics row): small count badges, active underline. */}
+        {data && <StageTabs data={data} tab={tab} onTab={goTab} />}
+
+        {/* Actions — the three things you DO to the loop. */}
         {data && (
-          <>
-            <div className="mt-5 overflow-hidden rounded-xl border border-border/60 bg-card/40">
-              <div className="flex items-stretch divide-x divide-border/50">
-                <PipelineStage label="Queued" value={data.status.queued} active={tab === "queue"} onClick={() => goTab("queue")} />
-                <PipelineStage
-                  label="Building"
-                  value={data.status.building}
-                  live={data.status.building > 0}
-                  active={tab === "building"}
-                  onClick={() => goTab("building")}
-                />
-                <PipelineStage
-                  label="Review"
-                  value={data.status.pending}
-                  attention={data.status.pending > 0}
-                  active={tab === "review"}
-                  onClick={() => goTab("review")}
-                />
-                <PipelineStage label="Deployed" value={data.status.deployed} tone="emerald" active={tab === "deployed"} onClick={() => goTab("deployed")} />
-                <PipelineStage label="Failed" value={data.status.failed} tone="amber" active={tab === "failed"} onClick={() => goTab("failed")} />
-                <PipelineStage label="Health" icon={ActivityIcon} active={tab === "health"} onClick={() => goTab("health")} />
-              </div>
-            </div>
-
-            {/* Action bar — every control in one place: not mixed into the
-                metrics, not buried in a tab (build-model used to live at the
-                bottom of History). */}
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <Button
-                size="sm"
-                className="gap-1.5"
-                disabled={busy === "cycle" || data.paused}
-                onClick={cycle}
-              >
-                {busy === "cycle" ? <Loader2 className="size-3.5 animate-spin" /> : <Hammer className="size-3.5" />}
-                Run cycle
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="gap-1.5"
-                disabled={busy === "introspect"}
-                onClick={introspect}
-              >
-                {busy === "introspect" ? <Loader2 className="size-3.5 animate-spin" /> : <Brain className="size-3.5" />}
-                Introspect
-              </Button>
-              <BuildModelPicker
-                current={data.buildModel}
-                busy={busy === "buildModel"}
-                onChange={setBuildModel}
-              />
-              <div className="ml-auto flex items-center gap-3">
-                {data.status.rollbacks > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setTab("history")}
-                    className="text-[11.5px] text-amber-500 transition-opacity hover:opacity-80"
-                  >
-                    {data.status.rollbacks} rollback{data.status.rollbacks === 1 ? "" : "s"}
-                  </button>
-                )}
-                <span className="text-[11.5px] tabular-nums text-muted-foreground">
-                  {data.status.builds.remaining}/{data.status.builds.cap} builds left today
-                </span>
-              </div>
-            </div>
-          </>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button size="sm" className="gap-1.5" disabled={busy === "cycle" || data.paused} onClick={cycle}>
+              {busy === "cycle" ? <Loader2 className="size-3.5 animate-spin" /> : <Hammer className="size-3.5" />}
+              Run cycle
+            </Button>
+            <Button size="sm" variant="outline" className="gap-1.5" disabled={busy === "introspect"} onClick={introspect}>
+              {busy === "introspect" ? <Loader2 className="size-3.5 animate-spin" /> : <Brain className="size-3.5" />}
+              Introspect
+            </Button>
+            <BuildModelPicker current={data.buildModel} busy={busy === "buildModel"} onChange={setBuildModel} />
+          </div>
         )}
 
         {/* Tabs */}
@@ -569,6 +545,41 @@ export default function EvolutionPage() {
                 )}
               </TabsContent>
 
+              {/* NEEDS YOU: intents the admission gate escalated to a human —
+                  goals that target the protected self-modification loop itself,
+                  which can never be auto-built. Informational + copy-to-act. */}
+              <TabsContent value="needs" className="mt-5 space-y-3">
+                {data.needsHuman.length === 0 ? (
+                  <div className="rounded-xl border border-border/60 bg-card/40 px-4 py-10 text-center">
+                    <p className="text-[13.5px] text-muted-foreground">No escalations.</p>
+                    <p className="mx-auto mt-1 max-w-sm text-[12.5px] leading-5 text-muted-foreground/80">
+                      When JARVIS proposes a change to its own evolution loop — which is
+                      protected and can&apos;t be auto-built — it&apos;s held here for you to
+                      handle by hand instead of burning a build.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex items-start gap-3 rounded-xl border border-primary/20 bg-primary/[0.04] px-4 py-3">
+                      <Flag className="mt-0.5 size-4 shrink-0 text-primary" />
+                      <p className="text-[12.5px] leading-5 text-muted-foreground">
+                        <span className="font-medium text-foreground">
+                          {data.needsHuman.length} intent{data.needsHuman.length === 1 ? "" : "s"} need your hand.
+                        </span>{" "}
+                        These target JARVIS&apos;s own protected self-modification code, so the loop
+                        won&apos;t build them autonomously. Implement one yourself, or leave it — it
+                        won&apos;t re-queue.
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      {data.needsHuman.map((n) => (
+                        <NeedsHumanRow key={n.id} n={n} />
+                      ))}
+                    </div>
+                  </>
+                )}
+              </TabsContent>
+
               {/* BUILDING: live in-flight builds — one row per running jarvis-automod-impl */}
               <TabsContent value="building" className="mt-5 space-y-3">
                 {(data.status.buildingDetail ?? []).length === 0 ? (
@@ -635,14 +646,21 @@ export default function EvolutionPage() {
                 )}
               </TabsContent>
 
-              {/* FAILED: builds that didn't pass the gate (rejected / red tests) */}
-              <TabsContent value="failed" className="mt-5 space-y-2">
+              {/* FAILED: builds that didn't pass the gate — triaged by class +
+                  the paths repeatedly targeted across failures (turns a flat
+                  list into where-to-look insight). */}
+              <TabsContent value="failed" className="mt-5 space-y-3">
                 {data.failed.length === 0 ? (
                   <div className="rounded-xl border border-border/60 bg-card/40 px-4 py-10 text-center">
                     <p className="text-[13.5px] text-muted-foreground">No failed builds.</p>
                   </div>
                 ) : (
-                  data.failed.map((f) => <FailedRow key={f.id} f={f} />)
+                  <>
+                    <FailureTriage digest={data.failureDigest} />
+                    <div className="space-y-2">
+                      {data.failed.map((f) => <FailedRow key={f.id} f={f} />)}
+                    </div>
+                  </>
                 )}
               </TabsContent>
             </Tabs>
@@ -742,109 +760,68 @@ function FilterPill({
 // One segment of the unified pipeline nav. It IS the tab bar now — clicking a
 // stage selects its view (active = highlighted). A count stage shows its number;
 // the Health stage shows an icon instead (no count).
-function PipelineStage({
-  label,
-  value,
-  icon: Icon,
-  tone,
-  live,
-  attention,
-  active,
-  onClick,
+// Work stages as a light tab bar (was a row of big-number tiles competing with
+// the KPIs). Text label + small count badge + active underline — reads as
+// navigation, not a second metrics band. Attention stages (review/needs) tint
+// their badge; a live build pulses.
+function StageTabs({
+  data,
+  tab,
+  onTab,
 }: {
-  label: string;
-  value?: number;
-  icon?: React.ComponentType<{ className?: string }>;
-  tone?: "emerald" | "amber";
-  live?: boolean;
-  attention?: boolean;
-  active?: boolean;
-  onClick: () => void;
+  data: EvolutionData;
+  tab: string;
+  onTab: (t: string) => void;
 }) {
+  const s = data.status;
+  const stages: {
+    id: string; label: string; n?: number; attn?: boolean; live?: boolean; tone?: "emerald" | "amber";
+  }[] = [
+    { id: "review", label: "Review", n: s.pending, attn: s.pending > 0 },
+    { id: "needs", label: "Needs you", n: s.needsHuman, attn: s.needsHuman > 0 },
+    { id: "queue", label: "Queue", n: s.queued },
+    { id: "building", label: "Building", n: s.building, live: s.building > 0 },
+    { id: "deployed", label: "Deployed", n: s.deployed, tone: "emerald" },
+    { id: "failed", label: "Failed", n: s.failed, tone: "amber" },
+    { id: "health", label: "Health" },
+  ];
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={`View ${label.toLowerCase()}`}
-      aria-pressed={active}
-      className={cn(
-        "flex flex-1 flex-col items-center gap-1 px-2 py-3.5 transition-colors",
-        active ? "bg-accent" : "hover:bg-accent/60",
-        !active && attention && "bg-primary/[0.06]",
-      )}
-    >
-      <span className="flex items-center gap-1.5">
-        {live && <span className="size-1.5 animate-pulse rounded-full bg-primary" />}
-        {Icon ? (
-          <Icon className={cn("size-[18px]", active ? "text-foreground" : "text-muted-foreground")} />
-        ) : (
-          <span
-            className={cn(
-              "text-[20px] font-semibold leading-none tabular-nums",
-              tone === "emerald" && "text-emerald-500",
-              tone === "amber" && "text-amber-500",
-              !tone && (attention || active ? "text-primary" : "text-foreground"),
-              tone && active && "opacity-100",
-            )}
-          >
-            {value}
-          </span>
-        )}
-      </span>
-      <span
-        className={cn(
-          "text-[10.5px] font-medium uppercase tracking-wide",
-          active ? "text-foreground" : "text-muted-foreground",
-        )}
-      >
-        {label}
-      </span>
-    </button>
-  );
-}
-
-function ModePill({
-  mode,
-  paused,
-  busy,
-  onMode,
-  onPause,
-}: {
-  mode: "auto" | "manual";
-  paused: boolean;
-  busy: boolean;
-  onMode: (m: "manual" | "auto") => void;
-  onPause: () => void;
-}) {
-  return (
-    <div className="ml-auto flex items-center gap-1.5">
-      <div className="flex items-center rounded-full border border-border/60 bg-card/50 p-0.5 text-[11.5px]">
-        {(["manual", "auto"] as const).map((m) => (
+    <div className="mt-5 flex flex-wrap items-center gap-x-1 gap-y-1 border-b border-border/60">
+      {stages.map((st) => {
+        const active = tab === st.id;
+        return (
           <button
-            key={m}
+            key={st.id}
             type="button"
-            disabled={busy}
-            onClick={() => onMode(m)}
+            onClick={() => onTab(st.id)}
+            aria-pressed={active}
             className={cn(
-              "rounded-full px-2 py-0.5 capitalize transition-colors",
-              mode === m ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:text-foreground",
+              "relative flex items-center gap-1.5 px-3 py-2 text-[13px] transition-colors",
+              active ? "text-foreground" : "text-muted-foreground hover:text-foreground",
             )}
           >
-            {m}
+            {st.live && <span className="size-1.5 animate-pulse rounded-full bg-primary" />}
+            <span className={cn(active && "font-medium")}>{st.label}</span>
+            {st.n !== undefined && (
+              <span
+                className={cn(
+                  "rounded-full px-1.5 py-px text-[11px] tabular-nums",
+                  st.attn
+                    ? "bg-primary/15 text-primary"
+                    : st.tone === "emerald" && st.n > 0
+                      ? "text-emerald-500"
+                      : st.tone === "amber" && st.n > 0
+                        ? "text-amber-500"
+                        : "bg-muted/50 text-muted-foreground",
+                )}
+              >
+                {st.n}
+              </span>
+            )}
+            {active && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-primary" />}
           </button>
-        ))}
-      </div>
-      <Button
-        size="sm"
-        variant="ghost"
-        className="h-7 gap-1.5 px-2 text-[12px]"
-        disabled={busy}
-        onClick={onPause}
-        title={paused ? "Resume evolution" : "Pause evolution"}
-      >
-        {paused ? <Play className="size-3.5 text-amber-500" /> : <Pause className="size-3.5" />}
-        {paused ? "Paused" : "Pause"}
-      </Button>
+        );
+      })}
     </div>
   );
 }
@@ -1234,6 +1211,319 @@ function ActivityRow({ a }: { a: Activity }) {
   );
 }
 
+// Loop status strip — is the cycle alive, and if idle, WHY. The colored dot +
+// plain-language reason kill the "auto-but-quiet looks broken" ambiguity. Offers
+// the one-click unblock when the loop is stopped (resume / go auto).
+const LOOP_TONE: Record<string, { dot: string; text: string }> = {
+  building: { dot: "bg-primary animate-pulse", text: "text-primary" },
+  deploying: { dot: "bg-primary animate-pulse", text: "text-primary" },
+  ready: { dot: "bg-emerald-500", text: "text-emerald-500" },
+  waiting: { dot: "bg-emerald-500", text: "text-muted-foreground" },
+  cooldown: { dot: "bg-amber-500", text: "text-muted-foreground" },
+  budget: { dot: "bg-amber-500", text: "text-amber-500" },
+  manual: { dot: "bg-muted-foreground/50", text: "text-muted-foreground" },
+  paused: { dot: "bg-rose-500", text: "text-rose-500" },
+  unknown: { dot: "bg-muted-foreground/40", text: "text-muted-foreground" },
+};
+
+function loopHeadline(s: LoopStatus): string {
+  if (s.state === "paused") return "Loop paused";
+  if (s.state === "manual") return "Manual — not building";
+  if (s.state === "building") return "Building now";
+  if (s.state === "deploying") return "Deploying";
+  if (s.state === "waiting") return "Auto — waiting for quiet";
+  if (s.state === "cooldown") return `Auto — cooldown ${Math.round(s.cooldownLeftS / 60)}m`;
+  if (s.state === "budget") return "Auto — budget spent";
+  if (s.state === "ready") return "Auto — ready to build";
+  return "Loop status unknown";
+}
+
+// System status — ONE card that answers "is the loop alive + healthy?". Top:
+// loop state (dot + headline + why) with the unblock action when stopped.
+// Bottom: three health stats (fitness / budget / deploy) as hairline-divided
+// cells. Replaces the old separate loop strip AND KPI band (removed a whole
+// chrome band + the mode-shown-twice redundancy).
+// The single run-state control: Off (hard pause) / Manual (propose only) /
+// Auto (build). Replaces the old pause button + resume button + manual/auto
+// toggle. "Off" wins visually when paused, regardless of the underlying mode.
+const LOOP_MODES: { id: "off" | "manual" | "auto"; label: string; hint: string }[] = [
+  { id: "off", label: "Off", hint: "Paused — nothing runs" },
+  { id: "manual", label: "Manual", hint: "Detect + queue proposals, but don't build" },
+  { id: "auto", label: "Auto", hint: "Continuously build proposals (you still approve deploys)" },
+];
+
+function LoopModeControl({
+  current,
+  busy,
+  onSet,
+}: {
+  current: "off" | "manual" | "auto";
+  busy: boolean;
+  onSet: (m: "off" | "manual" | "auto") => void;
+}) {
+  return (
+    <div className="flex items-center rounded-full border border-border/60 bg-background/50 p-0.5 text-[12px]">
+      {LOOP_MODES.map((m) => (
+        <button
+          key={m.id}
+          type="button"
+          disabled={busy}
+          title={m.hint}
+          onClick={() => onSet(m.id)}
+          className={cn(
+            "rounded-full px-2.5 py-1 transition-colors disabled:opacity-60",
+            current === m.id
+              ? m.id === "off"
+                ? "bg-rose-500/15 font-medium text-rose-500"
+                : "bg-primary/15 font-medium text-primary"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {m.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// System status — ONE card that answers "is the loop alive + healthy?". Top:
+// loop state (dot + headline + why) + the single Off/Manual/Auto control.
+// Bottom: three health stats (fitness / budget / deploy) as hairline-divided
+// cells. Replaces the old separate loop strip AND KPI band.
+function SystemStatusCard({
+  data,
+  busy,
+  onSetMode,
+  onHealth,
+}: {
+  data: EvolutionData;
+  busy: boolean;
+  onSetMode: (m: "off" | "manual" | "auto") => void;
+  onHealth: () => void;
+}) {
+  const s = data.loopStatus;
+  const f = data.fitness;
+  const cost = data.cost ?? { spentToday: 0, dailyUsd: 6, remaining: 6 };
+  const spentPct = cost.dailyUsd > 0 ? Math.min(100, (cost.spentToday / cost.dailyUsd) * 100) : 0;
+  const rollbacks = data.status.rollbacks;
+  const tone = LOOP_TONE[s.state] ?? LOOP_TONE.unknown;
+  const current: "off" | "manual" | "auto" = s.paused ? "off" : s.mode === "auto" ? "auto" : "manual";
+  const trendTone =
+    f.trend === "up" ? "text-emerald-500" : f.trend === "down" ? "text-amber-500" : "text-muted-foreground";
+  const trendLabel = f.trend === "up" ? "rising" : f.trend === "down" ? "declining" : f.trend === "flat" ? "steady" : "";
+  return (
+    <div className="mt-5 overflow-hidden rounded-2xl border border-border/60 bg-card/50">
+      {/* Loop state + the single run-state control */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-5 py-3.5">
+        <span className={cn("size-2 shrink-0 rounded-full", tone.dot)} />
+        <span className={cn("text-[14px] font-medium", tone.text)}>{loopHeadline(s)}</span>
+        <span className="text-[12.5px] text-muted-foreground">— {s.reason}</span>
+        <div className="ml-auto flex items-center gap-3">
+          {s.lastTickAgeS !== null && (
+            <span className="text-[11px] tabular-nums text-muted-foreground/70" title="Time since the in-process loop last ticked">
+              ticked {s.lastTickAgeS < 90 ? "just now" : `${Math.round(s.lastTickAgeS / 60)}m ago`}
+            </span>
+          )}
+          <LoopModeControl current={current} busy={busy} onSet={onSetMode} />
+        </div>
+      </div>
+      {/* Health outcomes */}
+      <div className="grid grid-cols-3 divide-x divide-border/50 border-t border-border/50">
+        <StatCell
+          label="Fitness"
+          icon={TrendingUp}
+          value={f.latest !== null ? f.latest.toFixed(2) : "—"}
+          valueTone={f.latest !== null && f.latest >= 0.7 ? "text-emerald-500" : f.latest !== null && f.latest < 0.6 ? "text-amber-500" : "text-foreground"}
+          sub={trendLabel ? <span className={trendTone}>{trendLabel}</span> : "no readings"}
+          spark={f.points.length > 1 ? f.points : undefined}
+          onClick={onHealth}
+        />
+        <StatCell
+          label="Budget today"
+          icon={Wallet}
+          value={`$${cost.spentToday.toFixed(2)}`}
+          sub={`of $${cost.dailyUsd.toFixed(0)}`}
+          meterPct={spentPct}
+          onClick={onHealth}
+        />
+        <StatCell
+          label="Deploy"
+          icon={ShieldCheck}
+          value={rollbacks === 0 ? "OK" : String(rollbacks)}
+          valueTone={rollbacks === 0 ? "text-emerald-500" : "text-amber-500"}
+          sub={rollbacks === 0 ? "auto-rollback on" : `rollback${rollbacks === 1 ? "" : "s"}`}
+          onClick={onHealth}
+        />
+      </div>
+    </div>
+  );
+}
+
+function StatCell({
+  label,
+  value,
+  sub,
+  icon: Icon,
+  valueTone = "text-foreground",
+  meterPct,
+  spark,
+  onClick,
+}: {
+  label: string;
+  value: string;
+  sub?: React.ReactNode;
+  icon: React.ComponentType<{ className?: string }>;
+  valueTone?: string;
+  meterPct?: number;
+  spark?: { ts: string; composite: number; passed: boolean }[];
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex flex-col gap-1.5 px-5 py-3 text-left transition-colors hover:bg-accent/40"
+    >
+      <span className="flex items-center gap-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
+        <Icon className="size-3" />
+        {label}
+      </span>
+      <div className="flex items-baseline gap-1.5">
+        <span className={cn("font-serif text-[20px] font-semibold leading-none tabular-nums", valueTone)}>{value}</span>
+        {sub && <span className="text-[11px] text-muted-foreground">{sub}</span>}
+      </div>
+      {meterPct !== undefined && (
+        <div className="h-1 overflow-hidden rounded-full bg-muted/50">
+          <div
+            className={cn("h-full rounded-full", meterPct >= 100 ? "bg-rose-500" : meterPct >= 80 ? "bg-amber-500" : "bg-emerald-500")}
+            style={{ width: `${Math.max(2, meterPct)}%` }}
+          />
+        </div>
+      )}
+      {spark && (
+        <div className="-mb-0.5">
+          <Sparkline points={spark} width={80} height={18} className="w-full opacity-70" />
+        </div>
+      )}
+    </button>
+  );
+}
+
+function NeedsHumanRow({ n }: { n: Activity }) {
+  const [copied, setCopied] = useState(false);
+  const cat = categorize([], n.title);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(n.title);
+      setCopied(true);
+      toast.success("Intent copied");
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      toast.error("Couldn't copy to clipboard.");
+    }
+  };
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-xl border border-border/60 bg-card/40 px-4 py-3">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <Flag className="size-3.5 shrink-0 text-primary" />
+          <p className="truncate text-[13px] text-foreground">{n.title}</p>
+          <CategoryChip category={cat} />
+        </div>
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11.5px] text-muted-foreground">
+          <span className="rounded-full bg-muted/60 px-1.5 py-0.5 text-[10.5px]">targets protected loop</span>
+          {n.priority && <PriorityDot priority={n.priority} />}
+          <span>{timeAgo(n.createdAt)}</span>
+        </div>
+      </div>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-7 shrink-0 gap-1.5 px-2 text-[12px] text-muted-foreground"
+        onClick={copy}
+        title="Copy the intent so you can implement it by hand"
+      >
+        {copied ? <CheckCircle2 className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
+        {copied ? "Copied" : "Copy"}
+      </Button>
+    </div>
+  );
+}
+
+const FAILURE_LABELS: Record<string, string> = {
+  blocklist: "Blocked path",
+  council_block: "Council blocked",
+  tests_failed: "Tests failed",
+  no_commit: "No commit",
+  too_many_files: "Too many files",
+  other: "Other",
+};
+function failClassTone(label: string): string {
+  if (label === "blocklist" || label === "council_block") return "bg-rose-500";
+  if (label === "tests_failed" || label === "no_commit") return "bg-amber-500";
+  if (label === "too_many_files") return "bg-sky-500";
+  return "bg-muted-foreground/50";
+}
+
+function FailureTriage({ digest }: { digest: FailureDigest }) {
+  if (!digest || digest.total === 0) return null;
+  return (
+    <div className="rounded-xl border border-border/60 bg-card/40 p-4">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Failure triage</span>
+        <span className="text-[11.5px] tabular-nums text-muted-foreground">{digest.total} total</span>
+      </div>
+      <div className="mt-2.5 flex flex-wrap gap-1.5">
+        {digest.byClass.map((c) => (
+          <span
+            key={c.label}
+            className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/40 px-2 py-0.5 text-[11px] text-muted-foreground"
+          >
+            <span className={cn("size-1.5 rounded-full", failClassTone(c.label))} />
+            {FAILURE_LABELS[c.label] ?? c.label}
+            <span className="tabular-nums text-foreground">{c.count}</span>
+          </span>
+        ))}
+      </div>
+      {digest.repeatedPaths.length > 0 && (
+        <div className="mt-3 border-t border-border/50 pt-2.5">
+          <p className="text-[11px] text-muted-foreground">Repeatedly targeted — likely where the real work is:</p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {digest.repeatedPaths.map((p) => (
+              <span
+                key={p.path}
+                className="inline-flex items-center gap-1 rounded-md bg-muted/50 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+              >
+                <FileCode2 className="size-3" />
+                {stripPrefix(p.path)}
+                <span className="tabular-nums text-foreground">×{p.count}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LearnBadge({ flat, std }: { flat: boolean; std: number }) {
+  return (
+    <span
+      className={cn(
+        "mt-1 inline-flex items-center rounded-full px-1.5 py-0.5 text-[9.5px] font-medium uppercase tracking-wide",
+        flat ? "bg-amber-500/10 text-amber-500" : "bg-sky-500/10 text-sky-500",
+      )}
+      title={
+        flat
+          ? `Flat (σ ${std.toFixed(3)}) — plateaued; incremental tweaks aren't moving it`
+          : `Oscillating (σ ${std.toFixed(3)}) — responds to change, so it's improvable`
+      }
+    >
+      {flat ? "plateaued" : "learnable"}
+    </span>
+  );
+}
+
 function FitnessPanel({ fitness }: { fitness: Fitness }) {
   const trendTone =
     fitness.trend === "up" ? "text-emerald-500" : fitness.trend === "down" ? "text-amber-500" : "text-muted-foreground";
@@ -1262,30 +1552,42 @@ function FitnessPanel({ fitness }: { fitness: Fitness }) {
             <Sparkline points={fitness.points} width={520} height={56} className="w-full" />
           </div>
           {axes.length > 0 && (
-            <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3">
-              {axes.map(([axis, score]) => (
-                <div key={axis} className="min-w-0">
-                  <div className="flex items-center justify-between gap-2 text-[11.5px]">
-                    <span className="truncate text-muted-foreground">{axis.replace(/_/g, " ")}</span>
-                    <span className="tabular-nums text-foreground">{score.toFixed(2)}</span>
+            <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2.5 sm:grid-cols-3">
+              {axes.map(([axis, score]) => {
+                const meta = fitness.perAxisMeta?.[axis];
+                const weak = score < 0.6;
+                return (
+                  <div key={axis} className="min-w-0">
+                    <div className="flex items-center justify-between gap-2 text-[11.5px]">
+                      <span className="truncate text-muted-foreground">{axis.replace(/_/g, " ")}</span>
+                      <span className="tabular-nums text-foreground">{score.toFixed(2)}</span>
+                    </div>
+                    <div className="mt-1 h-1 overflow-hidden rounded-full bg-muted/50">
+                      <div
+                        className={cn("h-full rounded-full", weak ? "bg-amber-500" : "bg-emerald-500")}
+                        style={{ width: `${Math.max(0, Math.min(1, score)) * 100}%` }}
+                      />
+                    </div>
+                    {weak && meta && <LearnBadge flat={meta.flat} std={meta.std} />}
                   </div>
-                  <div className="mt-1 h-1 overflow-hidden rounded-full bg-muted/50">
-                    <div
-                      className={cn("h-full rounded-full", score < 0.6 ? "bg-amber-500" : "bg-emerald-500")}
-                      style={{ width: `${Math.max(0, Math.min(1, score)) * 100}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
-          {fitness.weakAxis && (
-            <p className="mt-3 text-[12px] text-muted-foreground">
-              Weakest axis:{" "}
-              <span className="text-foreground">{fitness.weakAxis.axis.replace(/_/g, " ")}</span> at{" "}
-              {fitness.weakAxis.score.toFixed(2)} — the next improvement targets this.
-            </p>
-          )}
+          {fitness.weakAxis && (() => {
+            const wa = fitness.weakAxis;
+            const meta = fitness.perAxisMeta?.[wa.axis];
+            return (
+              <p className="mt-3.5 text-[12px] leading-5 text-muted-foreground">
+                Weakest axis:{" "}
+                <span className="text-foreground">{wa.axis.replace(/_/g, " ")}</span> at{" "}
+                {wa.score.toFixed(2)}.{" "}
+                {meta?.flat
+                  ? "It's been flat — incremental tweaks aren't moving it, so the next proposal should try a structurally different approach."
+                  : "It oscillates, so it responds to change — the next improvement targets it."}
+              </p>
+            );
+          })()}
         </>
       )}
     </div>
