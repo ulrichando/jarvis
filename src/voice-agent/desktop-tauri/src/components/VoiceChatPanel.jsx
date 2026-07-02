@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 
 // ── Theme tokens (match ChatPanel.jsx for visual consistency) ──
 const SURFACE   = '#0d1117'
@@ -26,6 +27,16 @@ const Icon = {
   ),
   LockOpen: (p) => (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
+  ),
+  Terminal: (p) => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+    </svg>
+  ),
+  User: (p) => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+    </svg>
   ),
 }
 
@@ -294,6 +305,18 @@ export default function VoiceChatPanel({
           </span>
         </div>
         <div style={{ display: 'flex', gap: '2px', alignItems: 'center' }}>
+          <HeaderButton
+            title="Sign in to your JARVIS server (opens a terminal running `jarvis auth login`)"
+            onClick={() => invoke('open_cli_terminal', { login: true }).catch(() => {})}
+          >
+            <Icon.User />
+          </HeaderButton>
+          <HeaderButton
+            title="Open the jarvis CLI in a terminal"
+            onClick={() => invoke('open_cli_terminal', { login: false }).catch(() => {})}
+          >
+            <Icon.Terminal />
+          </HeaderButton>
           <HeaderButton
             title={autoMute ? 'Mic auto-mute ON (click to disable)' : 'Mic auto-mute OFF (click to enable)'}
             onClick={() => setAutoMute(v => !v)}

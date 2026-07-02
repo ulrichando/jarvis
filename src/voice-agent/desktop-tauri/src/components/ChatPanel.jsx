@@ -565,14 +565,10 @@ export default function ChatPanel({
     return () => clearInterval(t)
   }, [isLoading, resetInFlight])
 
-  // ── Header actions: restart agent / open CLI / sign in ────────────
+  // ── Header actions: restart agent / open CLI ──────────────────────
+  // (Sign-in lives on the voice-agent UI — tray menu + VoiceChatPanel —
+  // per 2026-07-02 direction; deliberately NOT in the chat panels.)
   const [agentBusy, setAgentBusy] = useState(false)
-  const [login, setLogin] = useState(null)   // {loggedIn, baseUrl} | null
-
-  useEffect(() => {
-    if (!isOpen) return
-    invoke('bridge_login_status').then(setLogin).catch(() => {})
-  }, [isOpen])
 
   const restartAgent = useCallback(async () => {
     if (agentBusy) return
@@ -827,26 +823,6 @@ export default function ChatPanel({
             <span style={{ fontSize: '14px', fontWeight: 600, color: TEXT, letterSpacing: '-0.01em' }}>Jarvis</span>
           </div>
           <div style={{ display: 'flex', gap: '2px', alignItems: 'center' }}>
-            {login && !login.loggedIn && (
-              <button
-                onClick={() => openCli(true)}
-                data-no-drag
-                title="Sign in to your JARVIS server (opens a terminal running `jarvis auth login`)"
-                style={{
-                  background: ACCENT_BG, border: `1px solid ${BORDER}`, color: ACCENT,
-                  cursor: 'pointer', padding: '3px 10px', borderRadius: '6px',
-                  fontSize: '12px', fontWeight: 600, marginRight: '4px',
-                }}
-              >Sign in</button>
-            )}
-            {login && login.loggedIn && (
-              <HeaderButton
-                title={`Signed in · ${(login.baseUrl || '').replace(/^https?:\/\//, '').replace(/\/api\/bridge$/, '') || 'JARVIS server'} — click to re-login`}
-                onClick={() => openCli(true)}
-              >
-                <Icon.User />
-              </HeaderButton>
-            )}
             <HeaderButton title="Open the jarvis CLI in a terminal" onClick={() => openCli(false)}>
               <Icon.Terminal />
             </HeaderButton>

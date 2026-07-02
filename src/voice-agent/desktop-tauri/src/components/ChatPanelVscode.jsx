@@ -253,14 +253,8 @@ function SettingsAction({ label, hint, onClick, disabled }) {
   )
 }
 
-function loginHost(login) {
-  return (login?.baseUrl || '')
-    .replace(/^https?:\/\//, '')
-    .replace(/\/api\/bridge\/?$/, '')
-}
-
 function Sidebar({ view, sessions, currentSessionId, onNewChat, onPickSession,
-                   login, onOpenCli, onRestartAgent, restarting }) {
+                   onOpenCli, onRestartAgent, restarting }) {
   const title = view === 'history' ? 'HISTORY' : view === 'settings' ? 'SETTINGS' : 'CHAT'
   return (
     <div style={{
@@ -304,13 +298,6 @@ function Sidebar({ view, sessions, currentSessionId, onNewChat, onPickSession,
         ))}
         {view === 'settings' && (
           <div style={{ padding: '8px 0', display: 'flex', flexDirection: 'column' }}>
-            <SettingsAction
-              label={login && login.loggedIn ? 'Re-sign in…' : 'Sign in to JARVIS server…'}
-              hint={login && login.loggedIn
-                ? `Signed in · ${loginHost(login) || 'server'}`
-                : 'Opens a terminal running `jarvis auth login`'}
-              onClick={() => onOpenCli(true)}
-            />
             <SettingsAction
               label="Open jarvis CLI…"
               hint="Terminal running the jarvis agent"
@@ -437,7 +424,7 @@ function MainArea({ messages, onSend, isLoading, isConnected }) {
   )
 }
 
-function StatusBar({ isConnected, model, messageCount, login, onSignIn, onOpenCli, onRestart, restarting }) {
+function StatusBar({ isConnected, model, messageCount, onOpenCli, onRestart, restarting }) {
   const chip = {
     background: 'rgba(255,255,255,0.14)', border: 'none', color: '#fff',
     borderRadius: 3, padding: '1px 8px', fontSize: 11, fontFamily: MONO,
@@ -457,17 +444,6 @@ function StatusBar({ isConnected, model, messageCount, login, onSignIn, onOpenCl
       </span>
       <span style={{ opacity: 0.8 }}>{model || 'JARVIS'}</span>
       <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-        {login && !login.loggedIn && (
-          <button style={chip} onClick={onSignIn}
-            title="Sign in to your JARVIS server (opens a terminal running `jarvis auth login`)">
-            Sign in
-          </button>
-        )}
-        {login && login.loggedIn && (
-          <span style={{ opacity: 0.85 }} title={`Signed in · ${loginHost(login) || 'JARVIS server'}`}>
-            ✓ {loginHost(login) || 'signed in'}
-          </span>
-        )}
         <button style={chip} onClick={onOpenCli} title="Open the jarvis CLI in a terminal">CLI</button>
         <button style={{ ...chip, opacity: restarting ? 0.6 : 1 }} onClick={onRestart} disabled={restarting}
           title="Restart the voice agent (also clears any stuck request here)">
@@ -490,15 +466,7 @@ export default function ChatPanelVscode({
     { role: 'assistant', content: 'Online. How can I assist you?' }
   ])
   const [isLoading, setIsLoading] = useState(false)
-  const [login, setLogin] = useState(null)        // {loggedIn, baseUrl} | null
   const [restarting, setRestarting] = useState(false)
-
-  // Login state comes from ~/.jarvis/keys.env (what `jarvis auth login`
-  // writes). Re-check when the Settings view opens so a login finished in
-  // the spawned terminal is reflected without an app restart.
-  useEffect(() => {
-    invoke('bridge_login_status').then(setLogin).catch(() => {})
-  }, [view])
 
   const openCli = useCallback((asLogin) => {
     invoke('open_cli_terminal', { login: !!asLogin }).catch((e) => {
@@ -585,7 +553,6 @@ export default function ChatPanelVscode({
             currentSessionId={null}
             onNewChat={newChat}
             onPickSession={() => {}}
-            login={login}
             onOpenCli={openCli}
             onRestartAgent={restartAgent}
             restarting={restarting}
@@ -602,8 +569,6 @@ export default function ChatPanelVscode({
         isConnected={wsConnected}
         model="JARVIS"
         messageCount={messages.length}
-        login={login}
-        onSignIn={() => openCli(true)}
         onOpenCli={() => openCli(false)}
         onRestart={restartAgent}
         restarting={restarting}
