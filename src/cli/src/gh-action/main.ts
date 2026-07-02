@@ -1,5 +1,6 @@
 // src/cli/src/gh-action/main.ts
-import { readFileSync, existsSync, renameSync } from 'node:fs'
+import { readFileSync, existsSync, renameSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileNoThrow, execFileNoThrowWithCwd } from '../utils/execFileNoThrow.js'
 import { actionCtxFromEnv, parseActionEvent, isAuthorized, type ActionEvent } from './event.js'
@@ -11,7 +12,7 @@ export type ActionDeps = {
   workspace: string
   jarvisBin?: string
   timeoutSec?: number
-  neutralizeClaude: (ws: string) => void
+  neutralizeClaude: (ws: string) => () => void   // returns a restore fn (call before `git add`)
   exec: (prompt: string) => Promise<{ code: number; stdout: string; stderr: string }>
   git: (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>
   gh: (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>
@@ -33,9 +34,13 @@ export async function runGhActionOnce(d: ActionDeps): Promise<ActionResult> {
   }
   if (d.dryRun) { d.log(`gh-action DRY-RUN would handle #${ev.issueNumber}: "${ev.task}"`); return { skipped: true } }
 
-  d.neutralizeClaude(d.workspace)                                   // SECURITY: drop target repo's hooks/settings
+  // SECURITY: move the target repo's .claude out of the tree so its hooks/settings
+  // can't hijack the agent, then restore it BEFORE `git add` so the move never
+  // lands in the PR. `finally` guarantees restore even if jarvis throws/times out.
+  const restoreClaude = d.neutralizeClaude(d.workspace)
   const prompt = `You are handling a GitHub request. Make ONLY the code changes for this task; do NOT run git commit, git push, or gh. Task: ${ev.task}`
-  const ex = await d.exec(prompt)
+  let ex: { code: number; stdout: string; stderr: string }
+  try { ex = await d.exec(prompt) } finally { restoreClaude() }
   if (ex.code !== 0) return { ok: false, error: `jarvis -p exited ${ex.code}: ${ex.stderr.slice(0, 200)}` }
 
   const gitc = d.git
@@ -70,7 +75,15 @@ export function realActionDeps(): ActionDeps {
     readEvent: () => { const ctx = actionCtxFromEnv(p => readFileSync(p, 'utf8')); return ctx ? parseActionEvent(ctx) : null },
     allowlist: (process.env.JARVIS_GH_ALLOWLIST ?? '').split(',').map(s => s.trim()).filter(Boolean),
     workspace: ws, jarvisBin, timeoutSec,
-    neutralizeClaude: (dir) => { const p = join(dir, '.claude'); if (existsSync(p)) { try { renameSync(p, join(dir, '.claude.untrusted')) } catch { /* best effort */ } } },
+    neutralizeClaude: (dir) => {
+      const src = join(dir, '.claude')
+      if (!existsSync(src)) return () => {}
+      let stash: string
+      // Stash OUTSIDE the work tree (os tmp) so neither the removal nor a
+      // `.claude.untrusted` shows up to `git add -A`.
+      try { stash = join(mkdtempSync(join(tmpdir(), 'jarvis-claude-')), '.claude'); renameSync(src, stash) } catch { return () => {} }
+      return () => { try { if (existsSync(src)) rmSync(src, { recursive: true, force: true }); renameSync(stash, src) } catch { /* best effort */ } }
+    },
     exec: async (prompt) => { const r = await execFileNoThrowWithCwd(jarvisBin, ['-p', prompt], { cwd: ws, timeout: timeoutSec * 1000, env: { ...process.env, JARVIS_SKIP_VERIFY: '1' } }); return { code: r.code, stdout: r.stdout, stderr: r.stderr } },
     git: (args) => run('git')(['-C', ws, ...args]),
     gh: run('gh'),
