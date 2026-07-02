@@ -1,4 +1,11 @@
-import { Box, Text, useInput } from 'ink'
+// Vendored ink, NOT the npm 'ink' package: npm ink's reconciler has a
+// top-level await, which (a) made this whole subtree an async module —
+// the module-level require() of it in BackgroundTasksDialog deadlocked
+// the source-run REPL boot — and (b) breaks `bun build --compile`
+// ("require() async module is unsupported"). Every other component in
+// this tree imports from src/ink.js; these two files were the only
+// strays (2026-07-02).
+import { Box, Text, useInput } from '../../ink.js'
 import * as React from 'react'
 import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { SdkWorkflowAgentProgress } from '../../types/tools.js'

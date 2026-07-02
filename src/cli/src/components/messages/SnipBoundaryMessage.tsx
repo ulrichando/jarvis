@@ -1,4 +1,7 @@
-import { Text } from 'ink'
+// Vendored ink, NOT npm 'ink' (its reconciler has a top-level await that
+// poisons the import graph async + breaks bun --compile; see
+// WorkflowDetailDialog.tsx note, 2026-07-02).
+import { Text } from '../../ink.js'
 import * as React from 'react'
 
 type Props = {
