@@ -26,6 +26,16 @@ describe('gh-agent config', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
+  test('non-string entries in repos/allowlist are filtered out (never throws)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gha-'))
+    const p = join(dir, 'gh-agent.json')
+    writeFileSync(p, JSON.stringify({ repos: ['o/r', 7, null], allowlist: [42, 'alice'] }))
+    const cfg = loadGhAgentConfig(p)
+    expect(cfg.repos).toEqual(['o/r'])
+    expect(cfg.allowlist).toEqual(['alice'])
+    rmSync(dir, { recursive: true, force: true })
+  })
+
   test('malformed JSON → defaults (never throws)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'gha-'))
     const p = join(dir, 'gh-agent.json')

@@ -1,6 +1,6 @@
 // src/cli/src/gh-agent/cursor.test.ts
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { addHandledIds, advanceCursor, readCursor, readHandledIds } from './cursor.js'
@@ -13,10 +13,19 @@ describe('gh-agent cursor', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  test('advance then read returns the advanced value', () => {
+  test('advance then read returns the advanced value (canonical ISO)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ghc-'))
     advanceCursor('owner/repo', '2026-07-02T00:00:00Z', dir)
-    expect(readCursor('owner/repo', dir)).toBe('2026-07-02T00:00:00Z')
+    expect(readCursor('owner/repo', dir)).toBe('2026-07-02T00:00:00.000Z')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('readCursor canonicalizes a hand-edited but Date-parseable value', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ghc-'))
+    writeFileSync(join(dir, 'owner__repo.cursor'), 'July 1 2026')
+    const got = readCursor('owner/repo', dir)
+    expect(got).toBe(new Date('July 1 2026').toISOString())
+    expect(got).toMatch(/\.\d{3}Z$/) // canonical: has millis + Z
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -24,8 +33,8 @@ describe('gh-agent cursor', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ghc-'))
     advanceCursor('owner/a', '2026-01-01T00:00:00Z', dir)
     advanceCursor('owner/b', '2026-02-02T00:00:00Z', dir)
-    expect(readCursor('owner/a', dir)).toBe('2026-01-01T00:00:00Z')
-    expect(readCursor('owner/b', dir)).toBe('2026-02-02T00:00:00Z')
+    expect(readCursor('owner/a', dir)).toBe('2026-01-01T00:00:00.000Z')
+    expect(readCursor('owner/b', dir)).toBe('2026-02-02T00:00:00.000Z')
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -34,7 +43,7 @@ describe('gh-agent cursor', () => {
     advanceCursor('owner/repo', '2026-07-02T00:00:00Z', dir)
     // An edited old comment re-entering the sweep must not move the cursor back.
     advanceCursor('owner/repo', '2026-06-01T00:00:00Z', dir)
-    expect(readCursor('owner/repo', dir)).toBe('2026-07-02T00:00:00Z')
+    expect(readCursor('owner/repo', dir)).toBe('2026-07-02T00:00:00.000Z')
     rmSync(dir, { recursive: true, force: true })
   })
 

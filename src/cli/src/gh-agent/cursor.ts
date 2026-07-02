@@ -3,16 +3,22 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { GH_AGENT_DIR } from './config.js'
 
-// owner/name → owner__name.cursor (filesystem-safe, unambiguous: '/' is the
-// only reserved char in a GitHub owner/name and becomes '__').
+// owner/name → owner__name (filesystem-safe, unambiguous: '/' is the only
+// reserved char in a GitHub owner/name and becomes '__').
+function repoSlug(repo: string): string {
+  return repo.replace(/\//g, '__')
+}
+
 function cursorPath(repo: string, dir: string): string {
-  return join(dir, `${repo.replace(/\//g, '__')}.cursor`)
+  return join(dir, `${repoSlug(repo)}.cursor`)
 }
 
 export function readCursor(repo: string, dir: string = GH_AGENT_DIR): string {
   try {
     const v = readFileSync(cursorPath(repo, dir), 'utf8').trim()
-    if (v && !Number.isNaN(new Date(v).getTime())) return v
+    // Normalize to canonical ISO so stored/compared values share one format
+    // (a hand-edited "July 1 2026" comes back as a proper toISOString()).
+    if (v && !Number.isNaN(new Date(v).getTime())) return new Date(v).toISOString()
   } catch {
     /* fall through to default */
   }
@@ -34,6 +40,7 @@ export function advanceCursor(repo: string, iso: string, dir: string = GH_AGENT_
     /* no cursor yet */
   }
   if (existing && !Number.isNaN(new Date(existing).getTime()) && iso <= existing) return
+  // ponytail: single-user; tmp+rename/lock if this ever runs concurrently
   writeFileSync(cursorPath(repo, dir), iso)
 }
 
@@ -43,7 +50,7 @@ export function advanceCursor(repo: string, iso: string, dir: string = GH_AGENT_
 const HANDLED_IDS_MAX = 500
 
 function handledPath(repo: string, dir: string): string {
-  return join(dir, `${repo.replace(/\//g, '__')}.handled`)
+  return join(dir, `${repoSlug(repo)}.handled`)
 }
 
 export function readHandledIds(repo: string, dir: string = GH_AGENT_DIR): Set<number> {
@@ -68,5 +75,6 @@ export function addHandledIds(repo: string, ids: number[], dir: string = GH_AGEN
   }
   // Sets preserve insertion order: file order = oldest→newest, keep the tail.
   const bounded = [...merged].slice(-HANDLED_IDS_MAX)
+  // ponytail: single-user; tmp+rename/lock if this ever runs concurrently
   writeFileSync(handledPath(repo, dir), bounded.join('\n') + (bounded.length > 0 ? '\n' : ''))
 }
