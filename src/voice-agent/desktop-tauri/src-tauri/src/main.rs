@@ -1009,6 +1009,19 @@ fn bridge_login_status() -> serde_json::Value {
     serde_json::json!({ "loggedIn": logged_in, "baseUrl": base_url })
 }
 
+/// Sign this box out of its JARVIS server: drop the Remote Control token +
+/// base URL from ~/.jarvis/keys.env. Device-level sign-out — the bridge token
+/// IS the credential, so clearing it locally revokes this box's access. (Full
+/// server-session invalidation is `jarvis auth logout`; this is the instant
+/// in-UI action the voice panel's Sign-out uses.)
+#[tauri::command]
+fn bridge_logout() -> Result<(), String> {
+    let mut map = _keys_read_map();
+    map.remove("JARVIS_BRIDGE_TOKEN");
+    map.remove("JARVIS_BRIDGE_BASE_URL");
+    _keys_write_map(&map)
+}
+
 /// Open a terminal running the jarvis CLI (login=false) or the JARVIS
 /// server sign-in flow (login=true — `jarvis auth login` is interactive,
 /// so the terminal IS the login UI). Tries common emulators in order;
@@ -3780,6 +3793,7 @@ fn main() {
             keys_restart_agent,
             restart_all_services,
             bridge_login_status,
+            bridge_logout,
             open_cli_terminal,
             mcp_list,
             mcp_set_enabled,
