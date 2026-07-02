@@ -14,26 +14,16 @@ SCRIPTS="$JARVIS_ROOT/scripts"
 # launcher before the agent loop ever starts.
 [ -t 1 ] && clear || true
 
-# Interactive REPL (tty + no args) runs the COMPILED binary in DEFAULT
-# permission mode: Shift+Tab cycles default → accept-edits → plan there
-# (bypass supersedes the cycle). Source-run interactive works ONLY in
-# bypass mode: deadlock #1 (bootstrap/state re-export cycle) is fixed,
-# but a second order-dependent module deadlock remains on the non-bypass
-# source boot branch (blank REPL; see cli-interactive-repl-deadlock
-# memory). Until #2 is pinned, the bundle (no import order) is the
-# interactive path; headless/subcommands stay on start.sh with bypass.
-JARVIS_BIN="$JARVIS_ROOT/dist/jarvis-linux-x64"
-if [ -t 1 ] && [ $# -eq 0 ] && [ -x "$JARVIS_BIN" ]; then
-  source "$SCRIPTS/start-env.sh"
-  source "$SCRIPTS/proxy-runtime.sh"
-  jarvis_proxy_start "$JARVIS_ROOT" "$SCRIPTS/bunw.sh"
-  # Launch in bypass ("autonomous") like the source path always did — AND
-  # launching WITH bypass is what puts it in the Shift+Tab carousel
-  # (getNextPermissionMode only offers bypassPermissions when
-  # isBypassPermissionsModeAvailable, i.e. it was enabled at launch;
-  # verified byte-identical with the claude-code donor). So this restores
-  # autonomous-by-default while keeping default/auto/plan one Shift+Tab away.
-  # start-env.sh always sets both vars (bypass default + sandbox settings).
-  exec "$JARVIS_BIN" --permission-mode "$JARVIS_PERMISSION_MODE" --settings "$JARVIS_FLAG_SETTINGS"
-fi
+# (2026-07-02) Single path again: source start.sh for EVERYTHING. The
+# interactive blank-REPL is root-caused and fixed — it was never a mode
+# thing or a bundling thing per se: feature-gated MODULE-LEVEL require()s
+# (WORKFLOW_SCRIPTS/MONITOR_TOOL in BackgroundTasksDialog.tsx) re-entered
+# the big import cycle while bun's source-run had promoted it to async
+# evaluation, deadlocking the REPL import wave silently. Converted to
+# React.lazy / on-demand import() there; source now paints in default,
+# acceptEdits, AND bypass. start.sh launches with bypass by default
+# (autonomous), which also keeps bypass in the Shift+Tab carousel
+# (donor-verified: only modes available at launch are cycled).
+# dist/jarvis-linux-x64 is the installer artifact only. A temporary
+# binary-for-interactive branch lived here while the bug was open.
 exec bash "$SCRIPTS/start.sh" "$@"
