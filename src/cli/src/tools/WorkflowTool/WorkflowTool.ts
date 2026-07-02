@@ -7,6 +7,7 @@ import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { generateTaskId, createTaskStateBase } from '../../Task.js'
 import { registerTask, updateTaskState } from '../../utils/task/framework.js'
+import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { getCwd } from '../../utils/cwd.js'
 import {
@@ -275,21 +276,61 @@ export const WorkflowTool = buildTool({
     void (async () => {
       const runController = (taskState as LocalWorkflowTaskState).runController!
 
-      const onProgress = (p: SdkWorkflowProgress) => {
+      // ~16ms-batched progress flusher: coalesces rapid onProgress calls into
+      // a single task-state update + SDK task_progress event per frame.
+      let pending: SdkWorkflowProgress[] = []
+      let flushTimer: ReturnType<typeof setTimeout> | undefined
+      const summaryText = taskState.summary
+      const taskStartTime = taskState.startTime
+
+      const flush = () => {
+        flushTimer = undefined
+        if (pending.length === 0) return
+        const batch = pending
+        pending = []
         updateTaskState<LocalWorkflowTaskState>(
           taskId,
           setAppStateForTasks,
-          task => ({
-            ...task,
-            workflowProgress: [...(task.workflowProgress ?? []), p],
-            totalTokens:
-              (task.totalTokens ?? 0) +
-              (p.type === 'workflow_agent' ? (p.tokens ?? 0) : 0),
-            totalToolCalls:
-              (task.totalToolCalls ?? 0) +
-              (p.type === 'workflow_agent' ? (p.toolCalls ?? 0) : 0),
-          }),
+          task => {
+            const merged = [...(task.workflowProgress ?? []), ...batch]
+            const addTokens = batch.reduce(
+              (n, p) => n + (p.type === 'workflow_agent' ? (p.tokens ?? 0) : 0),
+              0,
+            )
+            const addCalls = batch.reduce(
+              (n, p) =>
+                n + (p.type === 'workflow_agent' ? (p.toolCalls ?? 0) : 0),
+              0,
+            )
+            return {
+              ...task,
+              workflowProgress: merged,
+              totalTokens: (task.totalTokens ?? 0) + addTokens,
+              totalToolCalls: (task.totalToolCalls ?? 0) + addCalls,
+            }
+          },
         )
+        const lastAgent = [...batch]
+          .reverse()
+          .find(p => p.type === 'workflow_agent')
+        emitTaskProgress({
+          taskId,
+          toolUseId: context.toolUseId,
+          description:
+            lastAgent && lastAgent.type === 'workflow_agent'
+              ? lastAgent.label
+              : (summaryText ?? 'workflow'),
+          startTime: taskStartTime,
+          totalTokens: 0,
+          toolUses: 0,
+          summary: summaryText,
+          workflowProgress: batch,
+        })
+      }
+
+      const onProgress = (p: SdkWorkflowProgress) => {
+        pending.push(p)
+        flushTimer ??= setTimeout(flush, 16)
       }
 
       const dispatch = makeDispatch({
@@ -314,6 +355,10 @@ export const WorkflowTool = buildTool({
         signal: runController.signal,
         syncTimeoutMs: 30_000,
       })
+
+      // Drain any tail batch before writing the terminal status.
+      if (flushTimer) clearTimeout(flushTimer)
+      flush()
 
       const status = runController.signal.aborted
         ? 'killed'
