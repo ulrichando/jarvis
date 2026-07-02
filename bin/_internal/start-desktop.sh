@@ -181,6 +181,15 @@ done
 # append to /tmp/jarvis-proxy.log. Truncate once at script start so
 # each launcher invocation starts with a fresh log.
 : > /tmp/jarvis-proxy.log
+# Persistent-service happy path (2026-07-02, mirrors proxy-runtime.sh):
+# when jarvis-proxy.service owns :4000, spawning a second server.ts just
+# crash-loops on EADDRINUSE until the supervisor gives up (live: 6 crashes
+# after the unit was enabled). Skip the whole supervisor instead.
+if command -v systemctl >/dev/null 2>&1 \
+   && systemctl --user is-active --quiet jarvis-proxy.service 2>/dev/null; then
+  echo "[jarvis-proxy-sup] persistent jarvis-proxy.service is active — skipping session supervisor" >>/tmp/jarvis-proxy.log
+  PROXY_SUP_PID=""
+else
 (
   # The parent script runs under `set -euo pipefail`, which propagates
   # into this subshell. Disable -e here: `wait $PROXY_CHILD` returns
@@ -216,12 +225,13 @@ done
   done
 ) &
 PROXY_SUP_PID=$!
+fi
 
 for i in $(seq 1 15); do
   curl -s http://localhost:4000/health >/dev/null 2>&1 && break
   sleep 1
 done
-echo "[jarvis] proxy up on :4000 (provider: $JARVIS_PROVIDER, supervised pid=$PROXY_SUP_PID)"
+echo "[jarvis] proxy up on :4000 (provider: $JARVIS_PROVIDER, supervised pid=${PROXY_SUP_PID:-jarvis-proxy.service})"
 
 # ── Start bridge (8765) ───────────────────────────────────────────────
 "$BUN" "$CLI_ROOT/src/bridge/server.ts" &>/tmp/jarvis-bridge.log &
