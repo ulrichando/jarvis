@@ -5990,7 +5990,9 @@ async function run(): Promise<CommanderCommand> {
     .action(async (opts: { repo?: string; once?: boolean; dryRun?: boolean }) => {
       const { runGhAgentOnce } = await import("./gh-agent/main.js");
       await runGhAgentOnce({ repo: opts.repo, dryRun: !!opts.dryRun });
-      process.exit(0);
+      // Preserve the module's failure signal (process.exitCode = 1 on a failed
+      // poll/ack) so cron/systemd sees the real outcome, not a hardcoded 0.
+      process.exit(process.exitCode ?? 0);
     });
 
   program
