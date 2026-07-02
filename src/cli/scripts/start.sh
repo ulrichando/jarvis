@@ -60,6 +60,7 @@ CLI_CMD=( "$BUN"
   --feature=RUN_SKILL_GENERATOR
   --feature=ULTRATHINK
   --feature=WORKFLOW_SCRIPTS
+  --feature=HISTORY_SNIP
   --define 'MACRO.VERSION="2.1.108"'
   --define 'MACRO.BUILD_TIME=""'
   --define 'MACRO.PACKAGE_URL="@anthropic-ai/claude-code"'
