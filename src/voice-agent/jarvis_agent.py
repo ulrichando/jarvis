@@ -933,6 +933,7 @@ TTS_PROVIDER_FILE = Path.home() / ".jarvis" / "tts-provider"
 # refactor). Re-exported under the legacy underscored name so the one
 # in-file caller (entrypoint() at ~line 4630) is untouched.
 from providers.llm import build_dispatching_llm as _build_dispatching_llm
+from providers.llm import wrap_pin_fallback as _wrap_pin_fallback
 
 # Extracted to providers/tts.py 2026-05-10 (Step 6 of the 10/10
 # refactor). The chain builder takes the TTS_PROVIDER_FILE path as
@@ -5136,6 +5137,11 @@ def _build_llm_stack() -> dict:
         # Legacy behavior — user explicitly opted in via env var.
         dispatch_llm = None
         dispatch_tts = None
+        # NOTE: llm_arg set here is OVERWRITTEN below — the pinned path sets
+        # dispatch_llm=None, so the graph-else branch (further down) resets
+        # llm_arg to the single-LLM path. The JARVIS_PIN_FALLBACK_MODEL wrap is
+        # therefore applied THERE, at the terminal site, not here (fixing the
+        # 2026-07-02 bug where wrapping only here was a silent no-op).
         llm_arg = active_speech_llm
         tts_arg = tts.FallbackAdapter(_build_tts_chain())
         logger.info(
@@ -5214,7 +5220,14 @@ def _build_llm_stack() -> dict:
         # goes through the speech_llm + FallbackAdapter chain rather
         # than the dispatcher's fallback. Audit if telemetry shows
         # this is suboptimal.
-        llm_arg = active_speech_llm
+        #
+        # This is the TERMINAL llm_arg for the PINNED path (pin sets
+        # dispatch_llm=None → lands here) plus the dispatch-disabled and
+        # dispatcher-build-failed paths. wrap_pin_fallback arms the
+        # JARVIS_PIN_FALLBACK_MODEL rung HERE so it survives to the
+        # session — wrapping only at the pin branch above was a no-op
+        # because this line reset it (2026-07-02 audit).
+        llm_arg = _wrap_pin_fallback(active_speech_llm, active_speech_id)
         tts_arg = tts.FallbackAdapter(_build_tts_chain())
 
     return {
@@ -6586,6 +6599,14 @@ async def entrypoint(ctx: JobContext) -> None:
         subagent_tools=[],
         legacy_llm=llm_arg,
     )
+    # Proof of what the session ACTUALLY runs: 'FallbackAdapter' means the pin
+    # fallback survived to the session; a bare LLM class means it didn't. (The
+    # 2026-07-02 no-op bug would have shown a bare class here despite the
+    # "pin fallback armed" log firing upstream.)
+    logger.info(
+        f"[dispatch] final supervisor LLM → session: {type(llm_arg).__name__} "
+        f"label={getattr(llm_arg, '_jarvis_label', None)!r}"
+    )
 
     session = AgentSession(
         # 2026-05-02: raised from livekit's default 3 to 15. Browser
@@ -6597,20 +6618,17 @@ async def entrypoint(ctx: JobContext) -> None:
         # runaway loops.
         max_tool_steps=15,
         vad=ctx.proc.userdata["vad"],
-        # STT chain (2026-05-18): Deepgram Nova-3 streaming primary,
-        # Groq Whisper Turbo failover. Deepgram delivers partial
-        # transcripts every ~150 ms over WebSocket — that's what lets
-        # the framework's STT-confirmed barge-in path fire while the
-        # user is still talking (Whisper Turbo is non-streaming and
-        # final-only, which made barge-in unworkable). Falls through
-        # to Whisper-only when DEEPGRAM_API_KEY is unset / Deepgram
-        # plugin missing / Deepgram construction errors — safe to
-        # ship without the key, just slower barge-in.
+        # STT chain: local faster-whisper (large-v3-turbo, GPU). The live
+        # default is 100% on-device (JARVIS_STT_LOCAL_ONLY=1, 2026-06-21).
+        # _build_stt_chain still supports an optional Deepgram Nova-3
+        # streaming primary when DEEPGRAM_API_KEY is set and local-only is
+        # off; the Groq Whisper rung was removed 2026-06-29. Barge-in is
+        # VAD-gated (faster-whisper is finals-only), not STT-confirmed.
         stt=_build_stt_chain(vad=ctx.proc.userdata.get("vad")),
         # Speech LLM — switchable via the tray's "Models" submenu.
-        # Default is llama-3.3-70b on Groq for ~200 ms first-token
-        # latency. Switching writes ~/.jarvis/voice-model and bounces
-        # the agent unit, so the new LLM is built on next startup
+        # Default is deepseek-chat (DEFAULT_SPEECH_MODEL); Groq was
+        # removed 2026-06-29. Switching writes ~/.jarvis/voice-model and
+        # bounces the agent unit, so the new LLM is built on next startup
         # (read_speech_model() fires below as we exit entrypoint and
         # re-enter on the fresh job dispatch).
         # When Maya dispatcher is active, llm_arg is the TASK fallback;
