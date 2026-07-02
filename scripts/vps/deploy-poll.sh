@@ -94,6 +94,11 @@ if git -C "$REPO" diff --name-only "$OLD..$NEW" -- src/web src/cli | grep -q .; 
     # Caddyfile is bind-mounted :ro — content changes need an explicit restart.
     "${COMPOSE[@]}" restart caddy >>"$LOG" 2>&1 || rollback
   fi
+  if git -C "$REPO" diff --name-only "$OLD..$NEW" -- src/web/searxng | grep -q .; then
+    # searxng settings.yml is bind-mounted — content changes need a restart
+    # (up -d won't recreate on a mounted-file change alone).
+    "${COMPOSE[@]}" restart searxng >>"$LOG" 2>&1 || rollback
+  fi
   ok=0
   for _ in 1 2 3; do
     sleep 15
