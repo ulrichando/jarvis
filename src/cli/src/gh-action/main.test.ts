@@ -8,7 +8,7 @@ function deps(over: Partial<any> = {}) {
     readEvent: () => ({ repo: 'o/n', issueNumber: 5, isPR: false, task: 'add X', author: 'ulrichando', association: 'OWNER' }),
     allowlist: [] as string[],
     workspace: '/ws',
-    neutralizeClaude: (ws: string) => { calls.push(`neutralize:${ws}`) },
+    neutralizeClaude: (ws: string) => { calls.push(`neutralize:${ws}`); return () => { calls.push('restore') } },
     exec: async () => { calls.push('jarvis'); return { code: 0, stdout: '', stderr: '' } },
     git: async (a: string[]) => { calls.push(`git:${a.join(' ')}`); return { code: a.includes('--quiet') ? 1 : 0, stdout: '', stderr: '' } },
     gh: async (a: string[]) => { calls.push(`gh:${a[0]} ${a[1] ?? ''}`); return { code: 0, stdout: 'https://pr', stderr: '' } },
@@ -23,6 +23,9 @@ test('authorized issue → runs jarvis, opens PR', async () => {
   expect(calls).toContain('jarvis')
   expect(calls.some(c => c.startsWith('gh:pr create'))).toBe(true)
   expect(calls[0]).toBe('neutralize:/ws')          // security step runs BEFORE jarvis
+  // .claude must be restored AFTER jarvis and BEFORE staging, so the move never lands in the PR
+  expect(calls.indexOf('restore')).toBeGreaterThan(calls.indexOf('jarvis'))
+  expect(calls.indexOf('restore')).toBeLessThan(calls.findIndex(c => c.startsWith('git:add')))
 })
 
 test('unauthorized (NONE) → skips, never runs jarvis', async () => {
