@@ -111,6 +111,14 @@ DEFAULT_SPEECH_MODEL: str = "deepseek-chat"
 # legible. Each entry: (provider+model labels for display, factory
 # building the LLM). Factories raise on missing API key — the
 # read_speech_model() helper falls back to the default if so.
+# Force DeepSeek V4 into NON-thinking mode on the OpenAI-compatible endpoint.
+# V4 (flash + pro) DEFAULTS to thinking mode, which for voice means (a) 6–47s
+# time-to-first-token (unusable) and (b) it rejects `tool_choice="required"`
+# with HTTP 400 — the exact failure that broke JARVIS's tool-forced routes.
+# `{"thinking": {"type": "disabled"}}` pins the instant non-reasoning path
+# (~1.4s TTFT, tool_choice=auto works). Ref: api-docs.deepseek.com thinking-mode.
+_DEEPSEEK_NON_THINKING = {"thinking": {"type": "disabled"}}
+
 SPEECH_MODELS: dict[str, dict] = {
     # DeepSeek family — needs reasoning_content round-trip on
     # assistant tool-call messages, handled by deepseek_roundtrip.install()
@@ -119,22 +127,32 @@ SPEECH_MODELS: dict[str, dict] = {
     # non-thinking baseline (probe shows it never emits
     # reasoning_content even with the flag absent, so the patch's
     # capture path is dead for it).
+    # NOTE (2026-07-02): the bare `deepseek-chat` / `deepseek-reasoner` API
+    # aliases are DISCONTINUED 2026-07-24 (they currently point to V4-Flash
+    # non-thinking / thinking). Both entries below now target the explicit,
+    # alias-proof `deepseek-v4-flash` id + forced non-thinking — behavior-
+    # identical to the old alias today, but survives the deprecation. The id
+    # KEY stays "deepseek-chat" (it's DEFAULT_SPEECH_MODEL + the pin baseline).
     "deepseek-chat": {
-        "label": "DeepSeek · chat (V3, non-thinking)",
-        "build": lambda: lk_openai.LLM(
-            model="deepseek-chat",
-            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
-            base_url="https://api.deepseek.com/v1",
-            temperature=0.6,
-        ),
-    },
-    "deepseek-v4-flash": {
-        "label": "DeepSeek · v4 flash",
+        "label": "DeepSeek · V4-Flash (non-thinking, default)",
         "build": lambda: lk_openai.LLM(
             model="deepseek-v4-flash",
             api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
             base_url="https://api.deepseek.com/v1",
             temperature=0.6,
+            extra_body=_DEEPSEEK_NON_THINKING,
+        ),
+    },
+    "deepseek-v4-flash": {
+        "label": "DeepSeek · V4-Flash (non-thinking)",
+        "build": lambda: lk_openai.LLM(
+            model="deepseek-v4-flash",
+            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+            base_url="https://api.deepseek.com/v1",
+            temperature=0.6,
+            # Without this, v4-flash defaults to THINKING → slow TTFW +
+            # tool_choice=required 400s. Non-thinking is the voice-correct mode.
+            extra_body=_DEEPSEEK_NON_THINKING,
         ),
     },
     # Same upstream model as "deepseek-chat", under a DISTINCT id so it is
@@ -147,12 +165,13 @@ SPEECH_MODELS: dict[str, dict] = {
     # drift, instruction slips). Deliberate exception to the "ids match
     # upstream names verbatim" convention above.
     "deepseek-chat-v3": {
-        "label": "DeepSeek · chat (V3, pinned)",
+        "label": "DeepSeek · V4-Flash (non-thinking, pinned)",
         "build": lambda: lk_openai.LLM(
-            model="deepseek-chat",
+            model="deepseek-v4-flash",
             api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
             base_url="https://api.deepseek.com/v1",
             temperature=0.6,
+            extra_body=_DEEPSEEK_NON_THINKING,
         ),
     },
     # deepseek-v4-pro RETIRED 2026-05-16 per global review §P0-3.
@@ -1025,6 +1044,9 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
                 api_key=ds_key,
                 base_url="https://api.deepseek.com/v1",
                 temperature=0.6,
+                # Non-thinking: the fallback rung serves tool-forced routes,
+                # and v4-flash's default thinking mode 400s on tool_choice=required.
+                extra_body=_DEEPSEEK_NON_THINKING,
             )
             ds_fallback._jarvis_label = "deepseek:chat"
             logger.info("[dispatch] DeepSeek fallback armed (rung 3) for all routes")
