@@ -69,9 +69,18 @@ function normalizeServerUrl(raw: string): string {
  * runtime appends /v1/* to, and what the Settings card shows) and strips the
  * bridge suffix.
  */
+// Your production JARVIS server, if configured — the login default. Set
+// JARVIS_SERVER_URL (env or ~/.jarvis/keys.env) to your real domain so a fresh
+// sign-in targets your server, preferred over the last-used bridge base and the
+// 127.0.0.1:3000 fallback. (Loopback stays the fallback when it's unset or the
+// remote isn't responding — see the probe in jarvisAuthLogin.)
+const SERVER_URL_KEY = 'JARVIS_SERVER_URL'
+
 export function resolveServerRoot(flagUrl: string | undefined): string {
   const raw =
     flagUrl ??
+    process.env[SERVER_URL_KEY] ??
+    readKeysEnvValue(SERVER_URL_KEY) ??
     process.env[BASE_URL_KEY] ??
     readKeysEnvValue(BASE_URL_KEY) ??
     DEFAULT_SERVER_URL
@@ -295,16 +304,7 @@ export async function jarvisAuthLogin(opts: {
   email?: string
   token?: string
 }): Promise<void> {
-  const serverRoot = resolveServerRoot(opts.url)
-  const bridgeBase = bridgeBaseFromRoot(serverRoot)
-
-  if (!isLoopback(serverRoot) && serverRoot.startsWith('http://')) {
-    process.stderr.write(
-      `Warning: ${serverRoot} is plain HTTP on a non-loopback host — credentials ` +
-        'travel in cleartext, and the Remote Control worker only accepts HTTPS ' +
-        'or localhost HTTP base URLs.\n',
-    )
-  }
+  let serverRoot = resolveServerRoot(opts.url)
 
   // Escape hatch: a token pasted from Settings → Connectors skips the
   // email/password sign-in entirely. Shares applyJarvisToken with /login.
@@ -314,15 +314,36 @@ export async function jarvisAuthLogin(opts: {
     process.exit(0)
   }
 
-  // Probe the server before asking for credentials.
-  const probe = await fetchJson(`${serverRoot}/api/auth/ok`).catch(
-    () => undefined,
-  )
+  // Probe the resolved server before asking for credentials. If it's your
+  // configured remote server and it isn't responding (and you didn't force a
+  // --url), fall back to the local dev server — local is the fallback, NOT the
+  // default. A probe that returns a redirect (e.g. Cloudflare Access) is also a
+  // non-ok, so an Access-gated /api/auth/* trips the same fallback.
+  let probe = await fetchJson(`${serverRoot}/api/auth/ok`).catch(() => undefined)
+  if (!probe?.ok && !opts.url && !isLoopback(serverRoot)) {
+    process.stderr.write(
+      `${serverRoot} isn't responding` +
+        (probe ? ` (HTTP ${probe.status})` : '') +
+        ` — falling back to ${DEFAULT_SERVER_URL}.\n`,
+    )
+    serverRoot = normalizeServerUrl(DEFAULT_SERVER_URL)
+    probe = await fetchJson(`${serverRoot}/api/auth/ok`).catch(() => undefined)
+  }
   if (!probe?.ok) {
     fail(
       `Can't reach the JARVIS server at ${serverRoot}` +
         (probe ? ` (HTTP ${probe.status} from /api/auth/ok)` : '') +
-        '.\nIs the web app running? Pass --url <http://host:3000> to use a different server.',
+        '.\nIs the web app running? Pass --url <https://your-domain> to use a different server.',
+    )
+  }
+
+  const bridgeBase = bridgeBaseFromRoot(serverRoot)
+
+  if (!isLoopback(serverRoot) && serverRoot.startsWith('http://')) {
+    process.stderr.write(
+      `Warning: ${serverRoot} is plain HTTP on a non-loopback host — credentials ` +
+        'travel in cleartext, and the Remote Control worker only accepts HTTPS ' +
+        'or localhost HTTP base URLs.\n',
     )
   }
 
