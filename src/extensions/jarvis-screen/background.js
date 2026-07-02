@@ -80,9 +80,14 @@ async function connect() {
 // ── Command dispatch ─────────────────────────────────────────────────
 async function dispatchCommand(cmd) {
   const { action, args = {}, confirmed = false } = cmd;
-  // Safety gate (single point — covers bg AND content actions).
-  const gate = self.JARVIS_SAFETY && self.JARVIS_SAFETY.gate({ action, args, confirmed });
-  if (gate && gate.allow !== true) return gate;
+  // Safety gate (single point — covers bg AND content actions). FAIL CLOSED:
+  // if safety.js didn't load, refuse everything rather than dispatch ungated —
+  // otherwise a failed import would let destructive commands run unconfirmed.
+  if (!self.JARVIS_SAFETY || typeof self.JARVIS_SAFETY.gate !== "function") {
+    return { ok: false, error: "safety module unavailable — refusing command" };
+  }
+  const gate = self.JARVIS_SAFETY.gate({ action, args, confirmed });
+  if (gate.allow !== true) return gate;
   try {
     switch (action) {
       case "navigate":    return await bgNavigate(args);
