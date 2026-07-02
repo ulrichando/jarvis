@@ -181,6 +181,22 @@ done
 # append to /tmp/jarvis-proxy.log. Truncate once at script start so
 # each launcher invocation starts with a fresh log.
 : > /tmp/jarvis-proxy.log
+# The `pkill bun.*proxy/server.ts` above ALSO killed jarvis-proxy.service's own
+# proxy process. Give systemd a moment to reclaim the now-free :4000 before the
+# is-active check below decides whether to run a session supervisor. Without
+# this wait the check races the restart (sees "activating", not "active"),
+# starts a COMPETING session proxy, and locks the persistent service out of
+# :4000 for good — that's the "proxy: service unavailable; starting session
+# proxy on :4000" loop the CLI then prints on every launch.
+if command -v systemctl >/dev/null 2>&1 \
+   && systemctl --user is-enabled --quiet jarvis-proxy.service 2>/dev/null \
+   && ! systemctl --user is-active --quiet jarvis-proxy.service 2>/dev/null; then
+  systemctl --user restart jarvis-proxy.service 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    systemctl --user is-active --quiet jarvis-proxy.service 2>/dev/null && break
+    sleep 0.5
+  done
+fi
 # Persistent-service happy path (2026-07-02, mirrors proxy-runtime.sh):
 # when jarvis-proxy.service owns :4000, spawning a second server.ts just
 # crash-loops on EADDRINUSE until the supervisor gives up (live: 6 crashes
