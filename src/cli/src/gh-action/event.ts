@@ -60,3 +60,10 @@ export function parseActionEvent(ctx: ActionCtx): ActionEvent | null {
   if (!task || issueNumber <= 0 || !author) return null
   return { repo, issueNumber, isPR, task, author, association }
 }
+
+const TRUSTED_ASSOC = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
+export function isAuthorized(association: string, allowlist: string[], login = ''): boolean {
+  if (!TRUSTED_ASSOC.has(association)) return false
+  if (allowlist.length > 0) return allowlist.some(a => a.toLowerCase() === login.toLowerCase())
+  return true
+}

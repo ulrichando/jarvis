@@ -1,6 +1,6 @@
 // src/cli/src/gh-action/event.test.ts
 import { test, expect } from 'bun:test'
-import { parseActionEvent } from './event.js'
+import { isAuthorized, parseActionEvent } from './event.js'
 
 const base = { repo: 'o/n', trigger: '@jarvis' }
 function ctx(name: string, payload: unknown) {
@@ -43,4 +43,17 @@ test('self comment (bot marker) → null (no trigger loop)', () => {
     comment: { body: '@jarvis done <!-- jarvis-gh-agent -->', user: { login: 'x' }, author_association: 'OWNER' },
   }))
   expect(e).toBeNull()
+})
+
+test('OWNER/MEMBER/COLLABORATOR pass; NONE fails', () => {
+  expect(isAuthorized('OWNER', [])).toBe(true)
+  expect(isAuthorized('MEMBER', [])).toBe(true)
+  expect(isAuthorized('COLLABORATOR', [])).toBe(true)
+  expect(isAuthorized('NONE', [])).toBe(false)
+  expect(isAuthorized('CONTRIBUTOR', [])).toBe(false)
+})
+test('explicit allowlist is an AND-narrowing on the login', () => {
+  // when an allowlist is set, association must pass AND login must be listed
+  expect(isAuthorized('OWNER', ['someoneelse'], 'ulrichando')).toBe(false)
+  expect(isAuthorized('OWNER', ['ulrichando'], 'ulrichando')).toBe(true)
 })
