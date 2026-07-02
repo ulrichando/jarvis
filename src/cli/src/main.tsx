@@ -5978,6 +5978,21 @@ async function run(): Promise<CommanderCommand> {
       process.exit(0);
     });
 
+  // jarvis gh-agent — poll a GitHub repo for @jarvis mentions by allowlisted
+  // authors and (P1) acknowledge them. Reuses the machine's authed gh CLI.
+  // Config: ~/.jarvis/gh-agent.json. See docs/superpowers/specs/2026-07-02-jarvis-gh-agent-design.md
+  program
+    .command("gh-agent")
+    .description("Watch a GitHub repo for @jarvis mentions (P1: acknowledge)")
+    .option("--repo <owner/name>", "Repo to poll (overrides config repos[])")
+    .option("--once", "Do a single poll sweep and exit (default)")
+    .option("--dry-run", "Log what would happen; post nothing")
+    .action(async (opts: { repo?: string; once?: boolean; dryRun?: boolean }) => {
+      const { runGhAgentOnce } = await import("./gh-agent/main.js");
+      await runGhAgentOnce({ repo: opts.repo, dryRun: !!opts.dryRun });
+      process.exit(0);
+    });
+
   program
     .command("uninstall")
     .description(
