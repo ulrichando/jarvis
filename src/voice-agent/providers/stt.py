@@ -1,4 +1,6 @@
-"""STT chain — Deepgram Nova-3 (streaming) primary, local faster-whisper backup.
+"""STT chain — local faster-whisper (current live default: JARVIS_STT_LOCAL_ONLY=1,
+100% on-device). Optional Deepgram Nova-3 (streaming) primary + faster-whisper
+backup when DEEPGRAM_API_KEY is set AND local-only is off (rationale below).
 
 Why a chain (added 2026-05-18 per docs/superpowers/specs/2026-05-18-
 barge-in-interrupt-fix-design.md):

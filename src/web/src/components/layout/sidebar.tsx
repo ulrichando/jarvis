@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { UserMenu } from "./user-menu";
 import { useUI } from "@/stores/ui";
+import { useIsMobile } from "@/hooks/use-is-mobile";
 import { useChatStore } from "@/stores/chat";
 import {
   useConversations,
@@ -97,6 +98,21 @@ function initials(name?: string | null) {
 export function Sidebar() {
   const { sidebarOpen, toggleSidebar } = useUI();
   const pathname = usePathname();
+  const isMobile = useIsMobile();
+
+  // Mobile: the sidebar is an overlay drawer with its OWN open state —
+  // never persisted, default closed, closed again after navigating.
+  // The desktop `sidebarOpen` (persisted) is untouched by mobile use.
+  // SSR can't know the viewport, so the aside also carries
+  // `max-md:hidden` until mobileOpen — a phone never paints the
+  // desktop-persisted open state, even before hydration.
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const open = isMobile ? mobileOpen : sidebarOpen;
+  const toggleOpen = () =>
+    isMobile ? setMobileOpen((v) => !v) : toggleSidebar();
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
   const { data: conversations, isLoading } = useConversations();
   const { data: settings } = useSettings();
   const [moreOpen, setMoreOpen] = useState(false);
@@ -119,13 +135,29 @@ export function Sidebar() {
   return (
     <>
       <AnimatePresence initial={false}>
-        {sidebarOpen && (
+        {open && isMobile && (
+          <motion.div
+            key="sidebar-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            onClick={() => setMobileOpen(false)}
+            className="fixed inset-0 z-40 bg-black/50 md:hidden"
+            aria-hidden
+          />
+        )}
+        {open && (
           <motion.aside
+            key="sidebar"
             initial={{ width: 0, opacity: 0 }}
             animate={{ width: "16rem", opacity: 1 }}
             exit={{ width: 0, opacity: 0 }}
             transition={{ duration: 0.18, ease: "easeOut" }}
-            className="shrink-0 overflow-hidden border-r border-border/60 bg-sidebar text-sidebar-foreground"
+            className={cn(
+              "fixed inset-y-0 left-0 z-50 shrink-0 overflow-hidden border-r border-border/60 bg-sidebar text-sidebar-foreground md:relative md:z-auto",
+              !mobileOpen && "max-md:hidden",
+            )}
           >
             <div className="flex h-full w-64 flex-col">
               {/* Brand */}
@@ -139,7 +171,7 @@ export function Sidebar() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  onClick={toggleSidebar}
+                  onClick={toggleOpen}
                   aria-label="Close sidebar"
                   className="size-7"
                 >
@@ -329,15 +361,15 @@ export function Sidebar() {
           </motion.aside>
         )}
       </AnimatePresence>
-      {!sidebarOpen &&
+      {!open &&
         !pathname.startsWith("/workbench") &&
         !pathname.startsWith("/code") &&
         !pathname.startsWith("/design") && (
-          <div className="absolute left-2 top-2 z-10">
+          <div className="absolute left-2 top-2 z-10 max-md:hidden">
             <Button
               variant="ghost"
               size="icon"
-              onClick={toggleSidebar}
+              onClick={toggleOpen}
               aria-label="Open sidebar"
               className="size-8"
             >
@@ -345,6 +377,20 @@ export function Sidebar() {
             </Button>
           </div>
         )}
+      {/* Mobile hamburger — always available (SSR renders it, so it's
+          tappable before hydration finishes; opening is a client action
+          anyway). Hidden on md+ where the desktop button above applies. */}
+      <div className="absolute left-2 top-2 z-10 md:hidden">
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={toggleOpen}
+          aria-label="Open sidebar"
+          className={cn("size-8", open && "invisible")}
+        >
+          <PanelLeftOpen className="size-4" />
+        </Button>
+      </div>
     </>
   );
 }

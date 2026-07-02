@@ -1,0 +1,13 @@
+# cargo-audit config — read by the security-audit workflow (runs in this dir).
+[advisories]
+ignore = [
+    # quick-xml <0.41 DoS advisories (quadratic duplicate-attribute check;
+    # unbounded NsReader namespace allocation). Transitive via
+    # tauri 2.x -> plist ^1 -> quick-xml; no released plist accepts 0.41 yet,
+    # so this is unfixable in-repo (checked 2026-07-02; plist 1.9.0 already
+    # bumped us 0.38.4 -> 0.39.4). quick-xml here parses local plist files in
+    # a desktop app — not remote input. Remove both entries when a plist
+    # release depends on quick-xml >= 0.41.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]

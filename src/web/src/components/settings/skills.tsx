@@ -1,6 +1,6 @@
 "use client";
 
-import { Sparkles, Plus } from "lucide-react";
+import { Wrench, Plus } from "lucide-react";
 
 /**
  * Personal-scoped skills — reusable slash commands JARVIS can invoke
@@ -16,7 +16,7 @@ export function SkillsSection() {
     <div className="space-y-6">
       <div>
         <div className="flex items-center gap-2">
-          <Sparkles className="size-4 text-muted-foreground" />
+          <Wrench className="size-4 text-muted-foreground" />
           <h2 className="text-lg font-semibold">Skills</h2>
           <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-amber-500">
             Coming soon

@@ -19,6 +19,9 @@
 
 # production
 /build
+# box-local compose deltas (compose auto-merges this; keeps the tracked tree
+# clean so the VPS continuous-deploy ff-only pull never conflicts)
+/docker-compose.override.yml
 
 # misc
 .DS_Store

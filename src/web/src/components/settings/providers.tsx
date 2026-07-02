@@ -57,7 +57,7 @@ export function ProvidersSection() {
   return (
     <>
       <SettingsSection
-        description="Keys are stored locally in .jarvis/settings.json. Empty = falls back to the shared ~/.jarvis/keys.env (set on the desktop, used by the voice agent)."
+        description="Keys are stored locally in ~/.jarvis/settings.json. Empty = falls back to the shared ~/.jarvis/keys.env (set on the desktop, used by the voice agent)."
       >
         <div className="space-y-3">
           {PROVIDERS.map((p) => (

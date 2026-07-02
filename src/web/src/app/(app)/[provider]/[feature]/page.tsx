@@ -1,5 +1,5 @@
 import { notFound, redirect } from "next/navigation";
-import { ArrowRight, Sparkles } from "lucide-react";
+import { ArrowRight, Rocket } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { getFeature, PROVIDER_FEATURES } from "@/lib/ai/features";
@@ -71,7 +71,7 @@ export default async function FeaturePage(
               Start in chat <ArrowRight className="size-3.5" />
             </Button>
             <span className="inline-flex items-center gap-1.5 rounded-full border border-border/60 px-3 py-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-              <Sparkles className="size-3 text-primary" />
+              <Rocket className="size-3 text-primary" />
               workspace landing soon
             </span>
           </div>

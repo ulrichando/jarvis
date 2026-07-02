@@ -187,10 +187,55 @@ export function registerClaudeApiSkill(): void {
     allowedTools: ['Read', 'Grep', 'Glob', 'WebFetch'],
     userInvocable: true,
     async getPromptForCommand(args) {
-      const content = await import('./claudeApiContent.js')
+      // claudeApiContent.js statically imports ~26 .md docs under
+      // ./claude-api/. Those live only in Anthropic's INTERNAL build and are
+      // stripped from the public source this fork descends from — so the
+      // import THROWS here (verified 2026-07-02), which would crash the skill
+      // exactly when it's most likely to fire (any repo touching the
+      // Anthropic SDK — constant in JARVIS). Degrade to a live-docs fallback:
+      // the skill already declares WebFetch, and fetching docs.claude.com is
+      // more current than any bundled snapshot would have been anyway.
+      let content: SkillContent | null = null
+      try {
+        content = await import('./claudeApiContent.js')
+      } catch {
+        content = null
+      }
       const lang = await detectLanguage()
+      if (!content) {
+        return [{ type: 'text', text: buildFallbackPrompt(lang, args) }]
+      }
       const prompt = buildPrompt(lang, args, content)
       return [{ type: 'text', text: prompt }]
     },
   })
+}
+
+// Used when the bundled .md docs aren't present (public-build content strip).
+// Points the agent at the live, authoritative docs via WebFetch.
+function buildFallbackPrompt(lang: DetectedLanguage | null, args: string): string {
+  const langLine = lang
+    ? `The project appears to be **${lang}**.`
+    : `Ask the user which language/SDK they're targeting if it isn't obvious.`
+  const q = args.trim() ? `\n\nUser request: ${args.trim()}` : ''
+  return [
+    '# Claude API / Anthropic SDK',
+    '',
+    'You are helping build against the Claude API or an Anthropic SDK.',
+    langLine,
+    '',
+    'The bundled reference docs are not available in this build. Use WebFetch',
+    'to pull the current, authoritative documentation before answering:',
+    '',
+    '- API reference & guides: https://docs.claude.com/en/api/overview',
+    '- Models & pricing: https://docs.claude.com/en/docs/about-claude/models/overview',
+    '- Python SDK: https://github.com/anthropics/anthropic-sdk-python',
+    '- TypeScript SDK: https://github.com/anthropics/anthropic-sdk-typescript',
+    '- Agent SDK: https://docs.claude.com/en/api/agent-sdk/overview',
+    '',
+    'Fetch the page(s) most relevant to the task, then give concrete,',
+    'runnable code using the latest model IDs and patterns. Never rely on',
+    'memory for model names, pricing, or API shapes — verify against the docs.',
+    q,
+  ].join('\n')
 }

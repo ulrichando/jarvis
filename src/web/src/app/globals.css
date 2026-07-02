@@ -190,3 +190,24 @@
     scroll-behavior: auto !important;
   }
 }
+/* Settings → General → Appearance. chat.tsx sets data-chat-font / data-chat-density
+   on the chat root; message text + thread rhythm consume these variables
+   (markdown.tsx, message.tsx, thread.tsx). Fallbacks in the consumers match "md"/"cozy". */
+[data-chat-font="sm"] {
+  --chat-fs: 13.5px;
+  --chat-fs-user: 13px;
+}
+[data-chat-font="lg"] {
+  --chat-fs: 17px;
+  --chat-fs-user: 16px;
+}
+[data-chat-density="compact"] {
+  --chat-gap: 1rem;
+  --chat-pad-y: 1rem;
+  /* App-wide density: Tailwind v4 spacing utilities resolve
+     calc(var(--spacing) * N). This attribute sits on the app-shell root and
+     custom properties cascade, so overriding --spacing here tightens EVERY
+     padding / gap / margin / space-y under the shell — not just chat. Default
+     is 0.25rem; ~-12% is noticeable without breaking tight layouts. */
+  --spacing: 0.22rem;
+}

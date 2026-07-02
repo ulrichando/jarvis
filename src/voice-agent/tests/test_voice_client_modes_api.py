@@ -19,9 +19,23 @@ from aiohttp.test_utils import TestClient, TestServer
 
 @pytest.fixture
 def modes_path(tmp_path, monkeypatch):
-    """Redirect the modes store to a tmp file for the duration of the test."""
+    """Redirect the modes store AND the six real ~/.jarvis setting files
+    to tmp for the duration of the test.
+
+    The POST /mode tests run conversation_modes.apply(), which writes
+    voice-model / cli-model / tts-provider / ... — with only MODES_FILE
+    patched, every full-suite run rewrote the REAL ~/.jarvis/voice-model
+    to claude-haiku-4-5 (live 2026-07-01: the user's DeepSeek pick kept
+    "reverting to claude"; one revert timestamped to the second of a
+    suite finishing)."""
     p = tmp_path / "modes.json"
     monkeypatch.setattr("pipeline.conversation_modes.MODES_FILE", p)
+    for name in ("voice-mode", "voice-model", "cli-model",
+                 "tts-provider", "voice-tts-voice", "mode-allowed-tools"):
+        monkeypatch.setattr(
+            f"pipeline.conversation_modes._F_{name.replace('-', '_').upper()}",
+            tmp_path / name,
+        )
     return p
 
 
@@ -81,6 +95,35 @@ async def test_post_mode_applies_mode_and_triggers_restart(modes_path):
         assert body["restarting"] is True
         assert body["id"] == "claude"
     # The restart callable must have been scheduled.
+    api.restart_agent_unit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_post_mode_local_refused_without_ollama_model(modes_path, monkeypatch):
+    """Local mode with no pulled Ollama model → 409, nothing applied.
+
+    2026-07-02 user rule: applying Local with no on-device LLM boots a
+    dead agent. The gate probes the Ollama daemon."""
+    monkeypatch.setattr("voice_client_http_api._ollama_has_models", lambda: False)
+    api = _make_api()
+    app = api.build_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/mode", json={"id": "local"})
+        assert resp.status == 409
+        body = await resp.json()
+        assert "Ollama" in body["error"]
+    api.restart_agent_unit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_post_mode_local_applies_when_ollama_model_present(modes_path, monkeypatch):
+    monkeypatch.setattr("voice_client_http_api._ollama_has_models", lambda: True)
+    api = _make_api()
+    app = api.build_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/mode", json={"id": "local"})
+        assert resp.status == 200
+        assert (await resp.json())["ok"] is True
     api.restart_agent_unit.assert_called_once()
 
 

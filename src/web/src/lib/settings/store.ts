@@ -29,6 +29,12 @@ export async function loadSettings(): Promise<Settings> {
     try {
       const raw = await fs.readFile(file, "utf-8");
       const parsed = settingsSchema.safeParse(JSON.parse(raw));
+      if (!parsed.success) {
+        // Field-level salvage lives in the schema (.catch on model ids);
+        // reaching here means the file is structurally broken. Say so —
+        // silently serving defaults looks like "my settings vanished".
+        console.warn(`[settings] ${file} failed validation — using defaults:`, parsed.error.message);
+      }
       cache = parsed.success ? parsed.data : DEFAULT_SETTINGS;
       return cache;
     } catch {

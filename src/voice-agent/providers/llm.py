@@ -111,6 +111,14 @@ DEFAULT_SPEECH_MODEL: str = "deepseek-chat"
 # legible. Each entry: (provider+model labels for display, factory
 # building the LLM). Factories raise on missing API key — the
 # read_speech_model() helper falls back to the default if so.
+# Force DeepSeek V4 into NON-thinking mode on the OpenAI-compatible endpoint.
+# V4 (flash + pro) DEFAULTS to thinking mode, which for voice means (a) 6–47s
+# time-to-first-token (unusable) and (b) it rejects `tool_choice="required"`
+# with HTTP 400 — the exact failure that broke JARVIS's tool-forced routes.
+# `{"thinking": {"type": "disabled"}}` pins the instant non-reasoning path
+# (~1.4s TTFT, tool_choice=auto works). Ref: api-docs.deepseek.com thinking-mode.
+_DEEPSEEK_NON_THINKING = {"thinking": {"type": "disabled"}}
+
 SPEECH_MODELS: dict[str, dict] = {
     # DeepSeek family — needs reasoning_content round-trip on
     # assistant tool-call messages, handled by deepseek_roundtrip.install()
@@ -119,22 +127,51 @@ SPEECH_MODELS: dict[str, dict] = {
     # non-thinking baseline (probe shows it never emits
     # reasoning_content even with the flag absent, so the patch's
     # capture path is dead for it).
+    # NOTE (2026-07-02): the bare `deepseek-chat` / `deepseek-reasoner` API
+    # aliases are DISCONTINUED 2026-07-24 (they currently point to V4-Flash
+    # non-thinking / thinking). Both entries below now target the explicit,
+    # alias-proof `deepseek-v4-flash` id + forced non-thinking — behavior-
+    # identical to the old alias today, but survives the deprecation. The id
+    # KEY stays "deepseek-chat" (it's DEFAULT_SPEECH_MODEL + the pin baseline).
     "deepseek-chat": {
-        "label": "DeepSeek · chat (V3, non-thinking)",
-        "build": lambda: lk_openai.LLM(
-            model="deepseek-chat",
-            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
-            base_url="https://api.deepseek.com/v1",
-            temperature=0.6,
-        ),
-    },
-    "deepseek-v4-flash": {
-        "label": "DeepSeek · v4 flash",
+        "label": "DeepSeek · V4-Flash (non-thinking, default)",
         "build": lambda: lk_openai.LLM(
             model="deepseek-v4-flash",
             api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
             base_url="https://api.deepseek.com/v1",
             temperature=0.6,
+            extra_body=_DEEPSEEK_NON_THINKING,
+        ),
+    },
+    "deepseek-v4-flash": {
+        "label": "DeepSeek · V4-Flash (non-thinking)",
+        "build": lambda: lk_openai.LLM(
+            model="deepseek-v4-flash",
+            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+            base_url="https://api.deepseek.com/v1",
+            temperature=0.6,
+            # Without this, v4-flash defaults to THINKING → slow TTFW +
+            # tool_choice=required 400s. Non-thinking is the voice-correct mode.
+            extra_body=_DEEPSEEK_NON_THINKING,
+        ),
+    },
+    # Same upstream model as "deepseek-chat", under a DISTINCT id so it is
+    # pinnable: pin detection is `active_speech_id != DEFAULT_SPEECH_MODEL`
+    # and deepseek-chat IS the default, so picking it un-pins and hands the
+    # routes back to the per-route dispatcher (Anthropic primaries). Added
+    # 2026-07-01: user wants V3-chat pinned all-routes for voice — v4-flash
+    # (the only pinnable DeepSeek before this) is the latency-optimized
+    # rung and audibly weaker in conversation (emote markup, language
+    # drift, instruction slips). Deliberate exception to the "ids match
+    # upstream names verbatim" convention above.
+    "deepseek-chat-v3": {
+        "label": "DeepSeek · V4-Flash (non-thinking, pinned)",
+        "build": lambda: lk_openai.LLM(
+            model="deepseek-v4-flash",
+            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+            base_url="https://api.deepseek.com/v1",
+            temperature=0.6,
+            extra_body=_DEEPSEEK_NON_THINKING,
         ),
     },
     # deepseek-v4-pro RETIRED 2026-05-16 per global review §P0-3.
@@ -426,25 +463,52 @@ SPEECH_MODELS["gemini-2.5-pro"] = {
     "build": lambda: _build_gemini_speech_llm("gemini-2.5-pro"),
 }
 
+# Kimi K2.6 thinking toggle (verified live 2026-07-02). K2.6 DEFAULTS to
+# THINKING mode (chain-of-thought → ~4.8s TTFT), and in that mode temperature
+# is LOCKED to 1.0 (else HTTP 400 "invalid temperature: only 1 is allowed")
+# AND the builtin $web_search tool is incompatible — the origin of the old
+# "web_search not in request.tools → supervisor wedge → silence" voice break.
+# Disabling thinking = "Instant" mode: ~1.5s TTFT, temp 0.6 valid, tools +
+# tool_choice=required all work, and NO web_search break. Same
+# {"thinking":{"type":...}} extra_body shape DeepSeek uses. The previous builds
+# passed temp 0.4-0.7 with thinking left ON → 400 on every turn (why these
+# entries were "broken for voice"). Instant is the voice-usable config and the
+# intended JARVIS_PIN_FALLBACK_MODEL rung.
+_KIMI_INSTANT_EXTRA = {"thinking": {"type": "disabled"}}
+_KIMI_THINKING_EXTRA = {"thinking": {"type": "enabled"}}
+
+# kimi-k2.6-instant is UNGATED (2026-07-02 audit). It's verified working
+# (Instant mode → 1.48s TTFT, tools + tool_choice=required OK, no web_search
+# break) and is the JARVIS_PIN_FALLBACK_MODEL rung, so it must exist WITHOUT the
+# broad JARVIS_KIMI_VOICE_EXPERIMENTAL flag — that flag also swaps Kimi into the
+# dispatcher's TASK_BROWSER escalate tier (specialty_routes), an unwanted side
+# effect for a fallback-only use.
+SPEECH_MODELS["kimi-k2.6-instant"] = {
+    "label": "Kimi · K2.6 Instant",
+    "build": lambda: lk_openai.LLM(
+        model="kimi-k2.6",
+        api_key=os.environ.get("KIMI_API_KEY", ""),
+        base_url="https://api.moonshot.ai/v1",
+        temperature=0.6,
+        extra_body=_KIMI_INSTANT_EXTRA,
+    ),
+}
+
+# The remaining variants stay gated: thinking mode is slow (~4.8s) and still
+# has the builtin-web_search break; agent/swarm are unproven duplicates.
 if os.environ.get("JARVIS_KIMI_VOICE_EXPERIMENTAL", "0") == "1":
-    SPEECH_MODELS["kimi-k2.6-instant"] = {
-        "label": "Kimi · K2.6 Instant (experimental)",
-        "build": lambda: lk_openai.LLM(
-            model="kimi-k2.6",
-            api_key=os.environ.get("KIMI_API_KEY", ""),
-            base_url="https://api.moonshot.ai/v1",
-            temperature=0.6,
-        ),
-    }
+    # Thinking ON — slow (~4.8s) but valid; temperature MUST be 1.0 here.
     SPEECH_MODELS["kimi-k2.6-thinking"] = {
         "label": "Kimi · K2.6 Thinking (experimental)",
         "build": lambda: lk_openai.LLM(
             model="kimi-k2.6",
             api_key=os.environ.get("KIMI_API_KEY", ""),
             base_url="https://api.moonshot.ai/v1",
-            temperature=0.4,
+            temperature=1.0,
+            extra_body=_KIMI_THINKING_EXTRA,
         ),
     }
+    # Agent / Swarm — same model, Instant config (differ only by intent label).
     SPEECH_MODELS["kimi-k2.6-agent"] = {
         "label": "Kimi · K2.6 Agent (experimental)",
         "build": lambda: lk_openai.LLM(
@@ -452,6 +516,7 @@ if os.environ.get("JARVIS_KIMI_VOICE_EXPERIMENTAL", "0") == "1":
             api_key=os.environ.get("KIMI_API_KEY", ""),
             base_url="https://api.moonshot.ai/v1",
             temperature=0.6,
+            extra_body=_KIMI_INSTANT_EXTRA,
         ),
     }
     SPEECH_MODELS["kimi-k2.6-swarm"] = {
@@ -460,7 +525,8 @@ if os.environ.get("JARVIS_KIMI_VOICE_EXPERIMENTAL", "0") == "1":
             model="kimi-k2.6",
             api_key=os.environ.get("KIMI_API_KEY", ""),
             base_url="https://api.moonshot.ai/v1",
-            temperature=0.7,
+            temperature=0.6,
+            extra_body=_KIMI_INSTANT_EXTRA,
         ),
     }
 
@@ -563,6 +629,50 @@ def make_speech_llm() -> tuple[str, object]:
             f"falling back to {DEFAULT_SPEECH_MODEL}"
         )
         return DEFAULT_SPEECH_MODEL, SPEECH_MODELS[DEFAULT_SPEECH_MODEL]["build"]()
+
+
+def wrap_pin_fallback(primary, primary_id: str):
+    """Give a tray-pinned model a fallback rung so one provider blip isn't
+    total silence.
+
+    When JARVIS_PIN_ALL_ROUTES=1 disables the per-route dispatcher, the pinned
+    model is used bare — no fallback. Live outage 2026-07-02: DeepSeek inference
+    degraded to 18-28s TTFT with the account fully funded, and because the pin
+    has no fallback JARVIS went completely dead. If JARVIS_PIN_FALLBACK_MODEL
+    names ANOTHER SPEECH_MODELS id, wrap the pinned primary in a FallbackAdapter
+    so a primary timeout/error cascades to it. FallbackAdapter's attempt_timeout
+    (default 6s here, env JARVIS_PIN_FALLBACK_TIMEOUT) keeps a degraded primary
+    from hanging the full 30s idle-timeout before the fallback speaks.
+
+    Returns `primary` unchanged when the env is unset, names the primary itself,
+    or names an unregistered id — fully opt-in and reversible. Telemetry keeps
+    the primary's label until it actually fails over.
+    """
+    fb_id = os.environ.get("JARVIS_PIN_FALLBACK_MODEL", "").strip()
+    if not fb_id or fb_id == primary_id:
+        return primary
+    if fb_id not in SPEECH_MODELS:
+        logger.warning(
+            f"[dispatch] JARVIS_PIN_FALLBACK_MODEL={fb_id!r} not in SPEECH_MODELS "
+            f"(is its provider gate enabled?); pinned {primary_id} has NO fallback"
+        )
+        return primary
+    try:
+        fb = SPEECH_MODELS[fb_id]["build"]()
+        from livekit.agents.llm import FallbackAdapter as _LLMFallback
+        timeout = float(os.environ.get("JARVIS_PIN_FALLBACK_TIMEOUT", "6"))
+        wrapped = _LLMFallback([primary, fb], attempt_timeout=timeout)
+        wrapped._jarvis_label = getattr(primary, "_jarvis_label", "") or primary_id
+        logger.info(
+            f"[dispatch] pin fallback armed: {primary_id} → {fb_id} "
+            f"(FallbackAdapter attempt_timeout={timeout}s)"
+        )
+        return wrapped
+    except Exception as e:
+        logger.warning(
+            f"[dispatch] pin fallback wrap failed ({e}); pinned {primary_id} alone"
+        )
+        return primary
 
 
 # ── Pre-flight singleton ─────────────────────────────────────────────
@@ -1007,6 +1117,9 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
                 api_key=ds_key,
                 base_url="https://api.deepseek.com/v1",
                 temperature=0.6,
+                # Non-thinking: the fallback rung serves tool-forced routes,
+                # and v4-flash's default thinking mode 400s on tool_choice=required.
+                extra_body=_DEEPSEEK_NON_THINKING,
             )
             ds_fallback._jarvis_label = "deepseek:chat"
             logger.info("[dispatch] DeepSeek fallback armed (rung 3) for all routes")
@@ -1207,6 +1320,15 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
                     "api_key": ds_key,
                     "base_url": "https://api.deepseek.com/v1",
                     "temperature": temp,
+                    # Force non-thinking. v4-flash defaults to THINKING mode,
+                    # which (a) 400s on tool_choice=required — exactly what the
+                    # tool-forced routes below set — and (b) runs 6-47s TTFT.
+                    # ds_fallback (rung 3) + the SPEECH_MODELS entries already
+                    # do this; this per-route PRIMARY builder was missing it, so
+                    # a DeepSeek-primary tool-forced route (e.g. the default
+                    # JARVIS_TASK_CODE_MODEL=deepseek-v4-flash) 400'd every turn
+                    # and limped along on the fallback (2026-07-02 audit).
+                    "extra_body": _DEEPSEEK_NON_THINKING,
                 }
                 if tc is not None:
                     inst_kwargs["tool_choice"] = tc

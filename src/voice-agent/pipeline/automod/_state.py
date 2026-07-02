@@ -95,6 +95,12 @@ def intent_file_path(automod_id: str) -> Path:
     return _automod_home() / f"{automod_id}.intent.txt"
 
 
+def needs_human_path() -> Path:
+    """Intents queue admission rejected as human-only work (goals that target
+    the blocklisted automod pipeline itself). Reviewable, never auto-built."""
+    return _automod_home() / "needs-human.jsonl"
+
+
 def evolution_log_path() -> Path:
     """Repurposed from the retired rule-evolution system. Spec B writes
     automod_* event records here; readers should filter out the legacy

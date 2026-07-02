@@ -288,6 +288,14 @@ start_direct() {
         --setenv="JARVIS_DIRECT_IDLE_TIMEOUT_S=${JARVIS_DIRECT_IDLE_TIMEOUT_S:-300}"
         --setenv="JARVIS_GEMINI_WEBCAM=${JARVIS_GEMINI_WEBCAM:-0}"
         --setenv="JARVIS_OPENAI_WEBCAM=${JARVIS_OPENAI_WEBCAM:-0}"
+        # Realtime SPEECH models (2026-07-02) — systemd-run strips the env,
+        # so these must be forwarded explicitly or an override never reaches
+        # the direct-mode process (same trap as JARVIS_DIRECT_IDLE_TIMEOUT_S
+        # above). Defaults mirror the scripts' own fallbacks. The TOOL model
+        # in both modes is the realtime model itself (native tool-calling on
+        # the live session) — there is no separate tool LLM to configure.
+        --setenv="JARVIS_GEMINI_TOOLS_MODEL=${JARVIS_GEMINI_TOOLS_MODEL:-gemini-3.1-flash-live-preview}"
+        --setenv="JARVIS_GPT_TOOLS_MODEL=${JARVIS_GPT_TOOLS_MODEL:-gpt-realtime}"
     )
     if [[ -n "${PULSE_SERVER:-}" ]]; then
         run_args+=(--setenv="PULSE_SERVER=$PULSE_SERVER")
@@ -400,12 +408,14 @@ show_status() {
     case "$(current_mode)" in
         gemini)
             echo "mode: gemini (Gemini Live + audio + vision + tools)"
+            echo "       model: ${JARVIS_GEMINI_TOOLS_MODEL:-gemini-3.1-flash-live-preview} (speech + tools in one)"
             echo "       voice: ${JARVIS_GEMINI_TOOLS_VOICE:-Iapetus}"
             echo "       unit:  $GEMINI_SCOPE"
             notify "Current mode: Gemini Live" "Audio + vision + tools. Voice: ${JARVIS_GEMINI_TOOLS_VOICE:-Iapetus}."
             ;;
         openai)
             echo "mode: openai (OpenAI Realtime + audio + vision + tools)"
+            echo "       model: ${JARVIS_GPT_TOOLS_MODEL:-gpt-realtime} (speech + tools in one)"
             echo "       voice: ${JARVIS_GPT_TOOLS_VOICE:-cedar}"
             echo "       unit:  $OPENAI_SCOPE"
             notify "Current mode: OpenAI Realtime" "Audio + vision + tools. Voice: ${JARVIS_GPT_TOOLS_VOICE:-cedar}."

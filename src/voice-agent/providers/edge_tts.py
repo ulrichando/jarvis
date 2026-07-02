@@ -105,12 +105,29 @@ class _EdgeTTSChunkedStream(tts.ChunkedStream):
 
         edge_tts_obj = self._tts  # for type narrowing
         assert isinstance(edge_tts_obj, EdgeTTS)
+        # rate/pitch read fresh from the voice-style store per utterance
+        # ("Jarvis, speak slower" hot-swaps with no restart — mirrors the
+        # Kokoro provider). Construction-time values remain the fallback
+        # when no override file exists.
+        try:
+            from pipeline.voice_style import edge_rate_string, edge_pitch_string
+            rate = edge_rate_string(edge_tts_obj._rate)
+            pitch = edge_pitch_string(edge_tts_obj._pitch)
+        except Exception:
+            rate, pitch = edge_tts_obj._rate, edge_tts_obj._pitch
+        # Pronunciation lexicon — respellings only (Edge has no phoneme
+        # syntax; a Misaki override here would be read aloud as IPA).
+        try:
+            from pipeline.pronunciation import apply as _pron_apply
+            text = _pron_apply(text, phonemes_ok=False)
+        except Exception:
+            pass
         communicate = edge_tts.Communicate(
             text,
             edge_tts_obj._voice,
-            rate=edge_tts_obj._rate,
+            rate=rate,
             volume=edge_tts_obj._volume,
-            pitch=edge_tts_obj._pitch,
+            pitch=pitch,
         )
 
         try:

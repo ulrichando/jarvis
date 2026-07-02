@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useState, Fragment } from "react";
+import { useEffect, useRef, useState, Fragment } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Loader2, Volume2 } from "lucide-react";
 import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -17,8 +19,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useSettings, useUpdateSettings } from "@/hooks/use-settings";
-import { modelsByProvider } from "@/lib/ai/models-meta";
+import { useChatStore } from "@/stores/chat";
+import { modelsByProvider, MODELS_META, type ModelId } from "@/lib/ai/models-meta";
 import { IMAGE_MODELS } from "@/lib/ai/image-models";
+import { kokoroVoiceAccent, kokoroVoiceLabel } from "@/lib/chat/voices";
 import { cn } from "@/lib/utils";
 
 const JOB_TITLES = [
@@ -35,8 +39,6 @@ const JOB_TITLES = [
   "Other",
 ];
 
-const VOICE_OPTIONS = ["Buttery", "Airy", "Mellow", "Glassy", "Rounded"] as const;
-
 function SectionHeader({ title }: { title: string }) {
   return (
     <div className="mb-5">
@@ -49,6 +51,7 @@ function SectionHeader({ title }: { title: string }) {
 export function GeneralSection() {
   const { data, isLoading } = useSettings();
   const update = useUpdateSettings();
+  const setChatModel = useChatStore((s) => s.setModel);
   const groups = modelsByProvider();
 
   const [name, setName] = useState("");
@@ -60,7 +63,22 @@ export function GeneralSection() {
   const [systemPrompt, setSystemPrompt] = useState("");
   const [temperature, setTemperature] = useState(0.7);
   const [responseCompletions, setResponseCompletions] = useState(false);
-  const [voice, setVoice] = useState<(typeof VOICE_OPTIONS)[number]>("Mellow");
+  // Kokoro voice id ("af_heart"); empty = server default.
+  const [voice, setVoice] = useState("af_heart");
+  const [previewing, setPreviewing] = useState<string | null>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // The REAL voices the local Kokoro engine serves (not invented names).
+  const { data: voiceList, isError: voicesDown } = useQuery({
+    queryKey: ["tts-voices"],
+    queryFn: async () => {
+      const r = await fetch("/api/tts/voices");
+      if (!r.ok) throw new Error("kokoro unavailable");
+      return ((await r.json()) as { voices: string[] }).voices;
+    },
+    staleTime: 5 * 60_000,
+    retry: 1,
+  });
 
   useEffect(() => {
     if (!data) return;
@@ -73,6 +91,7 @@ export function GeneralSection() {
     setSystemPrompt(data.defaults.systemPrompt ?? "");
     setTemperature(data.defaults.temperature);
     setResponseCompletions(data.notifications?.responseCompletions ?? false);
+    setVoice(data.user.voice ?? "af_heart");
   }, [data]);
 
   const saveProfile = async () => {
@@ -91,6 +110,9 @@ export function GeneralSection() {
           temperature,
         },
       });
+      // Apply the new default to the composer's model picker immediately —
+      // the picker persists its own choice and would otherwise ignore this.
+      if (MODELS_META[model]) setChatModel(model as ModelId);
       toast.success("Saved");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to save");
@@ -98,6 +120,18 @@ export function GeneralSection() {
   };
 
   const toggleNotification = async (val: boolean) => {
+    // The chat fires a browser Notification when a reply finishes in a
+    // background tab — useless without permission, so ask for it here.
+    if (val && typeof Notification !== "undefined") {
+      let perm = Notification.permission;
+      if (perm === "default") perm = await Notification.requestPermission();
+      if (perm !== "granted") {
+        toast.error(
+          "Notifications are blocked — allow them for this site in the browser, then try again.",
+        );
+        return;
+      }
+    }
     setResponseCompletions(val);
     try {
       await update.mutateAsync({ notifications: { responseCompletions: val } });
@@ -117,6 +151,47 @@ export function GeneralSection() {
     }
   };
 
+  // Selecting a voice saves it AND plays a short sample so the choice is
+  // audible immediately — the names alone don't tell you anything.
+  const applyVoice = async (v: string) => {
+    const prev = voice;
+    setVoice(v);
+    void previewVoice(v);
+    try {
+      await update.mutateAsync({ user: { voice: v } });
+    } catch (err) {
+      setVoice(prev);
+      toast.error(err instanceof Error ? err.message : "Failed");
+    }
+  };
+
+  const previewVoice = async (v: string) => {
+    setPreviewing(v);
+    try {
+      const r = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: "Hello — I'm Jarvis, and this is how I sound.",
+          voice: v,
+        }),
+      });
+      if (!r.ok) throw new Error("Kokoro TTS isn't reachable");
+      const url = URL.createObjectURL(await r.blob());
+      previewAudioRef.current?.pause();
+      const audio = new Audio(url);
+      previewAudioRef.current = audio;
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        setPreviewing((p) => (p === v ? null : p));
+      };
+      await audio.play();
+    } catch (err) {
+      setPreviewing(null);
+      toast.error(err instanceof Error ? err.message : "Preview failed");
+    }
+  };
+
   if (isLoading || !data) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
   }
@@ -127,8 +202,8 @@ export function GeneralSection() {
       <section>
         <SectionHeader title="Profile" />
 
-        {/* Two-column row: Full name + Call name */}
-        <div className="grid grid-cols-2 gap-4 mb-4">
+        {/* Two-column row: Full name + Call name (stacked on mobile) */}
+        <div className="grid grid-cols-1 gap-4 mb-4 sm:grid-cols-2">
           <div>
             <label className="block text-[14px] font-medium mb-1.5">
               Full name
@@ -259,6 +334,13 @@ export function GeneralSection() {
                 </button>
               );
             })}
+          </div>
+          {/* Live preview — rides the same --chat-fs variable chat replies
+              use, so clicking a size visibly changes THIS text instantly. */}
+          <div className="mt-3 rounded-lg border border-border/50 bg-card/30 px-4 py-3">
+            <p className="text-[length:var(--chat-fs,15px)] leading-[1.7]">
+              Preview — chat replies render at this size.
+            </p>
           </div>
         </div>
 
@@ -420,32 +502,63 @@ export function GeneralSection() {
         </div>
       </section>
 
-      {/* Voice settings */}
+      {/* Voice settings — the live Kokoro voice list, click to hear + save */}
       <section>
         <SectionHeader title="Voice settings" />
         <div>
-          <p className="text-[14px] font-medium mb-3">Voice</p>
-          <div className="flex flex-wrap gap-2">
-            {VOICE_OPTIONS.map((v) => (
-              <button
-                key={v}
-                type="button"
-                onClick={() => setVoice(v)}
-                className={cn(
-                  "rounded-full border px-5 py-2 text-[13px] font-medium transition-colors",
-                  voice === v
-                    ? "border-border bg-card text-foreground"
-                    : "border-border/50 bg-card/30 text-foreground/70 hover:border-border hover:text-foreground",
-                )}
-              >
-                {v}
-              </button>
-            ))}
-          </div>
+          <p className="text-[14px] font-medium mb-1">Voice</p>
+          <p className="text-[13px] text-muted-foreground mb-3">
+            Voices served by your local Kokoro TTS — click one to hear it and
+            make it the read-aloud voice for web chat.
+          </p>
+          {voicesDown ? (
+            <p className="rounded-lg border border-border/50 bg-card/30 px-4 py-3 text-[13px] text-muted-foreground">
+              Kokoro TTS isn&apos;t reachable (kokoro-tts container on :8880).
+              Start it, then reload this page.
+            </p>
+          ) : !voiceList ? (
+            <p className="text-[13px] text-muted-foreground">Loading voices…</p>
+          ) : (
+            (["af", "am", "bf", "bm"] as const)
+              .map((prefix) => ({
+                prefix,
+                ids: voiceList.filter((v) => v.startsWith(prefix)),
+              }))
+              .filter((g) => g.ids.length > 0)
+              .map((g) => (
+                <div key={g.prefix} className="mb-3">
+                  <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                    {kokoroVoiceAccent(`${g.prefix}_x`)}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {g.ids.map((v) => (
+                      <button
+                        key={v}
+                        type="button"
+                        onClick={() => applyVoice(v)}
+                        className={cn(
+                          "flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-[13px] font-medium transition-colors",
+                          voice === v
+                            ? "border-primary/50 bg-primary/10 text-primary"
+                            : "border-border/50 bg-card/30 text-foreground/70 hover:border-border hover:text-foreground",
+                        )}
+                      >
+                        {previewing === v ? (
+                          <Loader2 className="size-3 animate-spin" />
+                        ) : (
+                          voice === v && <Volume2 className="size-3" />
+                        )}
+                        {kokoroVoiceLabel(v)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))
+          )}
           <p className="mt-3 text-[12px] text-muted-foreground">
-            Voice output is configured in the JARVIS desktop app (tray →
-            settings). This picker sets your preferred voice for when it&apos;s
-            available on the web.
+            Used when Jarvis reads replies aloud in the web chat&apos;s voice
+            mode. The desktop / voice agent has its own voice settings in the
+            tray.
           </p>
         </div>
       </section>

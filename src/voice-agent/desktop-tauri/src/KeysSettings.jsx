@@ -6,9 +6,15 @@ import { invoke } from '@tauri-apps/api/core'
 // keys_clear / keys_restart_agent.
 //
 // Two-tier storage shown to user:
-//   - "From tray" = ~/.jarvis/keys.env (managed here, highest priority)
-//   - "From repo" = src/voice-agent/.env etc. (defaults)
+//   - "tray"  = ~/.jarvis/keys.env (managed here, highest priority)
+//   - "repo"  = src/voice-agent/.env etc. (defaults)
 // Clear button opens a small action menu to choose which to clear.
+//
+// Layout note (2026-07-02 restyle): the window is ~560px wide, so each row
+// STACKS — name+status line, then a full-width input with the buttons
+// inline. The old 3-column row truncated placeholders at ~180px and the
+// sticky header let scrolled rows bleed out above it (page top-padding sat
+// outside the header's background). Header is now a full-bleed opaque bar.
 
 export default function KeysSettings() {
   const [rows, setRows] = useState([])     // [{env, label, present, source, masked}]
@@ -141,154 +147,154 @@ export default function KeysSettings() {
 
   return (
     <div style={pageStyle}>
+      <style>{css}</style>
+
       <div style={headerStyle}>
-        <h2 style={{ margin: 0, fontSize: 18 }}>API Keys</h2>
+        <div>
+          <h2 style={titleStyle}>API Keys</h2>
+          <div style={titleSubStyle}>~/.jarvis/keys.env · overrides repo .env defaults</div>
+        </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => onRestartAll()} disabled={busy} style={smallButton}
+          <button onClick={() => onRestartAll()} disabled={busy} className="k-btn" style={ghostButton}
             title="Restart voice-agent + proxy + bridge + honcho + kokoro">
-            Restart all services
+            Restart all
           </button>
-          <button onClick={onRestart} disabled={busy} style={primaryButton}>
+          <button onClick={onRestart} disabled={busy} className="k-btn" style={primaryButton}
+            title="Restart only the voice agent so new keys are picked up">
             Restart voice agent
           </button>
         </div>
       </div>
 
-      <p style={subtitleStyle}>
-        Tray entries are stored at <code>~/.jarvis/keys.env</code> and
-        override repo defaults from <code>.env</code> files. Clear gives
-        you a per-source choice. Restart the voice agent to apply
-        changes.
-      </p>
-
       <div style={listStyle}>
         {rows.map(row => (
           <div key={row.env} style={rowStyle}>
-            <div style={{ flex: '0 0 200px' }}>
-              <div style={{ fontWeight: 600 }}>{row.label}</div>
-              <div style={dimStyle}>{row.env}</div>
-            </div>
-
-            <div style={{ flex: '1', minWidth: 0 }}>
+            <div style={rowTopStyle}>
+              <div style={{ minWidth: 0 }}>
+                <span style={{ fontWeight: 600, fontSize: 13 }}>{row.label}</span>
+                <span style={envStyle}>{row.env}</span>
+              </div>
               {row.present ? (
                 <div style={presentRowStyle}>
-                  <span style={badgeStyleFor(row.source)}>
-                    {row.source === 'user' ? '● tray' : '● repo'}
+                  <span style={row.source === 'user' ? trayBadge : repoBadge}>
+                    {row.source === 'user' ? 'tray' : 'repo'}
                   </span>
                   <span style={maskStyle}>{row.masked}</span>
                 </div>
               ) : (
-                <div style={{ color: '#9ca3af', fontSize: 12, marginBottom: 4 }}>
-                  ● not set
-                </div>
+                <span style={unsetBadge}>not set</span>
               )}
+            </div>
+
+            <div style={rowControlsStyle}>
               <input
                 type="password"
-                placeholder={row.present ? 'Paste new value to override…' : 'Paste key…'}
+                className="k-input"
+                placeholder={row.present ? 'Paste new key to override…' : 'Paste key…'}
                 value={edits[row.env] || ''}
                 onChange={e => setEdits(prev => ({ ...prev, [row.env]: e.target.value }))}
                 style={inputStyle}
                 spellCheck={false}
                 autoComplete="off"
               />
-            </div>
-
-            <div style={{ display: 'flex', gap: 6, position: 'relative' }}>
               <button
                 onClick={() => onSave(row.env)}
                 disabled={busy || !((edits[row.env] || '').trim())}
-                style={smallButton}
+                className="k-btn"
+                style={ghostButton}
               >Save</button>
-              <button
-                onClick={() => row.present && setOpenMenu(openMenu === row.env ? null : row.env)}
-                disabled={busy || !row.present}
-                style={dangerButton}
-              >Clear ▾</button>
-              {openMenu === row.env && (
-                <div style={menuStyle}>
-                  {row.source === 'user' && (
-                    <button style={menuItemStyle} onClick={() => onClear(row.env, 'user')}>
-                      Clear from tray override
+              <div style={{ position: 'relative' }}>
+                <button
+                  onClick={() => row.present && setOpenMenu(openMenu === row.env ? null : row.env)}
+                  disabled={busy || !row.present}
+                  className="k-btn"
+                  style={dangerButton}
+                >Clear ▾</button>
+                {openMenu === row.env && (
+                  <div style={menuStyle} className="k-menu">
+                    {row.source === 'user' && (
+                      <button className="k-menu-item" onClick={() => onClear(row.env, 'user')}>
+                        Clear from tray override
+                      </button>
+                    )}
+                    {row.source === 'repo' && (
+                      <button className="k-menu-item" onClick={() => onClear(row.env, 'repo')}>
+                        Clear from repo .env file
+                      </button>
+                    )}
+                    <button className="k-menu-item" onClick={() => onClear(row.env, 'all')}>
+                      Clear from BOTH
                     </button>
-                  )}
-                  {row.source === 'repo' && (
-                    <button style={menuItemStyle} onClick={() => onClear(row.env, 'repo')}>
-                      Clear from repo .env file
+                    <button className="k-menu-item" onClick={() => setOpenMenu(null)}>
+                      Cancel
                     </button>
-                  )}
-                  <button style={menuItemStyle} onClick={() => onClear(row.env, 'all')}>
-                    Clear from BOTH
-                  </button>
-                  <button style={menuItemStyle} onClick={() => setOpenMenu(null)}>
-                    Cancel
-                  </button>
-                </div>
-              )}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         ))}
       </div>
 
       {/* ── MCP Connectors ─────────────────────────────────────────── */}
-      <div style={{ ...headerStyle, position: 'static', marginTop: 26 }}>
-        <h2 style={{ margin: 0, fontSize: 18 }}>MCP Connectors</h2>
+      <div style={sectionHeadStyle}>
+        <div>
+          <div style={sectionTitleStyle}>MCP Connectors</div>
+          <div style={titleSubStyle}>~/.jarvis/mcp.json · shared with web + voice · OAuth ones sign in from the web app</div>
+        </div>
         {!mcpAdding && (
-          <button onClick={() => setMcpAdding(true)} disabled={busy} style={smallButton}>
+          <button onClick={() => setMcpAdding(true)} disabled={busy} className="k-btn" style={ghostButton}>
             + Add server
           </button>
         )}
       </div>
-      <p style={subtitleStyle}>
-        MCP servers the assistant can call (stored in <code>~/.jarvis/mcp.json</code>, shared
-        with the web app + voice agent). Add a token-based or local HTTP server here; OAuth
-        connectors (Vercel, Notion) sign in from the web app → Settings → Connectors.
-      </p>
 
       {mcpAdding && (
-        <div style={{ ...rowStyle, flexDirection: 'column', alignItems: 'stretch', gap: 8, marginBottom: 8 }}>
+        <div style={{ ...rowStyle, gap: 8, marginBottom: 8 }}>
           <div style={{ display: 'flex', gap: 8 }}>
             <input
               value={mcpName} onChange={e => setMcpName(e.target.value)}
               placeholder="Name (e.g. GitHub)" spellCheck={false}
-              style={{ ...inputStyle, flex: '0 0 32%' }}
+              className="k-input" style={{ ...inputStyle, flex: '0 0 32%' }}
             />
             <input
               value={mcpUrl} onChange={e => setMcpUrl(e.target.value)}
               placeholder="https://api.githubcopilot.com/mcp/" spellCheck={false}
-              style={inputStyle}
+              className="k-input" style={inputStyle}
             />
           </div>
           <input
             type="password" value={mcpToken} onChange={e => setMcpToken(e.target.value)}
             placeholder="Auth token (optional) — sent as Authorization: Bearer …"
-            spellCheck={false} autoComplete="off" style={inputStyle}
+            spellCheck={false} autoComplete="off" className="k-input" style={inputStyle}
           />
-          <div style={{ display: 'flex', gap: 6 }}>
-            <button onClick={mcpAdd} disabled={busy || !mcpName.trim() || !mcpUrl.trim()} style={primaryButton}>Add</button>
-            <button onClick={() => { setMcpAdding(false); setMcpName(''); setMcpUrl(''); setMcpToken('') }} style={smallButton}>Cancel</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={mcpAdd} disabled={busy || !mcpName.trim() || !mcpUrl.trim()} className="k-btn" style={primaryButton}>Add</button>
+            <button onClick={() => { setMcpAdding(false); setMcpName(''); setMcpUrl(''); setMcpToken('') }} className="k-btn" style={ghostButton}>Cancel</button>
           </div>
         </div>
       )}
 
       <div style={listStyle}>
         {mcp.length === 0 ? (
-          <div style={{ ...dimStyle, padding: 10 }}>No MCP servers yet.</div>
+          <div style={{ ...rowStyle, color: '#6b7280', fontSize: 12 }}>No MCP servers yet.</div>
         ) : mcp.map(s => (
-          <div key={s.name} style={rowStyle}>
+          <div key={s.name} style={{ ...rowStyle, flexDirection: 'row', alignItems: 'center' }}>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 600 }}>
-                {s.name}
-                <span style={{ ...dimStyle, marginLeft: 8, textTransform: 'uppercase' }}>{s.transport}</span>
-                {s.hasAuth ? <span style={{ marginLeft: 6, color: '#9ca3af', fontSize: 11 }}>🔒</span> : null}
-                {s.oauth ? <span style={{ marginLeft: 6, color: '#22c55e', fontSize: 11 }}>oauth</span> : null}
+              <div style={{ fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</span>
+                <span style={transportBadge}>{s.transport}</span>
+                {s.hasAuth ? <span title="has auth token" style={{ fontSize: 10 }}>🔒</span> : null}
+                {s.oauth ? <span style={oauthBadge}>oauth</span> : null}
               </div>
-              <div style={{ ...dimStyle, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.url || '—'}</div>
+              <div style={{ ...envStyle, marginLeft: 0, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.url || '—'}</div>
             </div>
             <button
               onClick={() => mcpToggle(s.name, !s.enabled)} disabled={busy}
-              style={{ ...smallButton, background: s.enabled ? '#166534' : '#374151', borderColor: s.enabled ? '#166534' : '#374151' }}
+              className="k-btn"
+              style={s.enabled ? enabledButton : ghostButton}
             >{s.enabled ? 'Enabled' : 'Disabled'}</button>
-            <button onClick={() => mcpDelete(s.name)} disabled={busy} style={dangerButton}>Remove</button>
+            <button onClick={() => mcpDelete(s.name)} disabled={busy} className="k-btn" style={dangerButton}>Remove</button>
           </div>
         ))}
       </div>
@@ -300,74 +306,112 @@ export default function KeysSettings() {
   )
 }
 
-// ── Styles (inline — single page, no need to bloat index.css) ─────
+// ── Styles (inline + one tiny injected sheet for :focus/:hover/keyframes,
+//    which inline styles can't express — single page, no need for index.css) ─
+const css = `
+  .k-input::placeholder { color: #4b5563; }
+  .k-input:focus { outline: none; border-color: #3b82f6 !important; }
+  .k-btn { transition: filter 120ms ease, background 120ms ease; }
+  .k-btn:hover:not(:disabled) { filter: brightness(1.18); }
+  .k-btn:disabled { opacity: 0.45; cursor: default; }
+  .k-menu { animation: k-menu-in 120ms ease; transform-origin: top right; }
+  @keyframes k-menu-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
+  .k-menu-item {
+    padding: 8px 12px; background: transparent; color: #e5e7eb; border: none;
+    text-align: left; cursor: pointer; font-size: 12px;
+    border-bottom: 1px solid #263041;
+  }
+  .k-menu-item:last-child { border-bottom: none; }
+  .k-menu-item:hover { background: #263041; }
+`
+
 const pageStyle = {
   // Fill the webview window and let the rows scroll inside it.
   // Without overflow:auto, an 8-row list overflowed the 540px window
   // and was inaccessible — captured live 2026-05-02.
+  // No top padding: the sticky header below is a full-bleed opaque bar,
+  // so scrolled rows can never peek out above it (the old 16px page
+  // padding sat OUTSIDE the header's background — rows bled through).
   position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
   overflowY: 'auto', overflowX: 'hidden',
-  padding: 16, fontFamily: 'system-ui, -apple-system, sans-serif',
-  color: '#e5e7eb', background: '#111827',
-  fontSize: 14,
-}
-const listStyle = {
-  display: 'flex', flexDirection: 'column', gap: 8,
-  paddingBottom: 80,        // breathing room below last row
+  padding: '0 16px 16px', fontFamily: 'system-ui, -apple-system, sans-serif',
+  color: '#e5e7eb', background: '#0f1623',
+  fontSize: 13,
 }
 const headerStyle = {
   display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-  marginBottom: 6, gap: 12, position: 'sticky', top: 0,
-  background: '#111827', paddingTop: 4, paddingBottom: 8, zIndex: 10,
+  gap: 12, position: 'sticky', top: 0, zIndex: 10,
+  margin: '0 -16px 12px', padding: '14px 16px 12px',
+  background: '#0f1623', borderBottom: '1px solid #1e293b',
 }
-const subtitleStyle = {
-  fontSize: 12, color: '#9ca3af', marginTop: 0, marginBottom: 14,
-  lineHeight: 1.4,
+const titleStyle = { margin: 0, fontSize: 15, letterSpacing: '0.01em' }
+const titleSubStyle = { fontSize: 11, color: '#64748b', marginTop: 2 }
+const sectionHeadStyle = {
+  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+  gap: 12, margin: '26px 0 10px',
+}
+const sectionTitleStyle = {
+  fontSize: 11, fontWeight: 600, letterSpacing: '0.08em',
+  textTransform: 'uppercase', color: '#94a3b8',
+}
+const listStyle = {
+  display: 'flex', flexDirection: 'column', gap: 8,
 }
 const rowStyle = {
-  display: 'flex', alignItems: 'flex-start', gap: 10, padding: 10,
-  background: '#1f2937', borderRadius: 6,
+  display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 12px',
+  background: '#161f30', border: '1px solid #1e293b', borderRadius: 8,
 }
-const dimStyle = { fontSize: 11, color: '#6b7280', fontFamily: 'monospace' }
+const rowTopStyle = {
+  display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+  gap: 10, minWidth: 0,
+}
+const rowControlsStyle = { display: 'flex', gap: 8, alignItems: 'center' }
+const envStyle = {
+  fontSize: 10.5, color: '#64748b', fontFamily: 'ui-monospace, monospace',
+  marginLeft: 8,
+}
 const presentRowStyle = {
-  display: 'flex', gap: 8, alignItems: 'center', fontSize: 11,
-  marginBottom: 4,
+  display: 'flex', gap: 8, alignItems: 'center', flex: 'none',
 }
-const maskStyle = { color: '#9ca3af', fontFamily: 'monospace', fontSize: 11 }
+const maskStyle = { color: '#94a3b8', fontFamily: 'ui-monospace, monospace', fontSize: 11 }
+const badgeBase = {
+  fontSize: 10, fontWeight: 600, letterSpacing: '0.04em',
+  padding: '1px 7px', borderRadius: 999, textTransform: 'uppercase',
+}
+const trayBadge = { ...badgeBase, color: '#4ade80', background: 'rgba(34,197,94,0.12)' }
+const repoBadge = { ...badgeBase, color: '#facc15', background: 'rgba(250,204,21,0.10)' }
+const unsetBadge = { ...badgeBase, color: '#64748b', background: 'rgba(100,116,139,0.12)', flex: 'none' }
+const transportBadge = { ...badgeBase, color: '#94a3b8', background: 'rgba(148,163,184,0.10)', flex: 'none' }
+const oauthBadge = { ...badgeBase, color: '#4ade80', background: 'rgba(34,197,94,0.12)', flex: 'none' }
 const inputStyle = {
-  width: '100%', padding: '6px 8px', borderRadius: 4,
-  border: '1px solid #374151', background: '#111827', color: '#e5e7eb',
-  fontFamily: 'monospace', fontSize: 12, boxSizing: 'border-box',
+  flex: 1, minWidth: 0, height: 28, padding: '0 9px', borderRadius: 6,
+  border: '1px solid #263041', background: '#0f1623', color: '#e5e7eb',
+  fontFamily: 'ui-monospace, monospace', fontSize: 12, boxSizing: 'border-box',
 }
-const smallButton = {
-  padding: '6px 10px', borderRadius: 4, border: '1px solid #374151',
-  background: '#374151', color: '#e5e7eb', cursor: 'pointer',
-  fontSize: 12, whiteSpace: 'nowrap',
+const buttonBase = {
+  height: 28, padding: '0 10px', borderRadius: 6, cursor: 'pointer',
+  fontSize: 12, whiteSpace: 'nowrap', flex: 'none',
+}
+const ghostButton = {
+  ...buttonBase, border: '1px solid #263041', background: '#1c2638', color: '#cbd5e1',
 }
 const primaryButton = {
-  ...smallButton, background: '#2563eb', borderColor: '#2563eb',
+  ...buttonBase, border: '1px solid #2563eb', background: '#2563eb', color: '#fff',
 }
 const dangerButton = {
-  ...smallButton, background: '#7f1d1d', borderColor: '#7f1d1d',
+  ...buttonBase, border: '1px solid #3b1d24', background: 'transparent', color: '#f87171',
+}
+const enabledButton = {
+  ...buttonBase, border: '1px solid #166534', background: 'rgba(22,101,52,0.35)', color: '#4ade80',
 }
 const menuStyle = {
   position: 'absolute', top: '100%', right: 0, marginTop: 4,
-  background: '#1f2937', border: '1px solid #374151', borderRadius: 4,
+  background: '#1c2638', border: '1px solid #263041', borderRadius: 8,
   display: 'flex', flexDirection: 'column', minWidth: 220, zIndex: 20,
-  boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
-}
-const menuItemStyle = {
-  padding: '8px 12px', background: 'transparent', color: '#e5e7eb',
-  border: 'none', textAlign: 'left', cursor: 'pointer', fontSize: 12,
-  borderBottom: '1px solid #374151',
+  boxShadow: '0 8px 24px rgba(0,0,0,0.55)', overflow: 'hidden',
 }
 const statusStyle = {
   position: 'sticky', bottom: 0,
-  marginTop: 16, padding: 10, background: '#1e3a8a', borderRadius: 4,
-  fontSize: 12,
-}
-function badgeStyleFor(source) {
-  return source === 'user'
-    ? { color: '#22c55e', fontSize: 11 }      // green = tray (managed)
-    : { color: '#facc15', fontSize: 11 }      // amber = repo (default)
+  marginTop: 14, padding: '9px 12px', background: '#14263f',
+  border: '1px solid #1d4ed8', borderRadius: 8, fontSize: 12,
 }

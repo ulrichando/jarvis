@@ -64,13 +64,14 @@ def _already_queued(text: str) -> bool:
 def _enqueue(intent: dict) -> None:
     qp = queue_path()
     qp.parent.mkdir(parents=True, exist_ok=True)
-    # Dedup: skip a NON-retry intent whose exact text is already pending — stops
-    # the assessment piling the same goal up. RETRY intents are EXEMPT (they are
-    # meant to re-attempt, and are bounded by MAX_RETRY_ATTEMPTS + the `retried`
-    # marker), so legitimate retries of different goals are never dropped.
-    text = (intent.get("intent") or "").strip()
-    if text and not text.upper().startswith("RETRY") and _already_queued(text):
-        logger.info("[cycle] skip enqueue — intent already queued: %s", text[:80])
+    # Shared queue admission (patterns.queue_admission): exact + paraphrase
+    # dedup and the self-loop-target filter. RETRY intents are exempt from
+    # dedup there (they must re-attempt; bounded by MAX_RETRY_ATTEMPTS + the
+    # `retried` marker), so legitimate retries are never dropped.
+    admit, reason = patterns.queue_admission(intent)
+    if not admit:
+        logger.info("[cycle] skip enqueue (%s): %s", reason,
+                    str(intent.get("intent", ""))[:80])
         return
     with qp.open("a", encoding="utf-8") as f:
         f.write(json.dumps(intent, ensure_ascii=False) + "\n")

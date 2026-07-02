@@ -90,7 +90,7 @@ export function PrivacySection() {
             <div>
               <p className="text-[14px] font-medium">Data storage</p>
               <p className="mt-0.5 text-[13px] text-muted-foreground">
-                All data is stored in <span className="font-mono text-[12px]">.jarvis/</span> on your machine.
+                All data is stored in <span className="font-mono text-[12px]">~/.jarvis/</span> on your machine.
               </p>
             </div>
             <span className="rounded-full border border-border/60 px-2.5 py-1 font-mono text-[11px] text-muted-foreground">

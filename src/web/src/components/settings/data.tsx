@@ -104,7 +104,7 @@ export function DataSection() {
           <div>
             <p className="text-sm font-medium">Settings file</p>
             <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
-              .jarvis/settings.json
+              ~/.jarvis/settings.json
             </p>
           </div>
           <span className="rounded-full border border-border/60 px-2 py-0.5 font-mono text-[10px] text-muted-foreground">

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jarvis in Chrome</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; padding: 16px;
+        font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+        background: #16130f; color: #e9e4dc;
+      }
+      h1 { margin: 0 0 2px; font-size: 15px; font-weight: 600; }
+      .sub { color: #8b8377; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 14px; }
+      .card { border: 1px solid #2b2620; border-radius: 12px; background: #1c1813; padding: 12px 14px; margin-bottom: 12px; }
+      .row { display: flex; align-items: center; gap: 8px; }
+      .dot { width: 9px; height: 9px; border-radius: 50%; background: #6b6459; flex: none; }
+      .dot.ok { background: #34d399; }
+      .dot.warn { background: #fbbf24; }
+      .dot.bad { background: #f87171; }
+      .dot.pending { background: #60a5fa; }
+      .state { font-weight: 600; }
+      .reason { color: #9a9187; font-size: 12px; margin-top: 4px; }
+      label { display: block; color: #9a9187; font-size: 11px; margin: 10px 0 4px; }
+      input {
+        width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid #322c24;
+        background: #12100c; color: #e9e4dc; font: inherit; outline: none;
+      }
+      input:focus { border-color: #c96442; }
+      .btns { display: flex; gap: 8px; margin-top: 10px; }
+      button {
+        font: inherit; border-radius: 8px; padding: 7px 12px; cursor: pointer;
+        border: 1px solid #322c24; background: #241f19; color: #e9e4dc;
+      }
+      button.primary { background: #c96442; border-color: #c96442; color: #fff; }
+      button:disabled { opacity: .5; cursor: default; }
+      .log { margin: 0; padding: 0; list-style: none; }
+      .log li { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; border-top: 1px solid #241f19; font-size: 12px; }
+      .log li:first-child { border-top: none; }
+      .log .a { font-family: ui-monospace, monospace; }
+      .log .ok { color: #34d399; } .log .no { color: #f87171; }
+      .muted { color: #8b8377; }
+      .hint { font-size: 11px; color: #8b8377; margin-top: 6px; line-height: 1.5; }
+      code { background: #12100c; padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+    </style>
+  </head>
+  <body>
+    <h1>Jarvis in Chrome</h1>
+    <div class="sub">Browser control · local bridge</div>
+
+    <div class="card">
+      <div class="row"><span id="dot" class="dot"></span><span id="state" class="state">Checking…</span></div>
+      <div id="reason" class="reason"></div>
+    </div>
+
+    <div class="card" id="pairCard">
+      <label for="token">Bridge token</label>
+      <input id="token" type="password" placeholder="JARVIS_LOCAL_API_TOKEN" autocomplete="off" spellcheck="false" />
+      <div class="btns">
+        <button id="save" class="primary">Connect</button>
+        <button id="reconnect">Reconnect</button>
+      </div>
+      <p class="hint">Paste the value of <code>JARVIS_LOCAL_API_TOKEN</code> from
+        <code>~/.jarvis/local-api-token.env</code>. It's stored locally in the extension and only
+        used to authenticate to the bridge on 127.0.0.1.</p>
+    </div>
+
+    <div class="card">
+      <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">Recent actions</div>
+      <ul id="log" class="log"><li class="muted">Nothing yet.</li></ul>
+    </div>
+
+    <script src="side_panel.js"></script>
+  </body>
+</html>

@@ -33,8 +33,10 @@ import {
   Plug,
   Rocket,
   ScanSearch,
+  Bot,
+  Palette,
   Search,
-  Sparkles,
+  Sun,
   UserPlus,
   type LucideIcon,
 } from "lucide-react";
@@ -265,7 +267,7 @@ const DEFAULT_UX: ProviderUX = {
           kind: "toggle",
           toggled: true,
         },
-        { id: "style", label: "Use style", icon: Sparkles, kind: "submenu" },
+        { id: "style", label: "Use style", icon: Palette, kind: "submenu" },
       ],
     },
   ],
@@ -369,7 +371,7 @@ const GEMINI_UX: ProviderUX = {
     },
     {
       label: "Boost my day",
-      icon: Sparkles,
+      icon: Sun,
       prompt: "Help me plan a great day. ",
       description: "Plans and productivity",
       tasks: [
@@ -469,12 +471,12 @@ const KIMI_UX: ProviderUX = {
   ],
   secondary: {
     label: "Agent",
-    icon: Sparkles,
+    icon: Bot,
     groups: [
       {
         label: "Agent modes",
         items: [
-          { id: "default", label: "Default", icon: Sparkles, kind: "action" },
+          { id: "default", label: "Default", icon: Bot, kind: "action" },
           { id: "deep-research", label: "Deep Research", icon: Compass, kind: "action" },
           { id: "slides", label: "Slides", icon: Package, kind: "action" },
           { id: "websites", label: "Websites", icon: Code2, kind: "action" },

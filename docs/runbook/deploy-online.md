@@ -100,6 +100,39 @@ Your domain is already on Cloudflare, so:
 - A request with a wrong/absent bearer to a real `/api/*` route → `401 auth required`.
 - A request with a forged Host → `403 host not allowed`.
 
+## 6. Continuous deploy — push to master, the box self-updates
+
+Live since 2026-07-02. A systemd timer on the VPS polls `origin/master` every
+5 minutes and, when it moves: ff-only pull → `docker compose build` + `up -d`
+(only when `src/web` or `src/cli` changed; Caddyfile changes also restart caddy)
+→ health gate (hub `/health` + web HTTP + container states) → **automatic
+rollback** to the previous SHA on failure. The script lives in the repo
+([scripts/vps/deploy-poll.sh](../../scripts/vps/deploy-poll.sh)) so it
+self-updates with master; the units are one-time copies.
+
+Install (once, as root on the box):
+```bash
+cp /opt/jarvis/scripts/vps/jarvis-deploy-poll.{service,timer} /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now jarvis-deploy-poll.timer
+# optional off-box alerts:
+echo 'JARVIS_DEPLOY_NOTIFY_URL=https://ntfy.sh/<topic>' > /etc/jarvis-deploy.env
+```
+
+Rules the script enforces:
+- **ff-only** — a dirty/diverged `/opt/jarvis` refuses to deploy (loud failure,
+  no clobber). Box-local tweaks belong in `src/web/docker-compose.override.yml`
+  (gitignored, compose auto-merges it) or `.env.production` — never in tracked
+  files on the box.
+- **Migrations are MANUAL** — a push touching `src/web/drizzle/` skips the
+  deploy + alerts. Apply the schema per §3, then clear the latch:
+  `rm -f /var/lib/jarvis-deploy/failed-sha`.
+- **Failed-SHA latch** — a failed deploy is not retried every 5 minutes; it
+  waits for a new push to move master (or a manual latch clear).
+
+Ops: log at `/var/log/jarvis-deploy.log` · pause:
+`systemctl disable --now jarvis-deploy-poll.timer` · manual rollback:
+`git -C /opt/jarvis reset --hard <sha>` then rebuild per §3.
+
 ## The pty terminal — now authenticated at the socket
 The `/code` terminal (`scripts/pty-server.mjs`, port 8772) is a raw PTY shell.
 It is fronted by Caddy `/pty` (TLS + Cloudflare Access + app login) and bound to

@@ -5956,6 +5956,45 @@ async function run(): Promise<CommanderCommand> {
       await authStatus(opts);
     });
 
+  // jarvis keys — provider API keys, synced FROM the JARVIS server (server =
+  // source of truth; ~/.jarvis/keys.env = the local cache every launcher, the
+  // tray, and the voice agent read). Needs `jarvis auth login` first.
+  const keysCmd = program
+    .command("keys")
+    .description("Manage provider API keys (synced from your JARVIS server)")
+    .configureHelp(createSortedHelpConfig());
+  keysCmd
+    .command("pull")
+    .description(
+      "Fetch provider keys from the server into ~/.jarvis/keys.env (restart services to apply)",
+    )
+    .option(
+      "--url <url>",
+      "JARVIS server URL (default: $JARVIS_BRIDGE_BASE_URL or saved value)",
+    )
+    .action(async ({ url }: { url?: string }) => {
+      const { jarvisKeysPull } = await import("./cli/handlers/jarvisKeys.js");
+      await jarvisKeysPull({ url });
+      process.exit(0);
+    });
+
+  // jarvis gh-agent — poll a GitHub repo for @jarvis mentions by allowlisted
+  // authors and (P1) acknowledge them. Reuses the machine's authed gh CLI.
+  // Config: ~/.jarvis/gh-agent.json. See docs/superpowers/specs/2026-07-02-jarvis-gh-agent-design.md
+  program
+    .command("gh-agent")
+    .description("Watch a GitHub repo for @jarvis mentions (P1: acknowledge)")
+    .option("--repo <owner/name>", "Repo to poll (overrides config repos[])")
+    .option("--once", "Do a single poll sweep and exit (default)")
+    .option("--dry-run", "Log what would happen; post nothing")
+    .action(async (opts: { repo?: string; once?: boolean; dryRun?: boolean }) => {
+      const { runGhAgentOnce } = await import("./gh-agent/main.js");
+      await runGhAgentOnce({ repo: opts.repo, dryRun: !!opts.dryRun });
+      // Preserve the module's failure signal (process.exitCode = 1 on a failed
+      // poll/ack) so cron/systemd sees the real outcome, not a hardcoded 0.
+      process.exit(process.exitCode ?? 0);
+    });
+
   program
     .command("uninstall")
     .description(

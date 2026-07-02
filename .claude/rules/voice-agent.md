@@ -24,7 +24,7 @@ These constraints are load-bearing. Don't remove or weaken without the user's si
 
 **Don't restart `jarvis-voice-agent.service` while a session is active.** Check `~/.local/share/jarvis/turn_telemetry.db` for the latest `ts_utc`; if within 60s, ask the user first.
 
-**TTS is Groq Orpheus via `_LoggingGroqTTS` shim.** Don't replace with ElevenLabs (removed 2026-05-01) or other providers without coordinating the dispatcher in [pipeline/dispatching_tts.py](../../src/voice-agent/pipeline/dispatching_tts.py).
+**TTS is local Kokoro (primary) + Edge (fallback).** Groq Orpheus + its `_LoggingGroqTTS` / `LoggingGroqChunkedStream` shim were removed 2026-06-29 (full-Groq-eradication); ElevenLabs was removed 2026-05-01. Kokoro is on-device, so unset `GROQ_API_KEY` doesn't affect speech. Don't reintroduce a cloud TTS without coordinating the dispatcher in [pipeline/dispatching_tts.py](../../src/voice-agent/pipeline/dispatching_tts.py).
 
 **Voice-agent has its own `.venv`** at [src/voice-agent/.venv/](../../src/voice-agent/.venv/). Don't use the project root venv or system Python — the voice-agent's livekit-agents version is pinned.
 
