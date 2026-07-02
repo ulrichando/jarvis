@@ -649,6 +649,55 @@ def _is_unaddressed_ambient(text: str) -> bool:
     return not _recent_interaction(window)
 
 
+# Ambient-backchannel suppressor (2026-07-02). With the addressing gate
+# OFF (always-answer room, above), every overheard utterance reaches the
+# LLM, which is trusted to return an EMPTY string on ambient audio
+# (soul.md DISCRETION). Thinking-mode DeepSeek honored that; the
+# non-thinking pin (45f43ada) instead voices a minimal filler — "Right." /
+# "Mm." / "Yes?" — at the room, and each voiced filler lands in chat_ctx
+# as precedent for the next turn to mimic (same self-reinforcing loop as
+# the emote + tool-leak cases; live 2026-07-02: 0%→81% of turns within one
+# session, token drifting Right.→Mm.→Yes?). Deterministic enforcement: a
+# reply that is NOTHING BUT a filler token, answering a turn not addressed
+# to JARVIS, is silenced before TTS. Contentful replies and addressed
+# turns (vocative / wake phrase / live directed exchange) are untouched —
+# bare "Jarvis" → "Yes?" survives. Kill-switch: JARVIS_BACKCHANNEL_GATE=0.
+BACKCHANNEL_GATE_ON = os.environ.get("JARVIS_BACKCHANNEL_GATE", "1") != "0"
+# Longest filler lemma is ~11 letters ("fair enough"); a stream past this
+# length can never be a bare filler — flush early, zero latency cost.
+_BACKCHANNEL_MAX_LEN = 24
+# Matched against the normalized WHOLE reply (lowercase, letters+spaces
+# only). Deliberately separate from stt_gate.FILLER_TOKENS — that set
+# filters USER transcripts (different vocab + trust boundary).
+_FILLER_LEMMAS = frozenset({
+    "right", "mm", "mhm", "mmhm", "mm hm", "yeah", "yes", "yep", "yup",
+    "sure", "got it", "ok", "okay", "hm", "hmm", "huh", "go on", "uh huh",
+    "alright", "all right", "fair enough", "noted", "understood",
+    "of course", "indeed",
+})
+_FILLER_NORM_RE = re.compile(r"[^a-z]+")
+
+
+def _is_bare_filler_reply(text: str) -> bool:
+    """True when the ENTIRE reply is one backchannel token ("Right." /
+    "Mm." / "Yes?" / "Got it —"). Normalization keeps letters only, so
+    punctuation / dash / case variants all collapse to the same lemma."""
+    norm = _FILLER_NORM_RE.sub(" ", (text or "").lower()).strip()
+    return bool(norm) and norm in _FILLER_LEMMAS
+
+
+def _turn_is_addressed(user_text: str) -> bool:
+    """Same directedness bar as _should_sync_memory_item: an explicit
+    "Jarvis" vocative / wake phrase on THIS turn, or a live directed
+    exchange (the addressed-window stamp, touched by every addressed
+    turn in on_user_turn_completed)."""
+    if user_text and (
+        _JARVIS_NAME_RE.search(user_text) or _is_command(user_text, _WAKE_PATTERNS)
+    ):
+        return True
+    return _within_addressed_window()
+
+
 # Hedge phrases that the POST-HANDOFF HONESTY rule trains the
 # supervisor to emit when it couldn't confirm tool success. Keep
 # lowercase + substring-matched against ``jarvis_text.lower()``.
@@ -4033,6 +4082,50 @@ async def pre_tts_confab_gate_filter(text):
             yield buffer
 
 
+async def suppress_ambient_backchannel(text):
+    """Silence a reply that is NOTHING BUT a filler token ("Right." /
+    "Mm." / "Yes?") when the user turn wasn't addressed to JARVIS —
+    deterministic enforcement of soul.md's DISCRETION contract (ambient →
+    empty string), which non-thinking models drift from (live 2026-07-02:
+    the room got a voiced filler on 81% of turns; each one committed to
+    chat_ctx taught the next).
+
+    Emitting nothing rides the existing silent-turn path: no TTS, no
+    committed assistant text to mimic, no db row. Buffers at most
+    _BACKCHANNEL_MAX_LEN chars — anything longer can't be a bare filler
+    and streams through untouched. Sits AFTER the confab gate (sees final
+    post-retry text) and BEFORE the leakage/emote strippers.
+    Kill-switch: JARVIS_BACKCHANNEL_GATE=0."""
+    if not BACKCHANNEL_GATE_ON:
+        async for chunk in text:
+            yield chunk
+        return
+    buffer = ""
+    buffering = True
+    async for chunk in text:
+        if buffering:
+            buffer += chunk
+            if len(buffer) > _BACKCHANNEL_MAX_LEN:
+                # Too long to be a bare filler — flush, then pass through.
+                yield buffer
+                buffering = False
+        else:
+            yield chunk
+    if not buffering or not buffer:
+        return
+    # End-of-stream with a tiny reply: the only candidate shape.
+    if _is_bare_filler_reply(buffer):
+        sess = _active_session_for_telemetry[0]
+        user_text = str(getattr(sess, "_jarvis_last_user_text", "") or "")
+        if not _turn_is_addressed(user_text):
+            logger.warning(
+                f"[backchannel] suppressed filler {buffer!r} on unaddressed "
+                f"turn {user_text[:60]!r}"
+            )
+            return
+    yield buffer
+
+
 async def _post_turn_text_recovery(session) -> None:
     """Belt-and-suspenders recovery: an assistant item landed in chat_ctx
     with no text AND no tool_use, but the turn had fired tool calls
@@ -4489,6 +4582,18 @@ class JarvisAgent(Agent):
         # Turn accepted — stamp the interaction time so follow-ups within
         # the quiet-hours window don't need a vocative.
         _touch_interaction()
+
+        # Stash the accepted transcript for reply-side gates (the ambient-
+        # backchannel suppressor reads it off the telemetry session ref).
+        # Vocative/wake turns also warm the addressed-window stamp here so
+        # _turn_is_addressed doesn't depend on the memory-sync path being
+        # live (idempotent with _should_sync_memory_item's touch).
+        try:
+            self.session._jarvis_last_user_text = text
+        except Exception:
+            pass
+        if _JARVIS_NAME_RE.search(text) or _is_command(text, _WAKE_PATTERNS):
+            _touch_addressed()
 
         # Auto-title the conversation session from the first user utterance.
         # The store's auto_title() enforces first-writer-wins (WHERE title
@@ -6641,6 +6746,16 @@ async def entrypoint(ctx: JobContext) -> None:
             # ack (in _on_agent_state) cushions the buffering latency.
             # Kill switch: JARVIS_PRE_TTS_CONFAB_GATE=0.
             pre_tts_confab_gate_filter,
+            # Ambient-backchannel suppressor (2026-07-02): a reply that is
+            # ONLY a filler token ("Right." / "Mm." / "Yes?") answering a
+            # turn not addressed to JARVIS is silenced — soul.md DISCRETION
+            # enforced in code. Non-thinking pinned models voice fillers at
+            # the room and each committed one teaches the next (live: 0%→81%
+            # of turns in one session). After the confab gate so it sees the
+            # final text; before the strippers. Bare "Jarvis" → "Yes?" and
+            # mid-conversation continuers to ADDRESSED talk pass untouched.
+            # Kill switch: JARVIS_BACKCHANNEL_GATE=0.
+            suppress_ambient_backchannel,
             strip_function_call_leakage,
             # 2026-07-01: drop `*(chuckles)*`-style stage-direction
             # emotes + stray markdown, and NEVER emit a letterless
