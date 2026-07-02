@@ -1,23 +1,21 @@
-# Caddy — origin TLS + reverse proxy. Cloudflare sits IN FRONT of this
-# (DNS proxied, mode Full (strict)). Set JARVIS_DOMAIN in .env.production.
-
-{$JARVIS_DOMAIN:localhost} {
-	# Cloudflare Origin Certificate (Cloudflare dash → SSL/TLS → Origin Server →
-	# Create Certificate), dropped into the cert dir the compose caddy service
-	# mounts (./certs by default → /etc/caddy/certs). For local/no-CF, comment
-	# this line out — Caddy uses its internal CA instead (then set Cloudflare's
-	# SSL mode to "Full", not "Full (strict)").
-	tls /etc/caddy/certs/origin.crt /etc/caddy/certs/origin.key
-
+# Caddy — plain-HTTP origin behind the host's cloudflared tunnel (Cloudflare
+# terminates TLS at the edge; the tunnel delivers to localhost:80). This is the
+# LIVE production shape on the VPS. The previous origin-TLS shape
+# ({$JARVIS_DOMAIN} + Cloudflare Origin Certificate on :443) is in git history —
+# restore it only if you front this with a proxied DNS record instead of a
+# tunnel.
+:80 {
 	encode zstd gzip
 
-	# /code terminal websocket → the pty-server (8772). Routed through Caddy so
-	# it rides TLS + Cloudflare Access instead of being a raw exposed port. Set
-	# NEXT_PUBLIC_PTY_URL=wss://$JARVIS_DOMAIN/pty at BUILD time so the browser
-	# uses this path. The pty socket now requires a per-session HS256 token in
-	# its init frame (minted by /api/workspace/[id]/pty-token, behind the app
-	# auth; JARVIS_PTY_REQUIRE_AUTH=1 in compose) — so Access + app login + the
-	# socket token are three independent layers, not one.
+	# searx.0wlan.com → SearXNG (JARVIS's keyless web_search backend).
+	# Hostname-routed here; the public hostname is a cloudflared ingress rule
+	# EXCLUDED from Cloudflare Access (same pattern as /install.sh + /releases).
+	@searx host searx.0wlan.com
+	reverse_proxy @searx searxng:8080
+
+	# /code terminal websocket → the pty-server (8772). Rides the tunnel + app
+	# auth; the socket additionally requires a per-session HS256 token in its
+	# init frame (JARVIS_PTY_REQUIRE_AUTH=1 in compose).
 	@pty path /pty /pty/*
 	reverse_proxy @pty web:8772
 
@@ -25,7 +23,6 @@
 
 	# Baseline origin headers — Cloudflare WAF/Access are the primary edge layer.
 	header {
-		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
