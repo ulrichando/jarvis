@@ -1,0 +1,27 @@
+# JARVIS SearXNG — minimal override so a self-hosted SearXNG can serve as the
+# voice-agent's web_search backend (tools/plugins/web/searxng).
+#
+# The plugin calls  {SEARXNG_URL}/search?format=json  — and stock SearXNG allows
+# ONLY `html` output by default, returning HTTP 403 to JSON requests. Enabling
+# the json format below is the single load-bearing setting; without it web_search
+# silently falls back to the (IP-blocked) DuckDuckGo scraper.
+#
+# `use_default_settings: true` merges these keys over SearXNG's shipped defaults,
+# so this file stays tiny and survives image upgrades.
+use_default_settings: true
+
+server:
+  # The searxng docker entrypoint replaces this placeholder with the value of the
+  # SEARXNG_SECRET env var at container start. Set SEARXNG_SECRET in .env.production.
+  secret_key: "ultrasecretkey"
+  # JARVIS is the only client and the instance sits behind Caddy + Cloudflare
+  # Access (or a private network), so the bot-limiter would only 429 our own
+  # queries. Keep it OFF here and rely on network-level protection.
+  limiter: false
+  image_proxy: true
+
+search:
+  # REQUIRED — the voice-agent searxng plugin speaks the JSON API.
+  formats:
+    - html
+    - json
