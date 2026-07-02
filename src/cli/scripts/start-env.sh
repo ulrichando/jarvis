@@ -127,6 +127,11 @@ case "${1:-}" in
     ;;
 esac
 
+# bypass everywhere on the SOURCE path: headless/automation must never
+# stall on prompts, and source-run interactive currently ONLY boots in
+# bypass (non-bypass hits deadlock #2 — see bin/jarvis comment). The
+# interactive default-mode experience (Shift+Tab cycling) lives on the
+# binary path in bin/jarvis, which passes no --permission-mode.
 JARVIS_PERMISSION_MODE="${JARVIS_PERMISSION_MODE:-bypassPermissions}"
 JARVIS_SANDBOX_ENABLED="${JARVIS_SANDBOX_ENABLED:-0}"
 
