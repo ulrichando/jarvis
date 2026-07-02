@@ -663,6 +663,22 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
     )
     out.start()
     log.info(f"[playback] OPEN track={track.sid} sr={SAMPLE_RATE}Hz ch={NUM_CHANNELS} device={AUDIO_OUTPUT_DEVICE!r}")
+    # Serialize write vs stop/close. On SIGTERM, asyncio.run() teardown
+    # cancels this task while a blocking out.write is still executing in
+    # its to_thread worker (writes park up to ~200 ms on the ring); the
+    # finally below then hit out.stop()/close() CONCURRENTLY with that
+    # in-flight write → PortAudio ALSA teardown asserts (pa_linux_alsa.c
+    # EndProcessing cascade) → abort() → SIGABRT → unit 'failed' →
+    # OnFailure page (3× live 2026-07-01: 20:29/22:13/22:48). The lock
+    # makes teardown wait out the in-flight write (≤ one park, teardown-
+    # only) and the flag makes any later write a no-op after close.
+    _wlock = threading.Lock()
+    _closed = [False]  # mutable closure cell, same idiom as _speaking_until
+
+    def _write_pcm(p: np.ndarray) -> None:
+        with _wlock:
+            if not _closed[0]:
+                out.write(p)
     # `state.speaking` drives the tray's "talking" (blue) colour. The
     # remote track stays open the whole session (silence frames flow
     # continuously between TTS utterances). 2026-05-20: drive it from
@@ -727,7 +743,7 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
             # stale feed (the Claude path) → fall through and drive normally.
             if time.monotonic() - state.ext_face_ts < _EXT_FACE_FRESH_S:
                 # Off-loop write — see the comment at the main write below.
-                await asyncio.to_thread(out.write, pcm)
+                await asyncio.to_thread(_write_pcm, pcm)
                 continue
             # Drive state.speaking from the outgoing TTS PCM (clean,
             # known signal) — not mic-side RMS which can false-positive
@@ -781,7 +797,7 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
             # 2026-06-11 outages). to_thread keeps the loop free while
             # parked; awaiting each write before the next keeps frames
             # ordered (single in-flight write).
-            await asyncio.to_thread(out.write, pcm)
+            await asyncio.to_thread(_write_pcm, pcm)
     except Exception as e:
         log.warning(f"[playback] stream error: {e} — triggering reconnect")
         # Signal run_once() to tear down and reconnect via the
@@ -790,8 +806,12 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
         _audio_output_crashed.set()
     finally:
         state.speaking = False
-        out.stop()
-        out.close()
+        # Blocks ≤ one write-park while the worker thread leaves
+        # PortAudio — only ever contended at teardown (see _wlock above).
+        with _wlock:
+            _closed[0] = True
+            out.stop()
+            out.close()
         log.info(f"[playback] CLOSE track={track.sid}")
 
 
