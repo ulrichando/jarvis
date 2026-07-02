@@ -1,126 +1,253 @@
 "use client";
 
-import { BookOpen, Upload, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { BookOpen, Loader2, Trash2, Upload } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { Button } from "@/components/ui/button";
 
 /**
- * Personal-scoped knowledge base — files / docs the AI can reference
- * across ALL chats (not workspace-scoped). Workspace-scoped knowledge
- * lives in the workbench Settings tab → Knowledge.
- *
- * Stub for now. The infrastructure to wire this up is documented at
- * the bottom so the next implementation pass has a clear punch list.
+ * Personal-scoped knowledge base — docs the AI references in EVERY chat
+ * (workspace-scoped knowledge lives in the workbench Settings tab).
+ * Backed by /api/knowledge → ~/.jarvis/knowledge/. V1: whole text files
+ * injected into the system prompt (4K chars/doc), no embeddings.
  */
+
+type KnowledgeDoc = {
+  name: string;
+  bytes: number;
+  updatedAt: number;
+  enabled: boolean;
+};
+
+const ACCEPT = ".md,.txt,.json,.yaml,.yml,.csv";
+
+function fmtSize(bytes: number): string {
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+
 export function KnowledgeSection() {
+  const qc = useQueryClient();
+  const [dragOver, setDragOver] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newContent, setNewContent] = useState("");
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["knowledge"],
+    queryFn: async () => {
+      const r = await fetch("/api/knowledge");
+      if (!r.ok) throw new Error(r.statusText);
+      return (await r.json()) as { docs: KnowledgeDoc[] };
+    },
+    refetchOnWindowFocus: false,
+  });
+
+  const upload = useMutation({
+    mutationFn: async ({ name, content }: { name: string; content: string }) => {
+      const r = await fetch("/api/knowledge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, content }),
+      });
+      if (!r.ok) {
+        const j = (await r.json().catch(() => ({}))) as { error?: string };
+        throw new Error(j.error ?? r.statusText);
+      }
+      return r.json();
+    },
+    onSuccess: () => {
+      toast.success("Document added");
+      qc.invalidateQueries({ queryKey: ["knowledge"] });
+    },
+    onError: (err: Error) => toast.error(`Add failed: ${err.message}`),
+  });
+
+  const toggle = useMutation({
+    mutationFn: async ({ name, enabled }: { name: string; enabled: boolean }) => {
+      const r = await fetch("/api/knowledge", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, enabled }),
+      });
+      if (!r.ok) throw new Error(r.statusText);
+      return r.json();
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["knowledge"] }),
+    onError: (e: Error) => toast.error(`Update failed: ${e.message}`),
+  });
+
+  const remove = useMutation({
+    mutationFn: async (name: string) => {
+      const r = await fetch(`/api/knowledge?name=${encodeURIComponent(name)}`, {
+        method: "DELETE",
+      });
+      if (!r.ok) throw new Error(r.statusText);
+      return r.json();
+    },
+    onSuccess: () => {
+      toast.success("Document removed");
+      qc.invalidateQueries({ queryKey: ["knowledge"] });
+    },
+    onError: (e: Error) => toast.error(`Remove failed: ${e.message}`),
+  });
+
+  const handleFiles = async (files: FileList | null) => {
+    if (!files) return;
+    for (const f of Array.from(files)) {
+      const text = await f.text();
+      upload.mutate({ name: f.name, content: text });
+    }
+  };
+
+  const docs = data?.docs ?? [];
+
   return (
     <div className="space-y-6">
       <div>
         <div className="flex items-center gap-2">
           <BookOpen className="size-4 text-muted-foreground" />
           <h2 className="text-lg font-semibold">Knowledge</h2>
-          <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-amber-500">
-            Coming soon
-          </span>
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
           Documents JARVIS can reference in every chat — your CV, brand
           guidelines, recurring project specs, anything you&apos;d want the
-          model to remember without re-explaining it each turn.
+          model to remember without re-explaining it each turn. Each enabled
+          doc is added to the system prompt (first 4K characters).
         </p>
       </div>
 
-      {/* Hero upload zone (disabled) */}
-      <div className="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-border/60 bg-card/30 px-8 py-12 text-center">
+      {/* Upload zone */}
+      <label
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          void handleFiles(e.dataTransfer.files);
+        }}
+        className={`flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed px-8 py-12 text-center transition-colors ${
+          dragOver
+            ? "border-primary/60 bg-primary/5"
+            : "border-border/60 bg-card/30 hover:border-border"
+        }`}
+      >
         <div className="flex size-12 items-center justify-center rounded-full bg-muted">
-          <Upload className="size-5 text-muted-foreground" />
+          {upload.isPending ? (
+            <Loader2 className="size-5 animate-spin text-muted-foreground" />
+          ) : (
+            <Upload className="size-5 text-muted-foreground" />
+          )}
         </div>
         <div>
-          <div className="text-sm font-medium">Drop files to add to your knowledge</div>
+          <div className="text-sm font-medium">
+            Drop files to add to your knowledge
+          </div>
           <div className="mt-1 text-xs text-muted-foreground">
-            PDF, markdown, or text · 25MB per file
+            Markdown, text, JSON, YAML, or CSV · 1MB per file
           </div>
         </div>
-        <button
-          type="button"
-          disabled
-          className="mt-1 cursor-not-allowed rounded-md border border-border/60 bg-card/40 px-4 py-1.5 text-[12px] text-muted-foreground/70"
-        >
+        <span className="mt-1 rounded-md border border-border/60 bg-card/40 px-4 py-1.5 text-[12px] text-muted-foreground">
           Choose files
-        </button>
-      </div>
+        </span>
+        <input
+          type="file"
+          accept={ACCEPT}
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            void handleFiles(e.target.files);
+            e.target.value = "";
+          }}
+        />
+      </label>
 
-      {/* Empty list shape so the layout is intuitive even before files exist */}
-      <div className="rounded-lg border border-border/50 bg-card/20 p-6 text-center text-[13px] text-muted-foreground">
-        No documents yet.
-      </div>
+      {/* Paste fallback */}
+      <details className="text-[13px]">
+        <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+          Or paste text directly
+        </summary>
+        <div className="mt-2 space-y-2">
+          <input
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="filename.md"
+            className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 font-mono text-[12px] outline-none focus:border-primary"
+          />
+          <textarea
+            value={newContent}
+            onChange={(e) => setNewContent(e.target.value)}
+            placeholder="paste content here…"
+            rows={6}
+            className="w-full resize-y rounded-md border border-border bg-background px-2.5 py-1.5 font-mono text-[12px] leading-snug outline-none focus:border-primary"
+          />
+          <Button
+            size="sm"
+            disabled={upload.isPending}
+            onClick={() => {
+              if (!newName.trim() || !newContent.trim()) {
+                toast.error("Name and content required");
+                return;
+              }
+              upload.mutate({ name: newName, content: newContent });
+              setNewName("");
+              setNewContent("");
+            }}
+          >
+            {upload.isPending ? "Saving…" : "Save"}
+          </Button>
+        </div>
+      </details>
 
-      {/* What this will do once wired up */}
-      <div className="rounded-lg border border-border/50 bg-card/30 p-4">
-        <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          What this section will do
-        </h3>
-        <ul className="space-y-1.5 text-[13px] text-foreground/85">
-          <li className="flex items-start gap-2">
-            <span className="mt-1.5 size-1 shrink-0 rounded-full bg-primary/60" />
-            <span>Drag-drop PDFs, markdown, or text — chunked + embedded automatically.</span>
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="mt-1.5 size-1 shrink-0 rounded-full bg-primary/60" />
-            <span>Top-K retrieval per chat turn — relevant chunks injected into the system prompt.</span>
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="mt-1.5 size-1 shrink-0 rounded-full bg-primary/60" />
-            <span>Per-document toggle — disable a doc without deleting it.</span>
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="mt-1.5 size-1 shrink-0 rounded-full bg-primary/60" />
-            <span>&ldquo;Forget this&rdquo; — single click delete, embeddings purged.</span>
-          </li>
-        </ul>
-      </div>
-
-      <div className="rounded-lg border border-border/40 bg-card/20 p-4">
-        <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          What&apos;s needed to wire it up
-        </h3>
-        <ul className="space-y-1 text-[12px] text-muted-foreground">
-          <li className="font-mono">· Embeddings provider config (Voyage AI / OpenAI / local)</li>
-          <li className="font-mono">· Vector store (sqlite-vss for local, pgvector for hosted)</li>
-          <li className="font-mono">· DB schema: knowledge_docs(id, name, mime, bytes, status), knowledge_chunks(doc_id, content, embedding[])</li>
-          <li className="font-mono">· Upload + chunk worker (POST /api/knowledge/upload)</li>
-          <li className="font-mono">· Retrieval middleware in chat route (top-K → system prompt addendum)</li>
-        </ul>
-      </div>
-
-      {/* Faux row preview so the user can SEE what the populated state looks like */}
+      {/* Document list */}
       <div>
         <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Preview — what populated state looks like
+          Documents ({docs.length})
         </h3>
-        <div className="space-y-1.5 opacity-60">
-          {[
-            { name: "ulrich-cv.pdf", size: "412 KB", chunks: 24 },
-            { name: "brand-guidelines.md", size: "18 KB", chunks: 6 },
-            { name: "ohada-legal-summary.pdf", size: "1.2 MB", chunks: 84 },
-          ].map((d) => (
-            <div
-              key={d.name}
-              className="flex items-center justify-between rounded-md border border-border/40 px-3 py-2 text-[12px]"
-            >
-              <span className="font-mono">{d.name}</span>
-              <span className="text-muted-foreground">
-                {d.size} · {d.chunks} chunks
-              </span>
-              <button
-                type="button"
-                disabled
-                className="cursor-not-allowed text-muted-foreground/50"
-                aria-label="Remove"
+        {isLoading ? (
+          <p className="text-[13px] text-muted-foreground">Loading…</p>
+        ) : docs.length === 0 ? (
+          <div className="rounded-lg border border-border/50 bg-card/20 p-6 text-center text-[13px] text-muted-foreground">
+            No documents yet — drop a file above.
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            {docs.map((d) => (
+              <div
+                key={d.name}
+                className="flex items-center gap-3 rounded-md border border-border/40 px-3 py-2 text-[12px]"
               >
-                <Trash2 className="size-3.5" />
-              </button>
-            </div>
-          ))}
-        </div>
+                <Switch
+                  checked={d.enabled}
+                  onCheckedChange={(v) => toggle.mutate({ name: d.name, enabled: v })}
+                  aria-label={d.enabled ? "Disable document" : "Enable document"}
+                />
+                <span
+                  className={`flex-1 truncate font-mono ${d.enabled ? "" : "text-muted-foreground line-through"}`}
+                >
+                  {d.name}
+                </span>
+                <span className="shrink-0 text-muted-foreground">
+                  {fmtSize(d.bytes)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => remove.mutate(d.name)}
+                  disabled={remove.isPending}
+                  className="shrink-0 text-muted-foreground hover:text-destructive"
+                  aria-label={`Remove ${d.name}`}
+                >
+                  <Trash2 className="size-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
