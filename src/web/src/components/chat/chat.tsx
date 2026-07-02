@@ -47,7 +47,7 @@ import { useEditedFiles } from "@/stores/edited-files";
 import { useSettings } from "@/hooks/use-settings";
 import { useSkills, expandSkill } from "@/hooks/use-skills";
 import { useUI } from "@/stores/ui";
-import { DEFAULT_MODEL, MODELS_META, modelSupportsVision } from "@/lib/ai/models-meta";
+import { DEFAULT_MODEL, MODELS_META, modelSupportsVision, type ModelId } from "@/lib/ai/models-meta";
 import { getProviderUX } from "@/lib/ai/provider-ux";
 import { StreamingMessageParser } from "@/lib/actions/message-parser";
 import { ActionRunner, type ActionEvent } from "@/lib/actions/runner";
@@ -520,12 +520,31 @@ export function Chat({
     }
   }, [model, setModel]);
 
+  // Settings → Defaults → "Default model": adopt it once per mount when the
+  // picker is still on the untouched code default (a browser where the user
+  // never picked a model). A deliberate in-composer pick persists and wins;
+  // saving Settings applies its default immediately via the store instead.
+  const adoptedDefaultRef = useRef(false);
+  useEffect(() => {
+    if (adoptedDefaultRef.current) return;
+    const def = settings?.defaults?.model;
+    if (!def || !MODELS_META[def]) return;
+    adoptedDefaultRef.current = true;
+    if (model === DEFAULT_MODEL && def !== model) setModel(def as ModelId);
+  }, [settings?.defaults?.model, model, setModel]);
+
   const abortRef = useRef<AbortController | null>(null);
   // Fires once: after the first server-assigned conversation id on a
   // brand-new standalone /chat, replaceState the URL to /chat/<id> so a
   // refresh keeps the thread. Guarded so the auto-continue loop and
   // follow-up turns don't repeat it.
   const didSyncUrlRef = useRef(false);
+  // Server-assigned conversation id, pinned ACROSS submits. On standalone
+  // /chat the chatId prop stays undefined forever (the post-first-turn URL
+  // sync above is a history.replaceState, not a navigation, so the component
+  // never remounts with the id) — without this ref every follow-up send
+  // POSTs id:undefined and the server mints a NEW conversation per message.
+  const convIdRef = useRef<string | undefined>(chatId);
   // Scroll container for the message thread. The useStickToBottom
   // hook tracks how close the user is to the bottom; isAtBottom
   // gates Thread's auto-scroll on stream so the page doesn't yank
@@ -1028,12 +1047,12 @@ export function Chat({
       });
     };
 
-    // Conversation id for THIS submit. Starts as the prop, but once the first
-    // turn returns X-Conversation-Id we pin it locally so auto-continue turns
-    // extend the SAME conversation. Without this, a new chat (chatId starts
-    // undefined) re-sent id:undefined on the continuation → a second
-    // "Continue your previous output" chat appeared (the "two chats" bug).
-    let convId = chatId;
+    // Conversation id for THIS submit: the prop when the page was routed
+    // with one (/chat/[id]), else the id pinned by an earlier submit
+    // (convIdRef). Once this turn returns X-Conversation-Id we pin it both
+    // locally (auto-continue turns) and in the ref (follow-up submits), so
+    // every send extends the SAME conversation instead of minting a new one.
+    let convId = chatId ?? convIdRef.current;
 
     // One pass through fetch + stream-consume. Returns whether the stream
     // ended with finishReason="length" (= the model hit its token cap and
@@ -1083,6 +1102,7 @@ export function Chat({
       const cid = res.headers.get("X-Conversation-Id");
       if (cid) {
         convId = cid; // pin so auto-continue turns extend THIS conversation
+        convIdRef.current = cid; // pin across submits (follow-up sends)
         if (onConversationId) onConversationId(cid);
       }
       // Standalone /chat: sync the URL to /chat/<id> after the first
@@ -2239,7 +2259,7 @@ export function Chat({
       />
         </div>
         {showArtifactPanel && (
-          <div className="w-[44%] min-w-[380px] max-w-[680px] shrink-0 overflow-hidden border-l border-border/60">
+          <div className="fixed inset-0 z-40 overflow-hidden bg-background md:static md:z-auto md:w-[44%] md:min-w-[380px] md:max-w-[680px] md:shrink-0 md:border-l md:border-border/60">
             <ArtifactSidePanel
               artifacts={panelArtifacts}
               activeSlug={
