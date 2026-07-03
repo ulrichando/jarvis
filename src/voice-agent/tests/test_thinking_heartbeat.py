@@ -17,9 +17,9 @@ def _file_age_s(p: Path) -> float:
 async def test_heartbeat_touches_file_repeatedly(tmp_path, monkeypatch):
     """Heartbeat keeps the file fresh — after 0.6s with 0.2s sleep
     interval, file mtime should be less than the heartbeat interval old."""
-    from jarvis_agent import _thinking_heartbeat
+    from pipeline.thinking_heartbeat import _thinking_heartbeat
     fake_file = tmp_path / ".agent-thinking"
-    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", fake_file)
+    monkeypatch.setattr("pipeline.thinking_heartbeat._AGENT_THINKING_FILE", fake_file)
 
     task = asyncio.create_task(_thinking_heartbeat(interval_s=0.2))
     try:
@@ -38,9 +38,9 @@ async def test_heartbeat_touches_file_repeatedly(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_heartbeat_unlinks_file_on_cancel(tmp_path, monkeypatch):
-    from jarvis_agent import _thinking_heartbeat
+    from pipeline.thinking_heartbeat import _thinking_heartbeat
     fake_file = tmp_path / ".agent-thinking"
-    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", fake_file)
+    monkeypatch.setattr("pipeline.thinking_heartbeat._AGENT_THINKING_FILE", fake_file)
 
     task = asyncio.create_task(_thinking_heartbeat(interval_s=0.1))
     await asyncio.sleep(0.2)
@@ -59,9 +59,9 @@ async def test_heartbeat_survives_repeated_unlinks(tmp_path, monkeypatch):
     """Simulate the desktop racing the agent: file gets unlinked
     externally; heartbeat must re-create it on the next tick so the
     indicator doesn't blink green."""
-    from jarvis_agent import _thinking_heartbeat
+    from pipeline.thinking_heartbeat import _thinking_heartbeat
     fake_file = tmp_path / ".agent-thinking"
-    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", fake_file)
+    monkeypatch.setattr("pipeline.thinking_heartbeat._AGENT_THINKING_FILE", fake_file)
 
     task = asyncio.create_task(_thinking_heartbeat(interval_s=0.1))
     try:
@@ -82,9 +82,9 @@ async def test_heartbeat_survives_repeated_unlinks(tmp_path, monkeypatch):
 async def test_heartbeat_exits_cleanly_on_cancel_during_sleep(tmp_path, monkeypatch):
     """Cancel during the sleep portion of the loop — heartbeat must
     still unlink and exit (no hang)."""
-    from jarvis_agent import _thinking_heartbeat
+    from pipeline.thinking_heartbeat import _thinking_heartbeat
     fake_file = tmp_path / ".agent-thinking"
-    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", fake_file)
+    monkeypatch.setattr("pipeline.thinking_heartbeat._AGENT_THINKING_FILE", fake_file)
 
     task = asyncio.create_task(_thinking_heartbeat(interval_s=10.0))  # long sleep
     await asyncio.sleep(0.1)  # let it touch once
@@ -107,8 +107,8 @@ class _FakeSessionHB:
 
 @pytest.mark.asyncio
 async def test_start_helper_creates_task_and_stores_on_session(tmp_path, monkeypatch):
-    from jarvis_agent import _start_thinking_heartbeat
-    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", tmp_path / ".agent-thinking")
+    from pipeline.thinking_heartbeat import _start_thinking_heartbeat
+    monkeypatch.setattr("pipeline.thinking_heartbeat._AGENT_THINKING_FILE", tmp_path / ".agent-thinking")
     sess = _FakeSessionHB()
     _start_thinking_heartbeat(sess, interval_s=0.1)
     try:
@@ -127,8 +127,8 @@ async def test_start_helper_creates_task_and_stores_on_session(tmp_path, monkeyp
 @pytest.mark.asyncio
 async def test_start_helper_cancels_prior_task_defensively(tmp_path, monkeypatch):
     """Back-to-back calls — only the newest task runs."""
-    from jarvis_agent import _start_thinking_heartbeat
-    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", tmp_path / ".agent-thinking")
+    from pipeline.thinking_heartbeat import _start_thinking_heartbeat
+    monkeypatch.setattr("pipeline.thinking_heartbeat._AGENT_THINKING_FILE", tmp_path / ".agent-thinking")
     sess = _FakeSessionHB()
     _start_thinking_heartbeat(sess, interval_s=0.1)
     first = sess._jarvis_thinking_heartbeat
@@ -150,8 +150,8 @@ async def test_start_helper_cancels_prior_task_defensively(tmp_path, monkeypatch
 @pytest.mark.asyncio
 async def test_cancel_helper_handles_missing_task(tmp_path, monkeypatch):
     """If no heartbeat is running, cancel is a no-op."""
-    from jarvis_agent import _cancel_thinking_heartbeat
-    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", tmp_path / ".agent-thinking")
+    from pipeline.thinking_heartbeat import _cancel_thinking_heartbeat
+    monkeypatch.setattr("pipeline.thinking_heartbeat._AGENT_THINKING_FILE", tmp_path / ".agent-thinking")
     sess = _FakeSessionHB()
     # Should not raise.
     _cancel_thinking_heartbeat(sess)
@@ -160,9 +160,9 @@ async def test_cancel_helper_handles_missing_task(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cancel_helper_unlinks_file(tmp_path, monkeypatch):
-    from jarvis_agent import _start_thinking_heartbeat, _cancel_thinking_heartbeat
+    from pipeline.thinking_heartbeat import _start_thinking_heartbeat, _cancel_thinking_heartbeat
     fake_file = tmp_path / ".agent-thinking"
-    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", fake_file)
+    monkeypatch.setattr("pipeline.thinking_heartbeat._AGENT_THINKING_FILE", fake_file)
     sess = _FakeSessionHB()
     _start_thinking_heartbeat(sess, interval_s=0.1)
     await asyncio.sleep(0.15)
@@ -203,9 +203,9 @@ async def test_idle_backstop_cancels_heartbeat_when_state_stays_idle(tmp_path, m
     """Turn ended with no final reply: state sits in 'listening', so after
     the grace the backstop cancels the orphaned heartbeat and unlinks the
     file → tray goes green."""
-    from jarvis_agent import _start_thinking_heartbeat, _schedule_idle_heartbeat_cancel
+    from pipeline.thinking_heartbeat import _start_thinking_heartbeat, _schedule_idle_heartbeat_cancel
     fake_file = tmp_path / ".agent-thinking"
-    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", fake_file)
+    monkeypatch.setattr("pipeline.thinking_heartbeat._AGENT_THINKING_FILE", fake_file)
     monkeypatch.setenv("JARVIS_THINKING_IDLE_GRACE_S", "0.15")
     sess = _FakeSessionIdle(agent_state="listening")
     _start_thinking_heartbeat(sess, interval_s=0.05)
@@ -226,9 +226,9 @@ async def test_idle_backstop_cancels_heartbeat_when_state_stays_idle(tmp_path, m
 async def test_idle_backstop_skips_when_state_left_idle(tmp_path, monkeypatch):
     """If the agent went back to active work by the time the grace fires,
     the backstop must NOT cancel the heartbeat (turn is still live)."""
-    from jarvis_agent import _start_thinking_heartbeat, _schedule_idle_heartbeat_cancel
+    from pipeline.thinking_heartbeat import _start_thinking_heartbeat, _schedule_idle_heartbeat_cancel
     fake_file = tmp_path / ".agent-thinking"
-    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", fake_file)
+    monkeypatch.setattr("pipeline.thinking_heartbeat._AGENT_THINKING_FILE", fake_file)
     monkeypatch.setenv("JARVIS_THINKING_IDLE_GRACE_S", "0.15")
     sess = _FakeSessionIdle(agent_state="listening")
     _start_thinking_heartbeat(sess, interval_s=0.05)
@@ -246,13 +246,13 @@ async def test_idle_backstop_skips_when_state_left_idle(tmp_path, monkeypatch):
 async def test_pending_idle_cancel_aborted_on_resume(tmp_path, monkeypatch):
     """A return to thinking/speaking aborts the pending backstop task, so
     the heartbeat keeps running for the rest of the turn."""
-    from jarvis_agent import (
+    from pipeline.thinking_heartbeat import (
         _start_thinking_heartbeat,
         _schedule_idle_heartbeat_cancel,
         _cancel_pending_idle_heartbeat_cancel,
     )
     fake_file = tmp_path / ".agent-thinking"
-    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", fake_file)
+    monkeypatch.setattr("pipeline.thinking_heartbeat._AGENT_THINKING_FILE", fake_file)
     monkeypatch.setenv("JARVIS_THINKING_IDLE_GRACE_S", "0.15")
     sess = _FakeSessionIdle(agent_state="listening")
     _start_thinking_heartbeat(sess, interval_s=0.05)
@@ -272,15 +272,15 @@ async def test_pending_idle_cancel_aborted_on_resume(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_schedule_idle_cancel_noop_without_heartbeat(tmp_path, monkeypatch):
     """No heartbeat running → scheduling the backstop is a no-op."""
-    from jarvis_agent import _schedule_idle_heartbeat_cancel
-    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", tmp_path / ".agent-thinking")
+    from pipeline.thinking_heartbeat import _schedule_idle_heartbeat_cancel
+    monkeypatch.setattr("pipeline.thinking_heartbeat._AGENT_THINKING_FILE", tmp_path / ".agent-thinking")
     sess = _FakeSessionIdle(agent_state="listening")
     _schedule_idle_heartbeat_cancel(sess)
     assert sess._jarvis_thinking_idle_cancel_task is None
 
 
 def test_thinking_idle_grace_s_parsing(monkeypatch):
-    from jarvis_agent import _thinking_idle_grace_s
+    from pipeline.thinking_heartbeat import _thinking_idle_grace_s
     monkeypatch.delenv("JARVIS_THINKING_IDLE_GRACE_S", raising=False)
     assert _thinking_idle_grace_s() == 5.0
     monkeypatch.setenv("JARVIS_THINKING_IDLE_GRACE_S", "8.5")
@@ -298,7 +298,7 @@ def test_thinking_idle_grace_s_parsing(monkeypatch):
 # tool is running.
 
 def test_thinking_max_idle_s_parsing(monkeypatch):
-    from jarvis_agent import _thinking_max_idle_s
+    from pipeline.thinking_heartbeat import _thinking_max_idle_s
     monkeypatch.delenv("JARVIS_THINKING_MAX_IDLE_S", raising=False)
     assert _thinking_max_idle_s() == 120.0
     monkeypatch.setenv("JARVIS_THINKING_MAX_IDLE_S", "30")
@@ -309,7 +309,7 @@ def test_thinking_max_idle_s_parsing(monkeypatch):
 
 
 def test_bump_turn_activity_sets_timestamp():
-    from jarvis_agent import _bump_turn_activity
+    from pipeline.thinking_heartbeat import _bump_turn_activity
     sess = types.SimpleNamespace()
     before = time.monotonic()
     _bump_turn_activity(sess)
@@ -321,11 +321,11 @@ async def test_watchdog_self_cancels_when_progress_stale(tmp_path, monkeypatch):
     """No turn progress for > max_idle AND no tool running → heartbeat
     self-cancels and unlinks the flag, even though agent_state is never
     consulted."""
-    from jarvis_agent import _thinking_heartbeat
+    from pipeline.thinking_heartbeat import _thinking_heartbeat
     fake_file = tmp_path / ".agent-thinking"
     tool_file = tmp_path / ".tool-running"           # absent
-    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", fake_file)
-    monkeypatch.setattr("jarvis_agent._TOOL_BUSY_FILE", tool_file)
+    monkeypatch.setattr("pipeline.thinking_heartbeat._AGENT_THINKING_FILE", fake_file)
+    monkeypatch.setattr("pipeline.thinking_heartbeat._TOOL_BUSY_FILE", tool_file)
     monkeypatch.setenv("JARVIS_THINKING_MAX_IDLE_S", "0.2")
     sess = types.SimpleNamespace(_jarvis_last_turn_activity=time.monotonic() - 1.0)
     task = asyncio.create_task(_thinking_heartbeat(interval_s=0.05, session=sess))
@@ -338,12 +338,12 @@ async def test_watchdog_self_cancels_when_progress_stale(tmp_path, monkeypatch):
 async def test_watchdog_held_off_by_running_tool(tmp_path, monkeypatch):
     """Stale progress BUT a tool is running → keep the indicator amber
     (don't clear during a long legit tool)."""
-    from jarvis_agent import _thinking_heartbeat
+    from pipeline.thinking_heartbeat import _thinking_heartbeat
     fake_file = tmp_path / ".agent-thinking"
     tool_file = tmp_path / ".tool-running"
     tool_file.write_text("run_jarvis_cli\n123\n")     # tool busy
-    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", fake_file)
-    monkeypatch.setattr("jarvis_agent._TOOL_BUSY_FILE", tool_file)
+    monkeypatch.setattr("pipeline.thinking_heartbeat._AGENT_THINKING_FILE", fake_file)
+    monkeypatch.setattr("pipeline.thinking_heartbeat._TOOL_BUSY_FILE", tool_file)
     monkeypatch.setenv("JARVIS_THINKING_MAX_IDLE_S", "0.2")
     sess = types.SimpleNamespace(_jarvis_last_turn_activity=time.monotonic() - 1.0)
     task = asyncio.create_task(_thinking_heartbeat(interval_s=0.05, session=sess))
@@ -360,11 +360,11 @@ async def test_watchdog_held_off_by_running_tool(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_watchdog_survives_while_progress_is_fresh(tmp_path, monkeypatch):
     """Ongoing progress keeps the heartbeat alive past max_idle."""
-    from jarvis_agent import _thinking_heartbeat
+    from pipeline.thinking_heartbeat import _thinking_heartbeat
     fake_file = tmp_path / ".agent-thinking"
     tool_file = tmp_path / ".tool-running"
-    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", fake_file)
-    monkeypatch.setattr("jarvis_agent._TOOL_BUSY_FILE", tool_file)
+    monkeypatch.setattr("pipeline.thinking_heartbeat._AGENT_THINKING_FILE", fake_file)
+    monkeypatch.setattr("pipeline.thinking_heartbeat._TOOL_BUSY_FILE", tool_file)
     monkeypatch.setenv("JARVIS_THINKING_MAX_IDLE_S", "0.2")
     sess = types.SimpleNamespace(_jarvis_last_turn_activity=time.monotonic())
     task = asyncio.create_task(_thinking_heartbeat(interval_s=0.05, session=sess))
@@ -383,9 +383,9 @@ async def test_watchdog_survives_while_progress_is_fresh(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_watchdog_inert_without_session(tmp_path, monkeypatch):
     """session=None preserves the original always-on behavior (no watchdog)."""
-    from jarvis_agent import _thinking_heartbeat
+    from pipeline.thinking_heartbeat import _thinking_heartbeat
     fake_file = tmp_path / ".agent-thinking"
-    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", fake_file)
+    monkeypatch.setattr("pipeline.thinking_heartbeat._AGENT_THINKING_FILE", fake_file)
     monkeypatch.setenv("JARVIS_THINKING_MAX_IDLE_S", "0.1")
     task = asyncio.create_task(_thinking_heartbeat(interval_s=0.05))  # no session
     await asyncio.sleep(0.3)        # well past max_idle
