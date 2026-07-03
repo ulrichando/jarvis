@@ -73,6 +73,7 @@ export async function handleWebhook(
     issueNumber: ev.issueNumber,
     task: ev.task,
     isPR: ev.isPR,
+    commentId: ev.commentId, // undefined for issues.opened — nothing to 👀
   })
   deps.log?.(`webhook: enqueued ${ev.repo}#${ev.issueNumber} from @${ev.author}`)
   return { status: 202, body: 'queued' }
