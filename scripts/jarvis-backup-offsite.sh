@@ -124,14 +124,24 @@ if [ -n "$SSH_DEST" ]; then
   ssh_opts="-F /dev/null -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
   [ -n "$SSH_KEY" ] && ssh_opts="$ssh_opts -i $SSH_KEY"
   ssh_host="${SSH_DEST%%:*}"; ssh_path="${SSH_DEST#*:}"
-  if ssh $ssh_opts "$ssh_host" "mkdir -p '$ssh_path'" 2>>"$LOG" \
-     && rsync -q -e "ssh $ssh_opts" "$enc" "${SSH_DEST%/}/$encname" 2>>"$LOG" \
-     && ssh $ssh_opts "$ssh_host" "test -f '$ssh_path/$encname'" 2>>"$LOG"; then
+  # Retry the push so a transient blip (suspend/wifi → "Network is unreachable")
+  # self-heals within the run instead of paging. 3 attempts, 10s/20s backoff; a
+  # genuine outage still fails (~30-90s) and alerts. Service has no start timeout.
+  ssh_push_ok=0
+  for attempt in 1 2 3; do
+    if ssh $ssh_opts "$ssh_host" "mkdir -p '$ssh_path'" 2>>"$LOG" \
+       && rsync -q -e "ssh $ssh_opts" "$enc" "${SSH_DEST%/}/$encname" 2>>"$LOG" \
+       && ssh $ssh_opts "$ssh_host" "test -f '$ssh_path/$encname'" 2>>"$LOG"; then
+      ssh_push_ok=1; break
+    fi
+    [ "$attempt" -lt 3 ] && { log "ssh attempt ${attempt}/3 failed — retry in $((attempt*10))s"; sleep $((attempt*10)); }
+  done
+  if [ "$ssh_push_ok" -eq 1 ]; then
     pushed=$((pushed+1)); log "ssh OK: ${SSH_DEST}/${encname} (${encsize})"
     # retain newest N on the remote, prune older
     ssh $ssh_opts "$ssh_host" "ls -1t '$ssh_path'/jarvis-backup-*.age '$ssh_path'/jarvis-backup-*.gpg 2>/dev/null | tail -n +$((RETENTION+1)) | xargs -r rm -f" 2>>"$LOG" || true
   else
-    log "ssh FAILED: ${SSH_DEST}"
+    log "ssh FAILED after 3 attempts: ${SSH_DEST}"
   fi
 fi
 
