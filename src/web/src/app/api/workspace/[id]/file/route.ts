@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { getUserId } from "@/lib/auth-helpers";
 import {
   readFile,
   writeFile,
@@ -10,6 +11,18 @@ import {
 } from "@/lib/workspace/storage";
 
 export const runtime = "nodejs";
+
+// Defense-in-depth: this route reads/writes/deletes arbitrary workspace files
+// (incl. .env). Verify the login session in-handler (independent of proxy.ts)
+// so a proxy regression / dev-mode pass-through can't expose it. All legitimate
+// callers are same-origin browser requests (fetch / iframe / <a>) that carry
+// the session cookie. Returns a 401 response when unauthenticated, else null.
+async function unauthorizedIfNoSession(req: Request): Promise<NextResponse | null> {
+  if (!(await getUserId(req.headers))) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+  return null;
+}
 
 // Size caps so a single request can't read a huge file fully into memory
 // and OOM the server. Raw mode serves binary assets to the iframe
@@ -40,6 +53,8 @@ const MIME: Record<string, string> = {
 };
 
 export async function GET(req: Request, ctx: RouteContext<"/api/workspace/[id]/file">) {
+  const unauth = await unauthorizedIfNoSession(req);
+  if (unauth) return unauth;
   const { id } = await ctx.params;
   const url = new URL(req.url);
   const rel = url.searchParams.get("path");
@@ -90,6 +105,8 @@ export async function GET(req: Request, ctx: RouteContext<"/api/workspace/[id]/f
 }
 
 export async function PUT(req: Request, ctx: RouteContext<"/api/workspace/[id]/file">) {
+  const unauth = await unauthorizedIfNoSession(req);
+  if (unauth) return unauth;
   const { id } = await ctx.params;
   const body = await req.json().catch(() => ({}));
   const { path: rel, content } = body as { path?: string; content?: string };
@@ -105,6 +122,8 @@ export async function PUT(req: Request, ctx: RouteContext<"/api/workspace/[id]/f
 
 export async function POST(req: Request, ctx: RouteContext<"/api/workspace/[id]/file">) {
   // create a new file or directory
+  const unauth = await unauthorizedIfNoSession(req);
+  if (unauth) return unauth;
   const { id } = await ctx.params;
   const body = await req.json().catch(() => ({}));
   const { path: rel, type } = body as { path?: string; type?: "file" | "dir" };
@@ -119,6 +138,8 @@ export async function POST(req: Request, ctx: RouteContext<"/api/workspace/[id]/
 }
 
 export async function DELETE(req: Request, ctx: RouteContext<"/api/workspace/[id]/file">) {
+  const unauth = await unauthorizedIfNoSession(req);
+  if (unauth) return unauth;
   const { id } = await ctx.params;
   const url = new URL(req.url);
   const rel = url.searchParams.get("path");

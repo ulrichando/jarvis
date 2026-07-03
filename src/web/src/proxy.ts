@@ -223,10 +223,33 @@ export function proxy(req: NextRequest) {
     )
   }
 
+  // ── CSRF hard-stop (ALL modes, including dev where the bearer gate is off) ─
+  // A state-changing /api/* request from a cross-site browser context is never
+  // legitimate: the web UI calls same-origin, and non-browser callers (the CLI,
+  // the bridge, GitHub webhooks) don't send Sec-Fetch-Site at all. Browsers set
+  // it unforgeably, so this blocks the drive-by "evil.com POSTs
+  // /api/workspace/<id>/exec (arbitrary container shell)" vector that would
+  // otherwise pass straight through when JARVIS_REQUIRE_LOCAL_AUTH is unset
+  // (`next dev`). /api/auth/* is exempt — better-auth runs its own Origin/CSRF
+  // check there, and the CLI login sends Sec-Fetch-Site: same-origin anyway.
+  if (
+    req.method !== 'GET' &&
+    req.method !== 'HEAD' &&
+    req.headers.get('sec-fetch-site') === 'cross-site' &&
+    !path.startsWith('/api/auth/')
+  ) {
+    return new NextResponse(
+      JSON.stringify({ error: 'cross-site request refused' }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    )
+  }
+
   // Auth gate.
   if (!REQUIRE_AUTH) {
-    // Dev mode (no auth required). Pass through so `next dev` still
-    // works without the user having to provision a token first.
+    // Dev mode (no bearer required). Pass through so `next dev` still works
+    // without provisioning a token — but the CSRF hard-stop above still blocks
+    // cross-site browser writes, and the highest-risk routes (workspace exec /
+    // file) additionally verify the session in-handler (getUserId).
     return NextResponse.next()
   }
 
@@ -268,11 +291,13 @@ export function proxy(req: NextRequest) {
   // DEFENSE-IN-DEPTH: `/api/auth/*` is exempt from the session-cookie
   // requirement here so the sign-in form can POST before the cookie exists.
   // The signup endpoint (POST /api/auth/sign-up*) is blocked before this
-  // carve-out (above), so it never reaches here. All other `/api/*` routes
-  // that pass this carve-out (with a valid session
-  // cookie) are then independently validated by `withUser`/`requireUserId`
-  // in their route handlers — those call auth.api.getSession() against the
-  // DB, enforce the 30-day cap, and return 401 on stale/expired sessions.
+  // carve-out (above), so it never reaches here. This proxy gate is the
+  // authoritative network boundary for `/api/*` (a valid session cookie or the
+  // bearer token is required to get past it); the highest-risk routes
+  // (workspace `exec` / `file`) ALSO validate the session in-handler via
+  // `getUserId`/`withUser` — those call auth.api.getSession() against the DB,
+  // enforce the 30-day cap, and return 401 on stale/expired sessions — so a
+  // future proxy regression can't silently expose arbitrary shell / file access.
   // So the session-cookie requirement here is a proxy-layer fast negative;
   // the route handler is the authoritative validator. Public `/share/*`
   // surface is a page route (never /api/*), so it never reaches this gate.
