@@ -50,6 +50,23 @@ describe('gh-app installationToken', () => {
     expect(r).toEqual({ token: 'ghs_abc123', expiresAt: '2026-07-03T13:00:00Z' })
   })
 
+  // Without a body GitHub mints a token for ALL the installation's repos with
+  // ALL the app's permissions — least-privilege scoping is one POST body.
+  test('scopes the token to the target repo with minimal write permissions', async () => {
+    const calls: { url: string; init: RequestInit | undefined }[] = []
+    const fakeFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init })
+      return new Response(JSON.stringify({ token: 'ghs_scoped', expires_at: '2026-07-03T13:00:00Z' }), { status: 201 })
+    }) as typeof fetch
+    const r = await installationToken(987, 'the.app.jwt', { fetch: fakeFetch }, 'ulrichando/jarvis')
+    expect(r.token).toBe('ghs_scoped')
+    const body = JSON.parse(String(calls[0]!.init?.body))
+    expect(body.repositories).toEqual(['jarvis']) // repo NAME, not owner/name
+    expect(body.permissions).toEqual({ contents: 'write', pull_requests: 'write', issues: 'write' })
+    const h = calls[0]!.init?.headers as Record<string, string>
+    expect(h['content-type']).toBe('application/json')
+  })
+
   test('non-2xx minting response rejects without leaking the jwt', async () => {
     const fakeFetch = (async () => new Response('{"message":"bad creds"}', { status: 401 })) as typeof fetch
     let err: Error | null = null

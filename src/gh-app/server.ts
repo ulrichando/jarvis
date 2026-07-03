@@ -236,8 +236,8 @@ if (import.meta.main) {
   const worker = creds
     ? startWorker({
         store,
-        mintToken: async (installationId) =>
-          (await installationToken(installationId, appJwt(creds.appId, creds.pem), { fetch })).token,
+        mintToken: async (installationId, repo) =>
+          (await installationToken(installationId, appJwt(creds.appId, creds.pem), { fetch }, repo)).token,
         runInSandbox: (job, token) =>
           runInSandbox(job, token, {
             spawnContainer: dockerSpawnContainer(env.DOCKER_HOST ?? 'tcp://docker-proxy:2375', env.GH_APP_SANDBOX_NETWORK),

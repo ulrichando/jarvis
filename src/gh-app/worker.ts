@@ -12,7 +12,8 @@ import type { Job, JobStore } from './jobs.js'
 
 export type WorkerDeps = {
   store: JobStore
-  mintToken: (installationId: number) => Promise<string>
+  /** Mint a short-lived installation token scoped to the job's repo. */
+  mintToken: (installationId: number, repo: string) => Promise<string>
   runInSandbox: (job: Job, token: string) => Promise<{ ok: boolean; error?: string }>
   dailyCap: number
   concurrency: number
@@ -29,7 +30,7 @@ export async function runWorkerOnce(deps: WorkerDeps): Promise<RunOutcome> {
   const job = await deps.store.claimNext()
   if (!job) return 'idle'
   try {
-    const token = await deps.mintToken(job.installationId)
+    const token = await deps.mintToken(job.installationId, job.repo)
     const r = await deps.runInSandbox(job, token)
     if (r.ok) {
       await deps.store.markDone(job.id)

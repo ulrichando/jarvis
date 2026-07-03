@@ -107,8 +107,11 @@ Comment on any issue or PR of an installed repo:
 - **`.claude` neutralize**: the target repo's `.claude/` is stashed outside
   the tree while `jarvis -p` runs and restored before `git add`
   (`containerEntry.ts` — same guard as the Action).
-- **Token scope**: per-job installation token (expires ~1h, scoped to the
-  installation's repos); reaches the sandbox only via env (never argv);
+- **Token scope**: per-job installation token (expires ~1h), minted with an
+  explicit body scoping it to the job's ONE repo + minimal permissions
+  (`contents`/`pull_requests`/`issues` write — a body-less mint would cover
+  ALL the installation's repos with ALL app perms); reaches the sandbox only
+  via env (never argv);
   redacted from all error text; git auth via a container-local
   `url.…x-access-token….insteadOf` rewrite that dies with the container.
 - **Sandbox**: throwaway container per job, spawned through the tecnativa

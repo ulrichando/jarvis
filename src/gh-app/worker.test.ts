@@ -35,17 +35,17 @@ function deps(store: JobStore, over: Partial<WorkerDeps> = {}): WorkerDeps {
 }
 
 describe('gh-app worker', () => {
-  test('queued job under the cap → mints token, runs sandbox, markDone', async () => {
+  test('queued job under the cap → mints token scoped to the job repo, runs sandbox, markDone', async () => {
     const { store, done, failed } = memStore([job(1)])
-    const minted: number[] = []
+    const minted: { id: number; repo: string }[] = []
     const ran: { job: Job; token: string }[] = []
     const d = deps(store, {
-      mintToken: async (id) => { minted.push(id); return 'ghs_tok' },
+      mintToken: async (id, repo) => { minted.push({ id, repo }); return 'ghs_tok' },
       runInSandbox: async (j, t) => { ran.push({ job: j, token: t }); return { ok: true } },
     })
     const r = await runWorkerOnce(d)
     expect(r).toBe('ran')
-    expect(minted).toEqual([555])
+    expect(minted).toEqual([{ id: 555, repo: 'o/r' }]) // repo threaded → per-repo token scope
     expect(ran.length).toBe(1)
     expect(ran[0]!.token).toBe('ghs_tok')
     expect(ran[0]!.job.issueNumber).toBe(1)

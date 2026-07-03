@@ -29,17 +29,32 @@ export function appJwt(appId: number | string, pem: string, nowS: number = Math.
 export type TokenDeps = { fetch: typeof fetch }
 export type InstallationToken = { token: string; expiresAt: string }
 
+/** Least-privilege permission set for a job token — what the sandbox's
+ * clone → push → PR → comment flow actually needs, nothing more. (GitHub
+ * grants the mandatory metadata:read implicitly.) */
+const TOKEN_PERMISSIONS = { contents: 'write', pull_requests: 'write', issues: 'write' } as const
+
 export async function installationToken(
   installationId: number,
   jwt: string,
   deps: TokenDeps,
+  /** Target repo (`owner/name` or bare name). When given, the token is
+   * scoped to THAT repo only — an empty body would mint a token for ALL the
+   * installation's repos with ALL the app's permissions. */
+  repo?: string,
 ): Promise<InstallationToken> {
+  const repoName = repo?.includes('/') ? repo.slice(repo.lastIndexOf('/') + 1) : repo
   const res = await deps.fetch(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${jwt}`,
       Accept: 'application/vnd.github+json',
+      'content-type': 'application/json',
     },
+    body: JSON.stringify({
+      ...(repoName ? { repositories: [repoName] } : {}),
+      permissions: TOKEN_PERMISSIONS,
+    }),
   })
   if (!res.ok) {
     // Status only — never echo the request (jwt) or the body into errors that
