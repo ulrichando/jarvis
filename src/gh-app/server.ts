@@ -18,6 +18,9 @@ import { appJwt, installationToken } from './token.js'
 import { capsFromEnv, startWorker } from './worker.js'
 import { runInSandbox, DEFAULT_SANDBOX_IMAGE, type SpawnSpec, type SpawnResult } from './runInSandbox.js'
 
+/** GitHub's documented webhook payload cap. */
+export const MAX_WEBHOOK_BYTES = 25 * 1024 * 1024
+
 export type ServerDeps = {
   base: string
   webhook: WebhookDeps
@@ -66,7 +69,14 @@ export function makeApp(deps: ServerDeps): (req: Request) => Promise<Response> {
     }
 
     if (req.method === 'POST' && path === '/webhook') {
+      // GitHub caps webhook payloads at 25 MB — a bigger body is not GitHub.
+      // Reject on the declared length BEFORE buffering (this handler used to
+      // read the whole body into memory ahead of the signature check), and
+      // re-check after the read for chunked/no-Content-Length senders.
+      const declaredLen = Number(req.headers.get('content-length') ?? 0)
+      if (declaredLen > MAX_WEBHOOK_BYTES) return new Response('payload too large', { status: 413 })
       const raw = new Uint8Array(await req.arrayBuffer()) // RAW bytes — signature is over these
+      if (raw.byteLength > MAX_WEBHOOK_BYTES) return new Response('payload too large', { status: 413 })
       const headers: Record<string, string> = {}
       req.headers.forEach((v, k) => { headers[k] = v })
       const r = await handleWebhook(headers, raw, deps.webhook)

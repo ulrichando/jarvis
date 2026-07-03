@@ -55,6 +55,24 @@ describe('gh-app server', () => {
     expect(enqueued.length).toBe(0)
   })
 
+  // GitHub caps webhook payloads at 25 MB — a bigger declared length is not
+  // GitHub. Reject BEFORE buffering (the handler previously read the whole
+  // body into memory ahead of the signature check).
+  test('POST /webhook with oversized Content-Length → 413, nothing enqueued', async () => {
+    const { app, enqueued } = harness()
+    const res = await app(new Request('http://x/webhook', {
+      method: 'POST',
+      headers: {
+        'content-length': String(30 * 1024 * 1024),
+        'X-Hub-Signature-256': sigFor(webhookBody),
+        'X-GitHub-Event': 'issue_comment',
+      },
+      body: webhookBody,
+    }))
+    expect(res.status).toBe(413)
+    expect(enqueued.length).toBe(0)
+  })
+
   test('GET /health → 200', async () => {
     const { app } = harness()
     const res = await app(new Request('http://x/health'))
