@@ -818,6 +818,12 @@ interface ContainerMeta {
   repo?: string
   extraRepos?: string[]
   gitCapToken?: string
+  /** GitHub App installation token injected by the gh-app dispatch for an
+   *  EXTERNAL bot job (repo-scoped, ~1h). Absent on normal /code sessions —
+   *  those keep the global-PAT path. The git proxy + host-side PR use it. */
+  installationToken?: string
+  /** The App bot's login — committer identity for external bot jobs. */
+  botLogin?: string
 }
 
 function parseContainerMeta(session: SessionRow | null): ContainerMeta {
@@ -833,7 +839,14 @@ function parseContainerMeta(session: SessionRow | null): ContainerMeta {
 export function setSessionContainer(
   store: Store,
   sessionId: string,
-  meta: { container: string; repo: string; extraRepos?: string[]; gitCapToken?: string },
+  meta: {
+    container: string
+    repo: string
+    extraRepos?: string[]
+    gitCapToken?: string
+    installationToken?: string
+    botLogin?: string
+  },
 ): void {
   store.db
     .prepare('UPDATE sessions SET container_json = ? WHERE session_id = ?')
@@ -853,6 +866,13 @@ export function getSessionGitScope(session: SessionRow): string[] {
 export function validateGitCapToken(store: Store, sessionId: string, token: string): boolean {
   const m = parseContainerMeta(findSession(store, sessionId))
   return secretEquals(m.gitCapToken, token)
+}
+
+/** The gh-app-injected App installation token for an external bot-job session,
+ *  or null for normal /code sessions (which use the global PAT host-side). */
+export function getSessionInstallationToken(session: SessionRow | null): string | null {
+  const m = parseContainerMeta(session)
+  return m.installationToken || null
 }
 
 /** The persisted CLI worker launch spec — enough to re-exec the worker into an
