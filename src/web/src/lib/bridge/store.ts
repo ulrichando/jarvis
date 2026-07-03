@@ -835,7 +835,14 @@ function parseContainerMeta(session: SessionRow | null): ContainerMeta {
   }
 }
 
-/** Record the docker container backing a session, plus its git proxy scope. */
+/** Record the docker container backing a session, plus its git proxy scope.
+ *
+ *  TOKEN-STORAGE DECISION (external gh-app jobs): v1 stores the RAW
+ *  installation token (repo-scoped, ~1h lifetime) in the session's container
+ *  meta because the web holds no App private key and cannot re-mint one. Job
+ *  runs complete in minutes — well inside the 1h window. Long-lived or resumed
+ *  sessions may outlive the token (pushes/PRs then 401 and are surfaced, not
+ *  swallowed); re-minting via the gh-app is a v2 hardening. */
 export function setSessionContainer(
   store: Store,
   sessionId: string,

@@ -889,7 +889,10 @@ export async function createContainerPR(
     `if [ "$cur" = "$base" ] || [ -z "$cur" ] || [ "$cur" = "HEAD" ]; then git checkout -b ${shq(branch)} 2>/dev/null || git checkout ${shq(branch)} 2>/dev/null; cur=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); fi`,
     // Commit anything pending so the branch reflects all the work.
     `if [ -n "$(git status --porcelain)" ]; then git add -A && git commit -m ${shq(msg)} >/dev/null 2>&1; fi`,
-    `git push -u origin "$cur" >/dev/null 2>&1`,
+    // Push with the exit code CHECKED — a silent 401 here (e.g. an expired
+    // installation token on an external job) used to yield a compare URL to a
+    // branch that never reached the remote.
+    `if git push -u origin "$cur" >/dev/null 2>&1; then printf '@@PUSH@@ok\\n'; else printf '@@PUSH@@fail\\n'; fi`,
     `printf '@@BASE@@%s\\n' "$base"`,
     `printf '@@BRANCH@@%s\\n' "$cur"`,
   ].join("\n");
@@ -901,6 +904,18 @@ export async function createContainerPR(
   }
   const base = /@@BASE@@(.*)/.exec(out)?.[1]?.trim() || "main";
   const cur = /@@BRANCH@@(.*)/.exec(out)?.[1]?.trim() || branch;
+  // An explicit push failure is a hard error — never hand back a compare/PR
+  // URL for a branch that was not pushed. (A missing marker stays lenient for
+  // back-compat with pre-marker callers/mocks; the real script always emits it.)
+  if (/@@PUSH@@fail/.test(out)) {
+    return {
+      error:
+        `git push failed for ${cur} — the branch was NOT pushed to ${meta.repo}. ` +
+        (meta.installationToken
+          ? "The App installation token (~1h) may have expired — re-dispatch the job."
+          : "Check the GitHub connection (Settings) and the git proxy log."),
+    };
+  }
   const compareUrl = `https://github.com/${meta.repo}/compare/${base}...${cur}?expand=1`;
 
   // `compose` just hands back GitHub's new-PR URL (no PR opened).

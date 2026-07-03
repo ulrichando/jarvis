@@ -798,6 +798,79 @@ describe('launchContainerSession', () => {
     expect(body).toContain(`Jarvis-Session: ${sessionUrl}`)
   })
 
+  // ── Push-failure surfacing: a swallowed `git push` 401 (e.g. an expired
+  // installation token) must NOT yield a compare/PR URL for a branch that
+  // never reached the remote — the caller gets a clear error instead.
+  test('createContainerPR surfaces a failed in-container push instead of a compare URL', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec: fakeDocker().exec,
+    })
+    const scripts: string[] = []
+    const exec: DockerExec = async (args) => {
+      scripts.push(args.join(' '))
+      return args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: '@@PUSH@@fail\n@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' }
+        : { stdout: '', stderr: '' }
+    }
+    const { openPullRequest } = await import('@/lib/connectors/github')
+    vi.mocked(openPullRequest).mockClear()
+    const r = await createContainerPR(store, sessionId, exec)
+    expect('error' in r).toBe(true)
+    if (!('error' in r)) return
+    expect(r.error.toLowerCase()).toContain('push')
+    // No PR is opened for an unpushed branch.
+    expect(vi.mocked(openPullRequest)).not.toHaveBeenCalled()
+    // The real in-container script checks the push exit code + emits the marker.
+    const script = scripts.find((s) => s.includes('@@BRANCH@@'))!
+    expect(script).toContain('@@PUSH@@')
+    expect(script).toContain('git push -u origin')
+  })
+
+  test('createContainerPR compose mode also surfaces a failed push (no compose URL to an unpushed branch)', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec: fakeDocker().exec,
+    })
+    const exec: DockerExec = async (args) =>
+      args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: '@@PUSH@@fail\n@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' }
+        : { stdout: '', stderr: '' }
+    const r = await createContainerPR(store, sessionId, exec, 'compose')
+    expect('error' in r).toBe(true)
+  })
+
+  test('createContainerPR happy path with an explicit push-ok marker is unchanged', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec: fakeDocker().exec,
+    })
+    const exec: DockerExec = async (args) =>
+      args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: '@@PUSH@@ok\n@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' }
+        : { stdout: '', stderr: '' }
+    const r = await createContainerPR(store, sessionId, exec)
+    expect('error' in r).toBe(false)
+    if ('error' in r) return
+    expect(r.url).toBe('https://github.com/owner/demo/pull/7')
+    expect(r.branch).toBe('jarvis/session-x')
+  })
+
   test('regression: normal session PR body + commit message are stamped-free (byte-identical)', async () => {
     const sessionId = makeSession()
     const store = getStore()

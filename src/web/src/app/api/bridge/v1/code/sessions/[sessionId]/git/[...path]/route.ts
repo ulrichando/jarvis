@@ -61,6 +61,10 @@ async function handle(req: Request, ctx: Ctx): Promise<Response> {
   // External bot jobs (gh-app dispatch) carry a repo-scoped App installation
   // token in the session meta — inject THAT. Normal /code sessions have none
   // and keep today's global-PAT path byte-identical (incl. the 503).
+  // TOKEN-LIFETIME NOTE: v1 reads the raw stored installation token (~1h,
+  // repo-scoped) because the web holds no App private key to re-mint; bot job
+  // runs are minutes < 1h. A resumed/long session can outlive it — GitHub then
+  // 401s here and the failure is surfaced upstream. Re-mint is a v2 hardening.
   const injected = getSessionInstallationToken(session)
   const pat = injected ?? (await getGithubToken())
   if (!pat) return bridgeError(503, 'github_unavailable', 'GitHub not connected — reconnect in Settings')
