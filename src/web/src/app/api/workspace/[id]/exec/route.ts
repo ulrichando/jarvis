@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getUserId } from "@/lib/auth-helpers";
 import { execInRuntime, spawnDetached, dockerStatus } from "@/lib/workspace/docker";
 
 export const runtime = "nodejs";
@@ -6,6 +7,13 @@ export const runtime = "nodejs";
 export const maxDuration = 600;
 
 export async function POST(req: Request, ctx: RouteContext<"/api/workspace/[id]/exec">) {
+  // Defense-in-depth: this route runs arbitrary shell inside the workspace
+  // container. Verify the login session in-handler (independent of proxy.ts),
+  // so a proxy regression / dev-mode pass-through can never expose it. All
+  // legitimate callers are same-origin browser fetch()es that carry the cookie.
+  if (!(await getUserId(req.headers))) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
   const { id } = await ctx.params;
   const body = await req.json().catch(() => ({}));
   const command = typeof body?.command === "string" ? body.command : "";
