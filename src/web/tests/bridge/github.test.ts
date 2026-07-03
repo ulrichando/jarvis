@@ -105,6 +105,30 @@ describe('optional token param (App installation token)', () => {
     const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0]
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer t')
   })
+
+  test('mergePullRequest authenticates with the passed token, not the stored PAT', async () => {
+    ;(fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(new Response('{}', { status: 200 }))
+    const r = await mergePullRequest('owner/demo', 9, 'squash', 'ghs_inst_tok')
+    expect(r).toEqual({ ok: true })
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer ghs_inst_tok')
+  })
+
+  test('mergePullRequest without a token keeps the stored-PAT path', async () => {
+    ;(fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(new Response('{}', { status: 200 }))
+    const r = await mergePullRequest('owner/demo', 9)
+    expect(r).toEqual({ ok: true })
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer t')
+  })
+
+  test('mergePullRequest with a token works with NO connector configured', async () => {
+    process.env.JARVIS_CONNECTORS_FILE = path.join(os.tmpdir(), 'nope-does-not-exist.json')
+    ;(fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(new Response('{}', { status: 200 }))
+    expect(await mergePullRequest('owner/demo', 9, 'squash', 'ghs_inst_tok')).toEqual({ ok: true })
+    // …while the SAME call without a token still fails closed (default path).
+    expect((await mergePullRequest('owner/demo', 9)).ok).toBe(false)
+  })
 })
 
 describe('input guards (request-forgery / SSRF)', () => {

@@ -346,19 +346,23 @@ export async function openPullRequest(
   }
 }
 
-/** Merge a PR by number (host-side, with the real PAT). Squash by default. */
+/** Merge a PR by number (host-side, with the real PAT). Squash by default.
+ * `token` (optional): authenticate with THIS token instead of the stored PAT —
+ * external gh-app jobs pass their App installation token; default unchanged. */
 export async function mergePullRequest(
   repo: string,
   number: number,
   method: "squash" | "merge" | "rebase" = "squash",
+  token?: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const c = await load();
-  if (!c.github) return { ok: false, error: "GitHub not connected" };
+  const auth = token || c.github?.token;
+  if (!auth) return { ok: false, error: "GitHub not connected" };
   if (!isRepo(repo) || !isPrNum(number)) return { ok: false, error: "Invalid repo or number" };
   try {
     const r = await fetch(`${GH}/repos/${repo}/pulls/${number}/merge`, {
       method: "PUT",
-      headers: ghHeaders(c.github.token),
+      headers: ghHeaders(auth),
       body: JSON.stringify({ merge_method: method }),
     });
     if (!r.ok) return { ok: false, error: `Merge not allowed (${r.status}) — checks pending or branch protected.` };

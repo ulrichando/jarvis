@@ -950,7 +950,11 @@ export async function mergeContainerPR(
 ): Promise<{ merged: true } | { error: string }> {
   const session = findSession(store, sessionId);
   const meta = session?.container_json
-    ? (JSON.parse(session.container_json) as { container?: string; repo?: string })
+    ? (JSON.parse(session.container_json) as {
+        container?: string;
+        repo?: string;
+        installationToken?: string;
+      })
     : null;
   if (!meta?.container || !meta.repo) return { error: "This session has no container." };
   const workdir = `/workspace/${repoDirName(meta.repo)}`;
@@ -964,9 +968,15 @@ export async function mergeContainerPR(
   }
   if (!cur || cur === "HEAD") return { error: "No branch to merge." };
   const { githubPrStatus, mergePullRequest } = await import("../connectors/github");
-  const status = await githubPrStatus(meta.repo, cur);
+  // External bot jobs authenticate lookup + merge with the injected
+  // installation token; normal sessions call exactly as before (no extra arg).
+  const status = meta.installationToken
+    ? await githubPrStatus(meta.repo, cur, meta.installationToken)
+    : await githubPrStatus(meta.repo, cur);
   if (!status.ok || !status.status.pr) return { error: "No open pull request for this branch." };
-  const merged = await mergePullRequest(meta.repo, status.status.pr.number);
+  const merged = meta.installationToken
+    ? await mergePullRequest(meta.repo, status.status.pr.number, "squash", meta.installationToken)
+    : await mergePullRequest(meta.repo, status.status.pr.number);
   return merged.ok ? { merged: true } : { error: merged.error };
 }
 

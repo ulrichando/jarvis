@@ -928,11 +928,39 @@ describe('launchContainerSession', () => {
     })
     const exec: DockerExec = async (args) =>
       args.some((a) => a.includes('rev-parse')) ? { stdout: 'jarvis/session-x\n', stderr: '' } : { stdout: '', stderr: '' }
-    const { mergePullRequest } = await import('@/lib/connectors/github')
+    const { mergePullRequest, githubPrStatus } = await import('@/lib/connectors/github')
+    vi.mocked(githubPrStatus).mockClear()
     const r = await mergeContainerPR(store, sessionId, exec)
     expect('merged' in r).toBe(true)
-    // PR number 7 comes from the githubPrStatus mock.
+    // PR number 7 comes from the githubPrStatus mock. Normal sessions call
+    // exactly as today — NO trailing token argument on either lookup or merge.
+    expect(vi.mocked(githubPrStatus)).toHaveBeenCalledWith('owner/demo', 'jarvis/session-x')
     expect(vi.mocked(mergePullRequest)).toHaveBeenCalledWith('owner/demo', 7)
+  })
+
+  test('mergeContainerPR threads the injected installation token to pr-status + merge for external jobs', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'https://0wlan.com',
+      proxyHealthy: async () => false,
+      installationToken: 'ghs_inst_tok',
+      botLogin: 'jarvis-gh-bot',
+      exec: fakeDocker().exec,
+    })
+    const exec: DockerExec = async (args) =>
+      args.some((a) => a.includes('rev-parse')) ? { stdout: 'jarvis/session-x\n', stderr: '' } : { stdout: '', stderr: '' }
+    const { mergePullRequest, githubPrStatus } = await import('@/lib/connectors/github')
+    vi.mocked(githubPrStatus).mockClear()
+    vi.mocked(mergePullRequest).mockClear()
+    const r = await mergeContainerPR(store, sessionId, exec)
+    expect('merged' in r).toBe(true)
+    // Both host-side REST calls authenticate as the App installation, not the
+    // box owner's PAT.
+    expect(vi.mocked(githubPrStatus)).toHaveBeenCalledWith('owner/demo', 'jarvis/session-x', 'ghs_inst_tok')
+    expect(vi.mocked(mergePullRequest)).toHaveBeenCalledWith('owner/demo', 7, 'squash', 'ghs_inst_tok')
   })
 
   test('stopContainerSession removes the recorded container', async () => {
