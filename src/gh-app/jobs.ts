@@ -14,6 +14,9 @@ export type NewJob = {
   issueNumber: number
   task: string
   isPR: boolean
+  /** id of the triggering comment (issue_comment / review comment) — absent
+   * for issues.opened triggers. Feedback reacts 👀 on it. */
+  commentId?: number
 }
 export type Job = NewJob & { id: number }
 
@@ -29,16 +32,22 @@ export async function ensureSchema(sql: SqlClient): Promise<void> {
     error text,
     created_at timestamptz not null default now(),
     started_at timestamptz,
-    finished_at timestamptz
+    finished_at timestamptz,
+    comment_id bigint,
+    tracking_comment_id bigint
   )`)
+  // Pre-feedback tables predate the two comment columns — migrate in place
+  // (idempotent; no-ops once present).
+  await sql(`alter table gh_app_jobs add column if not exists comment_id bigint`)
+  await sql(`alter table gh_app_jobs add column if not exists tracking_comment_id bigint`)
   await sql(`create index if not exists gh_app_jobs_status_idx on gh_app_jobs (status, id)`)
 }
 
 export async function enqueue(sql: SqlClient, job: NewJob): Promise<number> {
   const r = await sql(
-    `insert into gh_app_jobs (installation_id, repo, issue_number, task, is_pr)
-     values ($1, $2, $3, $4, $5) returning id`,
-    [job.installationId, job.repo, job.issueNumber, job.task, job.isPR],
+    `insert into gh_app_jobs (installation_id, repo, issue_number, task, is_pr, comment_id)
+     values ($1, $2, $3, $4, $5, $6) returning id`,
+    [job.installationId, job.repo, job.issueNumber, job.task, job.isPR, job.commentId ?? null],
   )
   return Number(r.rows[0]?.id)
 }
@@ -50,7 +59,7 @@ export async function claimNext(sql: SqlClient): Promise<Job | null> {
        select id from gh_app_jobs where status = 'queued'
        order by id limit 1 for update skip locked
      )
-     returning id, installation_id, repo, issue_number, task, is_pr`,
+     returning id, installation_id, repo, issue_number, task, is_pr, comment_id`,
   )
   const row = r.rows[0]
   if (!row) return null
@@ -61,7 +70,14 @@ export async function claimNext(sql: SqlClient): Promise<Job | null> {
     issueNumber: Number(row.issue_number),
     task: String(row.task),
     isPR: Boolean(row.is_pr),
+    commentId: row.comment_id == null ? undefined : Number(row.comment_id),
   }
+}
+
+/** Persist the id of the "working on it" comment so the outcome edit can
+ * find it (and operators can trace the thread from the job row). */
+export async function setTrackingComment(sql: SqlClient, id: number, trackingCommentId: number): Promise<void> {
+  await sql(`update gh_app_jobs set tracking_comment_id = $1 where id = $2`, [trackingCommentId, id])
 }
 
 export async function markDone(sql: SqlClient, id: number): Promise<void> {
@@ -85,6 +101,7 @@ export type JobStore = {
   claimNext: () => Promise<Job | null>
   markDone: (id: number) => Promise<void>
   markFailed: (id: number, error: string) => Promise<void>
+  setTrackingComment: (id: number, trackingCommentId: number) => Promise<void>
   countToday: () => Promise<number>
 }
 
@@ -95,6 +112,7 @@ export function jobStore(sql: SqlClient): JobStore {
     claimNext: () => claimNext(sql),
     markDone: (id) => markDone(sql, id),
     markFailed: (id, error) => markFailed(sql, id, error),
+    setTrackingComment: (id, trackingCommentId) => setTrackingComment(sql, id, trackingCommentId),
     countToday: () => countToday(sql),
   }
 }

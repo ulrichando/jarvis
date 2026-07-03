@@ -10,15 +10,17 @@ function memStore(initial: NewJob[], startedToday = 0) {
   const queued: Job[] = initial.map((j) => ({ ...j, id: nextId++ }))
   const done: number[] = []
   const failed: { id: number; error: string }[] = []
+  const tracked: { id: number; trackingCommentId: number }[] = []
   let today = startedToday
   const store: JobStore = {
     enqueue: async (j) => { queued.push({ ...j, id: nextId++ }); return nextId - 1 },
     claimNext: async () => { const j = queued.shift() ?? null; if (j) today++; return j },
     markDone: async (id) => { done.push(id) },
     markFailed: async (id, error) => { failed.push({ id, error }) },
+    setTrackingComment: async (id, trackingCommentId) => { tracked.push({ id, trackingCommentId }) },
     countToday: async () => today,
   }
-  return { store, queued, done, failed }
+  return { store, queued, done, failed, tracked }
 }
 
 const job = (n: number): NewJob => ({ installationId: 555, repo: 'o/r', issueNumber: n, task: `t${n}`, isPR: false })
