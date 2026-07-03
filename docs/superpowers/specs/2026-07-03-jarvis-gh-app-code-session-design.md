@@ -67,6 +67,6 @@ The throwaway-sandbox path (`runInSandbox`) is **replaced** by the session path 
 
 ## Open risks
 
-- `src/web` is a **customized Next.js** (`src/web/AGENTS.md`: "NOT the Next.js you know") — the implementer must read its conventions before touching routes.
+- `src/web` is **stock Next.js 16.2.6 + React 19.2.4** (from `vercel/next.js`, not a fork). The `AGENTS.md` "NOT the Next.js you know" banner is **Next.js 16's own auto-generated agent-rule** warning that v16 has breaking API changes vs. older versions (which is what's in the implementer's training data). Mitigation: **read the bundled docs at `node_modules/next/dist/docs/` (01-app, index.md) before writing any route/server-component code.** Bounded risk — the docs ship in-repo.
 - The `/code` clone/auth path assumes user workspaces; the external-repo adaptation is the riskiest change — must not regress normal `/code`.
 - Live-VPS-only checks (proxy wiring, the session actually watchable) — verified during build against the box.
