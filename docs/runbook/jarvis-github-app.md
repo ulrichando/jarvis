@@ -88,6 +88,7 @@ Comment on any issue or PR of an installed repo:
 | `GH_APP_PORT` | `8790` | service port (Caddy: `gh.0wlan.com → gh-app:8790`) |
 | `GH_APP_BASE_URL` | `https://gh.0wlan.com` | manifest/webhook/callback base |
 | `GH_APP_SANDBOX_IMAGE` | `jarvis-gh-app` | image the worker spawns (host daemon tag) |
+| `GH_APP_SANDBOX_NETWORK` | — (**required**) | docker network for job containers. **Fail-closed**: when unset/empty the worker REFUSES to spawn (job marked failed) — jobs never run on the default open-egress bridge. MUST be an **egress-restricted** network that can reach only the model proxy + GitHub, NOT arbitrary internet (squid allowlist, same pattern as `/code`) — raw provider keys ride the job env, and prompt-injected repo content could otherwise exfiltrate them |
 | `GH_APP_CREDS_PATH` | `/data/creds.json` | captured-creds fallback path |
 | `DATABASE_URL` | — (required) | Postgres (`gh_app_jobs` table auto-created) |
 | `DOCKER_HOST` | `tcp://docker-proxy:2375` | restricted Docker API for sandbox spawns |
@@ -113,6 +114,13 @@ Comment on any issue or PR of an installed repo:
 - **Sandbox**: throwaway container per job, spawned through the tecnativa
   docker-proxy (no raw socket), `CapDrop=ALL`, `no-new-privileges`, 2 GB /
   512-pid limits, force-removed after run or timeout.
+- **Sandbox network (mandatory, fail-closed)**: every job container is
+  attached to `GH_APP_SANDBOX_NETWORK`; if it isn't configured the spawn is
+  refused and the job fails — there is no fall-open path onto the default
+  bridge. The network must be egress-restricted to the model proxy + GitHub
+  only. Further hardening (deferred): route the sandbox's LLM calls through
+  the model proxy and drop the raw provider keys from the sandbox env
+  entirely, so a compromised job has nothing to exfiltrate.
 
 ## Operations
 
@@ -141,7 +149,9 @@ Comment on any issue or PR of an installed repo:
 - [ ] Rate limit / dedupe per delivery id (`X-GitHub-Delivery`) — replay
       protection beyond the signature.
 - [ ] Per-repo daily caps + per-installation spend budgets.
-- [ ] Egress-restricted sandbox network (squid allowlist like `/code`).
+- [ ] Route sandbox LLM calls via the model proxy and DROP raw provider keys
+      from the sandbox env (the egress-restricted network is now mandatory —
+      this step removes the exfiltration target itself).
 - [ ] Webhook secret rotation procedure + dual-secret verify window.
 - [ ] Job-row retention/PII policy for task text.
 

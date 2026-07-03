@@ -117,7 +117,18 @@ export function sandboxEnvPassthrough(env: Record<string, string | undefined>): 
 // No docker binary in the image: the restricted proxy speaks the plain Engine
 // REST API, which is all a create → start → wait → logs → force-remove
 // lifecycle needs. Timeout = race on /wait, then force-remove (kills too).
-export function dockerSpawnContainer(dockerHost: string, network?: string) {
+//
+// The sandbox network is REQUIRED and fail-closed: without an explicit
+// NetworkMode the container lands on the default bridge with full internet
+// egress while raw provider keys sit in its env — prompt-injected repo
+// content could exfiltrate them. No network → refuse to spawn (the worker
+// marks the job failed); never run a job on the open bridge.
+export function dockerSpawnContainer(dockerHost: string, network: string | undefined) {
+  if (!network?.trim()) {
+    throw new Error(
+      'GH_APP_SANDBOX_NETWORK is required — refusing to spawn a sandbox on the default (open-egress) docker bridge',
+    )
+  }
   const base = dockerHost.replace(/^tcp:\/\//, 'http://').replace(/\/$/, '')
   return async (spec: SpawnSpec): Promise<SpawnResult> => {
     const create = await fetch(`${base}/containers/create`, {
@@ -136,7 +147,7 @@ export function dockerSpawnContainer(dockerHost: string, network?: string) {
           SecurityOpt: ['no-new-privileges'],
           Memory: 2 * 1024 * 1024 * 1024,
           PidsLimit: 512,
-          ...(network ? { NetworkMode: network } : {}),
+          NetworkMode: network,
         },
       }),
     })
@@ -193,6 +204,9 @@ if (import.meta.main) {
   const store = jobStore(sql)
 
   const caps = capsFromEnv(env)
+  if (!env.GH_APP_SANDBOX_NETWORK?.trim()) {
+    log('GH_APP_SANDBOX_NETWORK is not set — sandbox spawns will be REFUSED (jobs marked failed) until an egress-restricted docker network is configured')
+  }
   const allowlist = (env.GH_APP_ALLOWLIST ?? 'ulrichando').split(',').map((s) => s.trim()).filter(Boolean)
   const trigger = env.GH_APP_TRIGGER ?? '@jarvis'
 

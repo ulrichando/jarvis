@@ -1,7 +1,7 @@
 // src/gh-app/server.test.ts — hermetic smoke of the HTTP surface (fake deps).
 import { test, expect, describe } from 'bun:test'
 import { createHmac } from 'node:crypto'
-import { makeApp, credsFromEnvOrFile, sandboxEnvPassthrough, type ServerDeps } from './server.js'
+import { makeApp, credsFromEnvOrFile, sandboxEnvPassthrough, dockerSpawnContainer, type ServerDeps } from './server.js'
 import type { NewJob } from './jobs.js'
 
 const SECRET = 'topsecret'
@@ -119,6 +119,52 @@ describe('gh-app credsFromEnvOrFile', () => {
     const file = JSON.stringify({ appId: 12, pem: 'P2', webhookSecret: 's2' })
     expect(credsFromEnvOrFile({}, () => file)).toEqual({ appId: 12, pem: 'P2', webhookSecret: 's2' })
     expect(credsFromEnvOrFile({}, () => { throw new Error('ENOENT') })).toBeNull()
+  })
+})
+
+describe('gh-app dockerSpawnContainer sandbox network', () => {
+  const spec = { image: 'jarvis-gh-app', cmd: ['bun', 'x.ts'], env: {}, timeoutSec: 5, writableWorkdir: true }
+
+  // Raw provider keys ride the job env; the default docker bridge has full
+  // internet egress → prompt-injected repo content could exfiltrate them.
+  // No network configured = refuse to spawn, never fall open.
+  test('refuses to spawn when the sandbox network is unset/empty — no container created', async () => {
+    const realFetch = globalThis.fetch
+    let dockerCalls = 0
+    globalThis.fetch = (async () => { dockerCalls++; return new Response('{}', { status: 201 }) }) as typeof fetch
+    try {
+      expect(() => dockerSpawnContainer('tcp://docker-proxy:2375', undefined)).toThrow(/GH_APP_SANDBOX_NETWORK/)
+      expect(() => dockerSpawnContainer('tcp://docker-proxy:2375', '')).toThrow(/GH_APP_SANDBOX_NETWORK/)
+      expect(() => dockerSpawnContainer('tcp://docker-proxy:2375', '   ')).toThrow(/GH_APP_SANDBOX_NETWORK/)
+      expect(dockerCalls).toBe(0) // refusal happens before any Docker API call
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  test('always sets HostConfig.NetworkMode to the configured network', async () => {
+    const realFetch = globalThis.fetch
+    const created: any[] = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url)
+      if (u.endsWith('/containers/create')) {
+        created.push(JSON.parse(String(init?.body)))
+        return new Response(JSON.stringify({ Id: 'cid1' }), { status: 201 })
+      }
+      if (u.includes('/start')) return new Response(null, { status: 204 })
+      if (u.includes('/wait')) return new Response(JSON.stringify({ StatusCode: 0 }), { status: 200 })
+      if (u.includes('/logs')) return new Response(new Uint8Array(0), { status: 200 })
+      return new Response(null, { status: 204 }) // force-remove
+    }) as typeof fetch
+    try {
+      const spawn = dockerSpawnContainer('tcp://docker-proxy:2375', 'jarvis-sandbox-net')
+      const r = await spawn(spec)
+      expect(r.code).toBe(0)
+      expect(created.length).toBe(1)
+      expect(created[0].HostConfig.NetworkMode).toBe('jarvis-sandbox-net')
+    } finally {
+      globalThis.fetch = realFetch
+    }
   })
 })
 
