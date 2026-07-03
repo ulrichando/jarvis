@@ -12,7 +12,8 @@
     "identity",
     "downloads",
     "notifications",
-    "alarms"
+    "alarms",
+    "tabGroups"
   ],
   "host_permissions": [
     "<all_urls>",

@@ -174,6 +174,8 @@ async function dispatchCommand(cmd) {
       case "get_cookies": return await bgGetCookies(args);
       case "set_cookies": return await bgSetCookies(args);
       case "list_tabs":   return await bgListTabs();
+      case "activate_tab": return await bgActivateTab(args);
+      case "group_tabs":  return await bgGroupTabs(args);
       case "download":    return await bgDownload(args);
       default:            return await forwardToContent(action, args, confirmed);
     }
@@ -189,7 +191,7 @@ async function activeTabId() {
 
 // ── Site permissions (#3 per-site allow/block, #4 default blocked categories) ─
 // Site-agnostic meta commands are never site-gated (orienting / navigating away).
-const ALWAYS_ALLOWED_ACTIONS = new Set(["get_url", "list_tabs", "back", "forward", "close_tab"]);
+const ALWAYS_ALLOWED_ACTIONS = new Set(["get_url", "list_tabs", "activate_tab", "group_tabs", "back", "forward", "close_tab"]);
 function hostOf(url) { try { return new URL(url).hostname.toLowerCase(); } catch { return ""; } }
 async function activeTabUrl() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -276,10 +278,45 @@ async function bgGetCookies({ domain }) {
 
 async function bgListTabs() {
   const tabs = await chrome.tabs.query({});
+  const groupTitles = {};
+  try {
+    if (chrome.tabGroups) for (const g of await chrome.tabGroups.query({})) groupTitles[g.id] = g.title || "";
+  } catch { /* tabGroups may be unavailable */ }
+  const grouped = (t) => typeof t.groupId === "number" && t.groupId >= 0;
   return {
     ok: true,
-    tabs: tabs.slice(0, 40).map((t) => ({ id: t.id, title: t.title || "", url: t.url || "", active: !!t.active })),
+    tabs: tabs.slice(0, 40).map((t) => ({
+      id: t.id, title: t.title || "", url: t.url || "", active: !!t.active,
+      groupId: grouped(t) ? t.groupId : null,
+      group: grouped(t) ? (groupTitles[t.groupId] || "") : null,
+    })),
   };
+}
+
+async function bgActivateTab({ tab_id }) {
+  const id = Number(tab_id);
+  if (!Number.isInteger(id)) return { ok: false, error: "tab_id (a number from list_tabs) required" };
+  try { const t = await chrome.tabs.update(id, { active: true }); return { ok: true, id, url: (t && t.url) || "" }; }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+}
+
+// Corral tabs into a visible, labeled "Jarvis" group (reusing one if it exists),
+// so Jarvis's workspace is contained + obvious — the tab-group feature.
+async function bgGroupTabs({ tab_ids }) {
+  if (!chrome.tabs.group) return { ok: false, error: "tabGroups permission unavailable" };
+  let ids = Array.isArray(tab_ids) ? tab_ids.map(Number).filter(Number.isInteger) : [];
+  if (!ids.length) { const id = await activeTabId(); if (id) ids = [id]; }
+  if (!ids.length) return { ok: false, error: "no tabs to group" };
+  try {
+    let groupId;
+    if (chrome.tabGroups) {
+      const existing = await chrome.tabGroups.query({ title: "Jarvis" });
+      if (existing && existing.length) groupId = existing[0].id;
+    }
+    groupId = await chrome.tabs.group(groupId != null ? { tabIds: ids, groupId } : { tabIds: ids });
+    if (chrome.tabGroups) { try { await chrome.tabGroups.update(groupId, { title: "Jarvis", color: "cyan" }); } catch { /* title/color best-effort */ } }
+    return { ok: true, groupId, grouped: ids.length };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
 }
 
 async function bgDownload({ url, filename }) {
