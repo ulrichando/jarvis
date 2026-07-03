@@ -46,7 +46,9 @@ const TOOLS = [
   { name: "wait_for", description: "Wait until an element matching the selector appears.", input_schema: { type: "object", properties: { selector: { type: "string" }, timeout_ms: { type: "number" } }, required: ["selector"], additionalProperties: false } },
   { name: "back", description: "Go back in history.", input_schema: { type: "object", properties: {}, additionalProperties: false } },
   { name: "forward", description: "Go forward in history.", input_schema: { type: "object", properties: {}, additionalProperties: false } },
-  { name: "list_tabs", description: "List the user's open browser tabs (title + URL). Use to find or reference another open tab.", input_schema: { type: "object", properties: {}, additionalProperties: false } },
+  { name: "list_tabs", description: "List the user's open browser tabs (id, title, URL, and which tab group each belongs to). Use to find or reference another open tab, or to see the tabs in the current group.", input_schema: { type: "object", properties: {}, additionalProperties: false } },
+  { name: "activate_tab", description: "Switch to another open tab by its id (from list_tabs), then read/act on it — this is how you work across the tabs in a group.", input_schema: { type: "object", properties: { tab_id: { type: "number" } }, required: ["tab_id"], additionalProperties: false } },
+  { name: "group_tabs", description: "Collect tabs into a visible, labeled 'Jarvis' tab group (a contained workspace). Pass tab_ids from list_tabs, or omit to group the current tab.", input_schema: { type: "object", properties: { tab_ids: { type: "array", items: { type: "number" } } }, additionalProperties: false } },
   { name: "download", description: "Download a file from a URL to the user's Downloads folder.", input_schema: { type: "object", properties: { url: { type: "string" }, filename: { type: "string" } }, required: ["url"], additionalProperties: false } },
 ];
 
@@ -54,6 +56,7 @@ const SYSTEM = `You are Jarvis, operating the user's web browser through tools t
 - When the task involves the current page, call dom_summary (or get_url) FIRST to see it before acting. If you can answer from your own knowledge without the page, just answer — don't call a tool.
 - To click a button/link by its visible text, use click_text (do NOT invent CSS selectors like :has-text). Use click(selector) only with a precise standard CSS selector (id/class/attribute).
 - Locate elements with dom_summary/find_by_text before acting.
+- Working across tabs: list_tabs shows each tab's group; activate_tab switches to one so you can read/act on it; group_tabs collects the task's tabs into a labeled "Jarvis" group so the user can see your workspace. Prefer grouping when a task spans several tabs.
 - After an action, re-check with dom_summary/extract_text before the next step.
 - You know common sites — prefer their conventions over guessing: Gmail (compose = "c", the search box up top), Google Calendar (create = "c"), Google Docs (edit inline; menus under File/Edit/Insert), GitHub (a repo's Issues/Pull requests tabs; the "New issue" button), Slack (Ctrl/Cmd+K to jump to a channel/DM, the message box at the bottom).
 - If you hit a login page, CAPTCHA, paywall, or 2FA prompt, STOP — do not attempt to sign in or solve it. Ask the user to handle that step, then continue when they say it's done.
@@ -82,6 +85,8 @@ function labelFor(action: string, args: any): string {
     case "back": return "Go back";
     case "forward": return "Go forward";
     case "list_tabs": return "List open tabs";
+    case "activate_tab": return `Switch to tab ${a.tab_id}`;
+    case "group_tabs": return a.tab_ids && a.tab_ids.length ? `Group ${a.tab_ids.length} tabs` : "Group this tab";
     case "download": return `Download ${a.url}`;
     default: return action;
   }

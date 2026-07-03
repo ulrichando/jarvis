@@ -1,5 +1,16 @@
 import { test, expect, describe, afterEach } from "bun:test";
-import { runBrowserAgent } from "../browserAgent";
+import { runBrowserAgent, _AGENT_TOOLS } from "../browserAgent";
+
+describe("runBrowserAgent tool surface", () => {
+  test("exposes the tab-group tools (activate_tab, group_tabs)", () => {
+    const names = _AGENT_TOOLS.map((t: any) => t.name);
+    expect(names).toContain("activate_tab");
+    expect(names).toContain("group_tabs");
+    // activate_tab requires a numeric tab_id
+    const activate = _AGENT_TOOLS.find((t: any) => t.name === "activate_tab") as any;
+    expect(activate.input_schema.required).toContain("tab_id");
+  });
+});
 
 // Stub the LLM proxy: return the queued responses in order (last one repeats).
 const realFetch = globalThis.fetch;
