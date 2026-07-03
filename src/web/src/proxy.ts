@@ -185,7 +185,9 @@ export function proxy(req: NextRequest) {
       !hasSessionCookie(req)
     ) {
       const loginUrl = new URL('/login', req.url)
-      if (path !== '/') loginUrl.searchParams.set('next', path)
+      // Preserve the full path + query so return-to after login keeps params
+      // (e.g. /extension/authorize?redirect_uri=… needs its query to survive).
+      if (path !== '/') loginUrl.searchParams.set('next', path + new URL(req.url).search)
       return NextResponse.redirect(loginUrl)
     }
     return NextResponse.next()
