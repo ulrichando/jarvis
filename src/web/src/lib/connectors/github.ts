@@ -242,16 +242,20 @@ export type PrStatus = {
  * PR + CI status for `<repo>` branch `<branch>` (the /code Diff panel). Finds
  * the PR opened from the branch, then summarizes its head commit's check runs.
  * Returns nulls (not an error) when nothing is open yet so the panel can poll.
+ * `token` (optional): authenticate with THIS token instead of the stored PAT —
+ * external gh-app jobs pass their App installation token; default unchanged.
  */
 export async function githubPrStatus(
   repo: string,
   branch: string,
+  token?: string,
 ): Promise<{ ok: true; status: PrStatus } | { ok: false; error: string }> {
   const c = await load();
-  if (!c.github) return { ok: false, error: "GitHub not connected" };
+  const auth = token || c.github?.token;
+  if (!auth) return { ok: false, error: "GitHub not connected" };
   if (!isRepo(repo)) return { ok: false, error: "Invalid repo" };
   const owner = repo.split("/")[0];
-  const h = ghHeaders(c.github.token);
+  const h = ghHeaders(auth);
   try {
     const pr = await fetch(
       `${GH}/repos/${repo}/pulls?head=${owner}:${encodeURIComponent(branch)}&state=all&per_page=1`,
@@ -300,6 +304,8 @@ export async function githubPrStatus(
  * Open a PR head→base (host-side, with the real PAT — so the container never
  * needs a GitHub token). On 422 (a PR already exists for head→base) returns the
  * existing open PR instead of erroring.
+ * `token` (optional): authenticate with THIS token instead of the stored PAT —
+ * external gh-app jobs pass their App installation token; default unchanged.
  */
 export async function openPullRequest(
   repo: string,
@@ -308,21 +314,23 @@ export async function openPullRequest(
   title: string,
   body: string,
   draft = false,
+  token?: string,
 ): Promise<{ ok: true; url: string; number: number } | { ok: false; error: string }> {
   const c = await load();
-  if (!c.github) return { ok: false, error: "GitHub not connected" };
+  const auth = token || c.github?.token;
+  if (!auth) return { ok: false, error: "GitHub not connected" };
   if (!isRepo(repo)) return { ok: false, error: "Invalid repo" };
   try {
     const r = await fetch(`${GH}/repos/${repo}/pulls`, {
       method: "POST",
-      headers: ghHeaders(c.github.token),
+      headers: ghHeaders(auth),
       body: JSON.stringify({ title, head, base, body, draft }),
     });
     if (r.status === 422) {
       const owner = repo.split("/")[0];
       const ex = await fetch(
         `${GH}/repos/${repo}/pulls?head=${owner}:${encodeURIComponent(head)}&state=open&per_page=1`,
-        { headers: ghHeaders(c.github.token) },
+        { headers: ghHeaders(auth) },
       );
       if (ex.ok) {
         const a = (await ex.json()) as Array<{ html_url?: string; number?: number }>;

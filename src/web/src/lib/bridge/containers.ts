@@ -205,6 +205,15 @@ export async function launchContainerSession(
      *  globally-enabled connector. The web /code UI always sends an explicit
      *  array (opt-in; empty by default), so no connector rides along unasked. */
     connectors?: string[];
+    /** EXTERNAL bot job (gh-app dispatch): a repo-scoped GitHub App
+     *  installation token (~1h). Persisted into the session container meta so
+     *  the scoped git proxy + host-side PR path authenticate with it. It is
+     *  NEVER placed in the container (env or argv) — the container only ever
+     *  holds the per-session cap token. Absent for normal /code sessions,
+     *  which then behave byte-identically to before this field existed. */
+    installationToken?: string;
+    /** The App bot's login — the committer identity for external bot jobs. */
+    botLogin?: string;
   },
 ): Promise<void> {
   const exec = opts.exec ?? realDockerExec;
@@ -353,6 +362,10 @@ export async function launchContainerSession(
       repo: repoFullName,
       extraRepos,
       gitCapToken,
+      // External bot jobs only — the spread keeps the persisted JSON
+      // byte-identical for normal sessions (no extra keys).
+      ...(opts.installationToken ? { installationToken: opts.installationToken } : {}),
+      ...(opts.botLogin ? { botLogin: opts.botLogin } : {}),
     });
     if (cacheHit) emit(store, sessionId, "◌ Restored cached environment (setup skipped)");
   });
@@ -380,7 +393,9 @@ export async function launchContainerSession(
   // credential helper can authorize them. Non-fatal: a hiccup warns rather than
   // aborting the launch.
   const configureGitProxy = async (): Promise<void> => {
-    const login = gh.login || "jarvis";
+    // External bot jobs commit as the App bot, not the connected user.
+    const login =
+      opts.installationToken && opts.botLogin ? opts.botLogin : gh.login || "jarvis";
     const email = `${login}@users.noreply.github.com`;
     const cmd = [
       `git config --global user.name ${shq(login)}`,
@@ -839,7 +854,11 @@ export async function createContainerPR(
 ): Promise<{ url: string; branch: string } | { error: string }> {
   const session = findSession(store, sessionId);
   const meta = session?.container_json
-    ? (JSON.parse(session.container_json) as { container?: string; repo?: string })
+    ? (JSON.parse(session.container_json) as {
+        container?: string;
+        repo?: string;
+        installationToken?: string;
+      })
     : null;
   if (!meta?.container || !meta.repo) return { error: "This session has no container." };
   const workdir = `/workspace/${repoDirName(meta.repo)}`;
@@ -874,14 +893,13 @@ export async function createContainerPR(
   if (mode === "compose") return { url: compareUrl, branch: cur };
 
   const { openPullRequest } = await import("../connectors/github");
-  const pr = await openPullRequest(
-    meta.repo,
-    cur,
-    base,
-    "Changes from a Jarvis /code session",
-    "From a Jarvis /code session.",
-    mode === "draft",
-  );
+  const prTitle = "Changes from a Jarvis /code session";
+  const prBody = "From a Jarvis /code session.";
+  // External bot jobs authenticate the PR with the injected installation
+  // token; normal sessions call exactly as before (no trailing arg).
+  const pr = meta.installationToken
+    ? await openPullRequest(meta.repo, cur, base, prTitle, prBody, mode === "draft", meta.installationToken)
+    : await openPullRequest(meta.repo, cur, base, prTitle, prBody, mode === "draft");
   // On any REST failure, fall back to a clickable compare URL.
   if (!pr.ok) return { url: compareUrl, branch: cur };
   return { url: pr.url, branch: cur };

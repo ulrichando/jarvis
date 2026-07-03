@@ -670,6 +670,97 @@ describe('launchContainerSession', () => {
     expect(flat.find((c) => c.includes('cli.tsx'))!).toContain('--mcp-config /jarvis-config/.mcp.json')
   })
 
+  // ── External bot jobs (gh-app dispatch): injected installation token ────
+  test('external job: bot committer identity, token in meta but NEVER in the container', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    const { calls, exec } = fakeDocker()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'https://0wlan.com',
+      proxyHealthy: async () => false,
+      installationToken: 'ghs_inst_tok',
+      botLogin: 'jarvis-gh-bot',
+      exec,
+    })
+    const flat = calls.map((c) => c.join(' '))
+    // Committer = the App bot, not the connected user ('tester').
+    const gitcfg = flat.find((c) => c.includes('git config --global user.name'))!
+    expect(gitcfg).toContain("user.name 'jarvis-gh-bot'")
+    expect(gitcfg).toContain("user.email 'jarvis-gh-bot@users.noreply.github.com'")
+    expect(gitcfg).not.toContain('tester')
+    // The installation token lands in the session meta (for the git proxy +
+    // host-side PR)…
+    const meta = JSON.parse(findSession(store, sessionId)!.container_json!)
+    expect(meta.installationToken).toBe('ghs_inst_tok')
+    expect(meta.botLogin).toBe('jarvis-gh-bot')
+    // …but NEVER in any docker command line (the claude.ai/code invariant:
+    // tokens stay host-side; the container only holds the per-session cap).
+    expect(flat.some((c) => c.includes('ghs_inst_tok'))).toBe(false)
+  })
+
+  test('regression: no installationToken → committer + persisted meta byte-identical', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    const { calls, exec } = fakeDocker()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec,
+    })
+    const gitcfg = calls.map((c) => c.join(' ')).find((c) => c.includes('git config --global user.name'))!
+    expect(gitcfg).toContain("user.name 'tester'")
+    expect(gitcfg).toContain("user.email 'tester@users.noreply.github.com'")
+    // The meta JSON carries EXACTLY today's keys — no external-job fields.
+    const meta = JSON.parse(findSession(store, sessionId)!.container_json!)
+    expect(Object.keys(meta).sort()).toEqual(['container', 'extraRepos', 'gitCapToken', 'repo'])
+  })
+
+  test('createContainerPR passes the injected token to openPullRequest for external jobs', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'https://0wlan.com',
+      proxyHealthy: async () => false,
+      installationToken: 'ghs_inst_tok',
+      botLogin: 'jarvis-gh-bot',
+      exec: fakeDocker().exec,
+    })
+    const exec: DockerExec = async () => ({ stdout: '@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' })
+    const { openPullRequest } = await import('@/lib/connectors/github')
+    vi.mocked(openPullRequest).mockClear()
+    const r = await createContainerPR(store, sessionId, exec)
+    expect('error' in r).toBe(false)
+    expect(vi.mocked(openPullRequest)).toHaveBeenCalledWith(
+      'owner/demo', 'jarvis/session-x', 'main', expect.any(String), expect.any(String), false, 'ghs_inst_tok',
+    )
+  })
+
+  test('regression: createContainerPR without a token calls openPullRequest exactly as today', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec: fakeDocker().exec,
+    })
+    const exec: DockerExec = async () => ({ stdout: '@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' })
+    const { openPullRequest } = await import('@/lib/connectors/github')
+    vi.mocked(openPullRequest).mockClear()
+    await createContainerPR(store, sessionId, exec)
+    // 6 args — NO trailing token argument on the normal path.
+    expect(vi.mocked(openPullRequest)).toHaveBeenCalledWith(
+      'owner/demo', 'jarvis/session-x', 'main', expect.any(String), expect.any(String), false,
+    )
+  })
+
   test('multi-repo: clones each extra repo alongside the primary', async () => {
     const sessionId = makeSession()
     const store = getStore()
