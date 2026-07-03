@@ -22,6 +22,35 @@
 - **Category**: tech-debt
 - **Planned at**: commit `9861fd11`, 2026-07-02
 
+## Coupling analysis (done 2026-07-03 — read before executing)
+
+The cluster is NOT a clean lift; it mixes two concerns, and only one is
+separable:
+- **Concern #1 — tray file-flags (EXTRACT):** `_mark_tool_start`/`_mark_tool_end`
+  (write/unlink `~/.jarvis/.tool-running`), `_mark_thinking_start`/`_mark_thinking_end`
+  (`~/.jarvis/.agent-thinking`), `_start_thinking_heartbeat`/`_cancel_thinking_heartbeat`,
+  `_thinking_idle_grace_s`/`_thinking_max_idle_s` (return env-derived floats — no
+  module constants), `_bump_turn_activity`, `_schedule_idle_heartbeat_cancel`,
+  `_cancel_pending_idle_heartbeat_cancel` — **11 functions** + the 2 path
+  constants `_TOOL_BUSY_FILE`, `_AGENT_THINKING_FILE`. Verified: `_mark_tool_start`
+  does NOT touch the counter (only writes the tray file). These depend only on
+  logger/time/Path/os/asyncio → clean to move to `pipeline/thinking_heartbeat.py`.
+- **Concern #2 — chain counter (LEAVE IN PLACE):** `_tool_calls_this_turn`,
+  `_TURN_TOOL_CALL_LIMIT`, `_reset_tool_call_count`. This is `run_jarvis_cli`'s
+  chain-limit, entangled with the counter increment/check at `jarvis_agent.py`
+  ~line 1737 and the telemetry read at ~7410. It is a DIFFERENT concern that
+  happens to be co-located; do NOT move it. (Note: the session attribute
+  `session._jarvis_tool_calls_this_turn` is a LIST — unrelated to the int
+  counter despite the similar name; also leave it.)
+
+So the revised scope: extract the **11 tray-flag functions + 2 path constants**
+only. This is genuinely cohesive and low-coupling once the counter is excluded.
+
+**Blocked on execution 2026-07-03:** a voice session was active (last turn 33s
+ago). This plan's Step 5 live smoke needs a restart, which the CLAUDE.md rule
+forbids within 60s of a turn. Do this in an idle window so the tray-flag smoke
+can run — a green unit suite alone does NOT prove the tray file-writes still fire.
+
 ## Why this matters
 
 `src/voice-agent/jarvis_agent.py` is **8,176 lines** and still growing — it sat at
