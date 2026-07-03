@@ -1,0 +1,161 @@
+import { describe, expect, test, beforeEach, afterEach, vi } from 'vitest'
+import { _resetForTests, getStore } from '@/lib/bridge/db'
+import {
+  findSession,
+  listEnvironments,
+  listInboundSince,
+  listSessionEvents,
+} from '@/lib/bridge/store'
+import * as containers from '@/lib/bridge/containers'
+import { getUserId } from '@/lib/auth-helpers'
+
+// The dispatch route is SERVICE-token only — it must never consult the browser
+// session. Mocked so we can assert getUserId is never even called.
+vi.mock('@/lib/auth-helpers', () => ({ getUserId: vi.fn(async () => 'browser-user') }))
+// LOCAL_USER_ID without dragging the drizzle/Postgres graph into the test.
+vi.mock('@/lib/chat/persist', () => ({
+  LOCAL_USER_ID: '00000000-0000-0000-0000-000000000001',
+}))
+
+const SVC = 'svc_gh_app_bridge_token'
+const LOCAL_USER = '00000000-0000-0000-0000-000000000001'
+
+function post(body: unknown, token?: string): Request {
+  return new Request('http://web:3000/api/bridge/v1/gh-app/dispatch', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  })
+}
+
+const validBody = {
+  repo: 'octo/maxrun',
+  installationToken: 'ghs_inst_tok',
+  botLogin: 'jarvis-gh-bot',
+  task: 'fix the flaky test in ci.yml',
+  publicOrigin: 'https://0wlan.com/',
+  model: 'claude-opus-4-8',
+}
+
+async function route() {
+  return import('@/app/api/bridge/v1/gh-app/dispatch/route')
+}
+
+beforeEach(() => {
+  _resetForTests()
+  process.env.GH_APP_BRIDGE_TOKEN = SVC
+  vi.mocked(getUserId).mockClear()
+})
+afterEach(() => {
+  delete process.env.GH_APP_BRIDGE_TOKEN
+  vi.restoreAllMocks()
+})
+
+describe('POST /api/bridge/v1/gh-app/dispatch', () => {
+  test('401 on a missing or wrong bearer; getUserId is never consulted', async () => {
+    const { POST } = await route()
+    expect((await POST(post(validBody))).status).toBe(401)
+    expect((await POST(post(validBody, 'wrong-token'))).status).toBe(401)
+    expect(vi.mocked(getUserId)).not.toHaveBeenCalled()
+  })
+
+  test('401 (inert) when GH_APP_BRIDGE_TOKEN is not configured — even with a matching bearer', async () => {
+    delete process.env.GH_APP_BRIDGE_TOKEN
+    const { POST } = await route()
+    expect((await POST(post(validBody, ''))).status).toBe(401)
+    expect((await POST(post(validBody, SVC))).status).toBe(401)
+  })
+
+  test('valid token + payload → env for the repo, seeded session, launch with origin + token', async () => {
+    const launchSpy = vi
+      .spyOn(containers, 'launchContainerSession')
+      .mockResolvedValue(undefined)
+    const { POST } = await route()
+    const res = await POST(post(validBody, SVC))
+    expect(res.status).toBe(200)
+    const j = (await res.json()) as { session_id: string; session_url: string }
+    expect(j.session_id).toMatch(/^[0-9a-f]{16}$/)
+    // Trailing slash on publicOrigin is normalized away.
+    expect(j.session_url).toBe(`https://0wlan.com/code/session_${j.session_id}`)
+
+    const store = getStore()
+    // Environment: container-typed, owned by the box's single user, repo URL set.
+    const envs = listEnvironments(store, LOCAL_USER)
+    expect(envs).toHaveLength(1)
+    expect(envs[0]).toMatchObject({
+      worker_type: 'container',
+      git_repo_url: 'https://github.com/octo/maxrun',
+      user_id: LOCAL_USER,
+    })
+    // Session row exists, titled from the task, attached to that env.
+    const session = findSession(store, j.session_id)
+    expect(session?.environment_id).toBe(envs[0].environment_id)
+    expect(session?.title).toBe('fix the flaky test in ci.yml')
+
+    // Seed order (the child replays inbound from seq 0): bypassPermissions
+    // FIRST, then the task as the user message.
+    const inbound = listInboundSince(store, j.session_id, 0).map(
+      (r) => JSON.parse(r.payload_json) as Record<string, unknown>,
+    )
+    expect(inbound).toHaveLength(2)
+    expect(inbound[0]).toMatchObject({
+      type: 'control_request',
+      request: { subtype: 'set_permission_mode', mode: 'bypassPermissions' },
+    })
+    expect(inbound[1]).toMatchObject({ type: 'user' })
+    expect(JSON.stringify(inbound[1])).toContain('fix the flaky test in ci.yml')
+    // The prompt is mirrored as a session event so the transcript is watchable.
+    const events = listSessionEvents(store, j.session_id, 0).map((e) => e.payload_json)
+    expect(events.some((p) => p.includes('user_prompt') && p.includes('fix the flaky test'))).toBe(true)
+
+    // Launch got the EXPLICIT public origin (never req.url) + the injected
+    // token/bot identity + the model — so A1/A2 pick them up from the meta.
+    expect(launchSpy).toHaveBeenCalledTimes(1)
+    expect(launchSpy.mock.calls[0][1]).toMatchObject({
+      sessionId: j.session_id,
+      repoFullName: 'octo/maxrun',
+      baseUrl: 'https://0wlan.com',
+      model: 'claude-opus-4-8',
+      installationToken: 'ghs_inst_tok',
+      botLogin: 'jarvis-gh-bot',
+    })
+    // Service-token route: the browser-session path is never touched.
+    expect(vi.mocked(getUserId)).not.toHaveBeenCalled()
+  })
+
+  test('a second dispatch for the same repo reuses the environment', async () => {
+    vi.spyOn(containers, 'launchContainerSession').mockResolvedValue(undefined)
+    const { POST } = await route()
+    const r1 = await POST(post(validBody, SVC))
+    const r2 = await POST(post(validBody, SVC))
+    expect(r1.status).toBe(200)
+    expect(r2.status).toBe(200)
+    const envs = listEnvironments(getStore(), LOCAL_USER)
+    expect(envs).toHaveLength(1)
+    // …but each dispatch is its own session.
+    const [a, b] = [await r1.json(), await r2.json()] as Array<{ session_id: string }>
+    expect(a.session_id).not.toBe(b.session_id)
+  })
+
+  test('400 on a bad repo, missing installationToken, missing task, or bad publicOrigin', async () => {
+    const launchSpy = vi
+      .spyOn(containers, 'launchContainerSession')
+      .mockResolvedValue(undefined)
+    const { POST } = await route()
+    const cases = [
+      { ...validBody, repo: 'not-a-repo' },
+      { ...validBody, repo: 'owner/../etc' },
+      { ...validBody, installationToken: '' },
+      { ...validBody, task: '   ' },
+      { ...validBody, publicOrigin: 'web:3000' },
+      { ...validBody, publicOrigin: '' },
+    ]
+    for (const body of cases) {
+      expect((await POST(post(body, SVC))).status).toBe(400)
+    }
+    expect(launchSpy).not.toHaveBeenCalled()
+  })
+})
