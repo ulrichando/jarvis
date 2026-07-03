@@ -10,15 +10,17 @@ function memStore(initial: NewJob[], startedToday = 0) {
   const queued: Job[] = initial.map((j) => ({ ...j, id: nextId++ }))
   const done: number[] = []
   const failed: { id: number; error: string }[] = []
+  const tracked: { id: number; trackingCommentId: number }[] = []
   let today = startedToday
   const store: JobStore = {
     enqueue: async (j) => { queued.push({ ...j, id: nextId++ }); return nextId - 1 },
     claimNext: async () => { const j = queued.shift() ?? null; if (j) today++; return j },
     markDone: async (id) => { done.push(id) },
     markFailed: async (id, error) => { failed.push({ id, error }) },
+    setTrackingComment: async (id, trackingCommentId) => { tracked.push({ id, trackingCommentId }) },
     countToday: async () => today,
   }
-  return { store, queued, done, failed }
+  return { store, queued, done, failed, tracked }
 }
 
 const job = (n: number): NewJob => ({ installationId: 555, repo: 'o/r', issueNumber: n, task: `t${n}`, isPR: false })
@@ -126,6 +128,100 @@ describe('gh-app worker', () => {
     await drainQueue(d)
     expect(done.length).toBe(2)      // 18 + 2 = 20 → cap
     expect(queued.length).toBe(1)    // third stays queued
+  })
+})
+
+describe('gh-app worker thread feedback', () => {
+  type Reported = { jobId: number; tracking: number | null; result: { ok: boolean; error?: string }; token: string }
+  function fbRecorder(ackReturn: number | null = 77) {
+    const order: string[] = []
+    const acked: { jobId: number; token: string }[] = []
+    const reported: Reported[] = []
+    const feedback = {
+      acknowledge: async (j: Job, token: string) => { order.push('ack'); acked.push({ jobId: j.id, token }); return ackReturn },
+      report: async (j: Job, tracking: number | null, result: { ok: boolean; error?: string }, token: string) => {
+        order.push('report'); reported.push({ jobId: j.id, tracking, result, token })
+      },
+    }
+    return { feedback, order, acked, reported }
+  }
+
+  test('acknowledge runs BEFORE the sandbox, report AFTER with the result; tracking id persisted', async () => {
+    const { store, done, tracked } = memStore([job(1)])
+    const { feedback, order, acked, reported } = fbRecorder(77)
+    const d = deps(store, {
+      feedback,
+      runInSandbox: async () => { order.push('sandbox'); return { ok: true, prUrl: 'https://github.com/o/r/pull/9' } },
+    })
+    expect(await runWorkerOnce(d)).toBe('ran')
+    expect(order).toEqual(['ack', 'sandbox', 'report'])
+    expect(acked).toEqual([{ jobId: 1, token: 'ghs_tok' }])
+    expect(tracked).toEqual([{ id: 1, trackingCommentId: 77 }])
+    expect(reported.length).toBe(1)
+    expect(reported[0]!.tracking).toBe(77)
+    expect(reported[0]!.result).toEqual({ ok: true, prUrl: 'https://github.com/o/r/pull/9' } as any)
+    expect(reported[0]!.token).toBe('ghs_tok')
+    expect(done).toEqual([1])
+  })
+
+  test('sandbox ok:false → report carries the failed result', async () => {
+    const { store, failed } = memStore([job(1)])
+    const { feedback, reported } = fbRecorder()
+    const d = deps(store, { feedback, runInSandbox: async () => ({ ok: false, error: 'jarvis -p exited 1' }) })
+    expect(await runWorkerOnce(d)).toBe('failed')
+    expect(failed[0]!.error).toContain('jarvis -p exited 1')
+    expect(reported[0]!.result).toEqual({ ok: false, error: 'jarvis -p exited 1' })
+  })
+
+  test('sandbox THROW → still reported as a failed outcome (thread never left on "working")', async () => {
+    const { store, failed } = memStore([job(1)])
+    const { feedback, reported } = fbRecorder()
+    const d = deps(store, { feedback, runInSandbox: async () => { throw new Error('container timed out') } })
+    expect(await runWorkerOnce(d)).toBe('failed')
+    expect(failed[0]!.error).toContain('container timed out')
+    expect(reported.length).toBe(1)
+    expect(reported[0]!.result.ok).toBe(false)
+    expect(reported[0]!.result.error).toContain('container timed out')
+  })
+
+  test('acknowledge throwing does NOT fail the job; report still runs with tracking null', async () => {
+    const { store, done, tracked } = memStore([job(1)])
+    const reported: Reported[] = []
+    const d = deps(store, {
+      feedback: {
+        acknowledge: async () => { throw new Error('github 500') },
+        report: async (j: Job, tracking: number | null, result: any, token: string) => { reported.push({ jobId: j.id, tracking, result, token }) },
+      },
+    })
+    expect(await runWorkerOnce(d)).toBe('ran')
+    expect(done).toEqual([1])
+    expect(tracked.length).toBe(0)
+    expect(reported[0]!.tracking).toBeNull()
+  })
+
+  test('report throwing does NOT change the job outcome', async () => {
+    const { store, done } = memStore([job(1)])
+    const { feedback } = fbRecorder()
+    const d = deps(store, { feedback: { ...feedback, report: async () => { throw new Error('github down') } } })
+    expect(await runWorkerOnce(d)).toBe('ran')
+    expect(done).toEqual([1])
+  })
+
+  test('acknowledge returning null (post failed) → nothing persisted, report gets null', async () => {
+    const { store, tracked } = memStore([job(1)])
+    const { feedback, reported } = fbRecorder(null)
+    expect(await runWorkerOnce(deps(store, { feedback }))).toBe('ran')
+    expect(tracked.length).toBe(0)
+    expect(reported[0]!.tracking).toBeNull()
+  })
+
+  test('mintToken failure → no token, so neither acknowledge nor report fires', async () => {
+    const { store, failed } = memStore([job(1)])
+    const { feedback, order } = fbRecorder()
+    const d = deps(store, { feedback, mintToken: async () => { throw new Error('mint failed: HTTP 401') } })
+    expect(await runWorkerOnce(d)).toBe('failed')
+    expect(failed[0]!.error).toContain('HTTP 401')
+    expect(order).toEqual([])
   })
 })
 

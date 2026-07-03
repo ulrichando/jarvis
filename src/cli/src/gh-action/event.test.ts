@@ -16,6 +16,34 @@ test('issue_comment with trigger → task extracted', () => {
   expect(e).toEqual({ repo: 'o/n', issueNumber: 7, isPR: false, task: 'add a README', author: 'ulrichando', association: 'OWNER' })
 })
 
+test('issue_comment captures the triggering comment id (for the 👀 ack)', () => {
+  const e = parseActionEvent(ctx('issue_comment', {
+    action: 'created',
+    issue: { number: 7 },
+    comment: { id: 4242, body: '@jarvis add a README', user: { login: 'ulrichando' }, author_association: 'OWNER' },
+  }))
+  expect(e?.commentId).toBe(4242)
+})
+
+test('pull_request_review_comment captures the comment id too', () => {
+  const e = parseActionEvent(ctx('pull_request_review_comment', {
+    action: 'created',
+    pull_request: { number: 12 },
+    comment: { id: 777, body: '@jarvis fix this line', user: { login: 'ulrichando' }, author_association: 'OWNER' },
+  }))
+  expect(e?.commentId).toBe(777)
+  expect(e?.isPR).toBe(true)
+})
+
+test('issues.opened has no commentId (nothing to react on)', () => {
+  const e = parseActionEvent(ctx('issues', {
+    action: 'opened',
+    issue: { number: 3, body: '@jarvis do a thing', user: { login: 'ulrichando' }, author_association: 'OWNER' },
+  }))
+  expect(e).not.toBeNull()
+  expect(e?.commentId).toBeUndefined()
+})
+
 test('issue_comment on a PR → isPR true', () => {
   const e = parseActionEvent(ctx('issue_comment', {
     action: 'created',

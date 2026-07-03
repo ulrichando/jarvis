@@ -10,7 +10,7 @@ function sigFor(body: string) { return 'sha256=' + createHmac('sha256', SECRET).
 
 function issueCommentPayload(over: {
   body?: string; author?: string; association?: string; action?: string
-  installationId?: number | null; issueNumber?: number; isPR?: boolean
+  installationId?: number | null; issueNumber?: number; isPR?: boolean; commentId?: number
 } = {}) {
   const p: any = {
     action: over.action ?? 'created',
@@ -19,6 +19,7 @@ function issueCommentPayload(over: {
       ...(over.isPR ? { pull_request: { url: 'x' } } : {}),
     },
     comment: {
+      ...(over.commentId !== undefined ? { id: over.commentId } : {}),
       body: over.body ?? '@jarvis add HELLO.md',
       user: { login: over.author ?? 'ulrichando' },
       author_association: over.association ?? 'OWNER',
@@ -63,6 +64,14 @@ describe('gh-app handleWebhook', () => {
     expect(r.status).toBe(202)
     expect(enqueued.length).toBe(1)
     expect(enqueued[0]).toEqual({ installationId: 555, repo: 'o/r', issueNumber: 7, task: 'add HELLO.md', isPR: false })
+  })
+
+  test('triggering comment id rides the job (for the 👀 ack)', async () => {
+    const { deps, enqueued } = harness()
+    const body = issueCommentPayload({ commentId: 4242 })
+    const r = await handleWebhook(headersFor(body), body, deps)
+    expect(r.status).toBe(202)
+    expect(enqueued[0]!.commentId).toBe(4242)
   })
 
   test('PR comment maps isPR:true', async () => {

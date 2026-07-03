@@ -9,18 +9,25 @@
 //     job may never be left 'running' forever;
 //   - Postgres's SKIP LOCKED claim makes N parallel slots safe.
 import type { Job, JobStore } from './jobs.js'
+import type { SandboxResult, WorkerFeedback } from './feedback.js'
 
 export type WorkerDeps = {
   store: JobStore
   /** Mint a short-lived installation token scoped to the job's repo. */
   mintToken: (installationId: number, repo: string) => Promise<string>
-  runInSandbox: (job: Job, token: string) => Promise<{ ok: boolean; error?: string }>
+  runInSandbox: (job: Job, token: string) => Promise<SandboxResult>
+  /** Visible thread feedback (👀 + tracking comment + outcome edit).
+   * Optional and STRICTLY best-effort — every call is try/caught here; a
+   * feedback failure must never fail (or block) the job itself. */
+  feedback?: WorkerFeedback
   dailyCap: number
   concurrency: number
   log?: (m: string) => void
 }
 
 export type RunOutcome = 'idle' | 'deferred' | 'ran' | 'failed'
+
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 export async function runWorkerOnce(deps: WorkerDeps): Promise<RunOutcome> {
   if ((await deps.store.countToday()) >= deps.dailyCap) {
@@ -29,21 +36,43 @@ export async function runWorkerOnce(deps: WorkerDeps): Promise<RunOutcome> {
   }
   const job = await deps.store.claimNext()
   if (!job) return 'idle'
+  let token: string | null = null
+  let tracking: number | null = null
+  // Edit the tracking comment into the outcome (feedback falls back to a
+  // fresh comment when there is none). Requires a token: a mint failure
+  // means no acknowledge happened and GitHub would refuse us anyway.
+  const tellThread = async (result: SandboxResult) => {
+    if (!deps.feedback || token === null) return
+    try { await deps.feedback.report(job, tracking, result, token) }
+    catch (e) { deps.log?.(`worker: job ${job.id} report failed (ignored): ${errMsg(e)}`) }
+  }
   try {
-    const token = await deps.mintToken(job.installationId, job.repo)
+    token = await deps.mintToken(job.installationId, job.repo)
+    if (deps.feedback) {
+      // 👀 + "working on it" BEFORE the sandbox — the user sees the pickup.
+      try {
+        tracking = await deps.feedback.acknowledge(job, token)
+        if (tracking !== null) await deps.store.setTrackingComment(job.id, tracking)
+      } catch (e) { deps.log?.(`worker: job ${job.id} acknowledge failed (ignored): ${errMsg(e)}`) }
+    }
     const r = await deps.runInSandbox(job, token)
     if (r.ok) {
       await deps.store.markDone(job.id)
       deps.log?.(`worker: job ${job.id} (${job.repo}#${job.issueNumber}) done`)
+      await tellThread(r)
       return 'ran'
     }
     await deps.store.markFailed(job.id, r.error ?? 'sandbox run failed')
     deps.log?.(`worker: job ${job.id} failed: ${r.error ?? 'sandbox run failed'}`)
+    await tellThread(r)
     return 'failed'
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
+    const msg = errMsg(e)
     await deps.store.markFailed(job.id, msg)
     deps.log?.(`worker: job ${job.id} failed: ${msg}`)
+    // A thrown mint/sandbox must still resolve the thread — never leave the
+    // tracking comment stuck on "working on it".
+    await tellThread({ ok: false, error: msg })
     return 'failed'
   }
 }

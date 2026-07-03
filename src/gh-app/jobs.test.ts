@@ -1,6 +1,6 @@
 // src/gh-app/jobs.test.ts
 import { test, expect, describe } from 'bun:test'
-import { enqueue, claimNext, markDone, markFailed, countToday, ensureSchema, jobStore, type SqlClient } from './jobs.js'
+import { enqueue, claimNext, markDone, markFailed, setTrackingComment, countToday, ensureSchema, jobStore, type SqlClient } from './jobs.js'
 
 // Recording fake sql client: captures (text, params) and returns canned rows
 // per call — tests never touch Postgres.
@@ -20,7 +20,14 @@ describe('gh-app jobs', () => {
     expect(id).toBe(42)
     expect(calls.length).toBe(1)
     expect(calls[0]!.text).toMatch(/insert into gh_app_jobs/i)
-    expect(calls[0]!.params).toEqual([555, 'o/r', 7, 'add HELLO.md', false])
+    expect(calls[0]!.params).toEqual([555, 'o/r', 7, 'add HELLO.md', false, null])
+  })
+
+  test('enqueue stores the triggering comment id when present', async () => {
+    const { sql, calls } = fakeSql(() => [{ id: 43 }])
+    await enqueue(sql, { installationId: 555, repo: 'o/r', issueNumber: 7, task: 't', isPR: false, commentId: 4242 })
+    expect(calls[0]!.text).toMatch(/comment_id/i)
+    expect(calls[0]!.params).toEqual([555, 'o/r', 7, 't', false, 4242])
   })
 
   test('claimNext atomically claims the oldest queued job and maps the row', async () => {
@@ -36,9 +43,25 @@ describe('gh-app jobs', () => {
     expect(calls[0]!.text).toMatch(/returning/i)
   })
 
+  test('claimNext maps comment_id when the row has one (bigint comes back stringy)', async () => {
+    const { sql } = fakeSql(() => [{
+      id: 9, installation_id: 555, repo: 'o/r', issue_number: 7, task: 't', is_pr: false, comment_id: '4242',
+    }])
+    const job = await claimNext(sql)
+    expect(job?.commentId).toBe(4242)
+  })
+
   test('claimNext returns null when the queue is empty', async () => {
     const { sql } = fakeSql(() => [])
     expect(await claimNext(sql)).toBeNull()
+  })
+
+  test('setTrackingComment records the tracking comment id on the row', async () => {
+    const { sql, calls } = fakeSql(() => [])
+    await setTrackingComment(sql, 9, 987654)
+    expect(calls.length).toBe(1)
+    expect(calls[0]!.text).toMatch(/update gh_app_jobs set tracking_comment_id/i)
+    expect(calls[0]!.params).toEqual([987654, 9])
   })
 
   test('markDone / markFailed update status with the id (error recorded)', async () => {
@@ -64,7 +87,17 @@ describe('gh-app jobs', () => {
     expect(calls[0]!.text).toMatch(/create table if not exists gh_app_jobs/i)
     const store = jobStore(sql)
     await store.enqueue({ installationId: 1, repo: 'o/r', issueNumber: 2, task: 't', isPR: false })
+    await store.setTrackingComment(1, 22)
+    expect(calls.some((c) => /tracking_comment_id/i.test(c.text) && /update/i.test(c.text))).toBe(true)
     expect(await store.countToday()).toBe(0)
     expect(await store.claimNext()).toBeNull()
+  })
+
+  test('ensureSchema migrates pre-feedback tables: alter … add column if not exists', async () => {
+    const { sql, calls } = fakeSql(() => [])
+    await ensureSchema(sql)
+    const alters = calls.filter((c) => /alter table gh_app_jobs add column if not exists/i.test(c.text))
+    expect(alters.some((c) => /comment_id bigint/i.test(c.text))).toBe(true)
+    expect(alters.some((c) => /tracking_comment_id bigint/i.test(c.text))).toBe(true)
   })
 })
