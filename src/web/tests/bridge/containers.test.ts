@@ -925,6 +925,18 @@ describe('validRepoFullName', () => {
     expect(validRepoFullName('owner/../etc')).toBe(false)
     expect(validRepoFullName('owner/re po')).toBe(false)
   })
+
+  test('rejects dot-only segments (traversal), aligned with the git proxy validName', () => {
+    // `.` / `..` pass the charset regex but are path traversal, not repo names.
+    expect(validRepoFullName('owner/..')).toBe(false)
+    expect(validRepoFullName('owner/.')).toBe(false)
+    expect(validRepoFullName('../repo')).toBe(false)
+    expect(validRepoFullName('./repo')).toBe(false)
+    expect(validRepoFullName('../..')).toBe(false)
+    // Leading dots are fine when the segment isn't ONLY dots (.github is real).
+    expect(validRepoFullName('owner/.github')).toBe(true)
+    expect(validRepoFullName('.dotorg/repo')).toBe(true)
+  })
 })
 
 describe('tasks route container branch', () => {

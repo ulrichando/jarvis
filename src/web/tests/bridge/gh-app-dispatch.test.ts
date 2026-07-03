@@ -225,6 +225,7 @@ describe('POST /api/bridge/v1/gh-app/dispatch', () => {
     const cases = [
       { ...validBody, repo: 'not-a-repo' },
       { ...validBody, repo: 'owner/../etc' },
+      { ...validBody, repo: 'owner/..' }, // dot-only segment = traversal
       { ...validBody, installationToken: '' },
       // External commits must be attributed to the App bot, never the box
       // owner's connected identity — a tokenless botLogin is a hard 400.
@@ -234,6 +235,12 @@ describe('POST /api/bridge/v1/gh-app/dispatch', () => {
       { ...validBody, task: '   ' },
       { ...validBody, publicOrigin: 'web:3000' },
       { ...validBody, publicOrigin: '' },
+      // Degenerate/unparseable origins: new URL() must accept AND yield a
+      // real http(s) host — 'https://' alone parses nowhere.
+      { ...validBody, publicOrigin: 'https://' },
+      { ...validBody, publicOrigin: 'http://' },
+      { ...validBody, publicOrigin: 'https://:443' },
+      { ...validBody, publicOrigin: 'https:// evil.com' },
     ]
     for (const body of cases) {
       expect((await POST(post(body, SVC))).status).toBe(400)

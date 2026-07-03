@@ -91,9 +91,18 @@ export async function POST(req: Request): Promise<NextResponse> {
     return bridgeError(400, "invalid_request", "task is required");
   }
   // The origin becomes the child's callback base + every session link, so it
-  // must be an explicit http(s) origin — NEVER derived from req.url (this is
-  // an internal docker-network call; links must use the browser-facing host).
-  if (!/^https?:\/\//.test(publicOrigin)) {
+  // must be an explicit, PARSEABLE http(s) origin with a real host — NEVER
+  // derived from req.url (this is an internal docker-network call; links must
+  // use the browser-facing host). new URL() rejects degenerate shapes like
+  // "https://" that a bare prefix regex would wave through.
+  let originOk = false;
+  try {
+    const u = new URL(publicOrigin);
+    originOk = (u.protocol === "http:" || u.protocol === "https:") && u.hostname.length > 0;
+  } catch {
+    originOk = false;
+  }
+  if (!originOk) {
     return bridgeError(400, "invalid_request", "publicOrigin must be an http(s) origin");
   }
 
