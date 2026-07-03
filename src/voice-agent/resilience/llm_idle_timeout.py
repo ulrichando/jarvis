@@ -18,7 +18,7 @@ Tunable via `JARVIS_LLM_IDLE_TIMEOUT` (seconds, default 30).
 Setting it to 0 disables the wrap (debug only).
 
 Idempotent. Stacks on top of the existing sanitizer patches.
-Reference pattern: handoff_text_suppressor.py.
+Reference pattern: pycall.py.
 """
 from __future__ import annotations
 

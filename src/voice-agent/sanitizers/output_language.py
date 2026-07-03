@@ -117,7 +117,7 @@ def install() -> None:
     Idempotent. Re-installation is a no-op.
 
     The patch runs AFTER the existing _parse_choice patches in the
-    chain (deepseek_roundtrip, dsml, pycall, handoff_text,
+    chain (deepseek_roundtrip, dsml, pycall,
     denial_detector, internal_phrase) so it sees the post-sanitized
     content. Per-stream buffer accumulates the last 400 chars of
     content; once the buffer hits _MIN_BUFFER_LEN and crosses the

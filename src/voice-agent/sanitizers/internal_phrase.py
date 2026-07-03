@@ -22,7 +22,7 @@ replaced with an empty string (silent turn). When the reply
 contains an internal phrase wrapped in other content, only the
 internal phrase is blanked, the rest is kept.
 
-Designed to work with the existing handoff_text / pycall / dsml
+Designed to work with the existing pycall / dsml
 sanitizer stack — patches the same `_parse_choice` extension
 point. Idempotent install.
 """
@@ -206,7 +206,7 @@ def sanitize(text: str) -> str:
 def install() -> None:
     """Monkey-patch livekit.agents.inference.llm.LLMStream._parse_choice
     so internal phrases get blanked from `delta.content` before they
-    reach TTS. Stacks safely on top of dsml/pycall/handoff_text
+    reach TTS. Stacks safely on top of dsml/pycall
     sanitizers — same patch site, idempotent install."""
     global _INSTALLED
     if _INSTALLED:

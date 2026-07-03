@@ -11,7 +11,7 @@ NoRefusal output scanner; academic precedent for re-roll loops in
 Google ADK reflect-and-retry plugin (which targets tool errors,
 not capability denials specifically).
 
-Same install pattern as sanitizers/handoff_text.py: monkey-patch
+Same install pattern as sanitizers/pycall.py: monkey-patch
 LLMStream._parse_choice; idempotent.
 """
 from __future__ import annotations
@@ -105,7 +105,7 @@ def install() -> None:
     Idempotent: re-installation is a no-op.
 
     On detection, the patched _parse_choice logs the denial and
-    blanks the content (similar to handoff_text suppressor's blanking
+    blanks the content (similar to the pycall suppressor's blanking
     pattern). The framework receives empty content → emits nothing
     to TTS for that chunk. The next turn (when the user retries or
     rephrases) gets a fresh chance at a tool call.

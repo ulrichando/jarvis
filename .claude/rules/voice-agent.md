@@ -18,8 +18,6 @@ These constraints are load-bearing. Don't remove or weaken without the user's si
 
 **`resume_false_interruption` is OFF on purpose.** LiveKit's `pause()` is broken on the SFU output (gates new frames, doesn't clear queue). Disabling routes every barge-in to `interrupt() → clear_buffer() → clear_queue()`. Don't re-enable without verifying the SFU path. Comment + assignment at [jarvis_agent.py:4538-4555](../../src/voice-agent/jarvis_agent.py#L4538-L4555).
 
-**`handoff_text_suppressor` walks the FULL chat_ctx**, not the last 15. The 15-item window dropped `task_done` past it in busy sessions, then suppressed all supervisor text indefinitely. Cost is O(n), bounded by `CTX_MAX_TURNS=80`. (Residual — no subagent emits `task_done`/`transfer_to_*` now; the suppressor stays as cheap defense against the old shapes leaking into reply text.)
-
 **Confab-detector tool-evidence lookback is 10 messages.** **Strict-default since 2026-05-19 (L2 confab fix):** bare `transfer_to_*` / `delegate` does NOT count as evidence — required: a structured `tool_result` (role:'tool' OR `FunctionCallOutput` shape) OR a non-handoff tool_call. (Residual — `transfer_to_*`/`delegate` no longer exist; the rule stays as defense, and every direct-tool call produces the structured `tool_result` it wants.) Legacy permissive rule survives as kill-switch `JARVIS_CONFAB_STRICT_DISABLED=1`.
 
 **Don't restart `jarvis-voice-agent.service` while a session is active.** Check `~/.local/share/jarvis/turn_telemetry.db` for the latest `ts_utc`; if within 60s, ask the user first.

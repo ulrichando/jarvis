@@ -241,16 +241,6 @@ dsml_sanitizer.install()
 import sanitizers.pycall as pycall_sanitizer
 pycall_sanitizer.install()
 
-# Drop anticipatory text alongside transfer_to_*/delegate calls. The
-# supervisor LLM sometimes emits a fake confirmation ("A new tab is
-# open.") in the same turn as a handoff tool call — TTS plays
-# the lie before the subagent runs. confab_detector blocks the DB
-# save but TTS already streamed; this patches _parse_choice to blank
-# delta.content from the moment a handoff is detected. Stacks on top
-# of dsml_sanitizer + pycall_sanitizer.
-import sanitizers.handoff_text
-sanitizers.handoff_text.install()
-
 # Phase 4 of memory-layer fix — output-rail denial detector. Watches
 # supervisor text for memory-capability denials and blanks them
 # before TTS. JARVIS-original sanitizer (no published precedent).
