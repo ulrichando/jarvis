@@ -71,7 +71,7 @@ keep this directory's index monotonic.
 | 003 | [Delete the dead `handoff_text` sanitizer](003-delete-dead-handoff-text-sanitizer.md) | tech-debt | S | LOW | **DONE** (3850 passed, 3 skipped) |
 | 004 | [Extract the Android app to its own repo](004-extract-android-to-own-repo.md) | tech-debt | M | LOW | **DONE** (history on `android-standalone` branch; new-repo push pending) |
 | 005 | [Shelve the evolution / automod loop](005-shelve-evolution-automod-loop.md) | tech-debt | L | MED | **DONE** (141 files / -20,083 LOC; archive branch `archive/evolution-loop-2026-07`; voice 3356✓, web build✓) |
-| 006 | [First `jarvis_agent.py` extraction wave (thinking-heartbeat cluster)](006-jarvis-agent-extraction-wave-session-handlers.md) | tech-debt | L | MED-HIGH | ANALYZED, blocked on smoke — scope refined (11 tray-flag fns; counter stays). Needs an idle window for the required live restart. |
+| 006 | [First `jarvis_agent.py` extraction wave (thinking-heartbeat cluster)](006-jarvis-agent-extraction-wave-session-handlers.md) | tech-debt | L | MED-HIGH | **DONE** (222 LOC → pipeline/thinking_heartbeat.py; jarvis_agent.py −232; suite 3356✓; live restart clean NRestarts=0). Visual tray-toggle spot-check left to the user. |
 
 All four are independent. Do 003 first (10-minute clean win), then 004 (removes
 ~40% of the repo's file count at near-zero risk to daily-used code), then 005
