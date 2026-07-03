@@ -1,0 +1,45 @@
+name: gh-app-tests
+
+# Runs the JARVIS GitHub App service test suite on changes to src/gh-app/**
+# (or the src/cli engine it imports). Hermetic bun tests — no live
+# GitHub/Docker/Postgres. Non-blocking while coverage is established on the CI
+# runner, then ratchet to required (same policy as cli-tests.yml).
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "src/gh-app/**"
+      - "src/cli/**"
+      - ".github/workflows/gh-app-tests.yml"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "src/gh-app/**"
+      - "src/cli/**"
+      - ".github/workflows/gh-app-tests.yml"
+
+# Least-privilege default.
+permissions:
+  contents: read
+
+jobs:
+  bun-test:
+    name: bun test (gh-app)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      # gh-app imports the engine from src/cli (executeTask, event parse), whose
+      # transitive deps (execa) live in src/cli/node_modules — install there first.
+      - name: install engine deps
+        working-directory: src/cli
+        run: bun install
+
+      - name: bun test (gh-app)
+        continue-on-error: true
+        run: bun test src/gh-app/

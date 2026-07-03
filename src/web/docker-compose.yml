@@ -138,6 +138,43 @@ services:
       SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET in .env.production}
     expose: ["8080"]
 
+  # JARVIS GitHub App (gh.0wlan.com): @jarvis on an installed repo → GitHub
+  # webhook → signature-verified intake → Postgres job queue → worker mints a
+  # per-installation token and spawns a sandboxed jarvis container (via
+  # docker-proxy, same restricted path as the /code sandboxes) that opens the
+  # PR as the App. The public hostname is a cloudflared ingress EXCLUDED from
+  # Cloudflare Access (GitHub can't do SSO; the HMAC signature is the auth).
+  # Build context is the repo root — the image doubles as the SANDBOX image
+  # (bin/ + src/cli inside; `image:` tags it on the host daemon so the worker
+  # can spawn it by name). GH_APP_ID / GH_APP_PRIVATE_KEY /
+  # GH_APP_WEBHOOK_SECRET / GH_APP_ALLOWLIST / DATABASE_URL / provider keys
+  # come from .env.production (or /setup captures creds into gh_app_data).
+  gh-app:
+    build:
+      context: ../..
+      dockerfile: src/gh-app/Dockerfile
+    image: jarvis-gh-app
+    restart: unless-stopped
+    env_file:
+      - path: .env.production
+        required: false
+    environment:
+      DOCKER_HOST: tcp://docker-proxy:2375
+      GH_APP_PORT: "8790"
+      GH_APP_BASE_URL: ${GH_APP_BASE_URL:-https://gh.0wlan.com}
+      GH_APP_SANDBOX_IMAGE: ${GH_APP_SANDBOX_IMAGE:-jarvis-gh-app}
+    volumes:
+      - gh_app_data:/data
+    depends_on:
+      docker-proxy: { condition: service_started }
+      postgres: { condition: service_healthy }
+    expose: ["8790"]
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:8790/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
   postgres:
     image: postgres:16
     restart: unless-stopped
@@ -161,3 +198,4 @@ volumes:
   caddy_data:
   caddy_config:
   pg_data:
+  gh_app_data:
