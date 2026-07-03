@@ -21,6 +21,9 @@ export type ActionEvent = {
   task: string
   author: string
   association: string
+  /** id of the triggering comment (issue_comment / pull_request_review_comment);
+   * undefined for issues.opened. Lets feedback react 👀 on the exact trigger. */
+  commentId?: number
 }
 
 export type ActionCtx = { eventName: string; repo: string; trigger: string; payload: any }
@@ -40,10 +43,12 @@ export function actionCtxFromEnv(readFile: (p: string) => string): ActionCtx | n
 export function parseActionEvent(ctx: ActionCtx): ActionEvent | null {
   const { eventName, repo, trigger, payload } = ctx
   let body = '', author = '', association = '', issueNumber = 0, isPR = false
+  let commentId: number | undefined
   if (eventName === 'issue_comment' || eventName === 'pull_request_review_comment') {
     const c = payload?.comment
     if (!c) return null
     body = c.body ?? ''; author = c.user?.login ?? ''; association = c.author_association ?? ''
+    commentId = typeof c.id === 'number' ? c.id : undefined
     if (eventName === 'pull_request_review_comment') { issueNumber = payload?.pull_request?.number ?? 0; isPR = true }
     else { issueNumber = payload?.issue?.number ?? 0; isPR = !!payload?.issue?.pull_request }
   } else if (eventName === 'issues' && payload?.action === 'opened') {
@@ -58,7 +63,7 @@ export function parseActionEvent(ctx: ActionCtx): ActionEvent | null {
   if (!triggerRe.test(body)) return null
   const task = taskText(body, trigger)
   if (!task || issueNumber <= 0 || !author) return null
-  return { repo, issueNumber, isPR, task, author, association }
+  return { repo, issueNumber, isPR, task, author, association, commentId }
 }
 
 const TRUSTED_ASSOC = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
