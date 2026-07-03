@@ -76,6 +76,11 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (!installationToken) {
     return bridgeError(400, "invalid_request", "installationToken is required");
   }
+  // Required: external commits/PRs must be attributed to the App bot identity,
+  // never fall through to the box owner's connected GitHub login.
+  if (!botLogin) {
+    return bridgeError(400, "invalid_request", "botLogin is required");
+  }
   if (!task) {
     return bridgeError(400, "invalid_request", "task is required");
   }
@@ -139,7 +144,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       baseUrl: publicOrigin,
       model,
       installationToken,
-      ...(botLogin ? { botLogin } : {}),
+      botLogin, // validated non-empty above
     }).catch(() => {});
 
     return NextResponse.json({

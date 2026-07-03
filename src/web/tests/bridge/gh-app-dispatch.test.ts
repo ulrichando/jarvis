@@ -160,7 +160,7 @@ describe('POST /api/bridge/v1/gh-app/dispatch', () => {
     expect(a.session_id).not.toBe(b.session_id)
   })
 
-  test('400 on a bad repo, missing installationToken, missing task, or bad publicOrigin', async () => {
+  test('400 on a bad repo, missing installationToken, missing botLogin, missing task, or bad publicOrigin', async () => {
     const launchSpy = vi
       .spyOn(containers, 'launchContainerSession')
       .mockResolvedValue(undefined)
@@ -169,6 +169,11 @@ describe('POST /api/bridge/v1/gh-app/dispatch', () => {
       { ...validBody, repo: 'not-a-repo' },
       { ...validBody, repo: 'owner/../etc' },
       { ...validBody, installationToken: '' },
+      // External commits must be attributed to the App bot, never the box
+      // owner's connected identity — a tokenless botLogin is a hard 400.
+      { ...validBody, botLogin: '' },
+      { ...validBody, botLogin: '   ' },
+      { ...validBody, botLogin: undefined },
       { ...validBody, task: '   ' },
       { ...validBody, publicOrigin: 'web:3000' },
       { ...validBody, publicOrigin: '' },
