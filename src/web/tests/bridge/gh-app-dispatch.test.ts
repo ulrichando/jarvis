@@ -1,10 +1,14 @@
 import { describe, expect, test, beforeEach, afterEach, vi } from 'vitest'
 import { _resetForTests, getStore } from '@/lib/bridge/db'
 import {
+  createEnvironment,
+  findEnvironment,
   findSession,
   listEnvironments,
   listInboundSince,
   listSessionEvents,
+  parseEnvironmentConfig,
+  setEnvironmentConfig,
 } from '@/lib/bridge/store'
 import * as containers from '@/lib/bridge/containers'
 import { getUserId } from '@/lib/auth-helpers'
@@ -102,13 +106,23 @@ describe('POST /api/bridge/v1/gh-app/dispatch', () => {
     expect(j.session_url).toBe(`https://0wlan.com/code/session_${j.session_id}`)
 
     const store = getStore()
-    // Environment: container-typed, owned by the box's single user, repo URL set.
+    // Environment: container-typed, owned by the box's single user, repo URL
+    // set — and DEDICATED to the bot (machine_name marker), never a user env.
     const envs = listEnvironments(store, LOCAL_USER)
     expect(envs).toHaveLength(1)
     expect(envs[0]).toMatchObject({
       worker_type: 'container',
+      machine_name: 'gh-app-bot',
       git_repo_url: 'https://github.com/octo/maxrun',
       user_id: LOCAL_USER,
+    })
+    // Bot envs are locked down: allowlist egress (not --network=host), and no
+    // user-configured env vars / setup script can ever leak into a bot job.
+    expect(parseEnvironmentConfig(envs[0])).toEqual({
+      envVars: {},
+      setupScript: '',
+      networkLevel: 'trusted',
+      customAllowlist: [],
     })
     // Session row exists, titled from the task, attached to that env.
     const session = findSession(store, j.session_id)
@@ -144,6 +158,49 @@ describe('POST /api/bridge/v1/gh-app/dispatch', () => {
     })
     // Service-token route: the browser-session path is never touched.
     expect(vi.mocked(getUserId)).not.toHaveBeenCalled()
+  })
+
+  test('a dispatch NEVER reuses a user /code env for the same repo (secrets + host network stay out of bot jobs)', async () => {
+    const store = getStore()
+    // A user-configured env for the SAME repo: secret env vars, a setup
+    // script, and the default full (--network=host) egress.
+    const userEnv = createEnvironment(store, {
+      machine_name: 'Cloud container',
+      directory: '/workspace',
+      git_repo_url: 'https://github.com/octo/maxrun',
+      max_sessions: 4,
+      worker_type: 'container',
+      user_id: LOCAL_USER,
+    })
+    setEnvironmentConfig(store, userEnv.environment_id, {
+      envVars: { SECRET_API_KEY: 'user-secret' },
+      setupScript: 'echo user-setup',
+      networkLevel: 'full',
+      customAllowlist: [],
+    })
+
+    vi.spyOn(containers, 'launchContainerSession').mockResolvedValue(undefined)
+    const { POST } = await route()
+    const res = await POST(post(validBody, SVC))
+    expect(res.status).toBe(200)
+    const { session_id } = (await res.json()) as { session_id: string }
+
+    // The bot session is attached to a NEW dedicated env, not the user's.
+    const session = findSession(store, session_id)
+    expect(session?.environment_id).toBeTruthy()
+    expect(session?.environment_id).not.toBe(userEnv.environment_id)
+    const botEnv = findEnvironment(store, session!.environment_id!)
+    expect(botEnv?.machine_name).toBe('gh-app-bot')
+    // Locked-down config: trusted egress, NO inherited user secrets/setup.
+    const cfg = parseEnvironmentConfig(botEnv)
+    expect(cfg.networkLevel).toBe('trusted')
+    expect(cfg.envVars).toEqual({})
+    expect(cfg.setupScript).toBe('')
+    // The user env is untouched.
+    expect(parseEnvironmentConfig(findEnvironment(store, userEnv.environment_id))).toMatchObject({
+      envVars: { SECRET_API_KEY: 'user-secret' },
+      networkLevel: 'full',
+    })
   })
 
   test('a second dispatch for the same repo reuses the environment', async () => {

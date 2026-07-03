@@ -7,6 +7,7 @@ import {
   createEnvironment,
   getOrCreateSession,
   listEnvironments,
+  setEnvironmentConfig,
 } from "@/lib/bridge/store";
 import { launchContainerSession, validRepoFullName } from "@/lib/bridge/containers";
 import { bridgeError } from "@/lib/bridge/errors";
@@ -36,6 +37,11 @@ export const runtime = "nodejs";
 // never mints tokens (it holds no App private key), and the token never enters
 // the container. Jobs run in minutes — well inside the token's lifetime.
 // Spec: docs/superpowers/specs/2026-07-03-jarvis-gh-app-code-session-design.md
+
+/** machine_name marker for the bot's dedicated environments. User /code envs
+ *  use "Cloud container" (environments/cloud route), so this can never collide
+ *  with — or be picked up instead of — an env the user configured. */
+const BOT_ENV_MACHINE = "gh-app-bot";
 
 function serviceTokenOk(req: Request): boolean {
   const expected = process.env.GH_APP_BRIDGE_TOKEN ?? "";
@@ -93,22 +99,41 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   try {
     const store = getStore();
-    // Env get-or-create for the external repo (the runRoutine pattern; owner =
-    // the box's single user, like other service-registered environment rows).
+    // Env get-or-create for the external repo — but a DEDICATED bot env only
+    // (keyed on BOT_ENV_MACHINE, per repo), NEVER a user-created /code env for
+    // the same repo. Reusing a user env would hand the bot job the user's
+    // secret envVars + setup script and the default `full` network level
+    // (--network=host → reachable loopback services). Owner stays the box's
+    // single user, like other service-registered environment rows.
     const repoUrl = `https://github.com/${repo}`;
     const existing = listEnvironments(store, LOCAL_USER_ID).find(
-      (e) => e.worker_type === "container" && e.git_repo_url === repoUrl,
+      (e) =>
+        e.worker_type === "container" &&
+        e.machine_name === BOT_ENV_MACHINE &&
+        e.git_repo_url === repoUrl,
     );
-    const environmentId = existing
-      ? existing.environment_id
-      : createEnvironment(store, {
-          machine_name: "Cloud container",
-          directory: "/workspace",
-          git_repo_url: repoUrl,
-          max_sessions: 4,
-          worker_type: "container",
-          user_id: LOCAL_USER_ID,
-        }).environment_id;
+    let environmentId: string;
+    if (existing) {
+      environmentId = existing.environment_id;
+    } else {
+      environmentId = createEnvironment(store, {
+        machine_name: BOT_ENV_MACHINE,
+        directory: "/workspace",
+        git_repo_url: repoUrl,
+        max_sessions: 4,
+        worker_type: "container",
+        user_id: LOCAL_USER_ID,
+      }).environment_id;
+    }
+    // (Re)assert the locked-down bot config on EVERY dispatch — allowlist
+    // egress (`trusted`, not full/host) and no env vars / setup script — so a
+    // drifted or hand-edited bot env can't weaken isolation for the next job.
+    setEnvironmentConfig(store, environmentId, {
+      envVars: {},
+      setupScript: "",
+      networkLevel: "trusted",
+      customAllowlist: [],
+    });
 
     const sessionId = randomBytes(8).toString("hex");
     getOrCreateSession(store, sessionId, environmentId, task.slice(0, 80));
