@@ -23,6 +23,10 @@ export type ServerDeps = {
   webhook: WebhookDeps
   fetch?: typeof fetch
   saveCreds?: (c: AppCreds) => Promise<void> | void
+  /** One-time setup gate: when this reports true, /setup/callback refuses to
+   * convert/overwrite — GitHub reaches the host unauthenticated, so without
+   * it anyone could POST their own manifest and take over the app creds. */
+  credsExist?: () => Promise<boolean> | boolean
   log?: (m: string) => void
 }
 
@@ -41,6 +45,13 @@ export function makeApp(deps: ServerDeps): (req: Request) => Promise<Response> {
     if (req.method === 'GET' && path === '/setup/callback') {
       const code = url.searchParams.get('code')
       if (!code) return new Response('missing code', { status: 400 })
+      // Idempotent capture: refuse when creds are already present. This route
+      // is reachable unauthenticated (GitHub redirects land here), so it must
+      // be one-shot — never an overwrite path.
+      if (await deps.credsExist?.()) {
+        deps.log?.('setup/callback: refused — app already configured (creds present)')
+        return new Response('already configured — credentials exist; refusing to overwrite', { status: 409 })
+      }
       try {
         const creds = await convertManifestCode(code, { fetch: f, saveCreds: deps.saveCreds })
         // Confirmation only — NEVER echo pem/webhookSecret back over HTTP.
@@ -202,6 +213,9 @@ if (import.meta.main) {
       log,
     },
     saveCreds,
+    // Re-read on every callback (not the boot-time `creds` snapshot) so the
+    // takeover window closes the moment the FIRST callback writes the file.
+    credsExist: () => credsFromEnvOrFile(env) !== null,
     log,
   })
 

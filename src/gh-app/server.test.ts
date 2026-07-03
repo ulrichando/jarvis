@@ -7,16 +7,21 @@ import type { NewJob } from './jobs.js'
 const SECRET = 'topsecret'
 const sigFor = (b: string) => 'sha256=' + createHmac('sha256', SECRET).update(b).digest('hex')
 
-function harness() {
+function harness(over: Partial<ServerDeps> = {}) {
   const enqueued: NewJob[] = []
   const saved: unknown[] = []
+  const fetches: string[] = []
   const deps: ServerDeps = {
     base: 'https://gh.0wlan.com',
     webhook: { secret: SECRET, allowlist: ['ulrichando'], enqueue: async (j) => { enqueued.push(j) } },
-    fetch: (async () => new Response(JSON.stringify({ id: 7, pem: 'PEM', webhook_secret: 'ws' }), { status: 201 })) as typeof fetch,
+    fetch: (async (url: string | URL | Request) => {
+      fetches.push(String(url))
+      return new Response(JSON.stringify({ id: 7, pem: 'PEM', webhook_secret: 'ws' }), { status: 201 })
+    }) as typeof fetch,
     saveCreds: async (c) => { saved.push(c) },
+    ...over,
   }
-  return { app: makeApp(deps), enqueued, saved }
+  return { app: makeApp(deps), enqueued, saved, fetches }
 }
 
 const webhookBody = JSON.stringify({
@@ -80,6 +85,25 @@ describe('gh-app server', () => {
     const { app } = harness()
     expect((await app(new Request('http://x/setup/callback'))).status).toBe(400)
     expect((await app(new Request('http://x/nope'))).status).toBe(404)
+  })
+
+  // One-time setup: GitHub can reach the host unauthenticated, so a second
+  // callback (attacker-supplied manifest code) must NOT be able to overwrite
+  // the captured app credentials — refuse before converting anything.
+  test('GET /setup/callback with creds already stored → 409, no conversion, no overwrite', async () => {
+    const { app, saved, fetches } = harness({ credsExist: () => true })
+    const res = await app(new Request('http://x/setup/callback?code=attacker-code'))
+    expect(res.status).toBe(409)
+    expect(await res.text()).toContain('already configured')
+    expect(saved.length).toBe(0)   // nothing written
+    expect(fetches.length).toBe(0) // conversion never even attempted
+  })
+
+  test('GET /setup/callback with credsExist=false still converts (first-time setup)', async () => {
+    const { app, saved } = harness({ credsExist: async () => false })
+    const res = await app(new Request('http://x/setup/callback?code=abc'))
+    expect(res.status).toBe(200)
+    expect(saved.length).toBe(1)
   })
 })
 
