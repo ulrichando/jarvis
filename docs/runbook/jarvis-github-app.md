@@ -146,7 +146,7 @@ Comment on any issue or PR of an installed repo:
    gh_app_jobs set status='failed', error='rolled back' where
    status='queued'` to drop them permanently.
 
-## Public-listing hardening checklist (DEFERRED — do before ever making the app public)
+## Deferred hardening checklist (do before ever making the app public; several are worth doing sooner)
 
 - [ ] Per-installation (not just global) allowlist + an install-approval step.
 - [ ] Rate limit / dedupe per delivery id (`X-GitHub-Delivery`) — replay
@@ -157,6 +157,23 @@ Comment on any issue or PR of an installed repo:
       this step removes the exfiltration target itself).
 - [ ] Webhook secret rotation procedure + dual-secret verify window.
 - [ ] Job-row retention/PII policy for task text.
+- [ ] `ReadonlyRootfs: true` for job containers — currently writable because
+      the entry clones under the container's tmpdir; flipping it blind risks
+      breaking jarvis's own writes, so it needs a dedicated writable tmpfs
+      mount for the workdir first.
+- [ ] Stale-`running` reclaim — a service crash mid-job leaves the row
+      `running` forever (it never re-runs and silently eats a queue slot in
+      queries); add a reaper that fails/re-queues rows whose `started_at` is
+      older than the job timeout.
+- [ ] Daily-cap TOCTOU — `countToday` is checked before the claim, not
+      atomically with it, so N parallel slots can overshoot the cap by up to
+      `concurrency-1`; fold the cap check into the claim UPDATE.
+- [ ] Extend the `.claude/` neutralize to `CLAUDE.md` / `AGENTS.md` (and
+      nested agent-instruction files) — they still ride the clone into the
+      agent's prompt as repo-controlled instructions.
+- [ ] Explicit `User-Agent` on all GitHub API calls (GitHub requires one;
+      the runtime's default works today but an explicit UA is contractual
+      and makes our traffic greppable in audit logs).
 
 ## HELD live E2E (human, outward + live VPS — NOT run during implementation)
 
