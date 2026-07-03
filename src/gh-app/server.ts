@@ -253,7 +253,11 @@ if (import.meta.main) {
             spawnContainer: dockerSpawnContainer(env.DOCKER_HOST ?? 'tcp://docker-proxy:2375', env.GH_APP_SANDBOX_NETWORK),
             image: env.GH_APP_SANDBOX_IMAGE ?? DEFAULT_SANDBOX_IMAGE,
             timeoutSec: caps.timeoutSec,
-            entryEnv: { ...sandboxEnvPassthrough(env), GH_APP_ALLOWLIST: allowlist.join(','), GH_APP_TRIGGER: trigger },
+            // IS_SANDBOX=1 satisfies the CLI's root guard for bypass mode (the
+            // no-internet check is USER_TYPE=ant-only, skipped for self-hosted);
+            // JARVIS_REQUIRE_LOGIN=0 skips the interactive login gate — the
+            // sandbox authenticates to models via the passed provider keys.
+            entryEnv: { ...sandboxEnvPassthrough(env), GH_APP_ALLOWLIST: allowlist.join(','), GH_APP_TRIGGER: trigger, IS_SANDBOX: '1', JARVIS_REQUIRE_LOGIN: '0' },
           }),
         dailyCap: caps.dailyCap,
         concurrency: caps.concurrency,
