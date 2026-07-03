@@ -69,7 +69,7 @@ keep this directory's index monotonic.
 | # | Plan | Category | Effort | Risk |
 |---|------|----------|--------|------|
 | 003 | [Delete the dead `handoff_text` sanitizer](003-delete-dead-handoff-text-sanitizer.md) | tech-debt | S | LOW | **DONE** (3850 passed, 3 skipped) |
-| 004 | [Extract the Android app to its own repo](004-extract-android-to-own-repo.md) | tech-debt | M | LOW |
+| 004 | [Extract the Android app to its own repo](004-extract-android-to-own-repo.md) | tech-debt | M | LOW | **DONE** (history on `android-standalone` branch; new-repo push pending) |
 | 005 | [Shelve the evolution / automod loop](005-shelve-evolution-automod-loop.md) | tech-debt | L | MED |
 | 006 | [First `jarvis_agent.py` extraction wave (thinking-heartbeat cluster)](006-jarvis-agent-extraction-wave-session-handlers.md) | tech-debt | L | MED-HIGH |
 

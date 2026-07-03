@@ -38,7 +38,6 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: HIGH,CRITICAL
-          skip-dirs: src/android/app/src/main/cpp/llama.cpp,src/android/app/.cxx
           exit-code: '0'
 
       - name: Upload results to the Security tab
@@ -53,7 +52,6 @@ jobs:
           scan-type: fs
           format: cyclonedx
           output: sbom.cdx.json
-          skip-dirs: src/android/app/src/main/cpp/llama.cpp,src/android/app/.cxx
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
