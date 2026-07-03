@@ -22,7 +22,6 @@
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import net from 'node:net'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -42,24 +41,12 @@ const SSE_HEADERS = {
   'X-Accel-Buffering': 'no',
 } as const
 
-/** TCP connect probe — websockify (:6080) speaks WS, not plain HTTP, so a
- *  socket connect is the cheap liveness test. */
-function tcpUp(host: string, port: number, timeoutMs = 600): Promise<boolean> {
-  return new Promise((resolve) => {
-    const sock = new net.Socket()
-    const done = (ok: boolean) => {
-      sock.destroy()
-      resolve(ok)
-    }
-    sock.setTimeout(timeoutMs)
-    sock.once('connect', () => done(true))
-    sock.once('timeout', () => done(false))
-    sock.once('error', () => done(false))
-    sock.connect(port, host)
-  })
-}
-
 async function readVncPassword(): Promise<string | null> {
+  // Split topology: the VNC password is set in the computer-use container, not
+  // on the web container's disk — prefer the env var, fall back to the local
+  // file for co-located / local dev.
+  const fromEnv = process.env.JARVIS_CU_VNC_PASSWORD?.trim()
+  if (fromEnv) return fromEnv
   try {
     const raw = await fs.readFile(PASS_FILE, 'utf8')
     const pass = raw.trim()
@@ -69,7 +56,7 @@ async function readVncPassword(): Promise<string | null> {
   }
 }
 
-type Health = { ok: boolean; providers?: Record<string, boolean> }
+type Health = { ok: boolean; providers?: Record<string, boolean>; streamUp?: boolean }
 
 async function sidecarHealth(): Promise<Health | null> {
   try {
@@ -82,12 +69,11 @@ async function sidecarHealth(): Promise<Health | null> {
 }
 
 export async function GET(): Promise<Response> {
-  const [streamUp, health, password] = await Promise.all([
-    tcpUp('127.0.0.1', Number(VNC_WS_PORT)),
-    sidecarHealth(),
-    readVncPassword(),
-  ])
+  const [health, password] = await Promise.all([sidecarHealth(), readVncPassword()])
   const scUp = !!health?.ok
+  // Stream liveness comes from the sidecar's /health (co-located with websockify)
+  // rather than a cross-container TCP probe from the web container.
+  const streamUp = !!health?.streamUp
   const ready = streamUp && scUp && !!password
   return Response.json({
     ready,
@@ -97,7 +83,7 @@ export async function GET(): Promise<Response> {
     wsUrl: VNC_WS_URL,
     // Only hand the password over once the stream is actually up.
     password: streamUp ? password : null,
-    hint: ready ? null : 'Run `bin/jarvis-computer-use start` to bring up the desktop stream + agent.',
+    hint: ready ? null : 'Run `bin/jarvis-computer-use start` (local) or bring up the computer-use container (deployed).',
   })
 }
 

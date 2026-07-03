@@ -27,6 +27,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import uuid
 from typing import Any, Awaitable, Callable, Dict, List
 
@@ -368,10 +369,23 @@ async def run_loop(
 
 
 # ── HTTP / SSE ─────────────────────────────────────────────────────────────
+def _stream_up(host: str = "127.0.0.1", port: int | None = None, timeout: float = 0.5) -> bool:
+    """True if the noVNC websockify stream is accepting connections. Co-located
+    with the sidecar (same container/host), so 127.0.0.1 is correct. The web
+    route reads this from /health instead of probing across containers."""
+    p = int(os.environ.get("JARVIS_CU_WS_PORT", "6080")) if port is None else port
+    try:
+        with socket.create_connection((host, p), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 async def _health(_req: web.Request) -> web.Response:
     return web.json_response(
         {"ok": True, "x11": x11_backend_available(), "model": MODEL,
-         "max_steps": MAX_STEPS, "providers": available_providers()}
+         "max_steps": MAX_STEPS, "providers": available_providers(),
+         "streamUp": _stream_up()}
     )
 
 

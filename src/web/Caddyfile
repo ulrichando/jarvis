@@ -19,6 +19,12 @@
 	@pty path /pty /pty/*
 	reverse_proxy @pty web:8772
 
+	# /cu-vnc → the computer-use container's websockify (:6080) for the live
+	# noVNC desktop. Rides the tunnel + app login + Cloudflare Access (do NOT
+	# exclude /cu-vnc from Access) + the VNC password. Mirrors the /pty pattern.
+	@cuvnc path /cu-vnc /cu-vnc/*
+	reverse_proxy @cuvnc computer-use:6080
+
 	reverse_proxy web:3000
 
 	# Baseline origin headers — Cloudflare WAF/Access are the primary edge layer.

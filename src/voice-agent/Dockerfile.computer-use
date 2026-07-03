@@ -1,0 +1,36 @@
+# Cloud computer-use desktop: virtual X11 + WM + browser + noVNC + the JARVIS sidecar.
+FROM python:3.13-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      xvfb x11-utils openbox tint2 firefox-esr \
+      x11vnc websockify \
+      xdotool wmctrl imagemagick scrot \
+      fonts-dejavu-core ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Slim Python deps (sidecar only — no torch/livekit/whisper).
+COPY requirements-cu.txt /app/requirements-cu.txt
+RUN pip install --no-cache-dir -r requirements-cu.txt
+
+# Sidecar + exactly the modules it imports.
+COPY computer_use_service.py /app/
+COPY tools/ /app/tools/
+COPY pipeline/ /app/pipeline/
+COPY scripts/computer-use-container-start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+
+# Build-time smoke: the sidecar must import with ONLY the slim deps present.
+# If this fails, a transitive import pulled a heavy dep — trim it, don't add torch.
+RUN python -c "import computer_use_service; print('sidecar import OK')"
+
+# Non-root
+RUN useradd -m -u 10001 cu && chown -R cu:cu /app
+USER cu
+
+ENV DISPLAY=:99 \
+    JARVIS_COMPUTER_USE_WEB_PORT=8771 \
+    JARVIS_CU_WS_PORT=6080
+EXPOSE 8771 6080
+ENTRYPOINT ["/app/start.sh"]

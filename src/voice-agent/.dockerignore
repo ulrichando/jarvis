@@ -1,0 +1,12 @@
+# Build context for Dockerfile.computer-use is src/voice-agent/ — keep it small.
+# The image needs only computer_use_service.py + tools/ + pipeline/ + scripts/ +
+# requirements-cu.txt. Exclude everything else (esp. the multi-GB .venv).
+*
+!computer_use_service.py
+!requirements-cu.txt
+!tools
+!pipeline
+!scripts
+# Re-exclude noise inside the re-included dirs.
+**/__pycache__
+**/*.pyc

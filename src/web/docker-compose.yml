@@ -30,6 +30,7 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on: [web]
+    networks: [default, cu-net]
 
   web:
     build:
@@ -58,6 +59,9 @@ services:
       # the 0.0.0.0 bind above; set explicitly so a bind change can't silently
       # open an unauthenticated shell. Fails closed if the JWT secret is absent.
       JARVIS_PTY_REQUIRE_AUTH: "1"
+      # Cloud computer-use desktop (separate container on cu-net).
+      JARVIS_COMPUTER_USE_WEB_URL: "http://computer-use:8771"
+      JARVIS_CU_VNC_WS_URL: "${JARVIS_CU_VNC_WS_URL:-wss://0wlan.com/cu-vnc}"
       # Auth/host/DB come from .env.production:
       #   JARVIS_LOCAL_API_TOKEN, JARVIS_WEB_ALLOWED_HOSTS, BETTER_AUTH_URL,
       #   JARVIS_CANONICAL_HOST, DATABASE_URL, provider keys.
@@ -70,6 +74,7 @@ services:
       docker-proxy: { condition: service_started }
       postgres: { condition: service_healthy }
     expose: ["3000"]
+    networks: [default, cu-net]
 
   # Hub Gateway (JARVIS Hub sub-project 1): the CLI's :4000 proxy, holding the
   # provider keys + verifying login JWTs. Published on host 127.0.0.1:4000 so the
@@ -157,7 +162,40 @@ services:
       retries: 5
     expose: ["5432"]
 
+  # Cloud computer-use desktop — isolated Linux sandbox (Xvfb + WM + Firefox +
+  # x11vnc + websockify + the JARVIS sidecar) that account-connected web users
+  # drive from /computer-use. On cu-net ONLY: it reaches the internet + is
+  # reached by web (:8771 SSE) and caddy (:6080 noVNC), but NOT docker-proxy /
+  # postgres. Least-secrets: only provider keys + the VNC password (no env_file,
+  # which would leak PG/JWT secrets into an internet-facing sandbox). Build
+  # context is ../voice-agent.
+  computer-use:
+    build:
+      context: ../voice-agent
+      dockerfile: Dockerfile.computer-use
+    restart: unless-stopped
+    environment:
+      DISPLAY: ":99"
+      JARVIS_CU_WS_PORT: "6080"
+      JARVIS_COMPUTER_USE_WEB_PORT: "8771"
+      JARVIS_COMPUTER_USE_TIER: "${JARVIS_COMPUTER_USE_TIER:-full}"
+      JARVIS_CU_VNC_PASSWORD: "${JARVIS_CU_VNC_PASSWORD:?set JARVIS_CU_VNC_PASSWORD in .env.production}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+    networks: [cu-net]
+    mem_limit: 2g
+    shm_size: "512m"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    expose: ["8771", "6080"]
+
 volumes:
   caddy_data:
   caddy_config:
   pg_data:
+
+networks:
+  default: {}
+  cu-net:
+    driver: bridge
