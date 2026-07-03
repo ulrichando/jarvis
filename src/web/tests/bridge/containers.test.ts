@@ -761,6 +761,71 @@ describe('launchContainerSession', () => {
     )
   })
 
+  // ── Session-URL stamping (external bot jobs): PR body + commit trailer link
+  // back to the watchable run, claude.ai/code style. Normal sessions unchanged.
+  test('external job: PR body + in-container commit carry the session URL + Jarvis-Session trailer', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'https://0wlan.com',
+      proxyHealthy: async () => false,
+      installationToken: 'ghs_inst_tok',
+      botLogin: 'jarvis-gh-bot',
+      exec: fakeDocker().exec,
+    })
+    const sessionUrl = `https://0wlan.com/code/session_${sessionId}`
+    const calls: string[][] = []
+    const exec: DockerExec = async (args) => {
+      calls.push(args)
+      return args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: '@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' }
+        : { stdout: '', stderr: '' }
+    }
+    const { openPullRequest } = await import('@/lib/connectors/github')
+    vi.mocked(openPullRequest).mockClear()
+    const r = await createContainerPR(store, sessionId, exec)
+    expect('error' in r).toBe(false)
+    // Commit message (in-container script) carries the trailer.
+    const script = calls.map((c) => c.join(' ')).find((c) => c.includes('@@BRANCH@@'))!
+    expect(script).toContain(`Jarvis-Session: ${sessionUrl}`)
+    // PR body carries the link + trailer (title stays the default).
+    const [, , , title, body] = vi.mocked(openPullRequest).mock.calls[0]
+    expect(title).toBe('Changes from a Jarvis /code session')
+    expect(body).toContain('From a Jarvis /code session.') // default kept, only appended
+    expect(body).toContain(`/code/session_${sessionId}`)
+    expect(body).toContain(`Jarvis-Session: ${sessionUrl}`)
+  })
+
+  test('regression: normal session PR body + commit message are stamped-free (byte-identical)', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec: fakeDocker().exec,
+    })
+    const calls: string[][] = []
+    const exec: DockerExec = async (args) => {
+      calls.push(args)
+      return args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: '@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' }
+        : { stdout: '', stderr: '' }
+    }
+    const { openPullRequest } = await import('@/lib/connectors/github')
+    vi.mocked(openPullRequest).mockClear()
+    await createContainerPR(store, sessionId, exec)
+    const script = calls.map((c) => c.join(' ')).find((c) => c.includes('@@BRANCH@@'))!
+    expect(script).toContain("git commit -m 'Changes from a Jarvis /code session'")
+    expect(script).not.toContain('Jarvis-Session')
+    const [, , , title, body] = vi.mocked(openPullRequest).mock.calls[0]
+    expect(title).toBe('Changes from a Jarvis /code session')
+    expect(body).toBe('From a Jarvis /code session.')
+  })
+
   test('multi-repo: clones each extra repo alongside the primary', async () => {
     const sessionId = makeSession()
     const store = getStore()

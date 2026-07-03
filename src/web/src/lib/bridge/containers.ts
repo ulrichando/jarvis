@@ -863,7 +863,18 @@ export async function createContainerPR(
   if (!meta?.container || !meta.repo) return { error: "This session has no container." };
   const workdir = `/workspace/${repoDirName(meta.repo)}`;
   const branch = `jarvis/session-${sessionId.slice(0, 8)}`;
-  const msg = "Changes from a Jarvis /code session";
+  // External bot jobs (gh-app dispatch) stamp the watchable session URL into
+  // the commit + PR so a reviewer opens the exact run from GitHub (claude.ai/
+  // code parity: transcript link + session trailer). The URL is the one baked
+  // into the worker env at launch (JARVIS_SESSION_URL, from the dispatch's
+  // explicit publicOrigin). Normal sessions have no installationToken →
+  // sessionUrl stays null → message + body are byte-identical to today.
+  const sessionUrl = meta.installationToken
+    ? (getWorkerSpec(store, sessionId)?.env.JARVIS_SESSION_URL ?? null)
+    : null;
+  const msg = sessionUrl
+    ? `Changes from a Jarvis /code session\n\nJarvis-Session: ${sessionUrl}`
+    : "Changes from a Jarvis /code session";
   // In-container: cut a session branch if needed, commit pending work, push
   // (through the git proxy). Report base + branch back; the PR is opened
   // host-side so the container never needs a GitHub token.
@@ -894,7 +905,10 @@ export async function createContainerPR(
 
   const { openPullRequest } = await import("../connectors/github");
   const prTitle = "Changes from a Jarvis /code session";
-  const prBody = "From a Jarvis /code session.";
+  // Default body kept as-is; external jobs only APPEND the session link.
+  const prBody = sessionUrl
+    ? `From a Jarvis /code session.\n\nSession: ${sessionUrl}\n\nJarvis-Session: ${sessionUrl}`
+    : "From a Jarvis /code session.";
   // External bot jobs authenticate the PR with the injected installation
   // token; normal sessions call exactly as before (no trailing arg).
   const pr = meta.installationToken
