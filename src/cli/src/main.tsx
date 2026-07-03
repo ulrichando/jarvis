@@ -5995,6 +5995,21 @@ async function run(): Promise<CommanderCommand> {
       process.exit(process.exitCode ?? 0);
     });
 
+  // jarvis gh-action — event-driven sibling of gh-agent: runs ONCE on a GitHub
+  // Actions runner, reading the @jarvis event from $GITHUB_EVENT_PATH.
+  // Template workflow: .github/workflows/jarvis.yml. See
+  // docs/runbook/jarvis-github-action.md
+  program
+    .command("gh-action")
+    .description("Run jarvis on a GitHub Actions @jarvis event (used by the jarvis workflow)")
+    .option("--dry-run", "Log what would happen; post nothing")
+    .action(async () => {
+      const { runGhActionOnce, realActionDeps } = await import("./gh-action/main.js");
+      const r = await runGhActionOnce(realActionDeps());
+      if (r.error) { console.error(`[gh-action] FAILED: ${r.error}`); process.exitCode = 1; }
+      process.exit(process.exitCode ?? 0);
+    });
+
   program
     .command("uninstall")
     .description(
