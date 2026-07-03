@@ -20,12 +20,19 @@ vi.mock('@/lib/chat/persist', () => ({
 const SVC = 'svc_gh_app_bridge_token'
 const LOCAL_USER = '00000000-0000-0000-0000-000000000001'
 
+// The service token rides its OWN header (X-GH-App-Token) so Authorization
+// stays free for proxy.ts's network bearer gate (JARVIS_REQUIRE_LOCAL_AUTH=1
+// requires `Authorization: Bearer <JARVIS_LOCAL_API_TOKEN>` on every /api/*
+// request — same header, different value, so the two must not collide).
+// Every request here carries an unrelated Authorization bearer to prove the
+// route never reads the service token from it.
 function post(body: unknown, token?: string): Request {
   return new Request('http://web:3000/api/bridge/v1/gh-app/dispatch', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      authorization: 'Bearer local-api-token-for-proxy',
+      ...(token !== undefined ? { 'x-gh-app-token': token } : {}),
     },
     body: JSON.stringify(body),
   })
@@ -55,11 +62,24 @@ afterEach(() => {
 })
 
 describe('POST /api/bridge/v1/gh-app/dispatch', () => {
-  test('401 on a missing or wrong bearer; getUserId is never consulted', async () => {
+  test('401 on a missing or wrong X-GH-App-Token; getUserId is never consulted', async () => {
     const { POST } = await route()
     expect((await POST(post(validBody))).status).toBe(401)
     expect((await POST(post(validBody, 'wrong-token'))).status).toBe(401)
     expect(vi.mocked(getUserId)).not.toHaveBeenCalled()
+  })
+
+  test('401 when the service token is sent via Authorization: Bearer (the proxy.ts header) instead of X-GH-App-Token', async () => {
+    const { POST } = await route()
+    const req = new Request('http://web:3000/api/bridge/v1/gh-app/dispatch', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${SVC}`, // correct value, wrong header
+      },
+      body: JSON.stringify(validBody),
+    })
+    expect((await POST(req)).status).toBe(401)
   })
 
   test('401 (inert) when GH_APP_BRIDGE_TOKEN is not configured — even with a matching bearer', async () => {

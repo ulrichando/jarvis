@@ -9,7 +9,6 @@ import {
   listEnvironments,
 } from "@/lib/bridge/store";
 import { launchContainerSession, validRepoFullName } from "@/lib/bridge/containers";
-import { extractBearer } from "@/lib/bridge/auth";
 import { bridgeError } from "@/lib/bridge/errors";
 import { LOCAL_USER_ID } from "@/lib/chat/persist";
 
@@ -20,11 +19,15 @@ export const runtime = "nodejs";
 // /code container session (runRoutine-shaped: env get-or-create for the
 // external repo → session → seed bypassPermissions + the task → launch).
 //
-// AUTH IS SERVICE-TOKEN ONLY (GH_APP_BRIDGE_TOKEN bearer, constant-time
-// compare) — there is no browser here, so getUserId is deliberately NOT used.
-// Unset env → the route is inert (every request 401s). The caller must also
-// clear src/proxy.ts (Host allowlist + the network bearer gate when
-// JARVIS_REQUIRE_LOCAL_AUTH=1) — deployment config, not handled here.
+// AUTH IS SERVICE-TOKEN ONLY (GH_APP_BRIDGE_TOKEN in the dedicated
+// `X-GH-App-Token` header, constant-time compare) — there is no browser here,
+// so getUserId is deliberately NOT used. Unset env → the route is inert (every
+// request 401s). The token is NOT read from `Authorization`: in prod
+// (JARVIS_REQUIRE_LOCAL_AUTH=1) src/proxy.ts already claims that header for
+// its network bearer gate (`Authorization: Bearer <JARVIS_LOCAL_API_TOKEN>`),
+// so the gh-app sends BOTH — Authorization satisfies proxy.ts, X-GH-App-Token
+// satisfies this route. The caller must still clear proxy.ts's Host allowlist
+// — deployment config, not handled here.
 //
 // TOKEN-PASSING DESIGN: the gh-app mints a repo-scoped ~1h GitHub App
 // INSTALLATION token and passes it in; we thread it through
@@ -37,7 +40,7 @@ export const runtime = "nodejs";
 function serviceTokenOk(req: Request): boolean {
   const expected = process.env.GH_APP_BRIDGE_TOKEN ?? "";
   if (!expected) return false;
-  const given = extractBearer(req.headers.get("authorization")) ?? "";
+  const given = req.headers.get("x-gh-app-token") ?? "";
   const a = Buffer.from(expected, "utf8");
   const b = Buffer.from(given, "utf8");
   return a.length === b.length && timingSafeEqual(a, b);
