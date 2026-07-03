@@ -25,10 +25,22 @@ Code: `src/gh-app/` (service) reusing `src/cli/src/gh-agent/task.ts` (engine)
    ```
 
 2. **Expose the hostname**: add a cloudflared ingress rule for
-   `gh.0wlan.com → http://localhost:80` and **EXCLUDE it from Cloudflare
-   Access** (same pattern as `searx.0wlan.com` / `/install.sh`). GitHub's
-   webhook deliveries cannot pass SSO — the HMAC signature on `/webhook` is
-   the auth layer.
+   `gh.0wlan.com → http://localhost:80`, then scope Cloudflare Access
+   **per-path**, not per-hostname:
+
+   - **Exclude ONLY `gh.0wlan.com/webhook` from Cloudflare Access** (a
+     bypass/service-auth rule for that one path). GitHub's webhook
+     deliveries are server-to-server and cannot pass SSO; the constant-time
+     HMAC signature check on `/webhook` is that path's auth layer.
+   - **Keep `/setup`, `/setup/callback`, and `/health` BEHIND Cloudflare
+     Access.** Do NOT exclude the whole hostname — `/setup/callback`
+     converts a manifest code into app credentials, and leaving it open
+     lets anyone who can reach the host attempt a credential capture.
+     (The service also refuses re-capture once creds exist — 409 — but
+     Access is the intended front door.) `/setup/callback` works fine
+     behind Access because GitHub redirects your **browser** there, and
+     your browser carries the Access session; only `/webhook` is hit
+     machine-to-machine.
 
 3. **Create the App** (manifest flow): visit `https://gh.0wlan.com/setup` →
    "Create JARVIS App" → GitHub creates the private app under your account and
