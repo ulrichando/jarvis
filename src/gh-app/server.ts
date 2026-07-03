@@ -1,0 +1,215 @@
+// src/gh-app/server.ts — the gh.0wlan.com Bun service: setup + webhook + worker.
+//
+// Routes:
+//   GET  /setup           → manifest form (one click → GitHub creates the app)
+//   GET  /setup/callback  → exchanges the manifest code, persists credentials
+//   POST /webhook         → signature-verified event intake → job queue
+//   GET  /health          → liveness
+//
+// `makeApp(deps)` is the pure, fully-injected fetch handler (smoke-tested);
+// the import.meta.main block wires real env/Postgres/Docker and starts the
+// worker loop alongside Bun.serve.
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { setupPageHtml, convertManifestCode, type AppCreds } from './manifest.js'
+import { handleWebhook, type WebhookDeps } from './webhook.js'
+import { ensureSchema, jobStore, type SqlClient } from './jobs.js'
+import { appJwt, installationToken } from './token.js'
+import { capsFromEnv, startWorker } from './worker.js'
+import { runInSandbox, DEFAULT_SANDBOX_IMAGE, type SpawnSpec, type SpawnResult } from './runInSandbox.js'
+
+export type ServerDeps = {
+  base: string
+  webhook: WebhookDeps
+  fetch?: typeof fetch
+  saveCreds?: (c: AppCreds) => Promise<void> | void
+  log?: (m: string) => void
+}
+
+export function makeApp(deps: ServerDeps): (req: Request) => Promise<Response> {
+  const f = deps.fetch ?? fetch
+  return async (req: Request): Promise<Response> => {
+    const url = new URL(req.url)
+    const path = url.pathname
+
+    if (req.method === 'GET' && path === '/health') return new Response('ok', { status: 200 })
+
+    if (req.method === 'GET' && path === '/setup') {
+      return new Response(setupPageHtml(deps.base), { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } })
+    }
+
+    if (req.method === 'GET' && path === '/setup/callback') {
+      const code = url.searchParams.get('code')
+      if (!code) return new Response('missing code', { status: 400 })
+      try {
+        const creds = await convertManifestCode(code, { fetch: f, saveCreds: deps.saveCreds })
+        // Confirmation only — NEVER echo pem/webhookSecret back over HTTP.
+        return new Response(
+          `<!doctype html><p>JARVIS App created (appId ${creds.appId}). Credentials captured — restart the service to load them, then install the app on a repo.</p>`,
+          { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } },
+        )
+      } catch (e) {
+        deps.log?.(`setup/callback: ${e instanceof Error ? e.message : String(e)}`)
+        return new Response('conversion failed', { status: 502 })
+      }
+    }
+
+    if (req.method === 'POST' && path === '/webhook') {
+      const raw = new Uint8Array(await req.arrayBuffer()) // RAW bytes — signature is over these
+      const headers: Record<string, string> = {}
+      req.headers.forEach((v, k) => { headers[k] = v })
+      const r = await handleWebhook(headers, raw, deps.webhook)
+      return new Response(r.body, { status: r.status })
+    }
+
+    return new Response('not found', { status: 404 })
+  }
+}
+
+// --- credentials: env first, then the captured creds file ---
+export function credsFromEnvOrFile(
+  env: Record<string, string | undefined>,
+  readFile: (p: string) => string = (p) => readFileSync(p, 'utf8'),
+): AppCreds | null {
+  if (env.GH_APP_ID && env.GH_APP_PRIVATE_KEY && env.GH_APP_WEBHOOK_SECRET) {
+    return { appId: Number(env.GH_APP_ID), pem: env.GH_APP_PRIVATE_KEY, webhookSecret: env.GH_APP_WEBHOOK_SECRET }
+  }
+  try {
+    const raw = JSON.parse(readFile(credsPath(env)))
+    if (typeof raw.appId === 'number' && typeof raw.pem === 'string' && typeof raw.webhookSecret === 'string') {
+      return { appId: raw.appId, pem: raw.pem, webhookSecret: raw.webhookSecret }
+    }
+  } catch { /* not set up yet */ }
+  return null
+}
+
+function credsPath(env: Record<string, string | undefined>): string {
+  return env.GH_APP_CREDS_PATH ?? '/data/creds.json'
+}
+
+// --- Docker Engine API spawn (via DOCKER_HOST → tecnativa docker-proxy) ---
+//
+// No docker binary in the image: the restricted proxy speaks the plain Engine
+// REST API, which is all a create → start → wait → logs → force-remove
+// lifecycle needs. Timeout = race on /wait, then force-remove (kills too).
+export function dockerSpawnContainer(dockerHost: string, network?: string) {
+  const base = dockerHost.replace(/^tcp:\/\//, 'http://').replace(/\/$/, '')
+  return async (spec: SpawnSpec): Promise<SpawnResult> => {
+    const create = await fetch(`${base}/containers/create`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        Image: spec.image,
+        Cmd: spec.cmd,
+        Env: Object.entries(spec.env).filter(([, v]) => v !== undefined).map(([k, v]) => `${k}=${v}`),
+        WorkingDir: '/app',
+        HostConfig: {
+          // Writable rootfs (the entry clones under os.tmpdir()); still fenced:
+          // no host mounts, no privileges, bounded memory/pids.
+          ReadonlyRootfs: !spec.writableWorkdir,
+          CapDrop: ['ALL'],
+          SecurityOpt: ['no-new-privileges'],
+          Memory: 2 * 1024 * 1024 * 1024,
+          PidsLimit: 512,
+          ...(network ? { NetworkMode: network } : {}),
+        },
+      }),
+    })
+    if (create.status !== 201) throw new Error(`container create failed: HTTP ${create.status}`)
+    const { Id } = (await create.json()) as { Id: string }
+    const rm = () => fetch(`${base}/containers/${Id}?force=true`, { method: 'DELETE' }).catch(() => {})
+    try {
+      const start = await fetch(`${base}/containers/${Id}/start`, { method: 'POST' })
+      if (start.status !== 204) throw new Error(`container start failed: HTTP ${start.status}`)
+      const waited = await Promise.race([
+        fetch(`${base}/containers/${Id}/wait`, { method: 'POST' }).then((r) => r.json() as Promise<{ StatusCode: number }>),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`container timed out after ${spec.timeoutSec}s`)), spec.timeoutSec * 1000)),
+      ])
+      let stderr = ''
+      try {
+        const logs = await fetch(`${base}/containers/${Id}/logs?stdout=1&stderr=1&tail=50`)
+        stderr = demuxDockerLogs(new Uint8Array(await logs.arrayBuffer())).slice(-2000)
+      } catch { /* logs are best-effort */ }
+      return { code: waited.StatusCode, stdout: '', stderr }
+    } finally {
+      await rm()
+    }
+  }
+}
+
+/** Strip the 8-byte frame headers from Docker's multiplexed log stream. */
+export function demuxDockerLogs(buf: Uint8Array): string {
+  let out = ''
+  let i = 0
+  while (i + 8 <= buf.length) {
+    const size = (buf[i + 4]! << 24) | (buf[i + 5]! << 16) | (buf[i + 6]! << 8) | buf[i + 7]!
+    const start = i + 8
+    const end = Math.min(start + size, buf.length)
+    out += new TextDecoder().decode(buf.subarray(start, end))
+    if (size <= 0) break
+    i = end
+  }
+  return out || new TextDecoder().decode(buf) // non-multiplexed (tty) fallback
+}
+
+if (import.meta.main) {
+  const env = process.env
+  const log = (m: string) => console.log(`[gh-app] ${new Date().toISOString()} ${m}`)
+  const creds = credsFromEnvOrFile(env)
+  if (!creds) log('no app credentials yet — /webhook will 401 until /setup runs and the service restarts')
+
+  const dbUrl = env.DATABASE_URL ?? env.GH_APP_DATABASE_URL
+  if (!dbUrl) { console.error('[gh-app] DATABASE_URL is required'); process.exit(1) }
+  // Bun's built-in Postgres client; adapted to the driver-agnostic SqlClient.
+  const { SQL } = await import('bun')
+  const db = new SQL(dbUrl)
+  const sql: SqlClient = async (text, params = []) => ({ rows: (await db.unsafe(text, params as never[])) as unknown as any[] })
+  await ensureSchema(sql)
+  const store = jobStore(sql)
+
+  const caps = capsFromEnv(env)
+  const allowlist = (env.GH_APP_ALLOWLIST ?? 'ulrichando').split(',').map((s) => s.trim()).filter(Boolean)
+  const trigger = env.GH_APP_TRIGGER ?? '@jarvis'
+
+  const saveCreds = (c: AppCreds) => {
+    const p = credsPath(env)
+    mkdirSync(dirname(p), { recursive: true })
+    writeFileSync(p, JSON.stringify(c, null, 2), { mode: 0o600 })
+    log(`credentials captured to ${p} (appId ${c.appId}) — restart to activate`)
+  }
+
+  const app = makeApp({
+    base: env.GH_APP_BASE_URL ?? 'https://gh.0wlan.com',
+    webhook: {
+      secret: creds?.webhookSecret ?? '',
+      allowlist,
+      trigger,
+      enqueue: (j) => store.enqueue(j),
+      log,
+    },
+    saveCreds,
+    log,
+  })
+
+  const worker = creds
+    ? startWorker({
+        store,
+        mintToken: async (installationId) =>
+          (await installationToken(installationId, appJwt(creds.appId, creds.pem), { fetch })).token,
+        runInSandbox: (job, token) =>
+          runInSandbox(job, token, {
+            spawnContainer: dockerSpawnContainer(env.DOCKER_HOST ?? 'tcp://docker-proxy:2375', env.GH_APP_SANDBOX_NETWORK),
+            image: env.GH_APP_SANDBOX_IMAGE ?? DEFAULT_SANDBOX_IMAGE,
+            timeoutSec: caps.timeoutSec,
+            entryEnv: { GH_APP_ALLOWLIST: allowlist.join(','), GH_APP_TRIGGER: trigger },
+          }),
+        dailyCap: caps.dailyCap,
+        concurrency: caps.concurrency,
+        log,
+      })
+    : null
+
+  const port = Number(env.GH_APP_PORT ?? 8790)
+  Bun.serve({ port, hostname: '0.0.0.0', fetch: app })
+  log(`listening on :${port} (worker ${worker ? 'on' : 'off — no creds'}; cap ${caps.dailyCap}/day, ${caps.concurrency} concurrent)`)
+}
