@@ -48,6 +48,20 @@ so nothing is lost.
   **If `automod/` is removed but `code_mod.py` stays and imports it, the registry
   load fails and the voice agent will not boot.** Remove them together.
 - ~54 test files under `src/voice-agent/tests/` matching `*automod*` / `*evolution*`.
+- **LIVE feed-points (discovered 2026-07-02 — the audit missed these; NOT clean
+  isolation):** two core modules push an "experience signal" into the loop via
+  deferred imports and must be de-wired WITH the removal:
+  - `pipeline/turn_telemetry.py:~512-522` — a `_wake_*` path does
+    `from pipeline.automod import experience_signal as _signal` on correction
+    turns. Remove that import + its call; keep the rest of `log_turn`. The
+    `correction_signal` column + pattern tables it also manages are vestigial
+    schema — leave them (dropping columns is a needless DB migration).
+  - `tools/memory.py:~49-51` — on memory add/replace:
+    `from pipeline.automod import experience_signal as _signal; _signal.bump(...)`.
+    Remove those 2-3 lines; memory save itself is unaffected.
+  Neither is load-bearing for telemetry/memory's real job — both only *feed*
+  evolution, so they come out with it. A green voice suite after removal proves
+  no live path still imports `automod`.
 - `setup/systemd/jarvis-voice-agent.service` and
   `setup/systemd/jarvis-voice-agent.system.service` each set
   `Environment=JARVIS_AUTOMOD_ENABLED=1` — remove that line (leave the rest of the
