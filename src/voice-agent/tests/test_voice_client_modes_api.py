@@ -73,11 +73,21 @@ async def test_get_modes_returns_full_doc(modes_path):
 
 @pytest.mark.asyncio
 async def test_get_modes_cors_header(modes_path):
+    # The Origin gate (_origin_guard) echoes an allowlisted browser origin
+    # rather than "*", so the Tauri webview still gets a usable CORS header.
     api = _make_api()
     app = api.build_app()
     async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/modes")
-        assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+        resp = await client.get(
+            "/modes", headers={"Origin": "https://tauri.localhost"}
+        )
+        assert (
+            resp.headers.get("Access-Control-Allow-Origin")
+            == "https://tauri.localhost"
+        )
+        # A local caller (no Origin) gets no wildcard leaked back.
+        resp2 = await client.get("/modes")
+        assert "Access-Control-Allow-Origin" not in resp2.headers
 
 
 # ── POST /mode (select + restart) ────────────────────────────────────

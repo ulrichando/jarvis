@@ -99,16 +99,24 @@ async def test_queue_full_drops_oldest():
 
 @pytest.mark.asyncio
 async def test_cors_preflight_for_events():
-    """OPTIONS /events should hit the existing CORS wildcard.
+    """OPTIONS /events preflight echoes an allowlisted Origin, never "*".
 
-    The existing `cors` handler returns 204 (HTTP standard for OPTIONS
-    preflight) with `Access-Control-Allow-Origin: *`. We assert the
-    CORS header is present — the status code itself is an aiohttp
-    detail (204 No Content), but `2xx` is what matters for browsers.
+    The `_origin_guard` middleware mirrors the caller's Origin into
+    `Access-Control-Allow-Origin` only when it's on `_ALLOWED_ORIGINS`;
+    a request with no Origin gets no wildcard leaked back. (Matches the
+    contract asserted for /modes in test_voice_client_modes_api.py.)
     """
     api = _make_api()
     app = api.build_app()
     async with TestClient(TestServer(app)) as client:
-        async with client.options("/events") as resp:
+        async with client.options(
+            "/events", headers={"Origin": "https://tauri.localhost"}
+        ) as resp:
             assert 200 <= resp.status < 300
-            assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+            assert (
+                resp.headers.get("Access-Control-Allow-Origin")
+                == "https://tauri.localhost"
+            )
+        # No Origin → no wildcard leaked.
+        async with client.options("/events") as resp2:
+            assert "Access-Control-Allow-Origin" not in resp2.headers
