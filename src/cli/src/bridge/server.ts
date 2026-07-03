@@ -39,7 +39,10 @@ import {
   unregisterExtensionWS,
   isExtensionConnected,
   resolveExtensionResponse,
+  sendExtCommand,
 } from './ext_browse'
+import { runBrowserAgent } from './browserAgent'
+import { verifyProxyToken } from '../proxy/proxyJwt'
 import {
   deleteSessionsBetween,
   listSessions,
@@ -124,6 +127,22 @@ function tokenEq(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb)
 }
 
+// Shared HS256 secret for web-minted proxy JWTs (JARVIS_PROXY_JWT_SECRET in
+// ~/.jarvis/keys.env, sourced by the launcher). Empty → JWTs are not accepted
+// and only LOCAL_TOKEN works, so this is safe when the secret isn't provisioned.
+const PROXY_JWT_SECRET = process.env.JARVIS_PROXY_JWT_SECRET ?? ''
+
+// A credential is valid if it's the local API token OR a valid web-minted proxy
+// JWT — the extension's "log in to your Jarvis account" path (Chrome identity
+// flow → web mints the JWT → here). Verified OFFLINE via the shared secret.
+function isValidCredential(token: string): boolean {
+  if (tokenEq(token, LOCAL_TOKEN)) return true
+  if (PROXY_JWT_SECRET && token.split('.').length === 3) {
+    return verifyProxyToken(token, PROXY_JWT_SECRET).ok
+  }
+  return false
+}
+
 function isAuthorized(req: Request, urlObj: URL): boolean {
   if (!REQUIRE_AUTH) return true
   if (PUBLIC_PATHS.has(urlObj.pathname)) return true
@@ -132,11 +151,11 @@ function isAuthorized(req: Request, urlObj: URL): boolean {
     // for native WS clients) OR Sec-WebSocket-Protocol subprotocol value.
     const qp = urlObj.searchParams.get('token') ?? ''
     const subproto = req.headers.get('Sec-WebSocket-Protocol') ?? ''
-    return tokenEq(qp, LOCAL_TOKEN) || tokenEq(subproto, LOCAL_TOKEN)
+    return isValidCredential(qp) || isValidCredential(subproto)
   }
   const auth = req.headers.get('Authorization') ?? ''
   const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : ''
-  return tokenEq(bearer, LOCAL_TOKEN)
+  return isValidCredential(bearer)
 }
 // Mutable: /api/model lets the extension (and chat panel) pick a different
 // model at runtime. Applies to every subsequent query that doesn't override.
@@ -174,10 +193,22 @@ function broadcast(msg: unknown): void {
   }
 }
 
+// The bridge authenticates its LLM calls to the local proxy with the same proxy
+// credential the CLI uses (JARVIS_PROXY_TOKEN). Without it the proxy — when
+// JARVIS_PROXY_AUTH_REQUIRED=1 — 401s ("missing proxy credential") and chat
+// silently returns "(no response)".
+const PROXY_TOKEN = process.env.JARVIS_PROXY_TOKEN ?? ''
+function proxyHeaders(): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    ...(PROXY_TOKEN ? { Authorization: `Bearer ${PROXY_TOKEN}` } : {}),
+  }
+}
+
 async function askLLM(text: string, model: string = ACTIVE_MODEL): Promise<string> {
   const resp = await fetch(`${PROXY_URL}/v1/messages`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: proxyHeaders(),
     body: JSON.stringify({
       model,
       max_tokens: 4000,
@@ -187,19 +218,52 @@ async function askLLM(text: string, model: string = ACTIVE_MODEL): Promise<strin
     }),
   })
   const data = await resp.json() as any
-  return data?.content?.[0]?.text ?? '(no response)'
+  return data?.content?.[0]?.text
+    ?? (data?.error?.message ? `Error: ${data.error.message}` : '(no response)')
 }
 
-async function handleQuery(ws: WebSocket, text: string): Promise<void> {
+// The browser agent is a tool-use loop, so it's PINNED to a tool-capable model
+// regardless of the chat model picker — a weak pick (or one the proxy 400s on
+// tool-use, e.g. the Claude ids here) would silently break the acting loop.
+// deepseek-v4-pro is the registry default and verified for tool-use on this
+// proxy; override with JARVIS_BRIDGE_AGENT_MODEL.
+const AGENT_MODEL = process.env.JARVIS_BRIDGE_AGENT_MODEL || 'deepseek-v4-pro'
+// approvalId → resolver, for the "Ask before acting" approval round-trip.
+const pendingApprovals = new Map<string, (approved: boolean) => void>()
+
+async function handleQuery(ws: WebSocket, text: string, mode: 'ask' | 'auto' = 'ask'): Promise<void> {
   broadcast({ type: 'status', status: 'thinking' })
   const sessionId = wsSessionId.get(ws)
   if (sessionId) saveTurn(sessionId, 'user', text)
+  const send = (m: unknown) => { try { ws.send(JSON.stringify(m)) } catch {} }
   try {
-    const reply = await askLLM(text)
+    let reply: string
+    if (isExtensionConnected()) {
+      // Chat that ACTS: drive the current page through the extension's tools.
+      reply = await runBrowserAgent({
+        text,
+        model: AGENT_MODEL,
+        proxyUrl: PROXY_URL,
+        headers: proxyHeaders(),
+        mode,
+        sendCommand: (action, args, confirmed) => sendExtCommand(action, args, confirmed, 15_000),
+        requestApproval: (label) => new Promise<boolean>((resolve) => {
+          const approvalId = randomUUID()
+          pendingApprovals.set(approvalId, resolve)
+          send({ type: 'agent_event', event: { type: 'approval', approvalId, label } })
+          // A closed panel must not hang the loop — auto-deny after 2 min.
+          setTimeout(() => { if (pendingApprovals.delete(approvalId)) resolve(false) }, 120_000)
+        }),
+        onEvent: (event) => send({ type: 'agent_event', event }),
+      })
+    } else {
+      // No extension connected → plain chat (talk about the request).
+      reply = await askLLM(text)
+    }
     if (sessionId) saveTurn(sessionId, 'assistant', reply)
-    ws.send(JSON.stringify({ type: 'chat_response', text: reply }))
+    send({ type: 'chat_response', text: reply })
   } catch (e: any) {
-    ws.send(JSON.stringify({ type: 'chat_response', text: `Error: ${e.message}` }))
+    send({ type: 'chat_response', text: `Error: ${e.message}` })
   } finally {
     broadcast({ type: 'status', status: 'idle' })
   }
@@ -267,7 +331,7 @@ async function handlePageQuery(req: Request): Promise<Response> {
 
   const upstream = await fetch(`${PROXY_URL}/v1/messages`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: proxyHeaders(),
     body: JSON.stringify({
       model,
       max_tokens: 4000,
@@ -583,7 +647,7 @@ const server = Bun.serve({
       // session_state on every authenticated tab. The token is the same
       // one isAuthorized() uses for /api/* requests.
       if (msg.type === 'extension_hello') {
-        if (REQUIRE_AUTH && !tokenEq(msg.token ?? '', LOCAL_TOKEN)) {
+        if (REQUIRE_AUTH && !isValidCredential(msg.token ?? '')) {
           console.warn('[bridge] extension_hello rejected — missing/invalid token')
           try { ws.send(JSON.stringify({ type: 'extension_hello_nack', reason: 'auth' })) } catch {}
           try { ws.close(1008, 'auth') } catch {}
@@ -601,7 +665,7 @@ const server = Bun.serve({
       // /api/think-equivalent queries through the WS. Require the token
       // on every query (unconditional per-message auth). Echoes the
       // existing isAuthorized() contract for /api/* endpoints.
-      if (REQUIRE_AUTH && msg.type === 'query' && !tokenEq(msg.token ?? '', LOCAL_TOKEN)) {
+      if (REQUIRE_AUTH && msg.type === 'query' && !isValidCredential(msg.token ?? '')) {
         console.warn('[bridge] query rejected — missing/invalid token')
         try { ws.send(JSON.stringify({ type: 'chat_response', text: '(auth required)' })) } catch {}
         return
@@ -614,9 +678,16 @@ const server = Bun.serve({
         return
       }
 
+      // Approval decision for the browser agent's "Ask before acting" gate.
+      if (msg.type === 'agent_approval_decision' && typeof msg.approvalId === 'string') {
+        const resolve = pendingApprovals.get(msg.approvalId)
+        if (resolve) { pendingApprovals.delete(msg.approvalId); resolve(!!msg.approved) }
+        return
+      }
+
       // Existing chat-panel / desktop WS handling (unchanged).
       if (msg.type === 'query' && typeof msg.text === 'string') {
-        await handleQuery(ws as unknown as WebSocket, msg.text)
+        await handleQuery(ws as unknown as WebSocket, msg.text, msg.mode === 'auto' ? 'auto' : 'ask')
       } else if (msg.type === 'feedback') {
         console.log(`[bridge] feedback: score=${msg.score} comment="${msg.comment ?? ''}"`)
         try { ws.send(JSON.stringify({ type: 'feedback_ack' })) } catch {}
