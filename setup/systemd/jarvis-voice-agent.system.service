@@ -22,7 +22,6 @@ Environment=JARVIS_BROWSER_AUTOLAUNCH_DISABLE=1
 Environment=JARVIS_SAVE_TRIGGER_LIVE=1
 Environment=JARVIS_RECALL_TRIGGER_LIVE=1
 Environment=JARVIS_SKILL_REVIEW_APPLY=1
-Environment=JARVIS_AUTOMOD_ENABLED=1
 ExecStart=/opt/jarvis/src/voice-agent/.venv/bin/python /opt/jarvis/src/voice-agent/jarvis_agent.py start
 Restart=always
 RestartSec=5

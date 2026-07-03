@@ -425,8 +425,9 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
             )
         except sqlite3.OperationalError:
             pass  # column already exists — idempotent on every startup
-        # Two pattern tables — populated by pipeline.automod.patterns, drained
-        # by the spawner. proposed_at IS NULL means "not yet emitted to queue".
+        # Two pattern tables (vestigial as of 2026-07 — the automod loop that
+        # populated + drained them was removed; kept to avoid a needless DB
+        # migration on existing turn_telemetry.db files).
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS recurring_corrections (
                 signal TEXT PRIMARY KEY,
@@ -448,9 +449,9 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
             );
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_subagent ON turns(subagent)")
-        # Auto-mod error-driven branch (Spec 2026-05-27). Idempotent.
-        # Populated by pipeline/automod/error_logger.ErrorTelemetryHandler;
-        # read by pipeline/automod/patterns._scan_errors.
+        # Error-signature table (vestigial as of 2026-07 — the automod loop
+        # that populated + read it was removed; kept to avoid a needless
+        # migration). Idempotent.
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS recurring_errors (
                 signature TEXT PRIMARY KEY,
@@ -503,26 +504,6 @@ def _self_rss_mb() -> Optional[float]:
         return round(rss_pages * 4096 / (1024 * 1024), 1)
     except Exception:
         return None
-
-
-_CONFAB_BAD_STATES = {"hedged_no_evidence", "retry_factory_missing"}
-
-
-def _maybe_signal_evolution(correction_signal, confab_check_state) -> None:
-    """Wake the cognitive evolution loop (pipeline.automod.experience_signal) when a turn
-    carried a bug/correction — a correction_signal or a bad confab_check_state.
-    Best-effort; never raises into the telemetry write. Phase 1, 2026-06-23."""
-    try:
-        reason = None
-        if correction_signal:
-            reason = f"correction:{str(correction_signal)[:80]}"
-        elif confab_check_state in _CONFAB_BAD_STATES:
-            reason = f"confab:{confab_check_state}"
-        if reason:
-            from pipeline.automod import experience_signal as _signal
-            _signal.bump(reason)
-    except Exception:
-        pass
 
 
 def log_turn(
@@ -654,9 +635,6 @@ def log_turn(
                     _corr_signal,
                 ),
             )
-        # Phase 1 cognitive loop: wake the evolution loop if this turn carried a
-        # bug/correction signal. After the row is written; never blocks it.
-        _maybe_signal_evolution(_corr_signal, confab_check_state)
     except Exception as e:
         global _log_turn_fail_count
         _log_turn_fail_count += 1

@@ -6469,26 +6469,6 @@ async def maybe_publish_assistant_says(
         logger.debug(f"[chat-panel] assistant_says publish failed: {_e!r}")
 
 
-async def _automod_tick() -> None:
-    """One evolution pass: always scan (queue intents for review); BUILD only in
-    AUTO mode. Extracted module-level so it's unit-testable. Phase 1, 2026-06-23
-    cognitive-loop (docs/superpowers/plans/2026-06-23-cognitive-evolution-loop-phase1.md)."""
-    from pipeline.automod import patterns as _automod_patterns
-    from pipeline.automod import spawner as _automod_spawner
-    from pipeline.automod._state import is_auto_mode
-    # Stamp the heartbeat first — proves the in-process loop is alive and records
-    # WHY it will/won't build this tick (idle/cooldown/budget/mode), so the
-    # /evolution page can show "auto · waiting: cooldown 34m" instead of silence.
-    try:
-        from pipeline.automod import heartbeat as _automod_heartbeat
-        _automod_heartbeat.beat()
-    except Exception:  # noqa: BLE001 — liveness must never break the tick
-        pass
-    _automod_patterns.scan_and_emit()
-    if is_auto_mode():
-        await _automod_spawner.drain_queue()
-
-
 async def entrypoint(ctx: JobContext) -> None:
     """
     Runs once per client that joins a room. This is the actual
@@ -6532,17 +6512,6 @@ async def entrypoint(ctx: JobContext) -> None:
         conversation_store.init_db()
     except Exception as e:
         logger.warning(f"[conversation] init_db failed: {e}")
-
-    # Install the auto-mod error telemetry handler. Captures recurring
-    # exceptions from this process for the auto-mod error-driven scanner
-    # to detect. Idempotent — re-install is a no-op. The handler reads
-    # the same telemetry DB that init_db() just initialized.
-    # Spec: docs/superpowers/specs/2026-05-27-automod-error-driven-branch-design.md
-    try:
-        from pipeline.automod.error_logger import install_error_handler
-        install_error_handler()
-    except Exception as _e:
-        logger.warning(f"[automod] error handler install failed: {_e}")
 
     # Clear any stale thinking/tool flags from a prior crashed agent.
     # If we leave them, the new fresh agent reports "thinking" forever
@@ -7831,39 +7800,6 @@ async def entrypoint(ctx: JobContext) -> None:
             await asyncio.sleep(_bgtasks.poll_s())
 
     asyncio.create_task(_background_task_watcher(), name="bg-task-watcher")
-
-    # Spec B (Plane 3) — pattern detector + spawner background loop.
-    # Reads turn_telemetry.db every N seconds (default 30 min), emits
-    # intents to ~/.jarvis/auto-mods/queue.jsonl on threshold crossings,
-    # then optionally spawns the wrapper subprocess if JARVIS_AUTOMOD_SPAWN_LIVE=1.
-    # Both no-op when their respective env gates aren't set.
-    if os.environ.get("JARVIS_AUTOMOD_ENABLED", "0") == "1":
-        try:
-            async def _automod_loop():
-                from pipeline.automod import experience_signal as _signal
-                # Backstop: even with no signal, sweep at most this often so a
-                # missed bump can't stall evolution forever. Default 2h.
-                backstop = float(os.environ.get("JARVIS_AUTOMOD_BACKSTOP_S", "7200"))
-                cooldown = float(os.environ.get("JARVIS_AUTOMOD_COOLDOWN_S", "30"))
-                while True:
-                    await _signal.wait(backstop)   # wakes on a real signal OR backstop
-                    _signal.clear()
-                    try:
-                        await _automod_tick()
-                    except Exception as _e:  # noqa: BLE001
-                        logger.warning("[automod] tick failed: %s", _e)
-                    # Debounce a burst of signals into one pass.
-                    await asyncio.sleep(cooldown)
-
-            asyncio.create_task(_automod_loop(), name="automod-pattern-loop")
-            logger.info(
-                "[automod] event-driven pattern detector + spawner scheduled "
-                "(backstop=%ss; spawn_live=%s; mode-gated build)",
-                os.environ.get("JARVIS_AUTOMOD_BACKSTOP_S", "7200"),
-                os.environ.get("JARVIS_AUTOMOD_SPAWN_LIVE", "0"),
-            )
-        except Exception as _e:  # noqa: BLE001
-            logger.warning("[automod] scheduler wiring failed: %s", _e)
 
     # Spawn the background watchers — each is a fire-and-forget task
     # whose lifetime is bound to the job. Extracted 2026-05-10 (Step
