@@ -1,7 +1,7 @@
 // src/gh-app/server.test.ts — hermetic smoke of the HTTP surface (fake deps).
 import { test, expect, describe } from 'bun:test'
 import { createHmac } from 'node:crypto'
-import { makeApp, credsFromEnvOrFile, type ServerDeps } from './server.js'
+import { makeApp, credsFromEnvOrFile, sandboxEnvPassthrough, type ServerDeps } from './server.js'
 import type { NewJob } from './jobs.js'
 
 const SECRET = 'topsecret'
@@ -95,5 +95,19 @@ describe('gh-app credsFromEnvOrFile', () => {
     const file = JSON.stringify({ appId: 12, pem: 'P2', webhookSecret: 's2' })
     expect(credsFromEnvOrFile({}, () => file)).toEqual({ appId: 12, pem: 'P2', webhookSecret: 's2' })
     expect(credsFromEnvOrFile({}, () => { throw new Error('ENOENT') })).toBeNull()
+  })
+})
+
+describe('gh-app sandboxEnvPassthrough', () => {
+  test('forwards only present provider-key vars — never app creds or DB', () => {
+    const env = {
+      ANTHROPIC_API_KEY: 'a', DEEPSEEK_API_KEY: 'd', JARVIS_PROVIDER: 'deepseek',
+      GH_APP_PRIVATE_KEY: 'PEM-NO', GH_APP_WEBHOOK_SECRET: 'no', DATABASE_URL: 'no', POSTGRES_PASSWORD: 'no',
+      GROQ_API_KEY: undefined,
+    }
+    const out = sandboxEnvPassthrough(env)
+    expect(out).toEqual({ ANTHROPIC_API_KEY: 'a', DEEPSEEK_API_KEY: 'd', JARVIS_PROVIDER: 'deepseek' })
+    expect(Object.keys(out)).not.toContain('GH_APP_PRIVATE_KEY')
+    expect(Object.keys(out)).not.toContain('DATABASE_URL')
   })
 })

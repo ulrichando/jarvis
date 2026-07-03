@@ -87,6 +87,20 @@ function credsPath(env: Record<string, string | undefined>): string {
   return env.GH_APP_CREDS_PATH ?? '/data/creds.json'
 }
 
+// Provider keys the in-sandbox `jarvis -p` needs to reach an LLM. STRICT
+// allowlist — the sandbox runs untrusted-task-driven code, so app creds,
+// webhook secret, and DB DSN must never cross into it.
+const SANDBOX_ENV_KEYS = [
+  'ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY', 'GROQ_API_KEY', 'OPENAI_API_KEY',
+  'JARVIS_PROVIDER', 'JARVIS_MODEL',
+] as const
+
+export function sandboxEnvPassthrough(env: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const k of SANDBOX_ENV_KEYS) if (env[k]) out[k] = env[k]!
+  return out
+}
+
 // --- Docker Engine API spawn (via DOCKER_HOST → tecnativa docker-proxy) ---
 //
 // No docker binary in the image: the restricted proxy speaks the plain Engine
@@ -201,7 +215,7 @@ if (import.meta.main) {
             spawnContainer: dockerSpawnContainer(env.DOCKER_HOST ?? 'tcp://docker-proxy:2375', env.GH_APP_SANDBOX_NETWORK),
             image: env.GH_APP_SANDBOX_IMAGE ?? DEFAULT_SANDBOX_IMAGE,
             timeoutSec: caps.timeoutSec,
-            entryEnv: { GH_APP_ALLOWLIST: allowlist.join(','), GH_APP_TRIGGER: trigger },
+            entryEnv: { ...sandboxEnvPassthrough(env), GH_APP_ALLOWLIST: allowlist.join(','), GH_APP_TRIGGER: trigger },
           }),
         dailyCap: caps.dailyCap,
         concurrency: caps.concurrency,
