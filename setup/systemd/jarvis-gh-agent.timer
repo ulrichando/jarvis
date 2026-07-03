@@ -1,0 +1,16 @@
+[Unit]
+Description=JARVIS — GitHub agent poll trigger
+Documentation=file:/home/ulrich/Documents/Projects/jarvis/docs/superpowers/specs/2026-07-02-jarvis-gh-agent-design.md
+
+[Timer]
+# Poll with a ~10-min gap measured from the END of the last sweep
+# (OnUnitInactiveSec), so a long-running task never stampedes the next one.
+# First sweep 3 min after enable/boot. RandomizedDelaySec avoids a :00 stampede
+# with the other timers. Monotonic timer, so Persistent= does not apply.
+OnBootSec=3min
+OnUnitInactiveSec=10min
+RandomizedDelaySec=60s
+Unit=jarvis-gh-agent.service
+
+[Install]
+WantedBy=timers.target

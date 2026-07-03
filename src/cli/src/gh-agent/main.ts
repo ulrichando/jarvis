@@ -1,10 +1,16 @@
 // src/cli/src/gh-agent/main.ts
 import { type GhAgentConfig, isAllowedAuthor, loadGhAgentConfig } from './config.js'
 import { addHandledIds, advanceCursor, readCursor, readHandledIds } from './cursor.js'
-import { type GhRunner, listMentions, postComment, SELF_MARKER } from './gh.js'
+import { type GhRunner, listMentions, type Mention } from './gh.js'
+import { taskText } from './task.js'
 
 export type RunOnceArgs = { repo?: string; dryRun: boolean }
-export type RunOnceDeps = { run?: GhRunner; cfg?: GhAgentConfig; cursorDir?: string }
+export type RunOnceDeps = {
+  run?: GhRunner
+  cfg?: GhAgentConfig
+  cursorDir?: string
+  execute?: (repo: string, m: Mention, cfg: GhAgentConfig) => Promise<{ ok: boolean; prUrl?: string; noChanges?: boolean; error?: string }>
+}
 
 // owner/name only — anything else never reaches a gh invocation.
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/
@@ -17,13 +23,11 @@ function warn(msg: string): void {
   process.stderr.write(`[gh-agent] ${msg}\n`)
 }
 
-function taskText(body: string, trigger: string): string {
-  const i = body.indexOf(trigger)
-  return (i === -1 ? body : body.slice(i + trigger.length)).trim()
-}
-
 export async function runGhAgentOnce(args: RunOnceArgs, deps: RunOnceDeps = {}): Promise<void> {
   const cfg = deps.cfg ?? loadGhAgentConfig()
+  // Default executor resolves lazily inside the arrow: tests inject a stub,
+  // and dry-run never constructs the real exec deps at all.
+  const execute = deps.execute ?? (async (repo, m, cfg) => { const { executeTask, realDeps } = await import('./task.js'); return executeTask(repo, m, cfg, realDeps()) })
   const requested = args.repo ? [args.repo] : cfg.repos
   const repos = requested.filter(r => {
     if (REPO_RE.test(r)) return true
@@ -53,8 +57,8 @@ export async function runGhAgentOnce(args: RunOnceArgs, deps: RunOnceDeps = {}):
     // guarantee; the cursor only narrows the fetch window.
     const handled = readHandledIds(repo, deps.cursorDir)
     const fresh = ordered.filter(m => !handled.has(m.id))
-    // Oldest updated_at among mentions whose ack FAILED this sweep — the
-    // window must not advance past it or the retry could never re-fetch it.
+    // Oldest updated_at among mentions whose execution FAILED this sweep —
+    // the window must not advance past it or the retry could never re-fetch it.
     let oldestFailed: string | null = null
     for (const m of fresh) {
       if (!isAllowedAuthor(cfg, m.author)) {
@@ -64,23 +68,18 @@ export async function runGhAgentOnce(args: RunOnceArgs, deps: RunOnceDeps = {}):
         if (!args.dryRun) addHandledIds(repo, [m.id], deps.cursorDir)
         continue
       }
-      const task = taskText(m.body, cfg.trigger)
       if (args.dryRun) {
-        log(`  #${m.issueNumber} DRY-RUN would ack @${m.author}: "${task}"`)
+        const task = taskText(m.body, cfg.trigger)
+        log('  #'+m.issueNumber+' DRY-RUN would handle @'+m.author+': "'+task+'"')
       } else {
-        const ok = await postComment(
-          repo,
-          m.issueNumber,
-          // SELF_MARKER lets the next sweep filter this ack out (no self-loop).
-          `👀 Jarvis received this from @${m.author}: "${task}"\n\n_(P1: acknowledgement only — automated execution lands in P2.)_\n\n${SELF_MARKER}`,
-          deps.run,
-        )
-        log(`  #${m.issueNumber} ${ok ? 'acked' : 'ACK FAILED'} @${m.author}`)
-        if (ok) {
-          // Per-mention, immediately: a mid-sweep crash must not replay acks.
+        const res = await execute(repo, m, cfg)
+        if (res.ok) {
+          log(`  #${m.issueNumber} ${res.noChanges ? 'no-changes' : (res.prUrl ? 'PR '+res.prUrl : 'pushed')} @${m.author}`)
+          // Per-mention, immediately: a mid-sweep crash must not replay tasks.
           addHandledIds(repo, [m.id], deps.cursorDir)
         } else {
-          // NOT handled → retried next sweep; surface the failure to the exit.
+          log(`  #${m.issueNumber} FAILED @${m.author}: ${res.error ?? 'unknown'}`)
+          // do NOT mark handled → retried next sweep; surface failure to exit.
           process.exitCode = 1
           if (oldestFailed === null || m.updatedAt < oldestFailed) oldestFailed = m.updatedAt
         }
@@ -88,7 +87,7 @@ export async function runGhAgentOnce(args: RunOnceArgs, deps: RunOnceDeps = {}):
     }
     // Advance the since-window to the newest FETCHED comment (matching or
     // not) so unrelated chatter still shrinks the window — but never past a
-    // failed ack: ?since= is inclusive (updated_at >= since), so advancing
+    // failed task: ?since= is inclusive (updated_at >= since), so advancing
     // exactly TO the failed mention keeps it re-fetchable next sweep.
     // advanceCursor's monotonic floor absorbs any regression. Dry-run
     // persists nothing.

@@ -8,8 +8,8 @@ export type GhAgentConfig = {
   allowlist: string[]
   trigger: string
   pollSeconds: number
-  maxTasksPerHour: number
-  model?: string
+  executionTimeoutSec: number
+  // P3 adds rate-limiting (maxTasksPerHour) + model override.
 }
 
 export const GH_AGENT_DIR = join(homedir(), '.jarvis', 'gh-agent')
@@ -20,7 +20,7 @@ export const DEFAULTS: GhAgentConfig = {
   allowlist: ['ulrichando'],
   trigger: '@jarvis',
   pollSeconds: 45,
-  maxTasksPerHour: 6,
+  executionTimeoutSec: 600,
 }
 
 export function loadGhAgentConfig(path: string = CONFIG_PATH): GhAgentConfig {
@@ -35,8 +35,8 @@ export function loadGhAgentConfig(path: string = CONFIG_PATH): GhAgentConfig {
       allowlist: Array.isArray(raw.allowlist) ? strings(raw.allowlist) : DEFAULTS.allowlist,
       trigger: typeof raw.trigger === 'string' ? raw.trigger : DEFAULTS.trigger,
       pollSeconds: typeof raw.pollSeconds === 'number' ? raw.pollSeconds : DEFAULTS.pollSeconds,
-      maxTasksPerHour: typeof raw.maxTasksPerHour === 'number' ? raw.maxTasksPerHour : DEFAULTS.maxTasksPerHour,
-      model: typeof raw.model === 'string' ? raw.model : undefined,
+      // Clamp: 0/negative/NaN would mean an instant (or no) kill for jarvis -p.
+      executionTimeoutSec: (typeof raw.executionTimeoutSec === 'number' && raw.executionTimeoutSec > 0) ? raw.executionTimeoutSec : DEFAULTS.executionTimeoutSec,
     }
   } catch {
     return { ...DEFAULTS }

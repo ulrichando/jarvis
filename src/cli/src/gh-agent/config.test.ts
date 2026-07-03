@@ -44,6 +44,25 @@ describe('gh-agent config', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
+  test('executionTimeoutSec defaults to 600 and is overridable', () => {
+    expect(DEFAULTS.executionTimeoutSec).toBe(600)
+    const dir = mkdtempSync(join(tmpdir(), 'gha-'))
+    const p = join(dir, 'gh-agent.json')
+    writeFileSync(p, JSON.stringify({ executionTimeoutSec: 120 }))
+    expect(loadGhAgentConfig(p).executionTimeoutSec).toBe(120)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('non-positive executionTimeoutSec falls back to the default (never a zero/negative timeout)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gha-'))
+    const p = join(dir, 'gh-agent.json')
+    writeFileSync(p, JSON.stringify({ executionTimeoutSec: -5 }))
+    expect(loadGhAgentConfig(p).executionTimeoutSec).toBe(600)
+    writeFileSync(p, JSON.stringify({ executionTimeoutSec: 0 }))
+    expect(loadGhAgentConfig(p).executionTimeoutSec).toBe(600)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
   test('isAllowedAuthor is case-insensitive and exact', () => {
     const cfg = { ...DEFAULTS, allowlist: ['Alice'] }
     expect(isAllowedAuthor(cfg, 'alice')).toBe(true)
