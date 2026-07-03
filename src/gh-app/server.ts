@@ -16,6 +16,7 @@ import { handleWebhook, type WebhookDeps } from './webhook.js'
 import { ensureSchema, jobStore, type SqlClient } from './jobs.js'
 import { appJwt, installationToken } from './token.js'
 import { capsFromEnv, startWorker } from './worker.js'
+import { workerFeedback } from './feedback.js'
 import { runInSandbox, DEFAULT_SANDBOX_IMAGE, type SpawnSpec, type SpawnResult } from './runInSandbox.js'
 
 /** GitHub's documented webhook payload cap. */
@@ -259,6 +260,9 @@ if (import.meta.main) {
             // sandbox authenticates to models via the passed provider keys.
             entryEnv: { ...sandboxEnvPassthrough(env), GH_APP_ALLOWLIST: allowlist.join(','), GH_APP_TRIGGER: trigger, IS_SANDBOX: '1', JARVIS_REQUIRE_LOGIN: '0' },
           }),
+        // Visible thread feedback: 👀 the trigger, post "working on it",
+        // edit it into the outcome. Best-effort by contract (worker catches).
+        feedback: workerFeedback({ fetch }),
         dailyCap: caps.dailyCap,
         concurrency: caps.concurrency,
         log,
