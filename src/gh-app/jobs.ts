@@ -34,12 +34,18 @@ export async function ensureSchema(sql: SqlClient): Promise<void> {
     started_at timestamptz,
     finished_at timestamptz,
     comment_id bigint,
-    tracking_comment_id bigint
+    tracking_comment_id bigint,
+    session_id text,
+    session_url text
   )`)
   // Pre-feedback tables predate the two comment columns — migrate in place
   // (idempotent; no-ops once present).
   await sql(`alter table gh_app_jobs add column if not exists comment_id bigint`)
   await sql(`alter table gh_app_jobs add column if not exists tracking_comment_id bigint`)
+  // Pre-Phase-C tables predate the /code-session columns (code-session runs
+  // record the watchable session on the job row) — same idempotent migration.
+  await sql(`alter table gh_app_jobs add column if not exists session_id text`)
+  await sql(`alter table gh_app_jobs add column if not exists session_url text`)
   await sql(`create index if not exists gh_app_jobs_status_idx on gh_app_jobs (status, id)`)
 }
 
@@ -80,6 +86,12 @@ export async function setTrackingComment(sql: SqlClient, id: number, trackingCom
   await sql(`update gh_app_jobs set tracking_comment_id = $1 where id = $2`, [trackingCommentId, id])
 }
 
+/** Persist the /code session a code-session run dispatched to (Phase C) —
+ * operators can open the watchable transcript straight from the job row. */
+export async function setSession(sql: SqlClient, id: number, sessionId: string, sessionUrl: string): Promise<void> {
+  await sql(`update gh_app_jobs set session_id = $1, session_url = $2 where id = $3`, [sessionId, sessionUrl, id])
+}
+
 export async function markDone(sql: SqlClient, id: number): Promise<void> {
   await sql(`update gh_app_jobs set status = 'done', finished_at = now() where id = $1`, [id])
 }
@@ -102,6 +114,7 @@ export type JobStore = {
   markDone: (id: number) => Promise<void>
   markFailed: (id: number, error: string) => Promise<void>
   setTrackingComment: (id: number, trackingCommentId: number) => Promise<void>
+  setSession: (id: number, sessionId: string, sessionUrl: string) => Promise<void>
   countToday: () => Promise<number>
 }
 
@@ -113,6 +126,7 @@ export function jobStore(sql: SqlClient): JobStore {
     markDone: (id) => markDone(sql, id),
     markFailed: (id, error) => markFailed(sql, id, error),
     setTrackingComment: (id, trackingCommentId) => setTrackingComment(sql, id, trackingCommentId),
+    setSession: (id, sessionId, sessionUrl) => setSession(sql, id, sessionId, sessionUrl),
     countToday: () => countToday(sql),
   }
 }

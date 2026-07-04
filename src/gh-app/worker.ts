@@ -10,12 +10,17 @@
 //   - Postgres's SKIP LOCKED claim makes N parallel slots safe.
 import type { Job, JobStore } from './jobs.js'
 import type { SandboxResult, WorkerFeedback } from './feedback.js'
+import type { WorkerCodeSessions } from './codeSession.js'
 
 export type WorkerDeps = {
   store: JobStore
   /** Mint a short-lived installation token scoped to the job's repo. */
   mintToken: (installationId: number, repo: string) => Promise<string>
   runInSandbox: (job: Job, token: string) => Promise<SandboxResult>
+  /** Phase C (GH_APP_USE_CODE_SESSIONS): when present, jobs run as watchable
+   * /code sessions (dispatch → poll → PR) INSTEAD of runInSandbox. Absent —
+   * the default — the sandbox path is byte-identical to before Phase C. */
+  codeSessions?: WorkerCodeSessions
   /** Visible thread feedback (👀 + tracking comment + outcome edit).
    * Optional and STRICTLY best-effort — every call is try/caught here; a
    * feedback failure must never fail (or block) the job itself. */
@@ -38,6 +43,7 @@ export async function runWorkerOnce(deps: WorkerDeps): Promise<RunOutcome> {
   if (!job) return 'idle'
   let token: string | null = null
   let tracking: number | null = null
+  let sessionUrl: string | null = null // set on the code-session path only
   // Edit the tracking comment into the outcome (feedback falls back to a
   // fresh comment when there is none). Requires a token: a mint failure
   // means no acknowledge happened and GitHub would refuse us anyway.
@@ -48,6 +54,50 @@ export async function runWorkerOnce(deps: WorkerDeps): Promise<RunOutcome> {
   }
   try {
     token = await deps.mintToken(job.installationId, job.repo)
+    // I2: PR jobs ALWAYS take the sandbox, even with code sessions on — the
+    // session path clones the DEFAULT branch (wrong tree for "fix this PR")
+    // and has no analog of the sandbox's untrusted-PR-head refusal (fork /
+    // non-allowlisted author, src/cli/src/gh-agent/task.ts). v1 scopes
+    // /code sessions to issue/comment jobs only.
+    if (deps.codeSessions && !job.isPR) {
+      // — Phase C code-session path (GH_APP_USE_CODE_SESSIONS): dispatch the
+      // job as a watchable /code session, poll it to completion, open the PR
+      // through the session's PR route. Any service-call throw (dispatch /
+      // PR) lands in the outer catch → markFailed + best-effort thread
+      // feedback, exactly like a sandbox failure.
+      const cs = deps.codeSessions
+      const s = await cs.create(job)
+      sessionUrl = s.sessionUrl
+      // Traceability, not control flow — a lost row update must not kill a
+      // dispatched run (mirrors setTrackingComment's forgiveness).
+      try { await deps.store.setSession(job.id, s.sessionId, s.sessionUrl) }
+      catch (e) { deps.log?.(`worker: job ${job.id} setSession failed (ignored): ${errMsg(e)}`) }
+      if (deps.feedback) {
+        // 👀 + "working on it — watch it live: <session>" AFTER dispatch so
+        // the tracking comment can carry the link from the first post.
+        try {
+          tracking = await deps.feedback.acknowledge(job, token, s.sessionUrl)
+          if (tracking !== null) await deps.store.setTrackingComment(job.id, tracking)
+        } catch (e) { deps.log?.(`worker: job ${job.id} acknowledge failed (ignored): ${errMsg(e)}`) }
+      }
+      const outcome = await cs.poll(s.sessionId)
+      if (outcome === 'done') {
+        const pr = await cs.openPr(s.sessionId)
+        await deps.store.markDone(job.id)
+        deps.log?.(`worker: job ${job.id} (${job.repo}#${job.issueNumber}) done — ${s.sessionUrl}`)
+        await tellThread({ ok: true, prUrl: pr.url, sessionUrl: s.sessionUrl })
+        return 'ran'
+      }
+      const errText = outcome === 'timeout'
+        ? 'code session timed out before completing'
+        : outcome === 'archived'
+          ? 'code session was archived before completing'
+          : 'code session requires action — open the session to continue'
+      await deps.store.markFailed(job.id, errText)
+      deps.log?.(`worker: job ${job.id} failed: ${errText}`)
+      await tellThread({ ok: false, error: errText, sessionUrl: s.sessionUrl })
+      return 'failed'
+    }
     if (deps.feedback) {
       // 👀 + "working on it" BEFORE the sandbox — the user sees the pickup.
       try {
@@ -70,9 +120,10 @@ export async function runWorkerOnce(deps: WorkerDeps): Promise<RunOutcome> {
     const msg = errMsg(e)
     await deps.store.markFailed(job.id, msg)
     deps.log?.(`worker: job ${job.id} failed: ${msg}`)
-    // A thrown mint/sandbox must still resolve the thread — never leave the
-    // tracking comment stuck on "working on it".
-    await tellThread({ ok: false, error: msg })
+    // A thrown mint/sandbox/session call must still resolve the thread —
+    // never leave the tracking comment stuck on "working on it". Keep the
+    // session link when the run got far enough to have one.
+    await tellThread(sessionUrl ? { ok: false, error: msg, sessionUrl } : { ok: false, error: msg })
     return 'failed'
   }
 }

@@ -18,6 +18,7 @@ import { appJwt, installationToken } from './token.js'
 import { capsFromEnv, startWorker } from './worker.js'
 import { workerFeedback } from './feedback.js'
 import { runInSandbox, DEFAULT_SANDBOX_IMAGE, type SpawnSpec, type SpawnResult } from './runInSandbox.js'
+import { makeCodeSessions, codeSessionConfigFromEnv, useCodeSessions } from './codeSession.js'
 
 /** GitHub's documented webhook payload cap. */
 export const MAX_WEBHOOK_BYTES = 25 * 1024 * 1024
@@ -245,28 +246,49 @@ if (import.meta.main) {
   })
 
   const worker = creds
-    ? startWorker({
-        store,
-        mintToken: async (installationId, repo) =>
-          (await installationToken(installationId, appJwt(creds.appId, creds.pem), { fetch }, repo)).token,
-        runInSandbox: (job, token) =>
-          runInSandbox(job, token, {
-            spawnContainer: dockerSpawnContainer(env.DOCKER_HOST ?? 'tcp://docker-proxy:2375', env.GH_APP_SANDBOX_NETWORK),
-            image: env.GH_APP_SANDBOX_IMAGE ?? DEFAULT_SANDBOX_IMAGE,
-            timeoutSec: caps.timeoutSec,
-            // IS_SANDBOX=1 satisfies the CLI's root guard for bypass mode (the
-            // no-internet check is USER_TYPE=ant-only, skipped for self-hosted);
-            // JARVIS_REQUIRE_LOGIN=0 skips the interactive login gate — the
-            // sandbox authenticates to models via the passed provider keys.
-            entryEnv: { ...sandboxEnvPassthrough(env), GH_APP_ALLOWLIST: allowlist.join(','), GH_APP_TRIGGER: trigger, IS_SANDBOX: '1', JARVIS_REQUIRE_LOGIN: '0' },
-          }),
-        // Visible thread feedback: 👀 the trigger, post "working on it",
-        // edit it into the outcome. Best-effort by contract (worker catches).
-        feedback: workerFeedback({ fetch }),
-        dailyCap: caps.dailyCap,
-        concurrency: caps.concurrency,
-        log,
-      })
+    ? (() => {
+        const mintToken = async (installationId: number, repo: string) =>
+          (await installationToken(installationId, appJwt(creds.appId, creds.pem), { fetch }, repo)).token
+        // Phase C (default OFF): GH_APP_USE_CODE_SESSIONS=1 dispatches jobs as
+        // watchable /code sessions instead of throwaway sandboxes. The flag
+        // only ADDS the codeSessions dep — absent, the worker's sandbox path
+        // is byte-identical to before.
+        let codeSessions: ReturnType<typeof makeCodeSessions> | undefined
+        if (useCodeSessions(env)) {
+          if (!env.JARVIS_LOCAL_API_TOKEN || !env.GH_APP_BRIDGE_TOKEN) {
+            log('GH_APP_USE_CODE_SESSIONS is on but JARVIS_LOCAL_API_TOKEN / GH_APP_BRIDGE_TOKEN is missing — dispatches will 401 and jobs will fail')
+          }
+          codeSessions = makeCodeSessions(
+            codeSessionConfigFromEnv(env),
+            { fetch, mintToken, log },
+            // Same per-job cap as the sandbox path (GH_APP_TIMEOUT_SEC).
+            { timeoutMs: caps.timeoutSec * 1000 },
+          )
+          log('code-session mode ON (GH_APP_USE_CODE_SESSIONS) — jobs run as watchable /code sessions')
+        }
+        return startWorker({
+          store,
+          mintToken,
+          runInSandbox: (job, token) =>
+            runInSandbox(job, token, {
+              spawnContainer: dockerSpawnContainer(env.DOCKER_HOST ?? 'tcp://docker-proxy:2375', env.GH_APP_SANDBOX_NETWORK),
+              image: env.GH_APP_SANDBOX_IMAGE ?? DEFAULT_SANDBOX_IMAGE,
+              timeoutSec: caps.timeoutSec,
+              // IS_SANDBOX=1 satisfies the CLI's root guard for bypass mode (the
+              // no-internet check is USER_TYPE=ant-only, skipped for self-hosted);
+              // JARVIS_REQUIRE_LOGIN=0 skips the interactive login gate — the
+              // sandbox authenticates to models via the passed provider keys.
+              entryEnv: { ...sandboxEnvPassthrough(env), GH_APP_ALLOWLIST: allowlist.join(','), GH_APP_TRIGGER: trigger, IS_SANDBOX: '1', JARVIS_REQUIRE_LOGIN: '0' },
+            }),
+          ...(codeSessions ? { codeSessions } : {}),
+          // Visible thread feedback: 👀 the trigger, post "working on it",
+          // edit it into the outcome. Best-effort by contract (worker catches).
+          feedback: workerFeedback({ fetch }),
+          dailyCap: caps.dailyCap,
+          concurrency: caps.concurrency,
+          log,
+        })
+      })()
     : null
 
   const port = Number(env.GH_APP_PORT ?? 8790)

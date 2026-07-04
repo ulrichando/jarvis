@@ -162,7 +162,10 @@ function repoDirName(repoFullName: string): string {
 }
 
 export function validRepoFullName(repo: string): boolean {
-  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo);
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) return false;
+  // A charset-valid segment that is nothing but dots (`.` / `..`) is path
+  // traversal, not a repo name — aligned with git-proxy.ts::validName.
+  return repo.split("/").every((seg) => !/^\.+$/.test(seg));
 }
 
 /**
@@ -205,6 +208,15 @@ export async function launchContainerSession(
      *  globally-enabled connector. The web /code UI always sends an explicit
      *  array (opt-in; empty by default), so no connector rides along unasked. */
     connectors?: string[];
+    /** EXTERNAL bot job (gh-app dispatch): a repo-scoped GitHub App
+     *  installation token (~1h). Persisted into the session container meta so
+     *  the scoped git proxy + host-side PR path authenticate with it. It is
+     *  NEVER placed in the container (env or argv) — the container only ever
+     *  holds the per-session cap token. Absent for normal /code sessions,
+     *  which then behave byte-identically to before this field existed. */
+    installationToken?: string;
+    /** The App bot's login — the committer identity for external bot jobs. */
+    botLogin?: string;
   },
 ): Promise<void> {
   const exec = opts.exec ?? realDockerExec;
@@ -353,6 +365,10 @@ export async function launchContainerSession(
       repo: repoFullName,
       extraRepos,
       gitCapToken,
+      // External bot jobs only — the spread keeps the persisted JSON
+      // byte-identical for normal sessions (no extra keys).
+      ...(opts.installationToken ? { installationToken: opts.installationToken } : {}),
+      ...(opts.botLogin ? { botLogin: opts.botLogin } : {}),
     });
     if (cacheHit) emit(store, sessionId, "◌ Restored cached environment (setup skipped)");
   });
@@ -380,7 +396,9 @@ export async function launchContainerSession(
   // credential helper can authorize them. Non-fatal: a hiccup warns rather than
   // aborting the launch.
   const configureGitProxy = async (): Promise<void> => {
-    const login = gh.login || "jarvis";
+    // External bot jobs commit as the App bot, not the connected user.
+    const login =
+      opts.installationToken && opts.botLogin ? opts.botLogin : gh.login || "jarvis";
     const email = `${login}@users.noreply.github.com`;
     const cmd = [
       `git config --global user.name ${shq(login)}`,
@@ -839,12 +857,27 @@ export async function createContainerPR(
 ): Promise<{ url: string; branch: string } | { error: string }> {
   const session = findSession(store, sessionId);
   const meta = session?.container_json
-    ? (JSON.parse(session.container_json) as { container?: string; repo?: string })
+    ? (JSON.parse(session.container_json) as {
+        container?: string;
+        repo?: string;
+        installationToken?: string;
+      })
     : null;
   if (!meta?.container || !meta.repo) return { error: "This session has no container." };
   const workdir = `/workspace/${repoDirName(meta.repo)}`;
   const branch = `jarvis/session-${sessionId.slice(0, 8)}`;
-  const msg = "Changes from a Jarvis /code session";
+  // External bot jobs (gh-app dispatch) stamp the watchable session URL into
+  // the commit + PR so a reviewer opens the exact run from GitHub (claude.ai/
+  // code parity: transcript link + session trailer). The URL is the one baked
+  // into the worker env at launch (JARVIS_SESSION_URL, from the dispatch's
+  // explicit publicOrigin). Normal sessions have no installationToken →
+  // sessionUrl stays null → message + body are byte-identical to today.
+  const sessionUrl = meta.installationToken
+    ? (getWorkerSpec(store, sessionId)?.env.JARVIS_SESSION_URL ?? null)
+    : null;
+  const msg = sessionUrl
+    ? `Changes from a Jarvis /code session\n\nJarvis-Session: ${sessionUrl}`
+    : "Changes from a Jarvis /code session";
   // In-container: cut a session branch if needed, commit pending work, push
   // (through the git proxy). Report base + branch back; the PR is opened
   // host-side so the container never needs a GitHub token.
@@ -856,7 +889,10 @@ export async function createContainerPR(
     `if [ "$cur" = "$base" ] || [ -z "$cur" ] || [ "$cur" = "HEAD" ]; then git checkout -b ${shq(branch)} 2>/dev/null || git checkout ${shq(branch)} 2>/dev/null; cur=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); fi`,
     // Commit anything pending so the branch reflects all the work.
     `if [ -n "$(git status --porcelain)" ]; then git add -A && git commit -m ${shq(msg)} >/dev/null 2>&1; fi`,
-    `git push -u origin "$cur" >/dev/null 2>&1`,
+    // Push with the exit code CHECKED — a silent 401 here (e.g. an expired
+    // installation token on an external job) used to yield a compare URL to a
+    // branch that never reached the remote.
+    `if git push -u origin "$cur" >/dev/null 2>&1; then printf '@@PUSH@@ok\\n'; else printf '@@PUSH@@fail\\n'; fi`,
     `printf '@@BASE@@%s\\n' "$base"`,
     `printf '@@BRANCH@@%s\\n' "$cur"`,
   ].join("\n");
@@ -868,20 +904,34 @@ export async function createContainerPR(
   }
   const base = /@@BASE@@(.*)/.exec(out)?.[1]?.trim() || "main";
   const cur = /@@BRANCH@@(.*)/.exec(out)?.[1]?.trim() || branch;
+  // An explicit push failure is a hard error — never hand back a compare/PR
+  // URL for a branch that was not pushed. (A missing marker stays lenient for
+  // back-compat with pre-marker callers/mocks; the real script always emits it.)
+  if (/@@PUSH@@fail/.test(out)) {
+    return {
+      error:
+        `git push failed for ${cur} — the branch was NOT pushed to ${meta.repo}. ` +
+        (meta.installationToken
+          ? "The App installation token (~1h) may have expired — re-dispatch the job."
+          : "Check the GitHub connection (Settings) and the git proxy log."),
+    };
+  }
   const compareUrl = `https://github.com/${meta.repo}/compare/${base}...${cur}?expand=1`;
 
   // `compose` just hands back GitHub's new-PR URL (no PR opened).
   if (mode === "compose") return { url: compareUrl, branch: cur };
 
   const { openPullRequest } = await import("../connectors/github");
-  const pr = await openPullRequest(
-    meta.repo,
-    cur,
-    base,
-    "Changes from a Jarvis /code session",
-    "From a Jarvis /code session.",
-    mode === "draft",
-  );
+  const prTitle = "Changes from a Jarvis /code session";
+  // Default body kept as-is; external jobs only APPEND the session link.
+  const prBody = sessionUrl
+    ? `From a Jarvis /code session.\n\nSession: ${sessionUrl}\n\nJarvis-Session: ${sessionUrl}`
+    : "From a Jarvis /code session.";
+  // External bot jobs authenticate the PR with the injected installation
+  // token; normal sessions call exactly as before (no trailing arg).
+  const pr = meta.installationToken
+    ? await openPullRequest(meta.repo, cur, base, prTitle, prBody, mode === "draft", meta.installationToken)
+    : await openPullRequest(meta.repo, cur, base, prTitle, prBody, mode === "draft");
   // On any REST failure, fall back to a clickable compare URL.
   if (!pr.ok) return { url: compareUrl, branch: cur };
   return { url: pr.url, branch: cur };
@@ -900,7 +950,11 @@ export async function mergeContainerPR(
 ): Promise<{ merged: true } | { error: string }> {
   const session = findSession(store, sessionId);
   const meta = session?.container_json
-    ? (JSON.parse(session.container_json) as { container?: string; repo?: string })
+    ? (JSON.parse(session.container_json) as {
+        container?: string;
+        repo?: string;
+        installationToken?: string;
+      })
     : null;
   if (!meta?.container || !meta.repo) return { error: "This session has no container." };
   const workdir = `/workspace/${repoDirName(meta.repo)}`;
@@ -914,9 +968,15 @@ export async function mergeContainerPR(
   }
   if (!cur || cur === "HEAD") return { error: "No branch to merge." };
   const { githubPrStatus, mergePullRequest } = await import("../connectors/github");
-  const status = await githubPrStatus(meta.repo, cur);
+  // External bot jobs authenticate lookup + merge with the injected
+  // installation token; normal sessions call exactly as before (no extra arg).
+  const status = meta.installationToken
+    ? await githubPrStatus(meta.repo, cur, meta.installationToken)
+    : await githubPrStatus(meta.repo, cur);
   if (!status.ok || !status.status.pr) return { error: "No open pull request for this branch." };
-  const merged = await mergePullRequest(meta.repo, status.status.pr.number);
+  const merged = meta.installationToken
+    ? await mergePullRequest(meta.repo, status.status.pr.number, "squash", meta.installationToken)
+    : await mergePullRequest(meta.repo, status.status.pr.number);
   return merged.ok ? { merged: true } : { error: merged.error };
 }
 

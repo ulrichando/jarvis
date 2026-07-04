@@ -670,6 +670,235 @@ describe('launchContainerSession', () => {
     expect(flat.find((c) => c.includes('cli.tsx'))!).toContain('--mcp-config /jarvis-config/.mcp.json')
   })
 
+  // ── External bot jobs (gh-app dispatch): injected installation token ────
+  test('external job: bot committer identity, token in meta but NEVER in the container', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    const { calls, exec } = fakeDocker()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'https://0wlan.com',
+      proxyHealthy: async () => false,
+      installationToken: 'ghs_inst_tok',
+      botLogin: 'jarvis-gh-bot',
+      exec,
+    })
+    const flat = calls.map((c) => c.join(' '))
+    // Committer = the App bot, not the connected user ('tester').
+    const gitcfg = flat.find((c) => c.includes('git config --global user.name'))!
+    expect(gitcfg).toContain("user.name 'jarvis-gh-bot'")
+    expect(gitcfg).toContain("user.email 'jarvis-gh-bot@users.noreply.github.com'")
+    expect(gitcfg).not.toContain('tester')
+    // The installation token lands in the session meta (for the git proxy +
+    // host-side PR)…
+    const meta = JSON.parse(findSession(store, sessionId)!.container_json!)
+    expect(meta.installationToken).toBe('ghs_inst_tok')
+    expect(meta.botLogin).toBe('jarvis-gh-bot')
+    // …but NEVER in any docker command line (the claude.ai/code invariant:
+    // tokens stay host-side; the container only holds the per-session cap).
+    expect(flat.some((c) => c.includes('ghs_inst_tok'))).toBe(false)
+  })
+
+  test('regression: no installationToken → committer + persisted meta byte-identical', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    const { calls, exec } = fakeDocker()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec,
+    })
+    const gitcfg = calls.map((c) => c.join(' ')).find((c) => c.includes('git config --global user.name'))!
+    expect(gitcfg).toContain("user.name 'tester'")
+    expect(gitcfg).toContain("user.email 'tester@users.noreply.github.com'")
+    // The meta JSON carries EXACTLY today's keys — no external-job fields.
+    const meta = JSON.parse(findSession(store, sessionId)!.container_json!)
+    expect(Object.keys(meta).sort()).toEqual(['container', 'extraRepos', 'gitCapToken', 'repo'])
+  })
+
+  test('createContainerPR passes the injected token to openPullRequest for external jobs', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'https://0wlan.com',
+      proxyHealthy: async () => false,
+      installationToken: 'ghs_inst_tok',
+      botLogin: 'jarvis-gh-bot',
+      exec: fakeDocker().exec,
+    })
+    const exec: DockerExec = async () => ({ stdout: '@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' })
+    const { openPullRequest } = await import('@/lib/connectors/github')
+    vi.mocked(openPullRequest).mockClear()
+    const r = await createContainerPR(store, sessionId, exec)
+    expect('error' in r).toBe(false)
+    expect(vi.mocked(openPullRequest)).toHaveBeenCalledWith(
+      'owner/demo', 'jarvis/session-x', 'main', expect.any(String), expect.any(String), false, 'ghs_inst_tok',
+    )
+  })
+
+  test('regression: createContainerPR without a token calls openPullRequest exactly as today', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec: fakeDocker().exec,
+    })
+    const exec: DockerExec = async () => ({ stdout: '@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' })
+    const { openPullRequest } = await import('@/lib/connectors/github')
+    vi.mocked(openPullRequest).mockClear()
+    await createContainerPR(store, sessionId, exec)
+    // 6 args — NO trailing token argument on the normal path.
+    expect(vi.mocked(openPullRequest)).toHaveBeenCalledWith(
+      'owner/demo', 'jarvis/session-x', 'main', expect.any(String), expect.any(String), false,
+    )
+  })
+
+  // ── Session-URL stamping (external bot jobs): PR body + commit trailer link
+  // back to the watchable run, claude.ai/code style. Normal sessions unchanged.
+  test('external job: PR body + in-container commit carry the session URL + Jarvis-Session trailer', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'https://0wlan.com',
+      proxyHealthy: async () => false,
+      installationToken: 'ghs_inst_tok',
+      botLogin: 'jarvis-gh-bot',
+      exec: fakeDocker().exec,
+    })
+    const sessionUrl = `https://0wlan.com/code/session_${sessionId}`
+    const calls: string[][] = []
+    const exec: DockerExec = async (args) => {
+      calls.push(args)
+      return args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: '@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' }
+        : { stdout: '', stderr: '' }
+    }
+    const { openPullRequest } = await import('@/lib/connectors/github')
+    vi.mocked(openPullRequest).mockClear()
+    const r = await createContainerPR(store, sessionId, exec)
+    expect('error' in r).toBe(false)
+    // Commit message (in-container script) carries the trailer.
+    const script = calls.map((c) => c.join(' ')).find((c) => c.includes('@@BRANCH@@'))!
+    expect(script).toContain(`Jarvis-Session: ${sessionUrl}`)
+    // PR body carries the link + trailer (title stays the default).
+    const [, , , title, body] = vi.mocked(openPullRequest).mock.calls[0]
+    expect(title).toBe('Changes from a Jarvis /code session')
+    expect(body).toContain('From a Jarvis /code session.') // default kept, only appended
+    expect(body).toContain(`/code/session_${sessionId}`)
+    expect(body).toContain(`Jarvis-Session: ${sessionUrl}`)
+  })
+
+  // ── Push-failure surfacing: a swallowed `git push` 401 (e.g. an expired
+  // installation token) must NOT yield a compare/PR URL for a branch that
+  // never reached the remote — the caller gets a clear error instead.
+  test('createContainerPR surfaces a failed in-container push instead of a compare URL', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec: fakeDocker().exec,
+    })
+    const scripts: string[] = []
+    const exec: DockerExec = async (args) => {
+      scripts.push(args.join(' '))
+      return args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: '@@PUSH@@fail\n@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' }
+        : { stdout: '', stderr: '' }
+    }
+    const { openPullRequest } = await import('@/lib/connectors/github')
+    vi.mocked(openPullRequest).mockClear()
+    const r = await createContainerPR(store, sessionId, exec)
+    expect('error' in r).toBe(true)
+    if (!('error' in r)) return
+    expect(r.error.toLowerCase()).toContain('push')
+    // No PR is opened for an unpushed branch.
+    expect(vi.mocked(openPullRequest)).not.toHaveBeenCalled()
+    // The real in-container script checks the push exit code + emits the marker.
+    const script = scripts.find((s) => s.includes('@@BRANCH@@'))!
+    expect(script).toContain('@@PUSH@@')
+    expect(script).toContain('git push -u origin')
+  })
+
+  test('createContainerPR compose mode also surfaces a failed push (no compose URL to an unpushed branch)', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec: fakeDocker().exec,
+    })
+    const exec: DockerExec = async (args) =>
+      args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: '@@PUSH@@fail\n@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' }
+        : { stdout: '', stderr: '' }
+    const r = await createContainerPR(store, sessionId, exec, 'compose')
+    expect('error' in r).toBe(true)
+  })
+
+  test('createContainerPR happy path with an explicit push-ok marker is unchanged', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec: fakeDocker().exec,
+    })
+    const exec: DockerExec = async (args) =>
+      args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: '@@PUSH@@ok\n@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' }
+        : { stdout: '', stderr: '' }
+    const r = await createContainerPR(store, sessionId, exec)
+    expect('error' in r).toBe(false)
+    if ('error' in r) return
+    expect(r.url).toBe('https://github.com/owner/demo/pull/7')
+    expect(r.branch).toBe('jarvis/session-x')
+  })
+
+  test('regression: normal session PR body + commit message are stamped-free (byte-identical)', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec: fakeDocker().exec,
+    })
+    const calls: string[][] = []
+    const exec: DockerExec = async (args) => {
+      calls.push(args)
+      return args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: '@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' }
+        : { stdout: '', stderr: '' }
+    }
+    const { openPullRequest } = await import('@/lib/connectors/github')
+    vi.mocked(openPullRequest).mockClear()
+    await createContainerPR(store, sessionId, exec)
+    const script = calls.map((c) => c.join(' ')).find((c) => c.includes('@@BRANCH@@'))!
+    expect(script).toContain("git commit -m 'Changes from a Jarvis /code session'")
+    expect(script).not.toContain('Jarvis-Session')
+    const [, , , title, body] = vi.mocked(openPullRequest).mock.calls[0]
+    expect(title).toBe('Changes from a Jarvis /code session')
+    expect(body).toBe('From a Jarvis /code session.')
+  })
+
   test('multi-repo: clones each extra repo alongside the primary', async () => {
     const sessionId = makeSession()
     const store = getStore()
@@ -699,11 +928,39 @@ describe('launchContainerSession', () => {
     })
     const exec: DockerExec = async (args) =>
       args.some((a) => a.includes('rev-parse')) ? { stdout: 'jarvis/session-x\n', stderr: '' } : { stdout: '', stderr: '' }
-    const { mergePullRequest } = await import('@/lib/connectors/github')
+    const { mergePullRequest, githubPrStatus } = await import('@/lib/connectors/github')
+    vi.mocked(githubPrStatus).mockClear()
     const r = await mergeContainerPR(store, sessionId, exec)
     expect('merged' in r).toBe(true)
-    // PR number 7 comes from the githubPrStatus mock.
+    // PR number 7 comes from the githubPrStatus mock. Normal sessions call
+    // exactly as today — NO trailing token argument on either lookup or merge.
+    expect(vi.mocked(githubPrStatus)).toHaveBeenCalledWith('owner/demo', 'jarvis/session-x')
     expect(vi.mocked(mergePullRequest)).toHaveBeenCalledWith('owner/demo', 7)
+  })
+
+  test('mergeContainerPR threads the injected installation token to pr-status + merge for external jobs', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'https://0wlan.com',
+      proxyHealthy: async () => false,
+      installationToken: 'ghs_inst_tok',
+      botLogin: 'jarvis-gh-bot',
+      exec: fakeDocker().exec,
+    })
+    const exec: DockerExec = async (args) =>
+      args.some((a) => a.includes('rev-parse')) ? { stdout: 'jarvis/session-x\n', stderr: '' } : { stdout: '', stderr: '' }
+    const { mergePullRequest, githubPrStatus } = await import('@/lib/connectors/github')
+    vi.mocked(githubPrStatus).mockClear()
+    vi.mocked(mergePullRequest).mockClear()
+    const r = await mergeContainerPR(store, sessionId, exec)
+    expect('merged' in r).toBe(true)
+    // Both host-side REST calls authenticate as the App installation, not the
+    // box owner's PAT.
+    expect(vi.mocked(githubPrStatus)).toHaveBeenCalledWith('owner/demo', 'jarvis/session-x', 'ghs_inst_tok')
+    expect(vi.mocked(mergePullRequest)).toHaveBeenCalledWith('owner/demo', 7, 'squash', 'ghs_inst_tok')
   })
 
   test('stopContainerSession removes the recorded container', async () => {
@@ -768,6 +1025,18 @@ describe('validRepoFullName', () => {
     expect(validRepoFullName('owner/repo/extra')).toBe(false)
     expect(validRepoFullName('owner/../etc')).toBe(false)
     expect(validRepoFullName('owner/re po')).toBe(false)
+  })
+
+  test('rejects dot-only segments (traversal), aligned with the git proxy validName', () => {
+    // `.` / `..` pass the charset regex but are path traversal, not repo names.
+    expect(validRepoFullName('owner/..')).toBe(false)
+    expect(validRepoFullName('owner/.')).toBe(false)
+    expect(validRepoFullName('../repo')).toBe(false)
+    expect(validRepoFullName('./repo')).toBe(false)
+    expect(validRepoFullName('../..')).toBe(false)
+    // Leading dots are fine when the segment isn't ONLY dots (.github is real).
+    expect(validRepoFullName('owner/.github')).toBe(true)
+    expect(validRepoFullName('.dotorg/repo')).toBe(true)
   })
 })
 

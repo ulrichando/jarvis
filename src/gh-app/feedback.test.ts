@@ -162,6 +162,63 @@ describe('gh-app feedback messages', () => {
   })
 })
 
+describe('gh-app feedback session links (Phase C)', () => {
+  const S = 'https://0wlan.com/code/session_ab12'
+
+  test('workingMessage with a session url adds the watch-live line', () => {
+    const m = workingMessage('add HELLO.md', S)
+    expect(m).toContain(`▶︎ Watch it live: ${S}`)
+    expect(m).toContain('> add HELLO.md')
+    expect(m).toContain(SELF_MARKER)
+  })
+
+  test('workingMessage WITHOUT a session url is byte-identical to the sandbox shape', () => {
+    expect(workingMessage('add HELLO.md')).toBe(
+      `🤖 **jarvis-gh-bot** is on it — working on:\n\n> add HELLO.md\n\n${SELF_MARKER}`,
+    )
+  })
+
+  test('resultMessage: PR + session url → "watch the run" link alongside the PR', () => {
+    const m = resultMessage({ ok: true, prUrl: 'https://github.com/o/r/pull/12', sessionUrl: S })
+    expect(m).toBe(
+      `✅ Done — opened **#12** for this. [Review it](https://github.com/o/r/pull/12) · [watch the run](${S}).\n\n${SELF_MARKER}`,
+    )
+  })
+
+  test('resultMessage: session url rides every outcome shape (noChanges / plain ok / failed)', () => {
+    expect(resultMessage({ ok: true, noChanges: true, sessionUrl: S })).toContain(`[watch the run](${S})`)
+    expect(resultMessage({ ok: true, sessionUrl: S })).toContain(`[watch the run](${S})`)
+    expect(resultMessage({ ok: false, error: 'x', sessionUrl: S })).toContain(`[watch the run](${S})`)
+  })
+
+  test('resultMessage WITHOUT a session url stays byte-identical to the sandbox shapes', () => {
+    expect(resultMessage({ ok: true, prUrl: 'https://github.com/o/r/pull/12' })).toBe(
+      `✅ Done — opened **#12** for this. [Review it](https://github.com/o/r/pull/12).\n\n${SELF_MARKER}`,
+    )
+    expect(resultMessage({ ok: true, prUrl: 'https://github.com/o/r/compare/x' })).toBe(
+      `✅ Done — [Review it](https://github.com/o/r/compare/x).\n\n${SELF_MARKER}`,
+    )
+    expect(resultMessage({ ok: true, noChanges: true })).toBe(`ℹ️ No changes were needed for this.\n\n${SELF_MARKER}`)
+    expect(resultMessage({ ok: true })).toBe(`✅ Done.\n\n${SELF_MARKER}`)
+    expect(resultMessage({ ok: false, error: 'x' })).toBe(`⚠️ Couldn't complete this — \`x\`.\n\n${SELF_MARKER}`)
+  })
+
+  test('acknowledge threads the session url into the posted tracking comment', async () => {
+    const { deps, calls } = fakeFetch(() => jsonRes(201, { id: 990 }))
+    const id = await acknowledge('o/r', { issueNumber: 7, task: 't', sessionUrl: S }, TOKEN, deps)
+    expect(id).toBe(990)
+    expect(bodyOf(calls[0]!).body).toContain(`▶︎ Watch it live: ${S}`)
+  })
+
+  test('workerFeedback binding forwards the session url to acknowledge', async () => {
+    const { deps, calls } = fakeFetch((url) =>
+      url.endsWith('/issues/7/comments') ? jsonRes(201, { id: 56 }) : jsonRes(201, {}))
+    const job = { id: 1, installationId: 5, repo: 'o/r', issueNumber: 7, task: 'do it', isPR: false }
+    expect(await workerFeedback(deps).acknowledge(job, TOKEN, S)).toBe(56)
+    expect(bodyOf(calls[0]!).body).toContain(`▶︎ Watch it live: ${S}`)
+  })
+})
+
 describe('gh-app workerFeedback binding', () => {
   const job = { id: 1, installationId: 5, repo: 'o/r', issueNumber: 7, task: 'do it', isPR: false, commentId: 4242 }
 

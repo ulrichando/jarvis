@@ -1,6 +1,6 @@
 // src/gh-app/jobs.test.ts
 import { test, expect, describe } from 'bun:test'
-import { enqueue, claimNext, markDone, markFailed, setTrackingComment, countToday, ensureSchema, jobStore, type SqlClient } from './jobs.js'
+import { enqueue, claimNext, markDone, markFailed, setTrackingComment, setSession, countToday, ensureSchema, jobStore, type SqlClient } from './jobs.js'
 
 // Recording fake sql client: captures (text, params) and returns canned rows
 // per call — tests never touch Postgres.
@@ -99,5 +99,23 @@ describe('gh-app jobs', () => {
     const alters = calls.filter((c) => /alter table gh_app_jobs add column if not exists/i.test(c.text))
     expect(alters.some((c) => /comment_id bigint/i.test(c.text))).toBe(true)
     expect(alters.some((c) => /tracking_comment_id bigint/i.test(c.text))).toBe(true)
+  })
+
+  test('setSession records the /code session id + url on the row (Phase C)', async () => {
+    const { sql, calls } = fakeSql(() => [])
+    await setSession(sql, 9, 'ab12', 'https://0wlan.com/code/session_ab12')
+    expect(calls.length).toBe(1)
+    expect(calls[0]!.text).toMatch(/update gh_app_jobs set session_id/i)
+    expect(calls[0]!.params).toEqual(['ab12', 'https://0wlan.com/code/session_ab12', 9])
+  })
+
+  test('ensureSchema migrates pre-session tables (session_id/session_url); jobStore binds setSession', async () => {
+    const { sql, calls } = fakeSql(() => [])
+    await ensureSchema(sql)
+    const alters = calls.filter((c) => /alter table gh_app_jobs add column if not exists/i.test(c.text))
+    expect(alters.some((c) => /session_id text/i.test(c.text))).toBe(true)
+    expect(alters.some((c) => /session_url text/i.test(c.text))).toBe(true)
+    await jobStore(sql).setSession(3, 'cd34', 'https://0wlan.com/code/session_cd34')
+    expect(calls.some((c) => /update gh_app_jobs set session_id/i.test(c.text))).toBe(true)
   })
 })

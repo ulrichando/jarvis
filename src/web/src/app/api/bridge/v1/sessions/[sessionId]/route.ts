@@ -16,6 +16,7 @@ import {
 import { extractBearer } from '@/lib/bridge/auth'
 import { getUserId } from '@/lib/auth-helpers'
 import { bridgeError } from '@/lib/bridge/errors'
+import { ccrSessionStatus } from '@/lib/bridge/ccrCompat'
 
 // Authorize a mutation on a session two ways: the CLI worker presents a
 // bearer (v1-permissive — any non-empty token); the /code browser presents a
@@ -47,7 +48,12 @@ async function authorizeMutation(
 
 // GET /api/bridge/v1/sessions/{id} — single-session fetch, used by the CLI's
 // reconnect paths (getBridgeSession). Returns the fields the CLI reads:
-// environment_id (for --session-id resume) and title.
+// environment_id (for --session-id resume) and title. `status` (additive,
+// Phase C) is the ccrSessionStatus run state the gh-app worker polls for its
+// done-signal (running/idle/requires_action/archived); `worker_reported`
+// (additive, C1) tells the poller whether the container CLI worker has EVER
+// PUT state — before that, `status:'running'` is only ccrSessionStatus's
+// fall-through default and must not arm the poller's done-signal.
 export async function GET(
   _req: Request,
   ctx: { params: Promise<{ sessionId: string }> },
@@ -63,6 +69,8 @@ export async function GET(
       title: session.title,
       archived: !!session.archived,
       created_at: session.created_at,
+      status: ccrSessionStatus(session),
+      worker_reported: !!session.worker_state_json,
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
