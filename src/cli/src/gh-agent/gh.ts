@@ -97,8 +97,9 @@ export async function listMentions(
   )
   // Word-boundary trigger match: '@jarvis do x' hits; '@jarvisfan99',
   // '@jarvis-bot', 'me@jarvis' don't. '-' counts as a word char because
-  // GitHub logins may contain it.
-  const triggerRe = new RegExp(`(?<![\\w-])${escapeRegExp(trigger)}(?![\\w-])`)
+  // GitHub logins may contain it. 'i' because GitHub logins/mentions are
+  // case-insensitive (@talos-agents == @Talos-agents).
+  const triggerRe = new RegExp(`(?<![\\w-])${escapeRegExp(trigger)}(?![\\w-])`, 'i')
   const mentions = comments
     .filter(c => !c.body.includes(SELF_MARKER) && triggerRe.test(c.body))
     .map(c => ({

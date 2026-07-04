@@ -170,7 +170,7 @@ describe('git proxy route', () => {
   // ── External bot jobs (gh-app dispatch): per-session injected installation
   // token. Sessions WITHOUT one must keep today's global-PAT path byte-identical.
   test('session meta with installationToken → forwards THAT token, never reads the PAT', async () => {
-    seed('owner/demo', 'git_cap', { installationToken: 'ghs_inst_tok', botLogin: 'jvs' })
+    seed('owner/demo', 'git_cap', { installationToken: 'ghs_inst_tok', botLogin: 'talos' })
     vi.mocked(getGithubToken).mockClear()
     const { GET } = await route()
     const req = new Request('http://h/info/refs?service=git-upload-pack', { headers: { authorization: basic('git_cap') } })

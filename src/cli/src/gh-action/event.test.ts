@@ -85,3 +85,25 @@ test('explicit allowlist is an AND-narrowing on the login', () => {
   expect(isAuthorized('OWNER', ['someoneelse'], 'ulrichando')).toBe(false)
   expect(isAuthorized('OWNER', ['ulrichando'], 'ulrichando')).toBe(true)
 })
+
+test('trigger match + task extraction are case-insensitive (autocomplete inserts @Talos-agents, humans type @talos-agents)', () => {
+  const mixed = parseActionEvent({ eventName: 'issue_comment', repo: 'o/n', trigger: '@Talos-agents', payload: {
+    action: 'created',
+    issue: { number: 9 },
+    comment: { body: 'hey @talos-agents fix the header', user: { login: 'ulrichando' }, author_association: 'OWNER' },
+  } })
+  expect(mixed?.task).toBe('fix the header')
+  const canonical = parseActionEvent({ eventName: 'issue_comment', repo: 'o/n', trigger: '@talos-agents', payload: {
+    action: 'created',
+    issue: { number: 9 },
+    comment: { body: '@Talos-Agents fix the header', user: { login: 'ulrichando' }, author_association: 'OWNER' },
+  } })
+  expect(canonical?.task).toBe('fix the header')
+  // Word boundaries still hold under 'i': a longer login is NOT our trigger.
+  const boundary = parseActionEvent({ eventName: 'issue_comment', repo: 'o/n', trigger: '@Talos-agents', payload: {
+    action: 'created',
+    issue: { number: 9 },
+    comment: { body: '@talos-agents-2 fix the header', user: { login: 'ulrichando' }, author_association: 'OWNER' },
+  } })
+  expect(boundary).toBeNull()
+})

@@ -18,7 +18,7 @@ export type WorkerDeps = {
   /** Mint a short-lived installation token scoped to the job's repo. */
   mintToken: (installationId: number, repo: string) => Promise<string>
   runInSandbox: (job: Job, token: string) => Promise<SandboxResult>
-  /** Merge a PR (the `@jvs merge` command). When present, a merge
+  /** Merge a PR (the `@talos merge` command). When present, a merge
    * command on a PR is handled here (a direct API merge) instead of a code
    * task. Absent → merge commands fall through to the normal run path. */
   mergePr?: (
@@ -64,7 +64,7 @@ export async function runWorkerOnce(deps: WorkerDeps): Promise<RunOutcome> {
   }
   try {
     token = await deps.mintToken(job.installationId, job.repo)
-    // `@jvs merge [squash|merge|rebase]` on a PR → merge it directly
+    // `@talos merge [squash|merge|rebase]` on a PR → merge it directly
     // via the API (a distinct action, not a code task). Author-gated upstream
     // (webhook allowlist); GitHub itself refuses an unmergeable PR (conflicts /
     // required checks) and we report the reason. Only on a PR + when the merge

@@ -63,7 +63,7 @@ beforeEach(() => {
 
 describe('GET /api/bridge/v1/sessions/{id}/pr-status', () => {
   test('external bot-job session → githubPrStatus authenticates with the injected installation token', async () => {
-    makeContainerSession('feed00aa11223344', { installationToken: 'ghs_inst_tok', botLogin: 'jvs' })
+    makeContainerSession('feed00aa11223344', { installationToken: 'ghs_inst_tok', botLogin: 'talos' })
     const { GET } = await route()
     const res = await GET(get('feed00aa11223344', 'jarvis/session-x'), {
       params: Promise.resolve({ sessionId: 'feed00aa11223344' }),
