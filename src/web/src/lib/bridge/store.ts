@@ -268,6 +268,16 @@ export function initSchema(db: Database.Database): void {
   } catch {
     /* column already present */
   }
+  // Additive (2026-07-04, API tokens): a user-assigned name for a bridge token.
+  // NULL = the legacy auto-minted Remote Control token (one per user, kept
+  // stable by getOrCreateBridgeToken); non-NULL = a named "API token" the user
+  // generated in Settings → API Tokens. Both authenticate identically via
+  // resolveBridgeToken, so a named token grants the same API access.
+  try {
+    db.exec('ALTER TABLE bridge_tokens ADD COLUMN name TEXT')
+  } catch {
+    /* column already present */
+  }
   db.exec(`CREATE TABLE IF NOT EXISTS session_groups (
     group_id TEXT PRIMARY KEY,
     user_id TEXT,
@@ -305,10 +315,12 @@ export function initSchema(db: Database.Database): void {
   db.pragma('foreign_keys = ON')
 }
 
-/** Get-or-create the caller's long-lived CLI token (one per user). */
+/** Get-or-create the caller's long-lived Remote Control token — the single
+ *  UNNAMED token per user (name IS NULL). Named API tokens (below) are separate
+ *  rows, so generating those never shadows or rotates this one. */
 export function getOrCreateBridgeToken(store: Store, userId: string): string {
   const existing = store.db
-    .prepare('SELECT token FROM bridge_tokens WHERE user_id = ? LIMIT 1')
+    .prepare('SELECT token FROM bridge_tokens WHERE user_id = ? AND name IS NULL LIMIT 1')
     .get(userId) as { token: string } | undefined
   if (existing) return existing.token
   const token = `jbr_${randomBytes(24).toString('base64url')}`
@@ -318,7 +330,8 @@ export function getOrCreateBridgeToken(store: Store, userId: string): string {
   return token
 }
 
-/** Resolve a CLI token to its owning user id, or null. Touches last_used_at. */
+/** Resolve any bridge token (Remote Control OR named API token) to its owning
+ *  user id, or null. Touches last_used_at. */
 export function resolveBridgeToken(store: Store, token: string): string | null {
   const row = store.db
     .prepare('SELECT user_id FROM bridge_tokens WHERE token = ?')
@@ -328,6 +341,69 @@ export function resolveBridgeToken(store: Store, token: string): string | null {
     .prepare('UPDATE bridge_tokens SET last_used_at = ? WHERE token = ?')
     .run(Date.now(), token)
   return row.user_id
+}
+
+/** One row in the user's Settings → API Tokens list. The token secret itself
+ *  is NEVER returned here — only a masked hint (shown once at creation). */
+export interface ApiTokenRow {
+  name: string
+  created_at: number
+  last_used_at: number | null
+  /** Last 4 chars of the secret, for "which token is this" disambiguation. */
+  hint: string
+}
+
+/** A user's named API tokens, newest first. */
+export function listApiTokens(store: Store, userId: string): ApiTokenRow[] {
+  const rows = store.db
+    .prepare(
+      // rowid DESC as tiebreak: same-ms creations still sort newest-first
+      // deterministically (created_at alone isn't unique at ms resolution).
+      `SELECT token, name, created_at, last_used_at FROM bridge_tokens
+       WHERE user_id = ? AND name IS NOT NULL ORDER BY created_at DESC, rowid DESC`,
+    )
+    .all(userId) as {
+    token: string
+    name: string
+    created_at: number
+    last_used_at: number | null
+  }[]
+  return rows.map((r) => ({
+    name: r.name,
+    created_at: r.created_at,
+    last_used_at: r.last_used_at,
+    hint: r.token.slice(-4),
+  }))
+}
+
+/** Mint a named API token. Returns the FULL secret (the only time it's exposed)
+ *  or null when the name is already taken for this user (names are the revoke
+ *  handle, so they must be unique per user). */
+export function createApiToken(
+  store: Store,
+  userId: string,
+  name: string,
+): string | null {
+  const clean = name.trim()
+  if (!clean) return null
+  const dup = store.db
+    .prepare('SELECT 1 FROM bridge_tokens WHERE user_id = ? AND name = ? LIMIT 1')
+    .get(userId, clean)
+  if (dup) return null
+  const token = `jbr_${randomBytes(24).toString('base64url')}`
+  store.db
+    .prepare('INSERT INTO bridge_tokens (token, user_id, name, created_at) VALUES (?, ?, ?, ?)')
+    .run(token, userId, clean, Date.now())
+  return token
+}
+
+/** Revoke a named API token by name (scoped to the owner). Returns whether a
+ *  row was removed. Never touches the unnamed Remote Control token. */
+export function revokeApiToken(store: Store, userId: string, name: string): boolean {
+  const info = store.db
+    .prepare('DELETE FROM bridge_tokens WHERE user_id = ? AND name = ? AND name IS NOT NULL')
+    .run(userId, name.trim())
+  return info.changes > 0
 }
 
 function genId(): string {
