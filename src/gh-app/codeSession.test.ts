@@ -88,12 +88,18 @@ describe('gh-app createCodeSession', () => {
 })
 
 describe('gh-app pollUntilDone', () => {
-  const statuses = (list: (string | Error | number)[]) =>
+  // A poll step: plain string = a REPORTED status (the worker has PUT state);
+  // object = explicit control of worker_reported (the pre-connect default is
+  // `status:'running', worker_reported:false` — ccrSessionStatus's
+  // fall-through when no worker_state_json exists yet).
+  type Step = string | { status: string; worker_reported?: boolean } | Error | number
+  const statuses = (list: Step[]) =>
     fakeFetch((_url, _init, n) => {
       const s = list[Math.min(n, list.length) - 1]!
       if (s instanceof Error) throw s
       if (typeof s === 'number') return jsonRes(s, {})
-      return jsonRes(200, { id: 's1', status: s })
+      if (typeof s === 'string') return jsonRes(200, { id: 's1', status: s, worker_reported: true })
+      return jsonRes(200, { id: 's1', status: s.status, worker_reported: s.worker_reported ?? true })
     })
 
   test('resolves done on running → idle; polls with the bearer', async () => {
@@ -107,7 +113,33 @@ describe('gh-app pollUntilDone', () => {
     expect(slept).toEqual([250, 250])
   })
 
-  test('ignores a just-launched pre-pickup idle — only idle AFTER running counts', async () => {
+  test('C1: the real lifecycle — pre-connect running default → init-idle → the actual run → done; never concludes on the init-idle', async () => {
+    // The true status sequence of a fresh session: 'running' is the
+    // fall-through DEFAULT while no worker_state_json exists (container
+    // still booting — zero work done), then the CLI PUTs worker_status
+    // 'idle' at connect BEFORE replaying the seeded task (the init-idle
+    // trap), then the genuine 'running' turn, then the genuine done 'idle'.
+    const { f, calls } = statuses([
+      { status: 'running', worker_reported: false }, // pre-connect default — must NOT arm sawRunning
+      { status: 'running', worker_reported: false },
+      { status: 'idle' },    // init-idle: worker connected, task not started — must NOT read as done
+      { status: 'running' }, // the actual turn — THIS arms sawRunning
+      { status: 'idle' },    // truly done
+    ])
+    const r = await pollUntilDone('s1', cfg, mkDeps(f), { intervalMs: 1, timeoutMs: 60_000 })
+    expect(r).toBe('done')
+    expect(calls.length).toBe(5) // it polled PAST the init-idle (call 3) — done only after the reported running
+  })
+
+  test('C1: default poll interval is 2.5s — tight enough to catch the real running between init-idle and done', async () => {
+    const { f } = statuses(['running', 'idle'])
+    const slept: number[] = []
+    const r = await pollUntilDone('s1', cfg, mkDeps(f, { sleep: async (ms) => { slept.push(ms) } }), { timeoutMs: 60_000 })
+    expect(r).toBe('done')
+    expect(slept).toEqual([2_500])
+  })
+
+  test('ignores a just-launched pre-pickup idle — only idle AFTER a reported running counts', async () => {
     const { f, calls } = statuses(['idle', 'idle', 'running', 'idle'])
     const r = await pollUntilDone('s1', cfg, mkDeps(f), { intervalMs: 1, timeoutMs: 60_000 })
     expect(r).toBe('done')
@@ -195,7 +227,7 @@ describe('gh-app code-session env wiring', () => {
     const { f, calls } = fakeFetch((url) => {
       if (url.endsWith('/gh-app/dispatch')) return jsonRes(200, { session_id: 's9', session_url: 'https://0wlan.com/code/session_s9' })
       if (url.endsWith('/sessions/s9/pr')) return jsonRes(200, { url: 'https://github.com/o/r/pull/3' })
-      return jsonRes(200, { status: calls.length < 3 ? 'running' : 'idle' })
+      return jsonRes(200, { status: calls.length < 3 ? 'running' : 'idle', worker_reported: true })
     })
     const cs = makeCodeSessions(cfg, mkDeps(f), { intervalMs: 1, timeoutMs: 60_000 })
     const s = await cs.create(job)

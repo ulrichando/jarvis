@@ -91,9 +91,18 @@ export async function createCodeSession(
 export type PollOutcome = 'done' | 'requires_action' | 'timeout'
 
 /**
- * Poll the session's `status` until the run finishes. 'done' = `idle`
- * observed AFTER `running` (a just-launched session can read idle before the
- * container worker picks up — never mistake that for completion);
+ * Poll the session's `status` until the run finishes. The true lifecycle of
+ * a fresh session is `running` (the pre-connect DEFAULT — no
+ * worker_state_json yet, zero work done) → `idle` (the CLI worker PUTs
+ * worker_status:'idle' at connect, BEFORE replaying the seeded task) →
+ * `running` (the actual turn) → `idle` (truly done). So (C1):
+ *   - `sawRunning` arms ONLY on a REPORTED running (`worker_reported` true —
+ *     the web GET's "worker_state_json exists" flag), never on the
+ *     pre-connect default;
+ *   - 'done' = `idle` observed after that — the init-idle can never
+ *     conclude the poll;
+ *   - the default interval is 2.5 s, shrinking the window where the real
+ *     `running` slips between two polls.
  * 'requires_action' = the run stopped waiting on a human (open the session);
  * 'timeout' = the total-wait cap elapsed. Transient fetch failures are
  * tolerated — the deadline bounds them.
@@ -104,7 +113,7 @@ export async function pollUntilDone(
   deps: CodeSessionDeps,
   opts: { intervalMs?: number; timeoutMs?: number } = {},
 ): Promise<PollOutcome> {
-  const intervalMs = opts.intervalMs ?? 5_000
+  const intervalMs = opts.intervalMs ?? 2_500
   const timeoutMs = opts.timeoutMs ?? 900_000 // mirrors the sandbox's 900 s default cap
   const now = deps.now ?? Date.now
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
@@ -116,10 +125,12 @@ export async function pollUntilDone(
         headers: authHeaders(cfg),
       })
       if (res.ok) {
-        const raw = (await res.json()) as { status?: unknown }
+        const raw = (await res.json()) as { status?: unknown; worker_reported?: unknown }
         const s = typeof raw.status === 'string' ? raw.status : ''
         if (s === 'requires_action') return 'requires_action'
-        if (s === 'running') sawRunning = true
+        // Only a REPORTED running counts — pre-connect, 'running' is just
+        // the web's fall-through default and means nothing has run.
+        if (s === 'running' && raw.worker_reported === true) sawRunning = true
         else if (s === 'idle' && sawRunning) return 'done'
       }
     } catch (e) {
