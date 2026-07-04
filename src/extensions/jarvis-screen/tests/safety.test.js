@@ -84,6 +84,14 @@ describe("safety.siteDecision (#3 per-site perms, #4 blocked categories)", () =>
   test("user allow-list OVERRIDES an enabled blocked category", () => {
     expect(safety.siteDecision("chase.com", perms({ blockCategories: true, allowed: ["chase.com"] })).allow).toBe(true);
   });
+  test("explicitly allowed host auto-confirms (Always allow actions on this site)", () => {
+    const r = safety.siteDecision("github.com", perms({ allowed: ["github.com"] }));
+    expect(r.allow).toBe(true);
+    expect(r.autoConfirm).toBe(true);
+  });
+  test("an allowed-by-default host does NOT auto-confirm", () => {
+    expect(safety.siteDecision("example.com", perms()).autoConfirm).toBeUndefined();
+  });
   test("empty host (chrome://, blank tab) is allowed — nothing web to act on", () => {
     expect(safety.siteDecision("", perms({ blockCategories: true })).allow).toBe(true);
   });

@@ -161,12 +161,13 @@ async function dispatchCommand(cmd) {
   if (!self.JARVIS_SAFETY || typeof self.JARVIS_SAFETY.gate !== "function") {
     return { ok: false, error: "safety module unavailable — refusing command" };
   }
-  const gate = self.JARVIS_SAFETY.gate({ action, args, confirmed });
-  if (gate.allow !== true) return gate;
-  // Site permissions (#3 user allow/block, #4 default blocked categories) — a
-  // second gate: even a confirmed command is refused on a disallowed site.
+  // Site permissions first (#3 allow/block, #4 blocked categories): a blocked
+  // site refuses everything; an EXPLICITLY allowed site auto-confirms (the
+  // user's "Always allow actions on this site" grant), skipping the safety prompt.
   const site = await checkSitePermission(action, args);
   if (site.allow !== true) return { ok: false, error: site.reason || "site blocked", site_blocked: true };
+  const gate = self.JARVIS_SAFETY.gate({ action, args, confirmed: confirmed || site.autoConfirm === true });
+  if (gate.allow !== true) return gate;
   try {
     switch (action) {
       case "navigate":    return await bgNavigate(args);
@@ -349,6 +350,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === "jarvis_chat") { sendChat(msg.text, msg.mode, msg.image); sendResponse({ ok: true }); return; }
   if (msg && msg.type === "jarvis_screenshot") { bgScreenshot().then(sendResponse).catch(() => sendResponse({ ok: false })); return true; }
   if (msg && msg.type === "jarvis_active_url") { activeTabUrl().then((url) => sendResponse({ ok: true, url })).catch(() => sendResponse({ ok: false })); return true; }
+  if (msg && msg.type === "jarvis_allow_site") {
+    (async () => {
+      const host = hostOf(await activeTabUrl());
+      const perms = await getSitePermissions();
+      if (host && !perms.allowed.includes(host)) await setSitePermissions({ allowed: [...perms.allowed, host] });
+      sendResponse({ ok: true, host });
+    })();
+    return true;
+  }
   if (msg && msg.type === "jarvis_agent_approval") {
     try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "agent_approval_decision", approvalId: msg.approvalId, approved: !!msg.approved })); } catch {}
     sendResponse({ ok: true }); return;

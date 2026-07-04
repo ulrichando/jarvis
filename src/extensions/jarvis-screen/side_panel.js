@@ -155,23 +155,33 @@ function handleAgentEvent(ev) {
 function renderApproval(approvalId, label) {
   setThinking(false);
   $("emptyState")?.remove();
-  const card = document.createElement("div");
-  card.className = "approval";
-  const t = document.createElement("div"); t.className = "at"; t.textContent = `Approve this action? ${label}`;
-  const row = document.createElement("div"); row.className = "arow";
-  const yes = document.createElement("button"); yes.className = "btn btn-primary"; yes.textContent = "Approve";
-  const no = document.createElement("button"); no.className = "btn"; no.textContent = "Deny";
-  no.style.cssText = "background:var(--panel);color:var(--fg)";
+  const card = document.createElement("div"); card.className = "approval";
+  const hdr = document.createElement("div"); hdr.className = "at"; hdr.textContent = "New permissions required"; card.appendChild(hdr);
+  const desc = document.createElement("div"); desc.style.cssText = "font-size:12.5px;color:var(--muted-fg);margin:1px 0 10px"; desc.textContent = label; card.appendChild(desc);
   const decide = (approved) => {
     chrome.runtime.sendMessage({ type: "jarvis_agent_approval", approvalId, approved }).catch(() => {});
     card.remove();
     if (approved) setThinking(true);
   };
-  yes.addEventListener("click", () => decide(true));
-  no.addEventListener("click", () => decide(false));
-  row.append(yes, no); card.append(t, row);
-  stream.appendChild(card);
-  stream.scrollTop = stream.scrollHeight;
+  const opt = (text, sub, primary, onClick) => {
+    const b = document.createElement("button"); b.className = "btn" + (primary ? " btn-primary" : "");
+    b.style.cssText = "display:block;width:100%;text-align:left;margin-top:6px" + (primary ? "" : ";background:var(--panel);color:var(--fg)");
+    const main = document.createElement("div"); main.textContent = text; b.appendChild(main);
+    if (sub) { const s = document.createElement("div"); s.style.cssText = "font-size:11px;opacity:.65;margin-top:1px"; s.textContent = sub; b.appendChild(s); }
+    b.addEventListener("click", onClick); return b;
+  };
+  // "Always allow" adds the current site to the approved list so future actions
+  // there auto-confirm (background dispatchCommand → siteDecision.autoConfirm).
+  card.appendChild(opt("Allow this action", "", true, () => decide(true)));
+  card.appendChild(opt("Decline", "", false, () => decide(false)));
+  card.appendChild(opt("Always allow actions on this site", "Browse, click, and type", false, async () => {
+    await chrome.runtime.sendMessage({ type: "jarvis_allow_site" }).catch(() => {});
+    decide(true);
+  }));
+  const foot = document.createElement("div"); foot.style.cssText = "font-size:11px;color:var(--faint-fg);margin-top:10px;line-height:1.4";
+  foot.textContent = "Jarvis will not purchase items, create accounts, or bypass captchas without your input.";
+  card.appendChild(foot);
+  stream.appendChild(card); stream.scrollTop = stream.scrollHeight;
 }
 
 async function send() {
