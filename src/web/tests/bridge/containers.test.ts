@@ -14,6 +14,7 @@ import {
   getInboundFloorSeq,
   setSessionContainer,
   archiveSession,
+  clearSessionContainer,
 } from '@/lib/bridge/store'
 import {
   launchContainerSession,
@@ -420,6 +421,71 @@ describe('launchContainerSession', () => {
       stderr: '',
     }))
     expect('error' in result).toBe(true)
+  })
+
+  test('getContainerDiff persists a snapshot and serves it (stale) once the container is gone', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec: fakeDocker().exec,
+    })
+    const fakeOut = [
+      '@@BRANCH@@jarvis/add-vision',
+      '@@BASE@@origin/main',
+      '@@AHEAD@@1',
+      '@@STAT@@',
+      ' ulrich.py | 3 +++',
+      ' 1 file changed, 3 insertions(+)',
+      '@@DIFF@@',
+      'diff --git a/ulrich.py b/ulrich.py',
+      '+import cv2',
+    ].join('\n')
+    const diffExec: DockerExec = async (args) =>
+      args[0] === 'exec' && args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: fakeOut, stderr: '' }
+        : { stdout: '', stderr: '' }
+    // A summary poll (the header chip) captures the snapshot — including the
+    // diff body, via its one-time internal full read on stat change.
+    const summary = await getContainerDiff(store, sessionId, diffExec, true)
+    expect('error' in summary).toBe(false)
+
+    // Container stopped/removed → exec rejects. Serve the capture, marked stale.
+    const deadExec: DockerExec = async () => {
+      throw new Error('container not running')
+    }
+    const afterDeath = await getContainerDiff(store, sessionId, deadExec)
+    expect('error' in afterDeath).toBe(false)
+    if ('error' in afterDeath) return
+    expect(afterDeath.stale).toBe(true)
+    expect(afterDeath.branch).toBe('jarvis/add-vision')
+    expect(afterDeath.stat).toContain('1 file changed')
+    expect(afterDeath.diff).toContain('+import cv2')
+
+    // An EMPTY live read (agent fetch caught base up / tree reverted) also
+    // falls back to the capture rather than blanking the panel.
+    const emptyOut = ['@@BRANCH@@jarvis/add-vision', '@@BASE@@origin/main', '@@AHEAD@@0', '@@STAT@@', '@@DIFF@@'].join('\n')
+    const emptyExec: DockerExec = async (args) =>
+      args[0] === 'exec' && args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: emptyOut, stderr: '' }
+        : { stdout: '', stderr: '' }
+    const emptyFallback = await getContainerDiff(store, sessionId, emptyExec)
+    expect('error' in emptyFallback).toBe(false)
+    if ('error' in emptyFallback) return
+    expect(emptyFallback.stale).toBe(true)
+    expect(emptyFallback.diff).toContain('+import cv2')
+
+    // Even after reclaim clears container_json entirely (the 12h idle reaper),
+    // the session's changes stay viewable.
+    clearSessionContainer(store, sessionId)
+    const afterReclaim = await getContainerDiff(store, sessionId, deadExec)
+    expect('error' in afterReclaim).toBe(false)
+    if ('error' in afterReclaim) return
+    expect(afterReclaim.stale).toBe(true)
+    expect(afterReclaim.stat).toContain('1 file changed')
   })
 
   test('createContainerPR pushes in-container and opens the PR host-side', async () => {

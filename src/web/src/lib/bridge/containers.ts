@@ -10,9 +10,11 @@ import {
   clearSessionContainer,
   findEnvironment,
   findSession,
+  getDiffSnapshot,
   getWorkerSpec,
   parseEnvironmentConfig,
   resumeFloorSeq,
+  setDiffSnapshot,
   setInboundFloorSeq,
   setSessionContainer,
   setSessionToken,
@@ -924,7 +926,19 @@ export type ContainerDiff = {
   stat: string;
   /** Unified diff text (all session changes vs base, incl. new files). */
   diff: string;
+  /** True when this is the last CAPTURED diff, served because the live
+   *  container state is gone (reclaimed/stopped) or empty. */
+  stale?: boolean;
 };
+
+/** Cap a stored diff body so a giant patch can't bloat the sessions row.
+ *  ponytail: flat cap; per-file trimming if a real session ever hits it. */
+const DIFF_SNAPSHOT_MAX = 500_000;
+function capDiff(diff: string): string {
+  return diff.length > DIFF_SNAPSHOT_MAX
+    ? diff.slice(0, DIFF_SNAPSHOT_MAX) + "\n… (diff truncated for storage)"
+    : diff;
+}
 
 /**
  * Read what the agent changed in a container session — the claude.ai/code
@@ -944,43 +958,79 @@ export async function getContainerDiff(
   const meta = session?.container_json
     ? (JSON.parse(session.container_json) as { container?: string; repo?: string })
     : null;
-  if (!meta?.container || !meta.repo) return { error: "no container" };
-  const workdir = `/workspace/${repoDirName(meta.repo)}`;
-  // summaryOnly skips the (potentially huge) full diff — just branch/ahead/stat,
-  // for the cheap header +/- indicator that polls frequently.
-  const script = [
-    `cd ${workdir} 2>/dev/null || exit 0`,
-    `base=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)`,
-    `git add -A -N >/dev/null 2>&1`,
-    `printf '@@BRANCH@@%s\\n' "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"`,
-    `printf '@@BASE@@%s\\n' "$base"`,
-    `printf '@@AHEAD@@%s\\n' "$(git rev-list --count "$base"..HEAD 2>/dev/null || echo 0)"`,
-    `printf '@@STAT@@\\n'`,
-    `git --no-pager diff --stat "$base" 2>/dev/null`,
-    `printf '@@DIFF@@\\n'`,
-    ...(summaryOnly ? [] : [`git --no-pager diff "$base" 2>/dev/null`]),
-  ].join("; ");
-  let out: string;
-  try {
-    out = (await exec(["exec", meta.container, "sh", "-c", script])).stdout;
-  } catch (e) {
-    return { error: e instanceof Error ? e.message : String(e) };
-  }
-  const grab = (re: RegExp) => re.exec(out)?.[1]?.trim() ?? "";
-  const statStart = out.indexOf("@@STAT@@");
-  const diffStart = out.indexOf("@@DIFF@@");
-  const stat =
-    statStart >= 0 && diffStart >= 0
-      ? out.slice(statStart + "@@STAT@@".length, diffStart).trim()
-      : "";
-  const diff = diffStart >= 0 ? out.slice(diffStart + "@@DIFF@@".length).replace(/^\n/, "") : "";
-  return {
-    branch: grab(/@@BRANCH@@(.*)/),
-    base: grab(/@@BASE@@(.*)/),
-    ahead: Number(grab(/@@AHEAD@@(.*)/)) || 0,
-    stat,
-    diff,
+  // The last captured diff, served (marked stale) whenever live state is
+  // unavailable or empty — the container is ephemeral (idle reclaim,
+  // redeploys, an agent fetch catching base up), the session's changes
+  // shouldn't be. Without this the "View changes" chip + Diff panel silently
+  // go blank once the container disappears.
+  const snapshot = (): ContainerDiff | null => {
+    const snap = getDiffSnapshot(store, sessionId);
+    if (!snap) return null;
+    const { branch, base, ahead, stat, diff } = snap;
+    return { branch, base, ahead, stat, diff, stale: true };
   };
+  if (!meta?.container || !meta.repo) return snapshot() ?? { error: "no container" };
+  const workdir = `/workspace/${repoDirName(meta.repo)}`;
+  // summary skips the (potentially huge) full diff — just branch/ahead/stat,
+  // for the cheap header +/- indicator that polls frequently.
+  const read = async (summary: boolean): Promise<ContainerDiff | { error: string }> => {
+    const script = [
+      `cd ${workdir} 2>/dev/null || exit 0`,
+      `base=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)`,
+      `git add -A -N >/dev/null 2>&1`,
+      `printf '@@BRANCH@@%s\\n' "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"`,
+      `printf '@@BASE@@%s\\n' "$base"`,
+      `printf '@@AHEAD@@%s\\n' "$(git rev-list --count "$base"..HEAD 2>/dev/null || echo 0)"`,
+      `printf '@@STAT@@\\n'`,
+      `git --no-pager diff --stat "$base" 2>/dev/null`,
+      `printf '@@DIFF@@\\n'`,
+      ...(summary ? [] : [`git --no-pager diff "$base" 2>/dev/null`]),
+    ].join("; ");
+    let out: string;
+    try {
+      out = (await exec(["exec", meta.container!, "sh", "-c", script])).stdout;
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+    const grab = (re: RegExp) => re.exec(out)?.[1]?.trim() ?? "";
+    const statStart = out.indexOf("@@STAT@@");
+    const diffStart = out.indexOf("@@DIFF@@");
+    const stat =
+      statStart >= 0 && diffStart >= 0
+        ? out.slice(statStart + "@@STAT@@".length, diffStart).trim()
+        : "";
+    const diff = diffStart >= 0 ? out.slice(diffStart + "@@DIFF@@".length).replace(/^\n/, "") : "";
+    return {
+      branch: grab(/@@BRANCH@@(.*)/),
+      base: grab(/@@BASE@@(.*)/),
+      ahead: Number(grab(/@@AHEAD@@(.*)/)) || 0,
+      stat,
+      diff,
+    };
+  };
+  const live = await read(summaryOnly);
+  // Container stopped/removed, or worktree no longer differs from base →
+  // fall back to the snapshot so the session's changes stay viewable.
+  if ("error" in live) return snapshot() ?? live;
+  if (!live.stat.trim()) return snapshot() ?? live;
+  // Persist non-empty reads. Summary reads carry no diff body, so when the
+  // stat actually changed take ONE full read for the snapshot (rare: only
+  // when the working tree changed since the last capture).
+  const prev = getDiffSnapshot(store, sessionId);
+  if (summaryOnly) {
+    if (prev?.stat !== live.stat) {
+      const full = await read(false);
+      if (!("error" in full) && full.stat.trim()) {
+        setDiffSnapshot(store, sessionId, { ...full, diff: capDiff(full.diff), at: Date.now() });
+      }
+    }
+  } else {
+    const capped = capDiff(live.diff);
+    if (prev?.stat !== live.stat || prev?.diff !== capped) {
+      setDiffSnapshot(store, sessionId, { ...live, diff: capped, at: Date.now() });
+    }
+  }
+  return live;
 }
 
 /**

@@ -74,6 +74,129 @@ function pendingAction(w: WorkerInfo | null): {
   };
 }
 
+// AskUserQuestion payload shape (mirrors the CLI tool's input schema).
+type AskQuestion = {
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options?: { label: string; description?: string }[];
+};
+
+function askQuestions(p: ReturnType<typeof pendingAction>): AskQuestion[] | null {
+  if (!p || p.tool_name !== "AskUserQuestion") return null;
+  const qs = (p.input as { questions?: unknown } | undefined)?.questions;
+  if (!Array.isArray(qs) || qs.length === 0) return null;
+  const valid = qs.filter(
+    (q): q is AskQuestion => !!q && typeof (q as AskQuestion).question === "string",
+  );
+  return valid.length ? valid : null;
+}
+
+/** The claude.ai-style question card: Jarvis asked a multiple-choice question
+ *  (AskUserQuestion) — render the options as clickable chips instead of the
+ *  generic Allow/Deny permission card. Submits {...input, answers} exactly
+ *  like the CLI's own question UI (answers keyed by question text; multi-
+ *  select joins labels with ", "; free text rides as the answer itself). */
+function QuestionsCard({
+  questions,
+  onSubmit,
+  onSkip,
+}: {
+  questions: AskQuestion[];
+  onSubmit: (answers: Record<string, string>) => void;
+  onSkip: () => void;
+}) {
+  const [picked, setPicked] = useState<Record<string, string[]>>({});
+  const [other, setOther] = useState<Record<string, string>>({});
+  const answerOf = (q: AskQuestion): string =>
+    other[q.question]?.trim() || (picked[q.question] ?? []).join(", ");
+  const allAnswered = questions.every((q) => answerOf(q).length > 0);
+  const submit = () => {
+    const answers: Record<string, string> = {};
+    for (const q of questions) answers[q.question] = answerOf(q);
+    onSubmit(answers);
+  };
+  const toggle = (q: AskQuestion, label: string) => {
+    setPicked((prev) => {
+      const cur = prev[q.question] ?? [];
+      const next = q.multiSelect
+        ? cur.includes(label)
+          ? cur.filter((l) => l !== label)
+          : [...cur, label]
+        : [label];
+      return { ...prev, [q.question]: next };
+    });
+    // Single question, single-select, no free text → answering IS submitting
+    // (chip-click UX like claude.ai). Multi anything → explicit Submit below.
+    if (!q.multiSelect && questions.length === 1 && !other[q.question]?.trim()) {
+      onSubmit({ [q.question]: label });
+    }
+  };
+  return (
+    <div className="rounded-xl border border-border bg-card/60 p-3.5">
+      {questions.map((q) => (
+        <div key={q.question} className="mb-3 last:mb-1">
+          {q.header && (
+            <span className="mb-1 inline-block rounded bg-accent/50 px-1.5 py-0.5 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground">
+              {q.header}
+            </span>
+          )}
+          <p className="text-[13px] font-medium text-foreground">{q.question}</p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {(q.options ?? []).map((o) => {
+              const on = (picked[q.question] ?? []).includes(o.label);
+              return (
+                <button
+                  key={o.label}
+                  type="button"
+                  title={o.description}
+                  onClick={() => toggle(q, o.label)}
+                  className={`rounded-full border px-3 py-1 text-[12px] transition-colors ${
+                    on
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border text-foreground/85 hover:bg-accent/40"
+                  }`}
+                >
+                  {o.label}
+                </button>
+              );
+            })}
+          </div>
+          <input
+            type="text"
+            value={other[q.question] ?? ""}
+            onChange={(e) => setOther((prev) => ({ ...prev, [q.question]: e.target.value }))}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && answerOf(q).length > 0 && allAnswered) submit();
+            }}
+            placeholder="Other…"
+            className="mt-2 w-full rounded-md border border-border/60 bg-transparent px-2.5 py-1 text-[12.5px] text-foreground placeholder:text-muted-foreground/50 focus:border-border focus:outline-none"
+          />
+        </div>
+      ))}
+      {(questions.length > 1 || questions.some((q) => q.multiSelect) || Object.values(other).some((t) => t.trim())) && (
+        <div className="mt-2 flex items-center gap-2">
+          <button
+            type="button"
+            disabled={!allAnswered}
+            onClick={submit}
+            className="rounded-md bg-primary px-3 py-1 text-[12px] font-medium text-primary-foreground disabled:opacity-50"
+          >
+            Submit
+          </button>
+          <button
+            type="button"
+            onClick={onSkip}
+            className="rounded-md border border-border px-3 py-1 text-[12px] text-foreground hover:bg-accent/40"
+          >
+            Skip
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // One row of the session-title dropdown. Every item is a real action (no
 // decorative stubs) — `sub` shows a chevron for expandable groups, `active`
 // a check for the current transcript view, `danger` for Delete.
@@ -454,6 +577,15 @@ export function CodeSession({
   const [answered, setAnswered] = useState<Set<string>>(new Set());
   // Cheap +/- summary for the header indicator (full diff lives in the panel).
   const [diffStat, setDiffStat] = useState<{ adds: number; dels: number } | null>(null);
+  // Branch + staleness from the summary poll — key the post-turn suggestion
+  // chips (stale = captured diff, container gone → PR creation impossible).
+  const [diffBranch, setDiffBranch] = useState<string>("");
+  const [diffStale, setDiffStale] = useState(false);
+  // The branch's PR (if any) for the suggestion chips; looked up when a turn
+  // completes, set directly when "Create pull request" succeeds.
+  const [prInfo, setPrInfo] = useState<{ url: string; number?: number } | null>(null);
+  const [creatingPr, setCreatingPr] = useState(false);
+  const [suggestErr, setSuggestErr] = useState<string | null>(null);
   // Server-synced pinned message uuids (fetched once; passed to MessageActions).
   const [pinnedUuids, setPinnedUuids] = useState<Set<string>>(new Set());
   // The container init steps (status events) collapse into one "Initialized
@@ -490,6 +622,10 @@ export function CodeSession({
     setLive(null);
     setAnswered(new Set());
     setInitOpen(true);
+    setDiffBranch("");
+    setDiffStale(false);
+    setPrInfo(null);
+    setSuggestErr(null);
     initAutoCollapsed.current = false;
     pendingSendRef.current = false;
     let active = true;
@@ -591,10 +727,13 @@ export function CodeSession({
       try {
         const r = await fetch(`/api/bridge/v1/sessions/${sessionId}/diff?summary=1`);
         if (r.ok && active) {
-          const stat = ((await r.json()) as { stat?: string }).stat ?? "";
+          const j = (await r.json()) as { stat?: string; branch?: string; stale?: boolean };
+          const stat = j.stat ?? "";
           const adds = Number(/(\d+) insertion/.exec(stat)?.[1] ?? 0);
           const dels = Number(/(\d+) deletion/.exec(stat)?.[1] ?? 0);
           setDiffStat(adds || dels ? { adds, dels } : null);
+          setDiffBranch(j.branch ?? "");
+          setDiffStale(!!j.stale);
         }
       } catch {
         /* transient */
@@ -734,6 +873,51 @@ export function CodeSession({
     onRunningChange?.(busy);
   }, [busy, onRunningChange]);
 
+  // Turn is over and the session has changes → look up whether the branch
+  // already has a PR, powering the claude.ai-style suggestion chips below the
+  // transcript (Create pull request / View pull request / Review changes).
+  const turnIdle = !busy && !live;
+  useEffect(() => {
+    if (!turnIdle || !diffBranch) return;
+    let active = true;
+    fetch(`/api/bridge/v1/sessions/${sessionId}/pr-status?branch=${encodeURIComponent(diffBranch)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: { pr?: { url: string; number: number } | null } | null) => {
+        if (active && j !== null) setPrInfo(j?.pr ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [turnIdle, diffBranch, sessionId]);
+
+  // The suggestion-chip "Create pull request" — same host action as the Diff
+  // panel's button (commits pending work, pushes, opens the PR host-side).
+  const createPrQuick = async () => {
+    setCreatingPr(true);
+    setSuggestErr(null);
+    try {
+      const r = await fetch(`/api/bridge/v1/sessions/${sessionId}/pr`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "full" }),
+      });
+      const j = (await r.json()) as { url?: string; error?: { message?: string } | string };
+      if (r.ok && j.url) {
+        setPrInfo({ url: j.url });
+        window.open(j.url, "_blank", "noopener");
+      } else {
+        setSuggestErr(
+          (typeof j.error === "string" ? j.error : j.error?.message) ?? "Could not create PR",
+        );
+      }
+    } catch {
+      setSuggestErr("Could not create PR");
+    } finally {
+      setCreatingPr(false);
+    }
+  };
+
   // Desktop notification when a turn ends or the session needs input, but only
   // if the tab is backgrounded (claude.ai/code notifies you to come back).
   const prevRunningRef = useRef(false);
@@ -761,8 +945,12 @@ export function CodeSession({
   const answerPermission = (
     action: NonNullable<ReturnType<typeof pendingAction>>,
     behavior: "allow" | "deny",
+    // AskUserQuestion answers ride along as a full-replacement input
+    // ({...input, answers}) — the shape the CLI's own question UI submits.
+    updatedInput?: Record<string, unknown>,
   ) => {
     setAnswered((prev) => new Set(prev).add(action.request_id));
+    const finalInput = updatedInput ?? action.input;
     post({
       permission: {
         request_id: action.request_id,
@@ -770,9 +958,7 @@ export function CodeSession({
         // Approve = run with the original input (pending_action.input); the
         // CLI treats updatedInput as a full replacement, so echoing it back
         // unchanged is the "yes, do that" answer.
-        ...(behavior === "allow" && action.input
-          ? { updated_input: action.input }
-          : {}),
+        ...(behavior === "allow" && finalInput ? { updated_input: finalInput } : {}),
       },
     }).catch((err: unknown) => {
       setSendError(err instanceof Error ? err.message : String(err));
@@ -1050,7 +1236,17 @@ export function CodeSession({
             );
           })}
 
-          {pending && !answered.has(pending.request_id) && (
+          {pending && !answered.has(pending.request_id) && askQuestions(pending) && (
+            <QuestionsCard
+              questions={askQuestions(pending)!}
+              onSubmit={(answers) =>
+                answerPermission(pending, "allow", { ...(pending.input ?? {}), answers })
+              }
+              onSkip={() => answerPermission(pending, "deny")}
+            />
+          )}
+
+          {pending && !answered.has(pending.request_id) && !askQuestions(pending) && (
             <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3">
               <p className="text-[13px] font-medium text-foreground">
                 Permission needed: <span className="font-mono">{pending.tool_name}</span>
@@ -1089,6 +1285,42 @@ export function CodeSession({
           {(waiting || running) && !live && (
             <div className="flex items-center gap-2 pt-1 text-orange-500">
               <span className="inline-block animate-pulse text-[18px] leading-none">✳</span>
+            </div>
+          )}
+
+          {/* Post-turn suggestions (claude.ai/code parity): the session has
+              changes — offer the obvious next actions instead of going quiet.
+              "Create pull request" needs the live container, so it hides when
+              the diff is a captured snapshot (container reclaimed). */}
+          {turnIdle && diffStat && (
+            <div className="flex flex-wrap items-center gap-2 pt-1.5">
+              {prInfo ? (
+                <a
+                  href={prInfo.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center rounded-full border border-border px-3 py-1 text-[12px] text-foreground/85 hover:bg-accent/40"
+                >
+                  View pull request{prInfo.number ? ` #${prInfo.number}` : ""} ↗
+                </a>
+              ) : diffStale ? null : (
+                <button
+                  type="button"
+                  onClick={createPrQuick}
+                  disabled={creatingPr}
+                  className="inline-flex items-center rounded-full border border-border px-3 py-1 text-[12px] text-foreground/85 hover:bg-accent/40 disabled:opacity-60"
+                >
+                  {creatingPr ? "Creating pull request…" : "Create pull request"}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => onTogglePanel("diff")}
+                className="inline-flex items-center rounded-full border border-border px-3 py-1 text-[12px] text-foreground/85 hover:bg-accent/40"
+              >
+                Review changes
+              </button>
+              {suggestErr && <span className="text-[11.5px] text-red-500">{suggestErr}</span>}
             </div>
           )}
         </div>
