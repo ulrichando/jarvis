@@ -11,6 +11,7 @@ function memStore(initial: NewJob[], startedToday = 0) {
   const done: number[] = []
   const failed: { id: number; error: string }[] = []
   const tracked: { id: number; trackingCommentId: number }[] = []
+  const sessions: { id: number; sessionId: string; sessionUrl: string }[] = []
   let today = startedToday
   const store: JobStore = {
     enqueue: async (j) => { queued.push({ ...j, id: nextId++ }); return nextId - 1 },
@@ -18,9 +19,10 @@ function memStore(initial: NewJob[], startedToday = 0) {
     markDone: async (id) => { done.push(id) },
     markFailed: async (id, error) => { failed.push({ id, error }) },
     setTrackingComment: async (id, trackingCommentId) => { tracked.push({ id, trackingCommentId }) },
+    setSession: async (id, sessionId, sessionUrl) => { sessions.push({ id, sessionId, sessionUrl }) },
     countToday: async () => today,
   }
-  return { store, queued, done, failed, tracked }
+  return { store, queued, done, failed, tracked, sessions }
 }
 
 const job = (n: number): NewJob => ({ installationId: 555, repo: 'o/r', issueNumber: n, task: `t${n}`, isPR: false })
@@ -222,6 +224,115 @@ describe('gh-app worker thread feedback', () => {
     expect(await runWorkerOnce(d)).toBe('failed')
     expect(failed[0]!.error).toContain('HTTP 401')
     expect(order).toEqual([])
+  })
+})
+
+describe('gh-app worker code-session path (GH_APP_USE_CODE_SESSIONS)', () => {
+  const SURL = 'https://0wlan.com/code/session_cs1'
+  type CS = NonNullable<WorkerDeps['codeSessions']>
+
+  function csRecorder(over: Partial<CS> = {}) {
+    const order: string[] = []
+    const cs: CS = {
+      create: async () => { order.push('create'); return { sessionId: 'cs1', sessionUrl: SURL } },
+      poll: async () => { order.push('poll'); return 'done' },
+      openPr: async () => { order.push('pr'); return { url: 'https://github.com/o/r/pull/12' } },
+      ...over,
+    }
+    return { cs, order }
+  }
+
+  function fbRecorder() {
+    const order: string[] = []
+    const acked: { jobId: number; token: string; sessionUrl?: string }[] = []
+    const reported: { tracking: number | null; result: { ok: boolean; prUrl?: string; error?: string; sessionUrl?: string } }[] = []
+    const feedback = {
+      acknowledge: async (j: Job, token: string, sessionUrl?: string) => { order.push('ack'); acked.push({ jobId: j.id, token, sessionUrl }); return 77 },
+      report: async (_j: Job, tracking: number | null, result: any) => { order.push('report'); reported.push({ tracking, result }) },
+    }
+    return { feedback, order, acked, reported }
+  }
+
+  test('happy path: create → persist session → ack(with url) → poll → PR → done + report', async () => {
+    const { store, done, sessions, tracked } = memStore([job(1)])
+    const { cs, order: csOrder } = csRecorder()
+    const { feedback, order: fbOrder, acked, reported } = fbRecorder()
+    let sandboxCalls = 0
+    const d = deps(store, { codeSessions: cs, feedback, runInSandbox: async () => { sandboxCalls++; return { ok: true } } })
+    expect(await runWorkerOnce(d)).toBe('ran')
+    expect(sandboxCalls).toBe(0) // flag ON → the sandbox path is never taken
+    expect(csOrder).toEqual(['create', 'poll', 'pr'])
+    expect(fbOrder).toEqual(['ack', 'report'])
+    expect(sessions).toEqual([{ id: 1, sessionId: 'cs1', sessionUrl: SURL }]) // persisted on the job row
+    expect(tracked).toEqual([{ id: 1, trackingCommentId: 77 }])
+    expect(acked).toEqual([{ jobId: 1, token: 'ghs_tok', sessionUrl: SURL }]) // tracking comment can link the live run
+    expect(done).toEqual([1])
+    expect(reported[0]!.result).toEqual({ ok: true, prUrl: 'https://github.com/o/r/pull/12', sessionUrl: SURL })
+  })
+
+  test('dispatch failure → job failed, best-effort report still runs, PR never attempted', async () => {
+    const { store, done, failed, sessions } = memStore([job(1)])
+    const { cs, order } = csRecorder({ create: async () => { throw new Error('code session dispatch failed: HTTP 401') } })
+    const { feedback, reported } = fbRecorder()
+    expect(await runWorkerOnce(deps(store, { codeSessions: cs, feedback }))).toBe('failed')
+    expect(done.length).toBe(0)
+    expect(failed[0]!.error).toContain('HTTP 401')
+    expect(sessions.length).toBe(0)
+    expect(order).toEqual([]) // neither poll nor pr fired
+    expect(reported.length).toBe(1) // thread still resolved
+    expect(reported[0]!.result.ok).toBe(false)
+    expect(reported[0]!.result.error).toContain('HTTP 401')
+  })
+
+  test('poll timeout → job failed with a clear timeout error, report carries the session link', async () => {
+    const { store, failed } = memStore([job(1)])
+    const { cs, order } = csRecorder({ poll: async () => 'timeout' })
+    const { feedback, reported } = fbRecorder()
+    expect(await runWorkerOnce(deps(store, { codeSessions: cs, feedback }))).toBe('failed')
+    expect(failed[0]!.error).toContain('timed out')
+    expect(order).toEqual(['create']) // poll was overridden (not recorded); the point: NO 'pr' on timeout
+    expect(order).not.toContain('pr')
+    expect(reported[0]!.result).toEqual({ ok: false, error: failed[0]!.error, sessionUrl: SURL } as any)
+  })
+
+  test('poll requires_action → job failed pointing at the session to continue', async () => {
+    const { store, failed } = memStore([job(1)])
+    const { cs } = csRecorder({ poll: async () => 'requires_action' })
+    const { feedback, reported } = fbRecorder()
+    expect(await runWorkerOnce(deps(store, { codeSessions: cs, feedback }))).toBe('failed')
+    expect(failed[0]!.error).toContain('requires action')
+    expect(reported[0]!.result.sessionUrl).toBe(SURL)
+  })
+
+  test('openSessionPr throwing → job failed, report still resolves the thread with the link', async () => {
+    const { store, done, failed } = memStore([job(1)])
+    const { cs } = csRecorder({ openPr: async () => { throw new Error('session PR failed: HTTP 400') } })
+    const { feedback, reported } = fbRecorder()
+    expect(await runWorkerOnce(deps(store, { codeSessions: cs, feedback }))).toBe('failed')
+    expect(done.length).toBe(0)
+    expect(failed[0]!.error).toContain('HTTP 400')
+    expect(reported[0]!.result.ok).toBe(false)
+    expect(reported[0]!.result.sessionUrl).toBe(SURL)
+  })
+
+  test('setSession persistence failure is swallowed — the run itself proceeds', async () => {
+    const { store, done } = memStore([job(1)])
+    store.setSession = async () => { throw new Error('pg down') }
+    const { cs, order } = csRecorder()
+    expect(await runWorkerOnce(deps(store, { codeSessions: cs }))).toBe('ran')
+    expect(done).toEqual([1])
+    expect(order).toEqual(['create', 'poll', 'pr'])
+  })
+
+  test('FLAG OFF (no codeSessions dep) → sandbox path byte-identical: runs sandbox, never dispatches/persists a session', async () => {
+    const { store, done, sessions } = memStore([job(1)])
+    let sandboxCalls = 0
+    const d = deps(store, { runInSandbox: async () => { sandboxCalls++; return { ok: true } } })
+    expect(d.codeSessions).toBeUndefined() // default deps carry NO session runner
+    expect(await runWorkerOnce(d)).toBe('ran')
+    expect(sandboxCalls).toBe(1)
+    expect(sessions.length).toBe(0)
+    expect(done).toEqual([1])
   })
 })
 
