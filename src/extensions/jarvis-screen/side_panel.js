@@ -175,8 +175,10 @@ function renderApproval(approvalId, label) {
     if (sub) { const s = document.createElement("div"); s.style.cssText = "font-size:11px;opacity:.65;margin-top:1px"; s.textContent = sub; b.appendChild(s); }
     b.addEventListener("click", onClick); return b;
   };
-  // "Always allow" adds the current site to the approved list so future actions
-  // there auto-confirm (background dispatchCommand → siteDecision.autoConfirm).
+  // "Always allow" adds the current site to the approved list (Settings → Your
+  // approved sites) so ordinary browse/click/type there stops prompting. It does
+  // NOT auto-confirm destructive/sensitive actions — those still prompt even on a
+  // trusted site (see background dispatchCommand; security review 2026-07-03).
   card.appendChild(opt("Allow this action", "", true, () => decide(true)));
   card.appendChild(opt("Decline", "", false, () => decide(false)));
   card.appendChild(opt("Always allow actions on this site", "Browse, click, and type", false, async () => {
