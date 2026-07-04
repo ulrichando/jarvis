@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach, afterEach, vi } from 'vitest'
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openPullRequest, mergePullRequest, githubPrStatus } from '@/lib/connectors/github'
+import { openPullRequest, mergePullRequest, githubPrStatus, listGithubRepos } from '@/lib/connectors/github'
 
 // Hermetic: point the connector at a temp file holding a connected token via
 // JARVIS_CONNECTORS_FILE, instead of mocking node:fs (which doesn't reliably
@@ -153,5 +153,39 @@ describe('input guards (request-forgery / SSRF)', () => {
     await openPullRequest('owner/demo', 'feature/x', 'main', 'T', 'B')
     const secondUrl = String((fetch as ReturnType<typeof vi.fn>).mock.calls[1][0])
     expect(secondUrl).toContain('head=owner:feature%2Fx') // slash encoded, not a raw path break
+  })
+})
+
+describe('listGithubRepos pagination (see ALL repos, not just the first 100)', () => {
+  const repo = (n: number) => ({
+    full_name: `me/r${n}`, private: false, default_branch: 'main', pushed_at: '', html_url: `u${n}`,
+  })
+  const fetchMock = () => fetch as ReturnType<typeof vi.fn>
+
+  test('pages through until a short page — a >100-repo account returns EVERY repo', async () => {
+    const full = Array.from({ length: 100 }, (_, i) => repo(i))
+    const tail = Array.from({ length: 30 }, (_, i) => repo(100 + i))
+    fetchMock()
+      .mockResolvedValueOnce(new Response(JSON.stringify(full), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(tail), { status: 200 }))
+    const r = await listGithubRepos()
+    expect(r.ok).toBe(true)
+    expect(r.ok && r.repos).toHaveLength(130) // NOT capped at 100
+    expect(fetchMock().mock.calls).toHaveLength(2)
+    expect(String(fetchMock().mock.calls[0][0])).toContain('page=1')
+    expect(String(fetchMock().mock.calls[1][0])).toContain('page=2')
+  })
+
+  test('a single short page stops after one request', async () => {
+    fetchMock().mockResolvedValueOnce(new Response(JSON.stringify([repo(1), repo(2)]), { status: 200 }))
+    const r = await listGithubRepos()
+    expect(r.ok && r.repos).toHaveLength(2)
+    expect(fetchMock().mock.calls).toHaveLength(1)
+  })
+
+  test('a 401 mid-listing surfaces a reconnect error', async () => {
+    fetchMock().mockResolvedValueOnce(new Response('nope', { status: 401 }))
+    const r = await listGithubRepos()
+    expect(r.ok).toBe(false)
   })
 })
