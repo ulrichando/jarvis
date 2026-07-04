@@ -9,12 +9,13 @@
 // `makeApp(deps)` is the pure, fully-injected fetch handler (smoke-tested);
 // the import.meta.main block wires real env/Postgres/Docker and starts the
 // worker loop alongside Bun.serve.
+import { timingSafeEqual } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { setupPageHtml, convertManifestCode, type AppCreds } from './manifest.js'
 import { handleWebhook, type WebhookDeps } from './webhook.js'
 import { ensureSchema, jobStore, type SqlClient } from './jobs.js'
-import { appJwt, installationToken } from './token.js'
+import { appJwt, installationToken, installationTokenForRepo, type InstallationToken } from './token.js'
 import { capsFromEnv, startWorker } from './worker.js'
 import { workerFeedback } from './feedback.js'
 import { runInSandbox, DEFAULT_SANDBOX_IMAGE, type SpawnSpec, type SpawnResult } from './runInSandbox.js'
@@ -33,7 +34,27 @@ export type ServerDeps = {
    * convert/overwrite — GitHub reaches the host unauthenticated, so without
    * it anyone could POST their own manifest and take over the app creds. */
   credsExist?: () => Promise<boolean> | boolean
+  /** POST /internal/mint-token — the web's token-REFRESH path for long-lived
+   * bot /code sessions (the dispatch-time token is ~1h; a session that
+   * outlives it 401s on push/PR). Authed by the SAME shared service token the
+   * web's dispatch route verifies (GH_APP_BRIDGE_TOKEN), direction inverted.
+   * Absent (no creds / no bridge token) → the route 404s, byte-identical to
+   * before. */
+  mint?: {
+    serviceToken: string
+    forRepo: (repo: string) => Promise<InstallationToken>
+  }
   log?: (m: string) => void
+}
+
+/** owner/name — same shape the web's dispatch route enforces. */
+const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
+
+function serviceTokenOk(expected: string, req: Request): boolean {
+  const given = req.headers.get('x-gh-app-token') ?? ''
+  const a = Buffer.from(expected, 'utf8')
+  const b = Buffer.from(given, 'utf8')
+  return a.length === b.length && timingSafeEqual(a, b)
 }
 
 export function makeApp(deps: ServerDeps): (req: Request) => Promise<Response> {
@@ -68,6 +89,27 @@ export function makeApp(deps: ServerDeps): (req: Request) => Promise<Response> {
       } catch (e) {
         deps.log?.(`setup/callback: ${e instanceof Error ? e.message : String(e)}`)
         return new Response('conversion failed', { status: 502 })
+      }
+    }
+
+    if (req.method === 'POST' && path === '/internal/mint-token') {
+      const m = deps.mint
+      if (!m?.serviceToken) return new Response('not found', { status: 404 })
+      if (!serviceTokenOk(m.serviceToken, req)) return new Response('unauthorized', { status: 401 })
+      let repo = ''
+      try {
+        const body = (await req.json()) as { repo?: unknown }
+        if (typeof body?.repo === 'string') repo = body.repo.trim()
+      } catch { /* falls through to the shape check */ }
+      if (!REPO_RE.test(repo)) return new Response('repo must be "owner/name"', { status: 400 })
+      try {
+        const t = await m.forRepo(repo)
+        return Response.json({ token: t.token, expiresAt: t.expiresAt })
+      } catch (e) {
+        // token.ts errors are status-only by contract — safe to log, never
+        // contain the JWT/token.
+        deps.log?.(`mint-token ${repo}: ${e instanceof Error ? e.message : String(e)}`)
+        return new Response('mint failed', { status: 502 })
       }
     }
 
@@ -243,6 +285,16 @@ if (import.meta.main) {
     // Re-read on every callback (not the boot-time `creds` snapshot) so the
     // takeover window closes the moment the FIRST callback writes the file.
     credsExist: () => credsFromEnvOrFile(env) !== null,
+    // Token-refresh mint for the web (long-lived bot /code sessions). Shares
+    // the dispatch route's service token — both sides already hold it.
+    ...(creds && env.GH_APP_BRIDGE_TOKEN
+      ? {
+          mint: {
+            serviceToken: env.GH_APP_BRIDGE_TOKEN,
+            forRepo: (repo: string) => installationTokenForRepo(creds.appId, creds.pem, repo, { fetch }),
+          },
+        }
+      : {}),
     log,
   })
 

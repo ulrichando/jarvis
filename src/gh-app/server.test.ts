@@ -199,3 +199,61 @@ describe('gh-app sandboxEnvPassthrough', () => {
     expect(Object.keys(out)).not.toContain('DATABASE_URL')
   })
 })
+
+describe('POST /internal/mint-token', () => {
+  const withMint = (forRepo?: (r: string) => Promise<{ token: string; expiresAt: string }>) => {
+    const minted: string[] = []
+    const h = harness({
+      mint: {
+        serviceToken: 'svc-secret',
+        forRepo: async (r: string) => {
+          minted.push(r)
+          return forRepo ? forRepo(r) : { token: 'ghs_fresh', expiresAt: '2026-07-04T20:00:00Z' }
+        },
+      },
+    })
+    return { ...h, minted }
+  }
+  const mintReq = (token: string | null, body: unknown) =>
+    new Request('http://x/internal/mint-token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(token ? { 'X-GH-App-Token': token } : {}) },
+      body: JSON.stringify(body),
+    })
+
+  test('404 when the mint dep is absent (no creds / no bridge token)', async () => {
+    const { app } = harness()
+    const res = await app(mintReq('svc-secret', { repo: 'o/r' }))
+    expect(res.status).toBe(404)
+  })
+
+  test('401 on missing or wrong service token — nothing minted', async () => {
+    const { app, minted } = withMint()
+    expect((await app(mintReq(null, { repo: 'o/r' }))).status).toBe(401)
+    expect((await app(mintReq('wrong', { repo: 'o/r' }))).status).toBe(401)
+    expect(minted.length).toBe(0)
+  })
+
+  test('400 on a non-owner/name repo — nothing minted', async () => {
+    const { app, minted } = withMint()
+    expect((await app(mintReq('svc-secret', { repo: 'no-slash' }))).status).toBe(400)
+    expect((await app(mintReq('svc-secret', { repo: 'a/b/c' }))).status).toBe(400)
+    expect((await app(mintReq('svc-secret', {}))).status).toBe(400)
+    expect(minted.length).toBe(0)
+  })
+
+  test('mints a fresh token for a valid repo', async () => {
+    const { app, minted } = withMint()
+    const res = await app(mintReq('svc-secret', { repo: 'ulrichando/maxrun' }))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ token: 'ghs_fresh', expiresAt: '2026-07-04T20:00:00Z' })
+    expect(minted).toEqual(['ulrichando/maxrun'])
+  })
+
+  test('502 when minting fails — status only, no token material in the body', async () => {
+    const { app } = withMint(async () => { throw new Error('installation lookup failed: HTTP 404') })
+    const res = await app(mintReq('svc-secret', { repo: 'o/gone' }))
+    expect(res.status).toBe(502)
+    expect(await res.text()).toBe('mint failed')
+  })
+})

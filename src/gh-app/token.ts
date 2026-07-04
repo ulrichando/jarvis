@@ -67,3 +67,25 @@ export async function installationToken(
   }
   return { token: raw.token, expiresAt: raw.expires_at }
 }
+
+/**
+ * Resolve a repo's installation, then mint a repo-scoped token — the web's
+ * REFRESH path (/internal/mint-token). The web knows only the repo (from the
+ * session's container meta); the installation id lives with the app, so look
+ * it up per-mint. Same error discipline as above: status only, never bodies.
+ */
+export async function installationTokenForRepo(
+  appId: number | string,
+  pem: string,
+  repo: string,
+  deps: TokenDeps,
+): Promise<InstallationToken> {
+  const jwt = appJwt(appId, pem)
+  const res = await deps.fetch(`https://api.github.com/repos/${repo}/installation`, {
+    headers: { Authorization: `Bearer ${jwt}`, Accept: 'application/vnd.github+json' },
+  })
+  if (!res.ok) throw new Error(`installation lookup failed: HTTP ${res.status}`)
+  const raw = (await res.json()) as { id?: unknown }
+  if (typeof raw.id !== 'number') throw new Error('installation lookup: response missing id')
+  return installationToken(raw.id, jwt, deps, repo)
+}

@@ -21,6 +21,7 @@ import {
   setWorkerSpec,
   type Store,
 } from "./store";
+import { freshInstallationToken } from "./gh-app-token";
 import { githubStatus } from "../connectors/github";
 import { MODELS_META } from "../ai/models-meta";
 import { listMcpServers } from "../mcp/store";
@@ -1141,7 +1142,7 @@ export async function createContainerPR(
       error:
         `git push failed for ${cur} — the branch was NOT pushed to ${meta.repo}. ` +
         (meta.installationToken
-          ? "The App installation token (~1h) may have expired — re-dispatch the job."
+          ? "The App installation token could not be refreshed (is GH_APP_INTERNAL_URL set and the gh-app healthy?) or has expired — as a last resort, re-dispatch the job."
           : "Check the GitHub connection (Settings) and the git proxy log."),
     };
   }
@@ -1157,9 +1158,13 @@ export async function createContainerPR(
     ? `From a Jarvis /code session.\n\nSession: ${sessionUrl}\n\nJarvis-Session: ${sessionUrl}`
     : "From a Jarvis /code session.";
   // External bot jobs authenticate the PR with the injected installation
-  // token; normal sessions call exactly as before (no trailing arg).
-  const pr = meta.installationToken
-    ? await openPullRequest(meta.repo, cur, base, prTitle, prBody, mode === "draft", meta.installationToken)
+  // token (refreshed through the gh-app when stale — a late PR open can
+  // outlive the ~1h dispatch token); normal sessions call exactly as before.
+  const prToken = meta.installationToken
+    ? await freshInstallationToken(store, sessionId, session)
+    : null;
+  const pr = prToken
+    ? await openPullRequest(meta.repo, cur, base, prTitle, prBody, mode === "draft", prToken)
     : await openPullRequest(meta.repo, cur, base, prTitle, prBody, mode === "draft");
   // On any REST failure, fall back to a clickable compare URL.
   if (!pr.ok) return { url: compareUrl, branch: cur };
@@ -1198,13 +1203,17 @@ export async function mergeContainerPR(
   if (!cur || cur === "HEAD") return { error: "No branch to merge." };
   const { githubPrStatus, mergePullRequest } = await import("../connectors/github");
   // External bot jobs authenticate lookup + merge with the injected
-  // installation token; normal sessions call exactly as before (no extra arg).
-  const status = meta.installationToken
-    ? await githubPrStatus(meta.repo, cur, meta.installationToken)
+  // installation token (refreshed through the gh-app when stale); normal
+  // sessions call exactly as before (no extra arg).
+  const mergeToken = meta.installationToken
+    ? await freshInstallationToken(store, sessionId, session)
+    : null;
+  const status = mergeToken
+    ? await githubPrStatus(meta.repo, cur, mergeToken)
     : await githubPrStatus(meta.repo, cur);
   if (!status.ok || !status.status.pr) return { error: "No open pull request for this branch." };
-  const merged = meta.installationToken
-    ? await mergePullRequest(meta.repo, status.status.pr.number, "squash", meta.installationToken)
+  const merged = mergeToken
+    ? await mergePullRequest(meta.repo, status.status.pr.number, "squash", mergeToken)
     : await mergePullRequest(meta.repo, status.status.pr.number);
   return merged.ok ? { merged: true } : { error: merged.error };
 }
