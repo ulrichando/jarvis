@@ -33,6 +33,7 @@ type SessionSummary = {
   title: string;
   status: "needs_input" | "working" | "done";
   created_at?: number;
+  last_activity_at?: number;
   pinned?: boolean;
   read?: boolean;
   archived?: boolean;
@@ -367,7 +368,7 @@ export function CodeSidebar({
                 </button>
                 {/* time → hidden on hover so the kebab can take its place */}
                 <span className="mr-1 shrink-0 text-[11px] text-sidebar-foreground/40 group-hover:hidden">
-                  {timeAgo(s.created_at)}
+                  {timeAgo(s.last_activity_at ?? s.created_at)}
                 </span>
                 <button
                   type="button"
