@@ -92,6 +92,9 @@ export async function GET(req: Request): Promise<NextResponse> {
           repo: repoLabel(env),
           machine_name: env?.machine_name ?? null,
           created_at: s.created_at,
+          // Last activity (newest event ts) — drives the sidebar's "N ago" so a
+          // long session you just used reads "just now", not its creation time.
+          last_activity_at: last?.created_at ?? s.created_at,
           status,
           pinned: !!s.pinned,
           read: !!s.read,
