@@ -12,7 +12,7 @@ const cfg: CodeSessionConfig = {
   bearerToken: 'local-api-token',
   serviceToken: 'svc-token',
   publicOrigin: 'https://0wlan.com',
-  botLogin: 'talos[bot]',
+  botLogin: 'talos-hq[bot]',
 }
 
 const job: Job = { id: 9, installationId: 555, repo: 'o/r', issueNumber: 7, task: 'fix ci', isPR: false }
@@ -78,7 +78,7 @@ describe('gh-app createCodeSession', () => {
     expect(body).toEqual({
       repo: 'o/r',
       installationToken: 'ghs_inst_tok', // RAW minted token — the route stores it in session meta
-      botLogin: 'talos[bot]',
+      botLogin: 'talos-hq[bot]',
       task: 'fix ci',
       publicOrigin: 'https://0wlan.com',
     })
@@ -310,7 +310,7 @@ describe('gh-app code-session env wiring', () => {
       bearerToken: '',
       serviceToken: '',
       publicOrigin: 'https://0wlan.com',
-      botLogin: 'talos[bot]',
+      botLogin: 'talos-hq[bot]',
       model: undefined,
     })
     expect(codeSessionConfigFromEnv({

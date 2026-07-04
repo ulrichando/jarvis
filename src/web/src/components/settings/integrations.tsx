@@ -9,8 +9,8 @@ import { SettingsSection } from "./field";
 import { useSettings, useUpdateSettings } from "@/hooks/use-settings";
 
 // GitHub App slug — install page is github.com/apps/<slug>. Matches the
-// gh-app deploy (`GH_APP_BOT_LOGIN=talos[bot]`, real slug talos).
-const GH_BOT_SLUG = "talos";
+// gh-app deploy (`GH_APP_BOT_LOGIN=talos-hq[bot]`, real slug talos-hq).
+const GH_BOT_SLUG = "talos-hq";
 // The mention users actually type — the collaborator machine user, NOT the
 // App slug (custom App bots are excluded from GitHub's mention autocomplete).
 const GH_BOT_MENTION = "Talos-agents";

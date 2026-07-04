@@ -232,7 +232,7 @@ export function codeSessionConfigFromEnv(env: Record<string, string | undefined>
     publicOrigin: stripSlash(env.GH_APP_PUBLIC_CODE_ORIGIN ?? 'https://0wlan.com'),
     // Default matches the bot identity the thread feedback already presents
     // (**talos**); override with the deployed App's real slug.
-    botLogin: env.GH_APP_BOT_LOGIN ?? 'talos[bot]',
+    botLogin: env.GH_APP_BOT_LOGIN ?? 'talos-hq[bot]',
     model: env.GH_APP_SESSION_MODEL || undefined,
   }
 }
