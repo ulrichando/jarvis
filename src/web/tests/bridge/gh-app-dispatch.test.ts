@@ -62,6 +62,8 @@ beforeEach(() => {
 })
 afterEach(() => {
   delete process.env.GH_APP_BRIDGE_TOKEN
+  delete process.env.GH_APP_WEB_URL
+  delete process.env.JARVIS_CODE_INTERNAL_ORIGIN
   vi.restoreAllMocks()
 })
 
@@ -158,6 +160,27 @@ describe('POST /api/bridge/v1/gh-app/dispatch', () => {
     })
     // Service-token route: the browser-session path is never touched.
     expect(vi.mocked(getUserId)).not.toHaveBeenCalled()
+  })
+
+  test('threads the internal origin (GH_APP_WEB_URL) into launch as internalBaseUrl; public origin unchanged', async () => {
+    process.env.GH_APP_WEB_URL = 'http://web:3000'
+    const launchSpy = vi.spyOn(containers, 'launchContainerSession').mockResolvedValue(undefined)
+    const { POST } = await route()
+    expect((await POST(post(validBody, SVC))).status).toBe(200)
+    expect(launchSpy).toHaveBeenCalledTimes(1)
+    expect(launchSpy.mock.calls[0][1]).toMatchObject({
+      baseUrl: 'https://0wlan.com', // PUBLIC session URL — unchanged
+      internalBaseUrl: 'http://web:3000', // container-facing origin — threaded
+    })
+  })
+
+  test('JARVIS_CODE_INTERNAL_ORIGIN takes precedence over GH_APP_WEB_URL', async () => {
+    process.env.GH_APP_WEB_URL = 'http://web:3000'
+    process.env.JARVIS_CODE_INTERNAL_ORIGIN = 'http://web-canary:3000'
+    const launchSpy = vi.spyOn(containers, 'launchContainerSession').mockResolvedValue(undefined)
+    const { POST } = await route()
+    expect((await POST(post(validBody, SVC))).status).toBe(200)
+    expect(launchSpy.mock.calls[0][1]).toMatchObject({ internalBaseUrl: 'http://web-canary:3000' })
   })
 
   test('a dispatch NEVER reuses a user /code env for the same repo (secrets + host network stay out of bot jobs)', async () => {

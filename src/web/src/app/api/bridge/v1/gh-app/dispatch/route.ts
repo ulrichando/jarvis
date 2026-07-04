@@ -175,7 +175,13 @@ export async function POST(req: Request): Promise<NextResponse> {
     void launchContainerSession(store, {
       sessionId,
       repoFullName: repo,
+      // baseUrl stays PUBLIC (the browser session URL). internalBaseUrl is how
+      // the container reaches this app for git-proxy + callback: on the
+      // containerized deploy the public origin is Cloudflare-fronted (bot
+      // challenge) + host.docker.internal is unreachable, so name the web
+      // service over the shared bridge. Unset (dev) → host.docker.internal path.
       baseUrl: publicOrigin,
+      internalBaseUrl: process.env.JARVIS_CODE_INTERNAL_ORIGIN || process.env.GH_APP_WEB_URL,
       model,
       installationToken,
       botLogin, // validated non-empty above
