@@ -178,6 +178,46 @@ function shq(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+/** In-container path of the static git credential helper script. Lives in
+ *  /jarvis-config (created early, writable by the exec user) so it works
+ *  whether or not the image user can write /usr/local/bin. */
+const GIT_CRED_HELPER_PATH = "/jarvis-config/git-cred";
+
+/**
+ * Sh command installing a STATIC git credential helper: a script that always
+ * answers `get` with the session's cap token. Deliberately NOT
+ * `credential.helper store` + ~/.git-credentials: on any 401 from the git
+ * proxy (cap-token remint on relaunch, a transient auth failure) git calls the
+ * store helper's `erase`, which deletes the credential line — after that every
+ * push finds no credential and git tries to PROMPT, wedging the session with
+ * "could not read Username for 'http://web:3000'". A helper program has no
+ * erase, so a rejected request can never evict the credential. (Claude Code's
+ * sandbox git proxy ships a helper binary rather than a cred file for the same
+ * reason.) The helper answers for every host — harmless: the token is
+ * per-session and only the proxy accepts it.
+ */
+function gitCredHelperCmd(gitCapToken: string, workdir?: string): string {
+  const lines = [
+    "#!/bin/sh",
+    '[ "$1" = get ] || exit 0',
+    `printf 'username=%s\\npassword=%s\\n' x-access-token '${gitCapToken}'`,
+  ];
+  return [
+    "mkdir -p /jarvis-config",
+    `printf '%s\\n' ${lines.map((l) => shq(l)).join(" ")} > ${GIT_CRED_HELPER_PATH}`,
+    `chmod 700 ${GIT_CRED_HELPER_PATH}`,
+    // Unset-all BEFORE set: with multiple existing values (old baked images,
+    // agent-added helpers) a plain `git config` set fails. Also drop any
+    // repo-local helper a wedged agent hand-rolled, and the store-file remnant.
+    "{ git config --global --unset-all credential.helper 2>/dev/null || true; }",
+    ...(workdir
+      ? [`{ git -C ${shq(workdir)} config --unset-all credential.helper 2>/dev/null || true; }`]
+      : []),
+    `git config --global credential.helper ${GIT_CRED_HELPER_PATH}`,
+    `rm -f "$HOME/.git-credentials"`,
+  ].join(" && ");
+}
+
 /**
  * Launch a container session: container → clone → optional setup → CLI.
  * Emits one status session_event per init step (the /code session view
@@ -424,16 +464,12 @@ export async function launchContainerSession(
   const proxyOrigin = childBaseUrl.replace(/\/+$/, "");
   const proxyRemote = (full: string): string =>
     `${proxyOrigin}/api/bridge/v1/code/sessions/${sessionId}/git/${full}.git`;
-  const proxyHostUrl = new URL(proxyOrigin);
-  // Credential-helper line: the CAP token as the password for the PROXY host.
-  // The real PAT is never written into the container.
-  const credLine = `${proxyHostUrl.protocol}//x-access-token:${gitCapToken}@${proxyHostUrl.host}`;
-
-  // Committer identity + the cap credential so `git commit`/`push` work
-  // non-interactively through the proxy. Runs on EVERY launch (cache restores
-  // scrub creds; cap tokens are per-session). Must run BEFORE clone/fetch so the
-  // credential helper can authorize them. Non-fatal: a hiccup warns rather than
-  // aborting the launch.
+  // Committer identity + the cap-token credential HELPER so `git commit`/
+  // `push` work non-interactively through the proxy (see gitCredHelperCmd for
+  // why a helper script and not `credential.helper store`). Runs on EVERY
+  // launch (cache restores scrub creds; cap tokens are per-session). Must run
+  // BEFORE clone/fetch so the credential helper can authorize them. Non-fatal:
+  // a hiccup warns rather than aborting the launch.
   const configureGitProxy = async (): Promise<void> => {
     // External bot jobs commit as the App bot, not the connected user.
     const login =
@@ -442,10 +478,9 @@ export async function launchContainerSession(
     const cmd = [
       `git config --global user.name ${shq(login)}`,
       `git config --global user.email ${shq(email)}`,
-      `git config --global credential.helper store`,
+      gitCredHelperCmd(gitCapToken),
       `git config --global init.defaultBranch main`,
       `git config --global --add safe.directory ${shq(workdir)}`,
-      `(umask 077; printf '%s\\n' ${shq(credLine)} > "$HOME/.git-credentials")`,
     ].join(" && ");
     try {
       await exec(["exec", name, "sh", "-c", cmd]);
@@ -533,7 +568,10 @@ export async function launchContainerSession(
     // re-write it for THIS session. Non-fatal — caching is an optimization.
     if (cacheEnabled && hasEnvSetup && cacheTag) {
       try {
-        await exec(["exec", name, "sh", "-c", `rm -f "$HOME/.git-credentials"`]).catch(() => {});
+        await exec([
+          "exec", name, "sh", "-c",
+          `rm -f "$HOME/.git-credentials" ${GIT_CRED_HELPER_PATH}`,
+        ]).catch(() => {});
         await exec(["commit", name, cacheTag]);
         await configureGitProxy();
         emit(store, sessionId, "◌ Cached environment snapshot for faster next launch");
@@ -806,8 +844,14 @@ export async function resumeContainerWorker(
   const session = findSession(store, sessionId);
   if (!session?.container_json || session.archived) return false;
   let name: string | undefined;
+  let gitCapToken: string | undefined;
   try {
-    name = (JSON.parse(session.container_json) as { container?: string }).container;
+    const meta = JSON.parse(session.container_json) as {
+      container?: string;
+      gitCapToken?: string;
+    };
+    name = meta.container;
+    gitCapToken = meta.gitCapToken;
   } catch {
     return false;
   }
@@ -818,6 +862,15 @@ export async function resumeContainerWorker(
     .then((r) => r.stdout.trim() === "true")
     .catch(() => false);
   if (!running) return false;
+  // Re-assert the static credential helper on every reopen (best-effort,
+  // idempotent). Heals sessions wedged by the old erasable store-file
+  // credential — a single proxy 401 evicted it and every push after failed
+  // with "could not read Username" — without waiting for a new launch.
+  if (gitCapToken) {
+    await exec([
+      "exec", name, "sh", "-c", gitCredHelperCmd(gitCapToken, spec.workdir),
+    ]).catch(() => {});
+  }
   // Already-alive worker → nothing to do (idempotent; safe to call on every
   // reopen). Match by process name (comm = "bun") and EXCLUDE zombies: a killed
   // worker reparented to the container's `sleep infinity` PID 1 lingers as an
