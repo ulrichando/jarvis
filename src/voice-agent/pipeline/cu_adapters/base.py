@@ -35,7 +35,8 @@ class StepResult:
 
 def strictify(node: Any) -> Any:
     """Recursively set additionalProperties:false on every object node (Anthropic
-    rejects tool schemas without it; harmless for the others)."""
+    rejects tool schemas without it; OpenAI tolerates it; Gemini REJECTS it —
+    its adapter strips it back out via _gemini_schema)."""
     if isinstance(node, dict):
         out = {k: strictify(v) for k, v in node.items()}
         if out.get("type") == "object" and "additionalProperties" not in out:

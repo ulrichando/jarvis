@@ -403,3 +403,13 @@ def test_native_max_px_tiers():
     assert _native_max_px("claude-sonnet-5") == 2576
     assert _native_max_px("claude-opus-4-8") == 2576
     assert _native_max_px("claude-sonnet-4-6") == 1568
+
+
+def test_gemini_schema_has_no_additional_properties():
+    # Gemini's Schema proto 400s on additionalProperties (live 2026-07-04);
+    # the adapter must strip what strictify adds for Anthropic.
+    from pipeline.cu_adapters.gemini_adapter import _gemini_schema
+    scrubbed = json.dumps(_gemini_schema(
+        {"type": "object", "additionalProperties": False,
+         "properties": {"a": {"type": "object", "additionalProperties": False}}}))
+    assert "additionalProperties" not in scrubbed
