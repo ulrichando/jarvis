@@ -7,7 +7,9 @@ import { SELF_MARKER } from '../gh-agent/gh.js'
 // this branch, so it's defined locally here rather than modifying gh-agent.
 // Collapse into `import { taskText } from '../gh-agent/task.js'` once P2 lands.
 export function taskText(body: string, trigger: string): string {
-  const i = body.indexOf(trigger)
+  // Case-insensitive locate: GitHub logins are case-insensitive — autocomplete
+  // inserts the canonical casing (@Talos-agents) while humans type lowercase.
+  const i = body.toLowerCase().indexOf(trigger.toLowerCase())
   const raw = (i === -1 ? body : body.slice(i + trigger.length)).trim()
   return Array.from(raw)
     .filter((ch) => { const c = ch.charCodeAt(0); return c > 0x1f ? c !== 0x7f : c === 0x0a || c === 0x09 })
@@ -59,7 +61,8 @@ export function parseActionEvent(ctx: ActionCtx): ActionEvent | null {
     return null
   }
   if (body.includes(SELF_MARKER)) return null                        // never react to our own posts
-  const triggerRe = new RegExp(`(?<![\\w-])${trigger.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`)
+  // 'i': mentions are case-insensitive on GitHub (@talos-agents == @Talos-agents).
+  const triggerRe = new RegExp(`(?<![\\w-])${trigger.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`, 'i')
   if (!triggerRe.test(body)) return null
   const task = taskText(body, trigger)
   if (!task || issueNumber <= 0 || !author) return null

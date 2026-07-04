@@ -1,8 +1,8 @@
-# JARVIS gh-app × /code — run each `@jvs` job as a watchable `/code` session (design)
+# JARVIS gh-app × /code — run each `@talos` job as a watchable `/code` session (design)
 
 **Status:** design / awaiting review · **Date:** 2026-07-03
 
-**Goal:** `@jvs <task>` runs the job as a real jarvis **`/code` session** — isolated, **watchable + steerable** at `0wlan.com/code/<id>`, **persistent** (history preserved), and **linked from the GitHub thread + PR** — instead of a throwaway headless sandbox. This is the self-hosted, GitHub-triggered equivalent of **claude.ai/code**.
+**Goal:** `@talos <task>` runs the job as a real jarvis **`/code` session** — isolated, **watchable + steerable** at `0wlan.com/code/<id>`, **persistent** (history preserved), and **linked from the GitHub thread + PR** — instead of a throwaway headless sandbox. This is the self-hosted, GitHub-triggered equivalent of **claude.ai/code**.
 
 ## Fact-check: the claude.ai/code model we're matching (from Anthropic docs)
 
@@ -17,7 +17,7 @@
 ## Architecture
 
 ```
-@jvs webhook → gh-app worker
+@talos webhook → gh-app worker
    → POST /api/bridge/v1/sessions  (internal, service-token auth)
         { externalRepo: "ulrichando/maxrun", installationToken, task, autonomous:true }
    → /code creates an isolated session: clone maxrun via the scoped git proxy

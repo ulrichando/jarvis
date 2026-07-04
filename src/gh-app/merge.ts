@@ -1,13 +1,13 @@
 // src/gh-app/merge.ts — the bot's "merge this PR" capability.
 //
-// `@jvs merge [squash|merge|rebase]` on a PR → merge it via the GitHub
+// `@talos merge [squash|merge|rebase]` on a PR → merge it via the GitHub
 // API with the repo-scoped installation token. Squash is the default. Pure
 // parse + an injected-fetch call, so it's unit-testable with zero GitHub.
 
 export type MergeMethod = 'squash' | 'merge' | 'rebase'
 
 /**
- * Parse a merge command out of the @jvs task text. Returns the method
+ * Parse a merge command out of the @talos task text. Returns the method
  * (squash by default) when the task is a merge directive — i.e. its first word
  * is "merge" — else null. An explicit `squash | merge | rebase` among the
  * following words overrides the default (`merge rebase`, `merge merge`).

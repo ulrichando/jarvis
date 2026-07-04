@@ -9,8 +9,11 @@ import { SettingsSection } from "./field";
 import { useSettings, useUpdateSettings } from "@/hooks/use-settings";
 
 // GitHub App slug — install page is github.com/apps/<slug>. Matches the
-// gh-app deploy (`GH_APP_BOT_LOGIN=jvs[bot]`, real slug jvs).
-const GH_BOT_SLUG = "jvs";
+// gh-app deploy (`GH_APP_BOT_LOGIN=talos[bot]`, real slug talos).
+const GH_BOT_SLUG = "talos";
+// The mention users actually type — the collaborator machine user, NOT the
+// App slug (custom App bots are excluded from GitHub's mention autocomplete).
+const GH_BOT_MENTION = "Talos-agents";
 
 export function IntegrationsSection() {
   const { data } = useSettings();
@@ -27,9 +30,10 @@ export function IntegrationsSection() {
   );
 }
 
-// The Jarvis GitHub App (@jvs): install it on a repo, then mention
-// @jvs in an issue or PR comment to dispatch a watchable /code
-// session that opens a PR. This is the discoverable "where is the bot" home.
+// The Jarvis GitHub App (slug `talos`): install it on a repo, then mention
+// @Talos-agents (the collaborator machine user — App bots never appear in
+// GitHub's @-autocomplete, a real user does) in an issue or PR comment to
+// dispatch a watchable /code session that opens a PR.
 function JarvisBotRow() {
   const installUrl = `https://github.com/apps/${GH_BOT_SLUG}/installations/new`;
   const appUrl = `https://github.com/apps/${GH_BOT_SLUG}`;
@@ -39,12 +43,12 @@ function JarvisBotRow() {
         <Bot className="size-4 text-muted-foreground" />
         <h3 className="text-[15px] font-semibold">Jarvis GitHub Bot</h3>
         <code className="rounded bg-accent/50 px-1.5 py-0.5 text-[11px] text-muted-foreground">
-          @{GH_BOT_SLUG}
+          @{GH_BOT_MENTION}
         </code>
       </div>
       <p className="mb-3 text-[13px] text-muted-foreground">
         Install the bot on your repositories, then mention{" "}
-        <code className="text-[12px]">@{GH_BOT_SLUG} &lt;task&gt;</code> in any issue or pull-request
+        <code className="text-[12px]">@{GH_BOT_MENTION} &lt;task&gt;</code> in any issue or pull-request
         comment. It runs a watchable{" "}
         <span className="font-medium text-foreground">Code</span> session and opens a pull request
         with a link back to the live session — the same flow as{" "}

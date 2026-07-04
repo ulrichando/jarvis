@@ -334,7 +334,7 @@ if (import.meta.main) {
               entryEnv: { ...sandboxEnvPassthrough(env), GH_APP_ALLOWLIST: allowlist.join(','), GH_APP_TRIGGER: trigger, IS_SANDBOX: '1', JARVIS_REQUIRE_LOGIN: '0' },
             }),
           ...(codeSessions ? { codeSessions } : {}),
-          // `@jvs merge [squash|merge|rebase]` on a PR → merge it via
+          // `@talos merge [squash|merge|rebase]` on a PR → merge it via
           // the API with the repo-scoped installation token.
           mergePr: (repo, prNumber, method, token) => mergePr(repo, prNumber, method, token, { fetch }),
           // Visible thread feedback: 👀 the trigger, post "working on it",

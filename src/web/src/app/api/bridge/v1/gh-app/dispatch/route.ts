@@ -17,7 +17,7 @@ import { LOCAL_USER_ID } from "@/lib/chat/persist";
 export const runtime = "nodejs";
 
 // POST /api/bridge/v1/gh-app/dispatch — INTERNAL service endpoint: the gh-app
-// worker turns an approved `@jvs <task>` job into a real, watchable
+// worker turns an approved `@talos <task>` job into a real, watchable
 // /code container session (runRoutine-shaped: env get-or-create for the
 // external repo → session → seed bypassPermissions + the task → launch).
 //
