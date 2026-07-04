@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/bridge/db";
 import { findEnvironment, findSession, listSessionEvents, resolveBridgeToken } from "@/lib/bridge/store";
-import { getContainerDiff } from "@/lib/bridge/containers";
+import { getContainerDiff, readCliTranscript } from "@/lib/bridge/containers";
 import { extractBearer } from "@/lib/bridge/auth";
 import { bridgeError } from "@/lib/bridge/errors";
 
@@ -72,7 +72,16 @@ export async function GET(
         ? `jarvis/session-${sessionId.slice(0, 8)}`
         : diff.branch;
     const transcript = renderTranscript(listSessionEvents(store, sessionId, 0));
-    return NextResponse.json({ repo: meta.repo, branch, transcript });
+    // Full-fidelity resume: the CLI's own jsonl from the container (worker
+    // runs with --session-id <id>, so the file IS this session). Null when
+    // the container is gone — the markdown transcript remains the fallback.
+    const nativeJsonl = await readCliTranscript(store, sessionId);
+    return NextResponse.json({
+      repo: meta.repo,
+      branch,
+      transcript,
+      ...(nativeJsonl ? { native_jsonl: nativeJsonl } : {}),
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return bridgeError(500, "internal_error", `teleport failed: ${msg}`);
