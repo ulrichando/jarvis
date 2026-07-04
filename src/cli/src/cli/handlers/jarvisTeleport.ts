@@ -107,8 +107,11 @@ export async function jarvisTeleport(sessionId?: string): Promise<void> {
   }
 
   process.stdout.write(`Fetching branch ${branch} …\n`)
-  await git(['fetch', 'origin', '--', branch], cwd)
-  let co = await git(['checkout', '--', branch], cwd)
+  // No `--` before the branch: `git checkout -- <x>` restores a PATHSPEC, not a
+  // branch switch. The branch-name regex guard above is the flag-injection
+  // defense (execFile never shell-splits the single arg).
+  await git(['fetch', 'origin', branch], cwd)
+  let co = await git(['checkout', branch], cwd)
   if (!co.ok) co = await git(['checkout', '-b', branch, `origin/${branch}`], cwd)
   if (!co.ok) bridgeFail(`Could not check out ${branch}. Fetch it manually: git fetch origin ${branch}.`)
 

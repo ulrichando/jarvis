@@ -64,6 +64,29 @@ async function git(args: string[], cwd?: string): Promise<{ stdout: string; ok: 
   }
 }
 
+/** Clone a (possibly private) GitHub repo. Prefer `gh repo clone` — it uses the
+ *  user's gh auth, so private repos work non-interactively; a bare
+ *  `git clone https://…` would prompt for a password and fail with no TTY.
+ *  Falls back to git (public repos / a configured credential helper). */
+async function cloneRepo(repo: string, dest: string): Promise<boolean> {
+  const CLONE_TIMEOUT_MS = 180_000 // clones can be large
+  try {
+    await execFileP('gh', ['repo', 'clone', repo, dest], { timeout: CLONE_TIMEOUT_MS })
+    return true
+  } catch {
+    try {
+      await execFileP(
+        'git',
+        ['-c', 'credential.interactive=false', 'clone', `https://github.com/${repo}.git`, dest],
+        { timeout: CLONE_TIMEOUT_MS },
+      )
+      return true
+    } catch {
+      return false
+    }
+  }
+}
+
 export async function fetchCloudSessions(): Promise<
   { ok: true; sessions: CloudSession[] } | { ok: false; error: string }
 > {
@@ -78,6 +101,9 @@ export type PullResult = {
   repo: string
   branch: string
   resumed: boolean
+  /** Absolute path the branch was checked out in. Set (and `cloned`) when the
+   *  session's repo differs from the current checkout, so we cloned it. */
+  clonedPath?: string
 }
 
 export async function pullSession(
@@ -100,31 +126,57 @@ export async function pullSession(
     return { ok: false, error: 'The session returned an unusable branch name.' }
   }
 
-  // Only teleport inside a matching checkout — never mutate an unrelated repo.
+  // Where does the branch get checked out? If the current dir IS a checkout of
+  // the session's repo, teleport in place (a true resume). Otherwise the
+  // session is for a DIFFERENT repo (e.g. running /teleport from repo A,
+  // selecting a session for repo B) — clone it as a sibling so we never mutate
+  // the current session's tree, and land the branch + conversation there.
   const inRepo = await git(['rev-parse', '--is-inside-work-tree'])
-  if (!inRepo.ok) {
-    return { ok: false, error: `Run this from a checkout of ${repo} (or use the shell: jarvis teleport ${id}).` }
-  }
-  const remote = (await git(['remote', 'get-url', 'origin'])).stdout
-  if (!remote.includes(repo)) {
-    return { ok: false, error: `You're in a different repository. cd into a ${repo} checkout and retry.` }
-  }
-  const dirty = (await git(['status', '--porcelain'])).stdout
-  if (dirty) {
-    return { ok: false, error: 'Working directory is not clean. Commit or stash your changes before teleporting.' }
+  const remote = inRepo.ok ? (await git(['remote', 'get-url', 'origin'])).stdout : ''
+  const sameRepo = inRepo.ok && remote.includes(repo)
+
+  let workdir = process.cwd()
+  let clonedPath: string | undefined
+
+  if (sameRepo) {
+    const dirty = (await git(['status', '--porcelain'])).stdout
+    if (dirty) {
+      return { ok: false, error: 'Working directory is not clean. Commit or stash your changes before teleporting.' }
+    }
+  } else {
+    // Clone target: a sibling of the current git root (or of cwd), named for
+    // the repo. Reuse an existing matching clone rather than re-cloning.
+    const gitRoot = inRepo.ok ? (await git(['rev-parse', '--show-toplevel'])).stdout : ''
+    const parent = path.dirname(gitRoot || process.cwd())
+    const dest = path.join(parent, repo.split('/').pop() || 'repo')
+    const destIsRepo = await git(['rev-parse', '--is-inside-work-tree'], dest)
+    const destRemote = destIsRepo.ok ? (await git(['remote', 'get-url', 'origin'], dest)).stdout : ''
+    if (!(destIsRepo.ok && destRemote.includes(repo))) {
+      if (destIsRepo.ok || (await fs.stat(dest).then(() => true).catch(() => false))) {
+        return { ok: false, error: `${dest} already exists and isn't ${repo}. Move it aside and retry.` }
+      }
+      const cloned = await cloneRepo(repo, dest)
+      if (!cloned) {
+        return { ok: false, error: `Could not clone ${repo}. Ensure \`gh auth login\` (or git creds) has access, then retry.` }
+      }
+    }
+    workdir = dest
+    clonedPath = dest
   }
 
-  const cwd = process.cwd()
-  await git(['fetch', 'origin', '--', branch], cwd)
-  let co = await git(['checkout', '--', branch], cwd)
-  if (!co.ok) co = await git(['checkout', '-b', branch, `origin/${branch}`], cwd)
+  // No `--` before the branch: `git checkout -- <x>` is a PATHSPEC restore, not
+  // a branch switch. The regex guard above (no leading `-`, no `..`) is the
+  // flag-injection defense, and execFile never shell-splits the single arg.
+  await git(['fetch', 'origin', branch], workdir)
+  let co = await git(['checkout', branch], workdir)
+  if (!co.ok) co = await git(['checkout', '-b', branch, `origin/${branch}`], workdir)
   if (!co.ok) return { ok: false, error: `Could not check out ${branch}. Fetch it manually: git fetch origin ${branch}.` }
 
   let resumed = false
   if (native_jsonl && native_jsonl.trim()) {
     try {
       const { getProjectDir } = await import('../../utils/sessionStoragePortable.js')
-      const canonical = await fs.realpath(cwd).catch(() => cwd)
+      const canonical = await fs.realpath(workdir).catch(() => workdir)
       const dir = getProjectDir(canonical)
       await fs.mkdir(dir, { recursive: true })
       await fs.writeFile(path.join(dir, `${id}.jsonl`), native_jsonl, 'utf8')
@@ -133,5 +185,5 @@ export async function pullSession(
       /* branch checked out regardless */
     }
   }
-  return { ok: true, result: { repo, branch, resumed } }
+  return { ok: true, result: { repo, branch, resumed, clonedPath } }
 }

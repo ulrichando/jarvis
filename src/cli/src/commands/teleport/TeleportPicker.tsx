@@ -3,10 +3,12 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { Box, Text } from '../../ink.js'
 import { useKeybinding } from '../../keybindings/useKeybinding.js'
+import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { Select } from '../../components/CustomSelect/index.js'
 import { Spinner } from '../../components/Spinner.js'
 import { KeyboardShortcutHint } from '../../components/design-system/KeyboardShortcutHint.js'
 import { Byline } from '../../components/design-system/Byline.js'
+import { formatRelativeTime } from '../../utils/format.js'
 import type { LocalJSXCommandOnDone } from '../../types/command.js'
 import {
   fetchCloudSessions,
@@ -16,17 +18,13 @@ import {
 } from './core.js'
 
 // Interactive /teleport (+/tp) picker — the in-REPL counterpart of claude.ai's
-// --teleport session picker. `/teleport` opens the arrow-key list; `/teleport
-// <id>` pulls that session directly. All work goes through core.ts (no
-// process.exit — this runs inside the live session).
+// --teleport session picker (mirrors the /resume picker, ResumeTask). `/teleport`
+// opens the arrow-key list; `/teleport <id>` pulls that session directly. All
+// work goes through core.ts (no process.exit — this runs inside the live session).
 
-function age(ts: number | null): string {
-  if (!ts) return ''
-  const m = Math.max(0, Math.round((Date.now() - ts) / 60_000))
-  if (m < 60) return `${m}m`
-  const h = Math.round(m / 60)
-  return h < 48 ? `${h}h` : `${Math.round(h / 24)}d`
-}
+const UPDATED_STRING = 'Updated'
+const REPO_STRING = 'Repository'
+const COL_GAP = '  '
 
 type State =
   | { s: 'loading' }
@@ -44,6 +42,9 @@ export function TeleportPicker({
   initialId?: string
 }): React.ReactNode {
   const [state, setState] = useState<State>({ s: 'loading' })
+  // 1-based focused row, for the "(N of M)" scroll position in the title.
+  const [focusedIndex, setFocusedIndex] = useState(1)
+  const { rows } = useTerminalSize()
 
   const pull = useCallback(async (id: string) => {
     setState({ s: 'pulling', id })
@@ -70,7 +71,6 @@ export function TeleportPicker({
     }
   }, [initialId, pull])
 
-  // Esc / Enter dismissal.
   useKeybinding('confirm:no', () => onDone('Teleport cancelled'), { context: 'Confirmation' })
   useKeybinding('confirm:yes', () => onDone('Teleported.'), {
     context: 'Confirmation',
@@ -99,20 +99,54 @@ export function TeleportPicker({
       )
       break
     case 'picking': {
-      const options = state.sessions.map((s) => ({
-        label: `${age(s.updated_at).padEnd(4)} ${s.repo.padEnd(24)} ${s.title.slice(0, 48)}`,
-        value: s.session_id,
+      const meta = state.sessions.map((s) => ({
+        ...s,
+        timeString: s.updated_at ? formatRelativeTime(new Date(s.updated_at)) : '',
       }))
+      const timeW = Math.max(UPDATED_STRING.length, ...meta.map((m) => m.timeString.length))
+      const repoW = Math.max(REPO_STRING.length, ...meta.map((m) => m.repo.length))
+      const options = meta.map((m) => ({
+        label: `${m.timeString.padEnd(timeW)}${COL_GAP}${m.repo.padEnd(repoW)}${COL_GAP}${m.title}`,
+        value: m.session_id,
+      }))
+      // Layout overhead: padding + title + header + footer (~7 rows).
+      const maxVisible = Math.max(1, Math.min(state.sessions.length, rows - 8))
+      const showScroll = state.sessions.length > maxVisible
       body = (
-        <Box flexDirection="column" gap={1}>
-          <Text bold>Teleport a cloud session to this machine:</Text>
-          <Select
-            options={options}
-            onChange={(value: string) => {
-              void pull(value)
-            }}
-          />
-          <Box>
+        <Box flexDirection="column">
+          <Text bold>
+            Select a cloud session to teleport
+            {showScroll && (
+              <Text dimColor>
+                {' '}
+                ({focusedIndex} of {state.sessions.length})
+              </Text>
+            )}
+            :
+          </Text>
+          <Box flexDirection="column" marginTop={1}>
+            <Box marginLeft={2}>
+              <Text bold dimColor>
+                {UPDATED_STRING.padEnd(timeW)}
+                {COL_GAP}
+                {REPO_STRING.padEnd(repoW)}
+                {COL_GAP}
+                Session Title
+              </Text>
+            </Box>
+            <Select
+              visibleOptionCount={maxVisible}
+              options={options}
+              onChange={(value: string) => {
+                void pull(value)
+              }}
+              onFocus={(value: string) => {
+                const i = options.findIndex((o) => o.value === value)
+                if (i >= 0) setFocusedIndex(i + 1)
+              }}
+            />
+          </Box>
+          <Box marginTop={1}>
             <Byline>
               <KeyboardShortcutHint shortcut="↑/↓" action="select" />
               <KeyboardShortcutHint shortcut="↵" action="teleport" />
@@ -131,17 +165,29 @@ export function TeleportPicker({
         </Box>
       )
       break
-    case 'done':
+    case 'done': {
+      const { repo, branch, resumed, clonedPath } = state.result
+      // cross-repo teleport → we cloned it elsewhere; you continue from there.
+      const continueCmd = clonedPath
+        ? `cd ${clonedPath} && jarvis --resume ${state.id}`
+        : `jarvis --resume ${state.id}`
       body = (
         <Box flexDirection="column" gap={1}>
           <Text color="success">✓ Teleported {state.id.slice(0, 12)}</Text>
           <Text>
-            repo <Text bold>{state.result.repo}</Text> · branch{' '}
-            <Text bold>{state.result.branch}</Text> checked out
+            repo <Text bold>{repo}</Text> · branch <Text bold>{branch}</Text>
+            {clonedPath ? (
+              <Text>
+                {' '}
+                cloned to <Text bold>{clonedPath}</Text>
+              </Text>
+            ) : (
+              <Text> checked out</Text>
+            )}
           </Text>
           <Text dimColor>
-            {state.result.resumed
-              ? `Continue the conversation:  jarvis --resume ${state.id}`
+            {resumed
+              ? `Continue the conversation:  ${continueCmd}`
               : '(no conversation transcript — the container may be gone)'}
           </Text>
           <Text dimColor>
@@ -150,6 +196,7 @@ export function TeleportPicker({
         </Box>
       )
       break
+    }
     case 'error':
       body = (
         <Box flexDirection="column" gap={1}>
