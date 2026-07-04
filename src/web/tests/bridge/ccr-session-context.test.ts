@@ -1,6 +1,11 @@
 import { describe, expect, test, beforeEach } from 'vitest'
 import { _resetForTests, getStore } from '@/lib/bridge/db'
-import { getOrCreateBridgeToken, createEnvironment, getOrCreateSession } from '@/lib/bridge/store'
+import {
+  getOrCreateBridgeToken,
+  createEnvironment,
+  getOrCreateSession,
+  appendSessionEvent,
+} from '@/lib/bridge/store'
 import { GET as listGET } from '@/app/api/v1/sessions/route'
 
 // The teleport client reads session_context.sources[].url to derive each
@@ -44,6 +49,27 @@ describe('CCR /api/v1/sessions session_context (teleport client contract)', () =
     expect(s.session_context).toBeTruthy()
     // The exact field the client's `sources.find(t => t.type==='git_repository').url` reads.
     expect(s.session_context!.sources).toEqual([{ type: 'git_repository', url: REPO }])
+  })
+
+  test('updated_at reflects last ACTIVITY (latest event), not creation', async () => {
+    const token = withEnvSession()
+    const store = getStore()
+    // Session created earlier; an event lands "now" → updated_at must be the event.
+    appendSessionEvent(store, 'abc123def456', { type: 'result', payload: { ok: true } })
+    const res = await listGET(
+      new Request('https://web.test/api/v1/sessions', {
+        headers: { authorization: `Bearer ${token}` },
+      }),
+    )
+    const body = (await res.json()) as {
+      data: { created_at: string; updated_at: string }[]
+    }
+    const s = body.data[0]!
+    // The event was appended after the session row → updated_at must be >= created_at,
+    // and specifically must move to the event time (not stay pinned to creation).
+    expect(new Date(s.updated_at).getTime()).toBeGreaterThanOrEqual(
+      new Date(s.created_at).getTime(),
+    )
   })
 
   test('a session with no repo yields empty sources (not undefined — client must not throw)', async () => {

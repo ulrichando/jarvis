@@ -5,6 +5,7 @@ import {
   appendSessionEvent,
   findEnvironment,
   getOrCreateSession,
+  latestSessionEventAt,
   listEnvironments,
   listSessions,
   findSession,
@@ -106,6 +107,11 @@ export async function GET(req: Request): Promise<NextResponse> {
     // "Error loading sessions". Source the repo URL from the session's env.
     const env = s.environment_id ? findEnvironment(store, s.environment_id) : null
     const repoUrl = env?.git_repo_url || null
+    // updated_at drives the picker's "N ago" label + newest-first sort
+    // (ResumeTask.tsx). It must be last ACTIVITY, not creation — else a session
+    // used hours after it was made shows its creation time. Use the latest
+    // session_event; fall back to created_at when a session has no events yet.
+    const lastActive = latestSessionEventAt(store, s.session_id) ?? s.created_at
     return {
       type: 'session' as const,
       id: s.session_id,
@@ -113,7 +119,7 @@ export async function GET(req: Request): Promise<NextResponse> {
       session_status: ccrSessionStatus(s),
       environment_id: s.environment_id,
       created_at: new Date(s.created_at).toISOString(),
-      updated_at: new Date(s.created_at).toISOString(),
+      updated_at: new Date(lastActive).toISOString(),
       session_context: {
         sources: repoUrl ? [{ type: 'git_repository' as const, url: repoUrl }] : [],
       },

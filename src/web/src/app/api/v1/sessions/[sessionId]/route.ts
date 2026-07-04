@@ -5,6 +5,7 @@ import {
   setSessionTitle,
   resolveBridgeToken,
   findEnvironment,
+  latestSessionEventAt,
   type Store,
 } from '@/lib/bridge/store'
 import { extractBearer } from '@/lib/bridge/auth'
@@ -63,7 +64,7 @@ export async function GET(
     session_status: ccrSessionStatus(s),
     environment_id: s.environment_id,
     created_at: new Date(s.created_at).toISOString(),
-    updated_at: new Date(s.created_at).toISOString(),
+    updated_at: new Date(latestSessionEventAt(store, sessionId) ?? s.created_at).toISOString(),
     session_context: {
       sources: repoUrl ? [{ type: 'git_repository' as const, url: repoUrl }] : [],
       outcomes: [{ type: 'git_repository' as const, git_info: { branches: [branch] } }],
