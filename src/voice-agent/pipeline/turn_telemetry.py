@@ -547,6 +547,8 @@ def log_turn(
     subagent_ms: Optional[int] = None,
     subagent_status: Optional[str] = None,
     user_lang: str = "en",
+    tool_call_count: int = 0,
+    had_tool_error: bool = False,
 ) -> None:
     """Write one row. Any exception is swallowed so telemetry never blocks voice.
 
@@ -613,8 +615,9 @@ def log_turn(
                     aec_layer1_active, aec_layer2_aec_active, aec_layer3_active,
                     output_profile, apm_delay_ms_p50, dtln_latency_ms_p95,
                     subagent_type, subagent_ms, subagent_status,
-                    user_lang, rss_mb, correction_signal)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    user_lang, rss_mb, correction_signal,
+                    tool_call_count, had_tool_error)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     ts_utc or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     user_text, jarvis_text, emotion, route, llm_used,
@@ -633,6 +636,7 @@ def log_turn(
                     subagent_type, subagent_ms, subagent_status,
                     user_lang, _self_rss_mb(),
                     _corr_signal,
+                    int(tool_call_count), int(had_tool_error),
                 ),
             )
     except Exception as e:
