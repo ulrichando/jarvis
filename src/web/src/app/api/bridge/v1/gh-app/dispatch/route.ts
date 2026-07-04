@@ -112,10 +112,13 @@ export async function POST(req: Request): Promise<NextResponse> {
     // (keyed on BOT_ENV_MACHINE, per repo), NEVER a user-created /code env for
     // the same repo. Reusing a user env would hand the bot job the user's
     // secret envVars + setup script and the default `full` network level
-    // (--network=host → reachable loopback services). Owner stays the box's
-    // single user, like other service-registered environment rows.
+    // (--network=host → reachable loopback services). Owner = the box's real
+    // user (JARVIS_GH_APP_SESSION_OWNER, e.g. the human's account id) so the bot
+    // sessions appear in THAT user's /code UI and are watchable/steerable; falls
+    // back to LOCAL_USER_ID (dev / unset) like other service-registered rows.
+    const sessionOwner = process.env.JARVIS_GH_APP_SESSION_OWNER?.trim() || LOCAL_USER_ID;
     const repoUrl = `https://github.com/${repo}`;
-    const existing = listEnvironments(store, LOCAL_USER_ID).find(
+    const existing = listEnvironments(store, sessionOwner).find(
       (e) =>
         e.worker_type === "container" &&
         e.machine_name === BOT_ENV_MACHINE &&
@@ -131,7 +134,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         git_repo_url: repoUrl,
         max_sessions: 4,
         worker_type: "container",
-        user_id: LOCAL_USER_ID,
+        user_id: sessionOwner,
       }).environment_id;
     }
     // (Re)assert the locked-down bot config on EVERY dispatch — allowlist

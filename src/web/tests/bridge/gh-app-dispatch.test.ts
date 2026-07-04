@@ -64,6 +64,7 @@ afterEach(() => {
   delete process.env.GH_APP_BRIDGE_TOKEN
   delete process.env.GH_APP_WEB_URL
   delete process.env.JARVIS_CODE_INTERNAL_ORIGIN
+  delete process.env.JARVIS_GH_APP_SESSION_OWNER
   vi.restoreAllMocks()
 })
 
@@ -160,6 +161,21 @@ describe('POST /api/bridge/v1/gh-app/dispatch', () => {
     })
     // Service-token route: the browser-session path is never touched.
     expect(vi.mocked(getUserId)).not.toHaveBeenCalled()
+  })
+
+  test('JARVIS_GH_APP_SESSION_OWNER makes the bot env owned by the box user (visible/watchable in their /code UI)', async () => {
+    const OWNER = 'a6825d5c-4b5a-4231-867e-44964ab9685e'
+    process.env.JARVIS_GH_APP_SESSION_OWNER = OWNER
+    vi.spyOn(containers, 'launchContainerSession').mockResolvedValue(undefined)
+    const { POST } = await route()
+    expect((await POST(post(validBody, SVC))).status).toBe(200)
+    const store = getStore()
+    // The env is owned by the configured box user — so it lists for THEM…
+    const owned = listEnvironments(store, OWNER)
+    expect(owned).toHaveLength(1)
+    expect(owned[0]).toMatchObject({ machine_name: 'gh-app-bot', user_id: OWNER })
+    // …and NOT for the LOCAL_USER default.
+    expect(listEnvironments(store, LOCAL_USER)).toHaveLength(0)
   })
 
   test('threads the internal origin (GH_APP_WEB_URL) into launch as internalBaseUrl; public origin unchanged', async () => {
