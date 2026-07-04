@@ -22,6 +22,7 @@ import {
 import { githubStatus } from "../connectors/github";
 import { MODELS_META } from "../ai/models-meta";
 import { listMcpServers } from "../mcp/store";
+import { signProxyToken } from "./proxyJwt";
 
 // Container-backed /code sessions (decisions-pending §12, modeled on
 // claude.ai/code's init sequence):
@@ -628,6 +629,22 @@ export async function launchContainerSession(
       const provider = meta?.provider ?? "deepseek";
       routingEnv.ANTHROPIC_BASE_URL = proxyUrl;
       routingEnv.ANTHROPIC_API_KEY = "jarvis-proxy"; // proxy holds the real keys
+      // When the proxy enforces auth (JARVIS_PROXY_AUTH_REQUIRED=1 — the
+      // containerized deploy), the CLI must present a signed proxy JWT: the same
+      // credential `jarvis auth login` mints, carried as ANTHROPIC_AUTH_TOKEN
+      // (→ Authorization: Bearer). The headless workbench can't run login, so
+      // mint one here (session-scoped, 24h) with the shared JARVIS_PROXY_JWT_SECRET
+      // the hub verifies against. Read the env secret DIRECTLY (never
+      // getOrCreate — a fresh secret wouldn't match the hub, and writing one is a
+      // side effect); when it's absent (auth-less local proxy) the placeholder
+      // key already suffices, so skip.
+      const proxyJwtSecret = process.env.JARVIS_PROXY_JWT_SECRET?.trim();
+      if (proxyJwtSecret) {
+        routingEnv.ANTHROPIC_AUTH_TOKEN = signProxyToken(
+          { sub: `code-session:${sessionId}`, ttlSeconds: 60 * 60 * 24 },
+          proxyJwtSecret,
+        );
+      }
       routingEnv.JARVIS_PROVIDER = provider;
       routingEnv.JARVIS_MODEL = proxyModel;
       routingEnv.JARVIS_MODEL_REGISTRY_ENABLED = "1";
