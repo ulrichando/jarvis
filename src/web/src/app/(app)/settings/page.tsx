@@ -20,7 +20,6 @@ import { JarvisInChromeSection } from "@/components/settings/jarvis-in-chrome";
 // that pipeline.settings.read_unified_setting reads.
 import { KnowledgeSection } from "@/components/settings/knowledge";
 import { SkillsSection } from "@/components/settings/skills";
-import { CookbookSection } from "@/components/settings/cookbook";
 import { SecuritySection } from "@/components/settings/security";
 
 type Section =
@@ -36,7 +35,6 @@ type Section =
   | "connectors"
   | "api-tokens"
   | "providers"
-  | "cookbook"
   | "data"
   | "about"
   | "jarvis-in-chrome";
@@ -51,7 +49,6 @@ const NAV: Array<{ id: Section; label: string }> = [
   { id: "connectors", label: "Connectors (MCP)" },
   { id: "api-tokens", label: "API Tokens" },
   { id: "providers", label: "Providers" },
-  { id: "cookbook", label: "Cookbook" },
   { id: "capabilities", label: "Capabilities" },
   { id: "usage", label: "Usage" },
   { id: "privacy", label: "Privacy" },
@@ -125,31 +122,25 @@ export default function SettingsPage() {
       </div>
 
       <div className="flex-1 overflow-hidden">
-        {section === "cookbook" ? (
-          // Full-bleed: the Cookbook is an embedded app, not a settings form,
-          // so it breaks out of the max-w-2xl reading column.
-          <CookbookSection />
-        ) : (
-          <div className="h-full overflow-y-auto">
-            <div className="mx-auto max-w-2xl px-4 py-6 sm:px-8 sm:py-8">
-              {section === "general" && <GeneralSection />}
-              {section === "account" && <AccountSection />}
-              {section === "security" && <SecuritySection />}
-              {section === "applications" && <IntegrationsSection />}
-              {section === "knowledge" && <KnowledgeSection />}
-              {section === "skills" && <SkillsSection />}
-              {section === "privacy" && <PrivacySection />}
-              {section === "usage" && <UsageSection />}
-              {section === "capabilities" && <CapabilitiesSection />}
-              {section === "connectors" && <ConnectorsSection />}
-              {section === "api-tokens" && <ApiTokensSection />}
-              {section === "providers" && <ProvidersSection />}
-              {section === "data" && <DataSection />}
-              {section === "about" && <AboutSection />}
-              {section === "jarvis-in-chrome" && <JarvisInChromeSection />}
-            </div>
+        <div className="h-full overflow-y-auto">
+          <div className="mx-auto max-w-2xl px-4 py-6 sm:px-8 sm:py-8">
+            {section === "general" && <GeneralSection />}
+            {section === "account" && <AccountSection />}
+            {section === "security" && <SecuritySection />}
+            {section === "applications" && <IntegrationsSection />}
+            {section === "knowledge" && <KnowledgeSection />}
+            {section === "skills" && <SkillsSection />}
+            {section === "privacy" && <PrivacySection />}
+            {section === "usage" && <UsageSection onOpenSection={setSection} />}
+            {section === "capabilities" && <CapabilitiesSection />}
+            {section === "connectors" && <ConnectorsSection />}
+            {section === "api-tokens" && <ApiTokensSection />}
+            {section === "providers" && <ProvidersSection />}
+            {section === "data" && <DataSection />}
+            {section === "about" && <AboutSection />}
+            {section === "jarvis-in-chrome" && <JarvisInChromeSection />}
           </div>
-        )}
+        </div>
       </div>
     </div>
   );
