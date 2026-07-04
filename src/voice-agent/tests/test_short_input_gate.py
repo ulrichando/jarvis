@@ -191,3 +191,47 @@ def test_is_command_strips_extended_whisper_variant_vocative_for_strict_wake(var
     assert _is_command(f"{variant}, are you there", _WAKE_PATTERNS) is True, (
         f"_is_command rejected strict wake with vocative {variant!r}"
     )
+
+
+# ── Engaged bare-mute + assistant-ack fallback (2026-07-03) ──────────
+# "Go on mute (please)" with no vocative is the user's most common mute
+# phrasing (7+ occurrences in conversations.db) and it muted only when
+# the LLM's reply happened to hit a 6-substring list — once ever.
+
+def test_assistant_mute_acks_cover_prompt_sanctioned_phrases():
+    """supervisor.md's MUTE/WAKE section sanctions exactly these acks; if
+    either leaves _ASSISTANT_MUTE_ACKS the model follows its own prompt
+    and nothing mutes (live 2026-07-02: 'Got it, quiet now.' voiced, no
+    mute engaged)."""
+    from jarvis_agent import _ASSISTANT_MUTE_ACKS
+    assert "going quiet" in _ASSISTANT_MUTE_ACKS
+    assert "got it, quiet now" in _ASSISTANT_MUTE_ACKS
+
+
+def test_mute_context_engaged_by_recent_interaction(monkeypatch):
+    import time as _t
+    import jarvis_agent as ja
+    from pipeline import speaking_tracker
+    speaking_tracker.reset()
+    monkeypatch.setattr(ja, "_last_real_interaction", _t.monotonic())
+    assert ja._mute_context_engaged() is True
+
+
+def test_mute_context_engaged_by_agent_speaking(monkeypatch):
+    import jarvis_agent as ja
+    from pipeline import speaking_tracker
+    monkeypatch.setattr(ja, "_last_real_interaction", 0.0)
+    speaking_tracker.reset()
+    speaking_tracker.note_speaking("morning digest: three PRs merged overnight")
+    try:
+        assert ja._mute_context_engaged() is True
+    finally:
+        speaking_tracker.reset()
+
+
+def test_mute_context_not_engaged_cold(monkeypatch):
+    import jarvis_agent as ja
+    from pipeline import speaking_tracker
+    monkeypatch.setattr(ja, "_last_real_interaction", 0.0)
+    speaking_tracker.reset()
+    assert ja._mute_context_engaged() is False

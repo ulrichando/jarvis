@@ -633,6 +633,27 @@ def _recent_interaction(window: float = QUIET_HOURS_WINDOW_SEC) -> bool:
     return (time.monotonic() - _last_real_interaction) < window
 
 
+def _mute_context_engaged() -> bool:
+    """Whether a vocative-less mute ("Go on mute.") counts as addressed
+    to JARVIS: the user interacted within the addressing-gate window, or
+    JARVIS is talking / just finished talking (muting the thing that's
+    talking). Uses the same window as `_is_unaddressed_ambient`, so the
+    deterministic mute accepts exactly the turns that would have reached
+    the LLM anyway — plus the agent-speaking case the addressing gate
+    misses (JARVIS's own speech never stamps `_touch_interaction`, so a
+    "go on mute" aimed at a digest announcement used to be dropped as
+    ambient). False-positive cost is low and audible: the mute is
+    confirmed out loud and "wake up" needs no vocative."""
+    window = QUIET_HOURS_WINDOW_SEC if _in_quiet_hours() else ENGAGEMENT_WINDOW_SEC
+    if _recent_interaction(window):
+        return True
+    try:
+        from pipeline import speaking_tracker
+        return bool(speaking_tracker.recent_speaking_text(10.0))
+    except Exception:
+        return False
+
+
 def _is_unaddressed_ambient(text: str) -> bool:
     """Decide whether a transcript should be dropped as ambient room audio.
 
@@ -1506,6 +1527,21 @@ def _set_silent(on: bool) -> None:
         pass
 
 
+# Assistant-text mute confirmations (lowercase substrings). The reply-side
+# auto-engage fallback flips silent mode when the LLM acknowledged a mute
+# the user-side gate missed. supervisor.md's MUTE/WAKE section sanctions
+# exactly "Going quiet." / "Got it, quiet now." — BOTH must stay in this
+# tuple, or the model follows its own prompt and nothing mutes (live
+# 2026-07-02: "Got it, quiet now." voiced, mute never engaged). Keep the
+# entries anchored/confirmation-shaped: a loose substring like "muted"
+# would auto-silence JARVIS whenever he *talks about* muting.
+_ASSISTANT_MUTE_ACKS = (
+    "going quiet", "going silent", "muting myself",
+    "going to sleep", "i'll be quiet", "be quiet now",
+    "got it, quiet now", "muting now", "going on mute",
+)
+
+
 # Directed-only memory sync (2026-07-02). With the reply addressing gate
 # deliberately OFF on this box (always-answer room, 2026-06-25), honcho
 # was fed EVERY overheard utterance — bystander chatter became derived
@@ -1575,6 +1611,7 @@ def _should_sync_memory_item(role: str, text: str) -> bool:
 # docs/superpowers/specs/2026-06-18-silent-mode-token-leak-fix-design.md
 from pipeline.voice_commands import (
     MUTE_PATTERNS as _MUTE_PATTERNS,
+    MUTE_SELF_EVIDENT_PATTERNS as _MUTE_SELF_EVIDENT_PATTERNS,
     WAKE_PATTERNS as _WAKE_PATTERNS,
     WAKE_STRICT_PATTERNS as _WAKE_STRICT_PATTERNS,
     MEDIA_OBJECT_RE as _MEDIA_OBJECT_RE,
@@ -4544,8 +4581,17 @@ class JarvisAgent(Agent):
             logger.info(f"[silent-mode] suppressed turn: {text[:60]!r}")
             raise StopResponse()
 
-        # Not silent. Check for mute trigger.
-        if _is_command(text, _MUTE_PATTERNS):
+        # Not silent. Check for mute trigger. Two rungs: the vocative-
+        # gated full pattern set, then — for machine-directed phrasings
+        # only ("go on mute" / "silent mode") — a vocative-less match
+        # accepted when JARVIS is the live interlocutor. Rung 2 replaces
+        # the LLM-reply fallback as the primary path for the user's most
+        # common phrasing ("Go on mute please." repeated 3× on 2026-07-02
+        # with zero effect — the LLM ack lottery never engaged the flag).
+        if _is_command(text, _MUTE_PATTERNS) or (
+            _is_command(text, _MUTE_SELF_EVIDENT_PATTERNS, require_vocative=False)
+            and _mute_context_engaged()
+        ):
             _set_silent(True)
             # Log the actual trigger phrase so false positives can be
             # diagnosed. Without this we only see "entering silent mode"
@@ -7093,10 +7139,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 # intent ("be active") wins over the LLM's confused
                 # text.
                 lower = (text or "").lower()
-                if not _is_silent() and any(p in lower for p in (
-                    "going quiet", "going silent", "muting myself",
-                    "going to sleep", "i'll be quiet", "be quiet now",
-                )):
+                if not _is_silent() and any(p in lower for p in _ASSISTANT_MUTE_ACKS):
                     # Find the most recent user turn in `prior`.
                     last_user_text = ""
                     for prev in reversed(prior):
