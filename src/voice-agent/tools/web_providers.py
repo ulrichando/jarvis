@@ -95,20 +95,27 @@ class WebSearchProvider(abc.ABC):
 # ---------------------------------------------------------------------------
 
 
-def _first_capable(capability: str) -> Optional[Any]:
-    """Return the first *available* web provider advertising ``supports_<capability>``.
+def _all_capable(capability: str) -> List[Any]:
+    """Every *available* web provider advertising ``supports_<capability>``.
 
     Name-sorted for determinism (via the registry). Exceptions in a provider's
     ``supports_*`` probe are swallowed so one bad backend can't break resolution.
     """
+    capable: List[Any] = []
     for provider in provider_registry.available_providers(PROVIDER_KIND):
         probe = getattr(provider, f"supports_{capability}", None)
         try:
             if probe is not None and probe():
-                return provider
+                capable.append(provider)
         except Exception:  # noqa: BLE001 — a capability probe must not raise out
             logger.debug("web provider %r supports_%s() raised", getattr(provider, "name", "?"), capability)
-    return None
+    return capable
+
+
+def _first_capable(capability: str) -> Optional[Any]:
+    """Return the first *available* web provider advertising ``supports_<capability>``."""
+    capable = _all_capable(capability)
+    return capable[0] if capable else None
 
 
 async def _invoke(method: Any, *args: Any) -> Any:
@@ -134,6 +141,16 @@ def first_search_provider() -> Optional[Any]:
     backend (better ranking, immune to DDG's IP CAPTCHA) over keyless DuckDuckGo.
     """
     return _first_capable("search")
+
+
+def search_providers() -> List[Any]:
+    """All available search-capable web backends, in registry (name) order.
+
+    ``web_search`` walks this list so a second configured backend (e.g. tavily
+    behind searxng) serves as the fallback rung when an earlier one errors or
+    answers with zero results.
+    """
+    return _all_capable("search")
 
 
 async def run_provider_search(provider: Any, query: str, limit: int = 5) -> Dict[str, Any]:
