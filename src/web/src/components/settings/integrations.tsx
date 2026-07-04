@@ -9,8 +9,8 @@ import { SettingsSection } from "./field";
 import { useSettings, useUpdateSettings } from "@/hooks/use-settings";
 
 // GitHub App slug — install page is github.com/apps/<slug>. Matches the
-// gh-app deploy (`GH_APP_BOT_LOGIN=jarvis-gh-bot[bot]`, real slug jarvis-gh-bot).
-const GH_BOT_SLUG = "jarvis-gh-bot";
+// gh-app deploy (`GH_APP_BOT_LOGIN=jvs[bot]`, real slug jvs).
+const GH_BOT_SLUG = "jvs";
 
 export function IntegrationsSection() {
   const { data } = useSettings();
@@ -27,8 +27,8 @@ export function IntegrationsSection() {
   );
 }
 
-// The Jarvis GitHub App (@jarvis-gh-bot): install it on a repo, then mention
-// @jarvis-gh-bot in an issue or PR comment to dispatch a watchable /code
+// The Jarvis GitHub App (@jvs): install it on a repo, then mention
+// @jvs in an issue or PR comment to dispatch a watchable /code
 // session that opens a PR. This is the discoverable "where is the bot" home.
 function JarvisBotRow() {
   const installUrl = `https://github.com/apps/${GH_BOT_SLUG}/installations/new`;

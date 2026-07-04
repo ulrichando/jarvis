@@ -25,10 +25,10 @@ describe('Applications → Jarvis GitHub Bot', () => {
     expect(screen.getByText('Jarvis GitHub Bot')).toBeTruthy()
     const install = screen.getByText(/Install on GitHub/i).closest('a')
     expect(install?.getAttribute('href')).toBe(
-      'https://github.com/apps/jarvis-gh-bot/installations/new',
+      'https://github.com/apps/jvs/installations/new',
     )
     const appPage = screen.getByText(/View app page/i).closest('a')
-    expect(appPage?.getAttribute('href')).toBe('https://github.com/apps/jarvis-gh-bot')
+    expect(appPage?.getAttribute('href')).toBe('https://github.com/apps/jvs')
   })
 })
 
