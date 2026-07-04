@@ -1,5 +1,6 @@
 import { describe, expect, test, beforeEach, afterEach, vi } from 'vitest'
 import { _resetForTests, getStore } from '@/lib/bridge/db'
+import { verifyProxyToken } from '@/lib/bridge/proxyJwt'
 import {
   getOrCreateSession,
   createEnvironment,
@@ -271,6 +272,49 @@ describe('launchContainerSession', () => {
     const cli = calls.map((c) => c.join(' ')).find((c) => c.includes('cli.tsx'))!
     expect(cli).toContain('JARVIS_PROVIDER=deepseek')
     expect(cli).toContain('JARVIS_MODEL=deepseek-v4-pro')
+  })
+
+  test('proxy auth-enforced deploy: the CLI carries a signed proxy JWT as ANTHROPIC_AUTH_TOKEN', async () => {
+    const secret = 'test-proxy-jwt-secret-abcdefghijklmnop012345'
+    process.env.JARVIS_PROXY_JWT_SECRET = secret
+    try {
+      const sessionId = makeSession()
+      const store = getStore()
+      const { calls, exec } = fakeDocker()
+      await launchContainerSession(store, {
+        sessionId,
+        repoFullName: 'owner/demo',
+        baseUrl: 'http://127.0.0.1:3000',
+        proxyHealthy: async () => true, // proxy up → the JWT-minting path
+        exec,
+      })
+      const cli = calls.map((c) => c.join(' ')).find((c) => c.includes('cli.tsx'))!
+      const m = /ANTHROPIC_AUTH_TOKEN=([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/.exec(cli)
+      expect(m).toBeTruthy()
+      // The token verifies against the SAME secret the hub uses, and is scoped
+      // to this session.
+      const res = verifyProxyToken(m![1], secret)
+      expect(res.ok).toBe(true)
+      expect(res.ok && res.claims.sub).toBe(`code-session:${sessionId}`)
+    } finally {
+      delete process.env.JARVIS_PROXY_JWT_SECRET
+    }
+  })
+
+  test('no proxy secret (auth-less local proxy): no ANTHROPIC_AUTH_TOKEN is minted', async () => {
+    delete process.env.JARVIS_PROXY_JWT_SECRET
+    const sessionId = makeSession()
+    const store = getStore()
+    const { calls, exec } = fakeDocker()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => true,
+      exec,
+    })
+    const cli = calls.map((c) => c.join(' ')).find((c) => c.includes('cli.tsx'))!
+    expect(cli).not.toContain('ANTHROPIC_AUTH_TOKEN=')
   })
 
   test('runs the setup script when the repo has .jarvis/setup.sh', async () => {
