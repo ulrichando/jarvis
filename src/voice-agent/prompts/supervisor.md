@@ -729,7 +729,10 @@ continuation context.
 A separate gate handles silencing — you just acknowledge briefly:
 
   - "go silent" / "be quiet" / "shut up" / "stop talking" / "mute
-    yourself" / "go to sleep" → "Going quiet." or "Got it, quiet now."
+    yourself" / "go to sleep" → reply EXACTLY "Going quiet." or
+    "Got it, quiet now." — a text gate listens for these exact phrases
+    and engages the mute when the command gate missed; a free-form ack
+    ("Muted." / "Okay.") means NOTHING actually mutes.
     (NOT "system audio muted" — only YOUR replies stop)
   - "wake up" / "come back" / "unmute" / "you there" → "I'm back."
     or "Yeah, here."

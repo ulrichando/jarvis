@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import re
 
-from pipeline.wake_word import INLINE_STRIP_RE
+from pipeline.wake_word import BARE_VOCATIVE_RE, INLINE_STRIP_RE, NAME_RE
 
 
 __all__ = [
     "MUTE_PATTERNS",
+    "MUTE_SELF_EVIDENT_PATTERNS",
     "WAKE_PATTERNS",
     "WAKE_STRICT_PATTERNS",
     "MEDIA_OBJECT_RE",
@@ -40,7 +41,10 @@ __all__ = [
 # \b on both ends so trailing punctuation like "Jarvis, mute."
 # still hits.
 MUTE_PATTERNS = tuple(re.compile(r"\b" + p + r"\b") for p in (
-    r"mute",
+    # "mutes?" — Whisper renders "Jarvis, mute" as "Jarvis mutes." often
+    # enough to show up in the conversation DB (2026-06-13). "muting"
+    # deliberately NOT covered (no \b-adjacent "mute" in it).
+    r"mutes?",
     r"go silent",
     r"go quiet",
     r"be quiet",
@@ -57,6 +61,26 @@ MUTE_PATTERNS = tuple(re.compile(r"\b" + p + r"\b") for p in (
     # only triggers because it fits a quiet-request shape anyway.
     r"quiet",
 ))
+
+
+# Subset of mute phrasings that are only ever said TO A MACHINE — safe
+# to honor WITHOUT the "Jarvis" vocative when the caller has separate
+# evidence the user is engaged with JARVIS (see jarvis_agent's
+# `_mute_context_engaged`). The human-directed phrases (shut up / be
+# quiet / quiet (down) / stop talking / go to sleep) stay vocative-
+# gated: ambient speech to kids / calls / the TV collides with them —
+# the 2026-04-26 false-positive class. Live motivation: bare
+# "Go on mute (please)" is the user's single most common mute phrasing
+# (7+ occurrences in conversations.db) and matched NOTHING
+# deterministic before 2026-07-03.
+MUTE_SELF_EVIDENT_PATTERNS = tuple(re.compile(r"\b" + p + r"\b") for p in (
+    r"mutes?",
+    r"go silent",
+    r"silent mode",
+    r"silence yourself",
+))
+
+
 WAKE_PATTERNS = tuple(re.compile(r"\b" + p + r"\b") for p in (
     r"wake up",
     r"come back",
@@ -109,7 +133,7 @@ WAKE_STRICT_PATTERNS = tuple(re.compile(r"\b" + p + r"\b") for p in (
 # mute the music) — should go to media_control, NOT enter silent
 # mode. Skip those before treating "mute" as a JARVIS-silence trigger.
 MEDIA_OBJECT_RE = re.compile(
-    r"\b(mute|silence|shut up)\b\s+"
+    r"\b(mutes?|silence|shut up)\b\s+"
     r"(the\s+)?"
     r"(music|song|track|audio|video|spotify|chrome|chromium|"
     r"firefox|youtube|player|tab|tv|sound|volume)",
@@ -133,24 +157,45 @@ COMMAND_MAX_WORDS = 6
 SENTENCE_SPLIT_RE = re.compile(r"[.!?;]+|\.{2,}")
 
 
-def is_command(text: str, patterns: tuple[re.Pattern, ...]) -> bool:
+def is_command(
+    text: str,
+    patterns: tuple[re.Pattern, ...],
+    *,
+    require_vocative: bool | None = None,
+) -> bool:
     """True iff some sentence in `text` is a short imperative matching
-    `patterns` and addressed to JARVIS where required (mute always needs
-    the vocative; strict-wake phrases need it; uniquely-commanding wake
-    phrases stay permissive)."""
-    is_mute_check = patterns is MUTE_PATTERNS
+    `patterns` and addressed to JARVIS where required (mute needs the
+    vocative by default; strict-wake phrases need it; uniquely-commanding
+    wake phrases stay permissive).
+
+    `require_vocative` overrides the mute vocative rule ONLY (None =
+    pattern-set default). Callers passing False must supply their own
+    addressed-to-JARVIS evidence — see jarvis_agent's
+    `_mute_context_engaged()`. It does not relax WAKE_STRICT_PATTERNS.
+
+    Vocative detection (2026-07-03, mute-intermittency fix) accepts the
+    name ANYWHERE in the sentence ("go on mute, jarvis") and carries a
+    bare-vocative sentence into the next one ("Jarvis. Go on mute." —
+    Whisper's punctuation is a lottery, so the name and the command
+    often land in different sentences)."""
+    is_mute_check = (
+        patterns is MUTE_PATTERNS or patterns is MUTE_SELF_EVIDENT_PATTERNS
+    )
+    need_vocative = is_mute_check if require_vocative is None else require_vocative
+    prev_bare_vocative = False
     for sentence in SENTENCE_SPLIT_RE.split(text or ""):
-        body = sentence.strip().lower()
-        if not body:
+        raw_body = sentence.strip().lower()
+        if not raw_body:
             continue
-        # Strip a leading vocative ("jarvis" / "jervis" / "javis" / "joris" /
-        # the 'l' variants / etc.), remembering whether one was actually
-        # present. The regex comes from pipeline.wake_word — same alternation
-        # source as NAME_RE and BARE_VOCATIVE_RE, so all 3 sites stay
-        # synchronized automatically.
-        stripped = INLINE_STRIP_RE.sub("", body)
-        had_vocative = stripped != body
-        body = stripped
+        # Vocative = the name anywhere in this sentence, or the previous
+        # sentence being JUST the name ("Jarvis." / "Hey Jarvis."). The
+        # regexes come from pipeline.wake_word — same alternation source
+        # as the agent's other vocative sites, so they stay synchronized.
+        had_vocative = prev_bare_vocative or bool(NAME_RE.search(raw_body))
+        prev_bare_vocative = bool(BARE_VOCATIVE_RE.match(raw_body))
+        # Strip a leading "(hey) jarvis," so the word-count bound and the
+        # pattern match run against the command body, not the address.
+        body = INLINE_STRIP_RE.sub("", raw_body)
         if len(body.split()) > COMMAND_MAX_WORDS:
             continue
         # If we're checking for a MUTE trigger and the user is actually
@@ -158,15 +203,16 @@ def is_command(text: str, patterns: tuple[re.Pattern, ...]) -> bool:
         # media_control handle it instead.
         if is_mute_check and MEDIA_OBJECT_RE.search(body):
             continue
-        # Mute commands MUST address JARVIS by name. False positive
-        # captured 2026-04-26: "i'm leaving. go on mute." (user
-        # speaking to a third party) silenced JARVIS for two hours.
-        # Wake commands stay permissive on a per-pattern basis (see
-        # WAKE_STRICT_PATTERNS below) — the loose phrases that collide
-        # with everyday speech ("are you listening", "answer me", etc.)
-        # require the vocative; uniquely-commanding ones ("wake up",
-        # "hey jarvis") stay permissive.
-        if is_mute_check and not had_vocative:
+        # Mute commands MUST address JARVIS by name (unless the caller
+        # explicitly relaxed it). False positive captured 2026-04-26:
+        # "i'm leaving. go on mute." (user speaking to a third party)
+        # silenced JARVIS for two hours. Wake commands stay permissive
+        # on a per-pattern basis (see WAKE_STRICT_PATTERNS below) — the
+        # loose phrases that collide with everyday speech ("are you
+        # listening", "answer me", etc.) require the vocative;
+        # uniquely-commanding ones ("wake up", "hey jarvis") stay
+        # permissive.
+        if is_mute_check and need_vocative and not had_vocative:
             continue
         if (not is_mute_check) and (not had_vocative) and any(
             p.search(body) for p in WAKE_STRICT_PATTERNS

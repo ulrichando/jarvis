@@ -65,6 +65,14 @@ NAME_RE: re.Pattern[str] = re.compile(
 )
 
 
+# Wake-filler preamble words tolerated before the name ("hey jarvis" /
+# "okay, jarvis"). Shared by BARE_VOCATIVE_RE and INLINE_STRIP_RE so the
+# two vocative shapes can't drift — pre-2026-07-03 only the bare-vocative
+# regex knew about fillers, so "Hey Jarvis, mute" never counted as
+# addressed while "Jarvis, mute" did (live mute-intermittency root cause).
+_PREAMBLE_FILLERS: str = r"(?:hey|yo|hi|ok(?:ay)?|so|alright|hello|i\s+said|please)"
+
+
 # ── Site 2: bare-vocative full-match ─────────────────────────────────
 # Matches an entire short transcript that is JUST the name (with
 # optional preamble fillers and trailing punctuation). Used by the
@@ -82,7 +90,7 @@ BARE_VOCATIVE_RE: re.Pattern[str] = re.compile(
     # ("Hello, Jarvis." is natural English; pre-2026-05-09 the comma
     # form fell into the short-input gate as a 2-word ambiguous and
     # got "Pardon?").
-    r"(?:(?:hey|yo|hi|ok(?:ay)?|so|alright|hello|i\s+said|please)[,\s]+)*"
+    rf"(?:{_PREAMBLE_FILLERS}[,\s]+)*"
     # The name itself.
     rf"(?:{NAME_ALTERNATION})"
     # Optional trailing punctuation only — no follow-up content:
@@ -92,12 +100,13 @@ BARE_VOCATIVE_RE: re.Pattern[str] = re.compile(
 
 
 # ── Site 3: inline strip inside _is_command() ────────────────────────
-# Strips a leading vocative from a sentence so wake/mute pattern
-# matching can run against the body. Distinct from NAME_RE because
-# it (a) anchors at start, (b) accepts trailing punctuation/space
-# as a delimiter (not a word boundary), and (c) consumes the
-# delimiter so the body is clean for downstream regex matching.
+# Strips a leading vocative (with optional wake-filler preamble — "hey
+# jarvis, …") from a sentence so wake/mute pattern matching can run
+# against the body. Distinct from NAME_RE because it (a) anchors at
+# start, (b) accepts trailing punctuation/space as a delimiter (not a
+# word boundary), and (c) consumes the delimiter so the body is clean
+# for downstream regex matching + the COMMAND_MAX_WORDS count.
 INLINE_STRIP_RE: re.Pattern[str] = re.compile(
-    rf"^(?:{NAME_ALTERNATION})[,.:!\s]+",
+    rf"^(?:{_PREAMBLE_FILLERS}[,\s]+)*(?:{NAME_ALTERNATION})[,.:!\s]+",
     re.IGNORECASE,
 )
