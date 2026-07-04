@@ -2,11 +2,15 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { Check, Eye, EyeOff, GitBranch, Trash2 } from "lucide-react";
+import { Check, Eye, EyeOff, GitBranch, Trash2, Bot, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SettingsSection } from "./field";
 import { useSettings, useUpdateSettings } from "@/hooks/use-settings";
+
+// GitHub App slug — install page is github.com/apps/<slug>. Matches the
+// gh-app deploy (`GH_APP_BOT_LOGIN=jarvis-gh-bot[bot]`, real slug jarvis-gh-bot).
+const GH_BOT_SLUG = "jarvis-gh-bot";
 
 export function IntegrationsSection() {
   const { data } = useSettings();
@@ -14,10 +18,51 @@ export function IntegrationsSection() {
 
   return (
     <SettingsSection
-      description="Tokens stay local in ~/.jarvis/settings.json. Used to push workspaces to GitHub from the Workbench's History tab."
+      description="Connect Jarvis to GitHub — install the bot on your repos, and store a token for pushing Workbench workspaces. Tokens stay local in ~/.jarvis/settings.json."
     >
+      <JarvisBotRow />
+      <div className="my-5 border-t border-border/60" />
       <GitHubRow />
     </SettingsSection>
+  );
+}
+
+// The Jarvis GitHub App (@jarvis-gh-bot): install it on a repo, then mention
+// @jarvis-gh-bot in an issue or PR comment to dispatch a watchable /code
+// session that opens a PR. This is the discoverable "where is the bot" home.
+function JarvisBotRow() {
+  const installUrl = `https://github.com/apps/${GH_BOT_SLUG}/installations/new`;
+  const appUrl = `https://github.com/apps/${GH_BOT_SLUG}`;
+  return (
+    <div>
+      <div className="mb-1.5 flex items-center gap-2">
+        <Bot className="size-4 text-muted-foreground" />
+        <h3 className="text-[15px] font-semibold">Jarvis GitHub Bot</h3>
+        <code className="rounded bg-accent/50 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+          @{GH_BOT_SLUG}
+        </code>
+      </div>
+      <p className="mb-3 text-[13px] text-muted-foreground">
+        Install the bot on your repositories, then mention{" "}
+        <code className="text-[12px]">@{GH_BOT_SLUG} &lt;task&gt;</code> in any issue or pull-request
+        comment. It runs a watchable{" "}
+        <span className="font-medium text-foreground">Code</span> session and opens a pull request
+        with a link back to the live session — the same flow as{" "}
+        <code className="text-[12px]">jarvis cloud</code>, driven from GitHub.
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <a href={installUrl} target="_blank" rel="noopener noreferrer">
+          <Button size="sm">
+            <Bot className="mr-1.5 size-3.5" /> Install on GitHub
+          </Button>
+        </a>
+        <a href={appUrl} target="_blank" rel="noopener noreferrer">
+          <Button variant="outline" size="sm">
+            <ExternalLink className="mr-1.5 size-3.5" /> View app page
+          </Button>
+        </a>
+      </div>
+    </div>
   );
 }
 
