@@ -94,5 +94,20 @@ export function snipCompactIfNeeded(
   }
 }
 
+/**
+ * Whether a message is a snip "marker" to hide from the transcript. jarvis's
+ * snip model inserts ONLY a snip_boundary (rendered by SnipBoundaryMessage via
+ * isSnipBoundaryMessage) and projects the snipped messages out — there is no
+ * separate marker message to suppress. Message.tsx requires this symbol (it's
+ * in the compiled render path, ported from an upstream that had a distinct
+ * marker type). Without it the require yields undefined and every message
+ * render under feature("HISTORY_SNIP") throws
+ * "isSnipMarkerMessage is not a function". Returning false makes the "hide
+ * marker" branch a no-op — correct for this model, and it stops the crash.
+ */
+export function isSnipMarkerMessage(_message: Message): boolean {
+  return false
+}
+
 // Re-export so call sites importing from snipCompact keep working.
 export { projectSnippedView, isSnipBoundaryMessage }
