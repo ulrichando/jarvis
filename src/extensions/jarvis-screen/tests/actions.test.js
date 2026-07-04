@@ -1,5 +1,6 @@
 /** @jest-environment jsdom */
 const actions = require("../actions.js");
+require("../safety.js"); // attaches globalThis.JARVIS_SAFETY so click gating is live (as in the browser)
 
 beforeEach(() => {
   document.body.innerHTML = `
@@ -98,6 +99,88 @@ describe("scroll + wait + close", () => {
   });
   test("close_tab returns a close request", () => {
     expect(actions.ext_close_tab()).toEqual({ ok: true, action: "close_requested" });
+  });
+});
+
+describe("destructive click gating (element-based, content-side)", () => {
+  test("a Delete-labeled button needs confirmation even with a generic selector", () => {
+    document.body.innerHTML = `<button id="x" class="btn-primary">Delete account</button>`;
+    const r = actions.ext_click({ selector: "#x" }); // selector has no destructive word
+    expect(r.ok).toBe(false);
+    expect(r.needs_confirmation).toBe(true);
+  });
+  test("the same click proceeds once confirmed", () => {
+    document.body.innerHTML = `<button id="x" class="btn-primary">Delete account</button>`;
+    let clicked = false;
+    document.getElementById("x").addEventListener("click", () => { clicked = true; });
+    const r = actions.ext_click({ selector: "#x" }, { confirmed: true });
+    expect(r.ok).toBe(true);
+    expect(clicked).toBe(true);
+  });
+  test("a benign button clicks freely", () => {
+    document.body.innerHTML = `<button id="ok">Continue</button>`;
+    expect(actions.ext_click({ selector: "#ok" }).ok).toBe(true);
+  });
+});
+
+describe("click_text (click by visible text — for the browser agent)", () => {
+  test("clicks the element whose text matches", () => {
+    document.body.innerHTML = `<button id="b">Continue</button><button>Cancel</button>`;
+    let clicked = false;
+    document.getElementById("b").addEventListener("click", () => { clicked = true; });
+    const r = actions.ext_click_text({ text: "continue" });
+    expect(r.ok).toBe(true);
+    expect(clicked).toBe(true);
+  });
+  test("fails cleanly when nothing matches", () => {
+    document.body.innerHTML = `<button>Cancel</button>`;
+    expect(actions.ext_click_text({ text: "nonexistent" }).ok).toBe(false);
+  });
+  test("a destructive label still needs confirmation", () => {
+    document.body.innerHTML = `<button>Delete account</button>`;
+    const r = actions.ext_click_text({ text: "delete account" }); // no confirm
+    expect(r.ok).toBe(false);
+    expect(r.needs_confirmation).toBe(true);
+  });
+});
+
+describe("console + network reading (feature 8)", () => {
+  test("read_console returns buffered messages, filterable by level", () => {
+    globalThis.__jarvisConsole = [{ level: "error", text: "boom", ts: 1 }, { level: "log", text: "hi", ts: 2 }];
+    const r = actions.ext_read_console({});
+    expect(r.ok).toBe(true);
+    expect(r.messages.length).toBe(2);
+    expect(actions.ext_read_console({ level: "error" }).messages.length).toBe(1);
+    delete globalThis.__jarvisConsole;
+  });
+  test("read_network returns a request list", () => {
+    const r = actions.ext_read_network();
+    expect(r.ok).toBe(true);
+    expect(Array.isArray(r.requests)).toBe(true);
+  });
+});
+
+describe("workflow recording (feature 10)", () => {
+  test("records clicks + field edits into replayable steps", () => {
+    document.body.innerHTML = `<button id="go">Go</button><input id="q" />`;
+    actions.ext_record_start();
+    document.getElementById("go").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    const q = document.getElementById("q"); q.value = "hello";
+    q.dispatchEvent(new Event("change", { bubbles: true }));
+    const r = actions.ext_record_stop();
+    expect(r.ok).toBe(true);
+    expect(r.steps.length).toBe(2);
+    expect(r.steps[0].action).toBe("click");
+    expect(r.steps[0].args.selector).toContain("#go");
+    expect(r.steps[1].action).toBe("type");
+    expect(r.steps[1].args.text).toBe("hello");
+  });
+  test("stops recording — no steps captured after stop", () => {
+    document.body.innerHTML = `<button id="go">Go</button>`;
+    actions.ext_record_start();
+    actions.ext_record_stop();
+    document.getElementById("go").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(actions.ext_record_stop().steps.length).toBe(0);
   });
 });
 

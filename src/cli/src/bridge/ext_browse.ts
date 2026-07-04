@@ -44,6 +44,29 @@ export function resolveExtensionResponse(msg: { cmd_id: string; [k: string]: any
   p.resolve(msg);
 }
 
+// Send ONE command to the connected extension and await its {ok, ...} reply.
+// Shared by the HTTP handler (below) and the in-process browser agent loop.
+// Throws "extension not connected" / "timeout" so callers can classify.
+export async function sendExtCommand(
+  action: string,
+  args: any = {},
+  confirmed = false,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+): Promise<any> {
+  if (!isExtensionConnected()) throw new Error("extension not connected");
+  const cmd_id = randomUUID();
+  const cmd = { cmd_id, action, args: args || {}, confirmed: !!confirmed };
+  const responsePromise = new Promise<any>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pending.delete(cmd_id);
+      reject(new Error("timeout"));
+    }, timeoutMs);
+    pending.set(cmd_id, { resolve, reject, timer });
+  });
+  extensionWS.send(JSON.stringify(cmd));
+  return responsePromise;
+}
+
 export async function handleExtBrowse(req: Request): Promise<Response> {
   let body: any;
   try { body = await req.json(); }
@@ -59,22 +82,10 @@ export async function handleExtBrowse(req: Request): Promise<Response> {
     );
   }
 
-  const cmd_id = randomUUID();
-  const timeout_ms = body.timeout_ms || DEFAULT_TIMEOUT_MS;
-  const cmd = { cmd_id, action, args: body.args || {}, confirmed: !!body.confirmed };
-
-  const responsePromise = new Promise<any>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pending.delete(cmd_id);
-      reject(new Error("timeout"));
-    }, timeout_ms);
-    pending.set(cmd_id, { resolve, reject, timer });
-  });
-
-  extensionWS.send(JSON.stringify(cmd));
-
   try {
-    const result = await responsePromise;
+    const result = await sendExtCommand(
+      action, body.args || {}, !!body.confirmed, body.timeout_ms || DEFAULT_TIMEOUT_MS,
+    );
     return Response.json(result, { status: 200 });
   } catch (e: any) {
     return Response.json(

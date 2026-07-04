@@ -3,73 +3,293 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Jarvis in Chrome</title>
+    <title>Jarvis</title>
     <style>
-      :root { color-scheme: dark; }
+      /* Jarvis design system — arc-reactor cyan on dark navy (mirrors src/web). */
+      :root {
+        color-scheme: dark;
+        --bg:          oklch(0.11 0.014 252);
+        --fg:          oklch(0.97 0.007 240);
+        --card:        oklch(0.155 0.022 250);
+        --panel:       oklch(0.185 0.022 250);
+        --primary:     oklch(0.80 0.155 198);
+        --primary-fg:  oklch(0.10 0.012 252);
+        --muted-fg:    oklch(0.74 0.032 235);
+        --faint-fg:    oklch(0.60 0.028 235);
+        --border:      oklch(0.75 0.10 200 / 20%);
+        --border-soft: oklch(0.75 0.10 200 / 11%);
+        --warn:        oklch(0.72 0.15 60);
+        --danger:      oklch(0.68 0.19 25);
+        --radius: 12px;
+      }
       * { box-sizing: border-box; }
+      html, body { height: 100%; }
       body {
-        margin: 0; padding: 16px;
-        font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
-        background: #16130f; color: #e9e4dc;
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 13.5px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        -webkit-font-smoothing: antialiased;
+        overflow: hidden;
       }
-      h1 { margin: 0 0 2px; font-size: 15px; font-weight: 600; }
-      .sub { color: #8b8377; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 14px; }
-      .card { border: 1px solid #2b2620; border-radius: 12px; background: #1c1813; padding: 12px 14px; margin-bottom: 12px; }
-      .row { display: flex; align-items: center; gap: 8px; }
-      .dot { width: 9px; height: 9px; border-radius: 50%; background: #6b6459; flex: none; }
-      .dot.ok { background: #34d399; }
-      .dot.warn { background: #fbbf24; }
-      .dot.bad { background: #f87171; }
-      .dot.pending { background: #60a5fa; }
-      .state { font-weight: 600; }
-      .reason { color: #9a9187; font-size: 12px; margin-top: 4px; }
-      label { display: block; color: #9a9187; font-size: 11px; margin: 10px 0 4px; }
-      input {
-        width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid #322c24;
-        background: #12100c; color: #e9e4dc; font: inherit; outline: none;
+      .app { height: 100%; display: flex; flex-direction: column; }
+      [hidden] { display: none !important; }
+      button { font: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+
+      /* ── Onboarding steps (centered) ─────────────────────────────── */
+      .step { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 28px 24px; text-align: center; }
+      .step .art { margin-bottom: 26px; }
+      .step h1 { margin: 0 0 10px; font-size: 19px; font-weight: 640; letter-spacing: -0.01em; }
+      .step p { margin: 0 0 22px; max-width: 320px; color: var(--muted-fg); font-size: 13.5px; }
+      .btn {
+        border-radius: 10px; padding: 9px 22px; font-weight: 600; font-size: 13.5px;
+        transition: filter .12s ease, background .12s ease, color .12s ease;
       }
-      input:focus { border-color: #c96442; }
-      .btns { display: flex; gap: 8px; margin-top: 10px; }
-      button {
-        font: inherit; border-radius: 8px; padding: 7px 12px; cursor: pointer;
-        border: 1px solid #322c24; background: #241f19; color: #e9e4dc;
+      .btn-neutral { background: oklch(0.92 0.008 240); color: oklch(0.16 0.02 252); }
+      .btn-neutral:hover { filter: brightness(0.96); }
+      .btn-primary { background: var(--primary); color: var(--primary-fg); }
+      .btn-primary:hover { filter: brightness(1.08); }
+
+      /* Beta risk panel */
+      .risks { width: 100%; max-width: 340px; margin: 0 0 22px; border: 1px solid var(--border-soft); border-radius: var(--radius); overflow: hidden; text-align: left; }
+      .risks .row { display: flex; gap: 12px; padding: 14px 15px; font-size: 12.5px; color: var(--muted-fg); border-top: 1px solid var(--border-soft); }
+      .risks .row:first-child { border-top: none; }
+      .risks .row svg { flex: none; margin-top: 1px; color: var(--faint-fg); }
+      .risks .row.danger { color: var(--danger); }
+      .risks .row.danger svg { color: var(--danger); }
+      .risks a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+
+      /* Onboarding progress dots */
+      .dots { display: flex; gap: 6px; margin-top: 22px; }
+      .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--border); }
+      .dots i.on { background: var(--primary); }
+
+      /* Simple illustrations (stylized, on-brand) */
+      .art-window { width: 132px; height: 92px; position: relative; }
+      .art-window .w { position: absolute; border: 1px solid var(--border); border-radius: 9px; background: var(--card); }
+      .art-window .w1 { inset: 0 14px 12px 0; }
+      .art-window .w2 { inset: 8px 7px 6px 7px; }
+      .art-window .w3 { inset: 16px 0 0 14px; }
+      .art-window .bar { position: absolute; top: 8px; left: 10px; display: flex; gap: 4px; }
+      .art-window .bar b { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+      .art-tabs { display: flex; gap: 4px; padding: 6px; border: 1px solid var(--border); border-radius: 10px 10px 0 0; background: var(--card); width: 200px; }
+      .art-tabs span { height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; padding: 0 9px; font-size: 11px; }
+      .art-tabs .active { background: var(--primary); color: var(--primary-fg); font-weight: 600; }
+      .art-tabs .ghost { flex: 1; background: var(--panel); }
+      .art-menu { width: 220px; border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--panel); padding: 6px; text-align: left; }
+      .art-menu .mi { display: flex; gap: 9px; align-items: center; padding: 7px 9px; font-size: 12.5px; color: var(--muted-fg); border-radius: 8px; }
+      .art-menu .mi .s { color: var(--primary); font-weight: 700; }
+
+      /* ── Main chat interface ─────────────────────────────────────── */
+      .topbar { display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; }
+      .model { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 8px; font-weight: 600; font-size: 13px; }
+      .model:hover { background: var(--panel); }
+      .model .cy { width: 8px; height: 8px; border-radius: 50%; background: var(--primary); box-shadow: 0 0 8px var(--primary); }
+      .topbar .icons { display: flex; gap: 2px; }
+      .iconbtn { width: 30px; height: 30px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; color: var(--muted-fg); }
+      .iconbtn:hover { background: var(--panel); color: var(--fg); }
+
+      .stream { flex: 1; overflow-y: auto; padding: 6px 14px 10px; display: flex; flex-direction: column; gap: 12px; }
+      .empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 4px; color: var(--muted-fg); }
+      .empty .pincard { width: 190px; border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--card); padding: 10px; margin-bottom: 14px; }
+      .empty .pincard .h { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted-fg); margin-bottom: 8px; }
+      .empty .pincard .h .cy { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); }
+      .empty .pincard .lines { height: 44px; border-radius: 8px; background: var(--panel); }
+      .empty strong { color: var(--fg); font-size: 13.5px; }
+      .empty span { font-size: 12.5px; max-width: 230px; }
+
+      .msg { max-width: 88%; padding: 9px 12px; border-radius: 13px; font-size: 13.5px; white-space: pre-wrap; word-wrap: break-word; }
+      .msg.user { align-self: flex-end; background: var(--primary); color: var(--primary-fg); border-bottom-right-radius: 5px; }
+      .msg.bot { align-self: flex-start; background: var(--card); border: 1px solid var(--border-soft); border-bottom-left-radius: 5px; }
+      .msg.bot.thinking { color: var(--muted-fg); font-style: italic; }
+      .msg .msg-img { display: block; max-width: 200px; max-height: 150px; border-radius: 8px; object-fit: cover; }
+      .msg .msg-img + span { display: block; margin-top: 6px; }
+
+      /* Browser-agent step rows + approval prompt */
+      .step-row { display: flex; align-items: center; gap: 8px; align-self: flex-start; max-width: 90%; font-size: 12.5px; color: var(--muted-fg); padding: 1px 2px; }
+      .step-row .step-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint-fg); flex: none; }
+      .step-row.ok .step-dot { background: oklch(0.72 0.17 155); }
+      .step-row.fail .step-dot { background: var(--danger); }
+      .approval { align-self: flex-start; max-width: 92%; border: 1px solid var(--border); border-radius: 12px; background: var(--card); padding: 10px 12px; }
+      .approval .at { font-size: 13px; margin-bottom: 9px; }
+      .approval .arow { display: flex; gap: 8px; }
+      .approval .btn { padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; }
+      .approval .task-ta { width: 100%; min-height: 52px; resize: vertical; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--fg); font: inherit; font-size: 13px; padding: 7px 9px; outline: none; }
+      .approval .task-ta:focus { border-color: oklch(0.80 0.155 198 / 55%); }
+      .approval .task-sel { margin-top: 7px; width: 100%; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); font: inherit; font-size: 13px; }
+      .task-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border-soft); }
+      .task-row .tx { flex: 1; font-size: 12.5px; color: var(--muted-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+      /* Composer */
+      .composer { position: relative; margin: 8px 12px 4px; border: 1px solid var(--border); border-radius: 13px; background: var(--card); padding: 6px 10px 4px; }
+      /* Shortcuts menu (type / in the composer) */
+      .sc-menu { position: absolute; left: -1px; right: -1px; bottom: calc(100% + 6px); border: 1px solid var(--border-soft); border-radius: 12px; background: var(--panel); padding: 6px; max-height: 210px; overflow-y: auto; z-index: 12; box-shadow: 0 -10px 34px -20px oklch(0 0 0 / 85%); }
+      .sc-menu .sc { display: flex; align-items: baseline; gap: 8px; padding: 7px 9px; border-radius: 8px; cursor: pointer; }
+      .sc-menu .sc:hover { background: var(--card); }
+      .sc-menu .sc .k { color: var(--primary); font-weight: 600; font-size: 13px; flex: none; }
+      .sc-menu .sc .p { color: var(--muted-fg); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .sc-menu .sc.add .k { color: var(--muted-fg); }
+      .sc-form { padding: 8px; display: grid; gap: 6px; }
+      .sc-form input { padding: 7px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); font: inherit; font-size: 13px; outline: none; }
+      .sc-form input:focus { border-color: oklch(0.80 0.155 198 / 55%); }
+      .sc-form .frow { display: flex; gap: 6px; justify-content: flex-end; }
+      .composer:focus-within { border-color: oklch(0.80 0.155 198 / 55%); }
+      .composer textarea {
+        width: 100%; resize: none; border: none; outline: none; background: transparent; color: var(--fg);
+        font: inherit; font-size: 13px; line-height: 1.4; padding: 0; margin: 0;
+        height: 46px; min-height: 46px; max-height: 140px; overflow-y: auto; display: block;
       }
-      button.primary { background: #c96442; border-color: #c96442; color: #fff; }
-      button:disabled { opacity: .5; cursor: default; }
-      .log { margin: 0; padding: 0; list-style: none; }
-      .log li { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; border-top: 1px solid #241f19; font-size: 12px; }
-      .log li:first-child { border-top: none; }
-      .log .a { font-family: ui-monospace, monospace; }
-      .log .ok { color: #34d399; } .log .no { color: #f87171; }
-      .muted { color: #8b8377; }
-      .hint { font-size: 11px; color: #8b8377; margin-top: 6px; line-height: 1.5; }
-      code { background: #12100c; padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+      .composer textarea::placeholder { color: var(--faint-fg); }
+      .composer .row { display: flex; align-items: center; justify-content: space-between; margin-top: 3px; }
+      .perm { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px; border: 1px solid var(--border-soft); font-size: 12px; color: var(--muted-fg); }
+      .perm:hover { color: var(--fg); border-color: var(--border); }
+      .composer .right { display: flex; align-items: center; gap: 2px; }
+      .composer .iconbtn { width: 27px; height: 27px; }
+      .composer .iconbtn.rec { color: var(--primary); }
+      .composer .attach { display: flex; align-items: center; gap: 8px; padding: 2px 2px 6px; }
+      .composer .attach img { width: 40px; height: 40px; object-fit: cover; border-radius: 7px; border: 1px solid var(--border); }
+      .composer .attach .x { color: var(--muted-fg); font-size: 14px; line-height: 1; padding: 3px 6px; border-radius: 6px; }
+      .composer .attach .x:hover { color: var(--fg); background: var(--panel); }
+      .send { width: 27px; height: 27px; border-radius: 8px; background: var(--primary); color: var(--primary-fg); display: inline-flex; align-items: center; justify-content: center; }
+      .send:hover { filter: brightness(1.08); }
+      .send:disabled { opacity: .45; cursor: default; filter: none; }
+      .disclaimer { text-align: center; font-size: 11px; color: var(--faint-fg); padding: 2px 12px 10px; }
+
+      /* Connect banner (when the bridge/token isn't set) */
+      .connect { margin: 8px 12px; border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--card); padding: 12px; }
+      .connect .t { font-size: 12.5px; color: var(--muted-fg); margin-bottom: 8px; }
+      .connect .f { display: flex; gap: 6px; }
+      .connect input { flex: 1; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); font: inherit; outline: none; }
+      .connect input:focus { border-color: oklch(0.80 0.155 198 / 55%); }
+      .status-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted-fg); }
+      .status-pill i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint-fg); }
+      .status-pill i.ok { background: oklch(0.72 0.17 155); }
+      .status-pill i.warn { background: var(--warn); }
+      .status-pill i.bad { background: var(--danger); }
+
+      /* Popover menus (3-dot, permission, model) */
+      .pop { position: absolute; z-index: 20; border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--panel); padding: 6px; min-width: 190px; box-shadow: 0 18px 44px -22px oklch(0 0 0 / 85%); }
+      .pop .mi { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 8px 9px; border-radius: 8px; font-size: 13px; color: var(--fg); }
+      .pop .mi:hover { background: var(--card); }
+      .pop .mi svg { color: var(--muted-fg); }
+      .pop .mi .chev { margin-left: auto; color: var(--faint-fg); }
+      .pop .mi.check { justify-content: space-between; }
+      .pop .mi .tick { color: var(--primary); }
+      .backdrop { position: fixed; inset: 0; z-index: 15; }
     </style>
   </head>
   <body>
-    <h1>Jarvis in Chrome</h1>
-    <div class="sub">Browser control · local bridge</div>
+    <div class="app">
+      <!-- ══ Onboarding: Beta ══ -->
+      <section class="step" data-view="beta">
+        <div class="art" aria-hidden="true">
+          <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="oklch(0.80 0.155 198)" stroke-width="1.4"><path d="M9 3h6M10 3v6l-5 8a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-8V3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <h1>This is a beta feature</h1>
+        <div class="risks">
+          <div class="row">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 3h6M10 3v5l-4.5 8.5A2 2 0 0 0 7.3 20h9.4a2 2 0 0 0 1.8-3.5L14 8V3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>This beta feature has unique risks distinct from other Jarvis products. You are fully responsible for all risks associated with use of this product.</span>
+          </div>
+          <div class="row">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+            <span>Jarvis can take screenshots when responding. For privacy, avoid using Jarvis on sensitive sites like health and banking platforms.</span>
+          </div>
+          <div class="row danger">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3 2 20h20L12 3Z" stroke-linejoin="round"/><path d="M12 10v5M12 17.5v.5" stroke-linecap="round"/></svg>
+            <span>Malicious actors can hide instructions in websites, emails, and documents that trick AI into taking harmful actions without your knowledge. <a href="src/extensions/jarvis-screen/README.md" data-learn>Learn more</a></span>
+          </div>
+        </div>
+        <button class="btn btn-neutral" data-next="automate">I understand</button>
+        <div class="dots"><i class="on"></i><i></i><i></i><i></i></div>
+      </section>
 
-    <div class="card">
-      <div class="row"><span id="dot" class="dot"></span><span id="state" class="state">Checking…</span></div>
-      <div id="reason" class="reason"></div>
-    </div>
+      <!-- ══ Onboarding: Automate ══ -->
+      <section class="step" data-view="automate" hidden>
+        <div class="art art-window" aria-hidden="true">
+          <div class="w w1"></div><div class="w w2"></div>
+          <div class="w w3"><span class="bar"><b style="background:oklch(0.68 0.19 25)"></b><b style="background:oklch(0.80 0.16 85)"></b><b style="background:oklch(0.72 0.17 155)"></b></span></div>
+        </div>
+        <h1>Automate your repetitive tasks</h1>
+        <p>Jarvis can take on your multi-step work like QA testing, researching leads, and data entry across multiple sites. You can focus elsewhere knowing Jarvis is working in the background.</p>
+        <button class="btn btn-neutral" data-next="tabgroup">Next</button>
+        <div class="dots"><i></i><i class="on"></i><i></i><i></i></div>
+      </section>
 
-    <div class="card" id="pairCard">
-      <label for="token">Bridge token</label>
-      <input id="token" type="password" placeholder="JARVIS_LOCAL_API_TOKEN" autocomplete="off" spellcheck="false" />
-      <div class="btns">
-        <button id="save" class="primary">Connect</button>
-        <button id="reconnect">Reconnect</button>
-      </div>
-      <p class="hint">Paste the value of <code>JARVIS_LOCAL_API_TOKEN</code> from
-        <code>~/.jarvis/local-api-token.env</code>. It's stored locally in the extension and only
-        used to authenticate to the bridge on 127.0.0.1.</p>
-    </div>
+      <!-- ══ Onboarding: Tab group ══ -->
+      <section class="step" data-view="tabgroup" hidden>
+        <div class="art art-tabs" aria-hidden="true">
+          <span class="active">Jarvis</span>
+          <span class="ghost"></span>
+          <span class="ghost"></span>
+        </div>
+        <h1>Jarvis has tab group access</h1>
+        <p>If Jarvis is open in a tab group, it can access the URL, context and information of all the tabs in that group.</p>
+        <button class="btn btn-neutral" data-next="shortcuts">Next</button>
+        <div class="dots"><i></i><i></i><i class="on"></i><i></i></div>
+      </section>
 
-    <div class="card">
-      <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">Recent actions</div>
-      <ul id="log" class="log"><li class="muted">Nothing yet.</li></ul>
+      <!-- ══ Onboarding: Shortcuts ══ -->
+      <section class="step" data-view="shortcuts" hidden>
+        <div class="art art-menu" aria-hidden="true">
+          <div class="mi"><span class="s">/</span> summarize-page</div>
+          <div class="mi"><span class="s">/</span> unsubscribe</div>
+          <div class="mi"><span class="s">+</span> Create new shortcut</div>
+        </div>
+        <h1>Use shortcuts to save time</h1>
+        <p>Shortcuts make it easy to send instructions to Jarvis. Great for tasks you repeat often! Type / in the chat to find and create shortcuts.</p>
+        <button class="btn btn-primary" data-finish>Let&rsquo;s go</button>
+        <div class="dots"><i></i><i></i><i></i><i class="on"></i></div>
+      </section>
+
+      <!-- ══ Main chat interface ══ -->
+      <section class="main" data-view="main" hidden style="flex:1; display:flex; flex-direction:column; min-height:0;">
+        <div class="topbar">
+          <button class="model" id="modelBtn"><span class="cy"></span> <span id="modelLabel">Jarvis</span> <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <div class="icons">
+            <button class="iconbtn" id="newChat" title="New chat"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2Z" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            <button class="iconbtn" id="menuBtn" title="Menu"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg></button>
+          </div>
+        </div>
+
+        <!-- Login banner (shown when not connected) — no token paste; logs in
+             to your Jarvis account and receives the credential automatically. -->
+        <div class="connect" id="connectBox" hidden>
+          <div class="t"><span class="status-pill"><i id="statusDot"></i><span id="statusText">Checking your connection…</span></span></div>
+          <button class="btn btn-primary" id="loginBtn" style="width:100%;margin-top:9px;padding:9px">Log in to Jarvis</button>
+        </div>
+
+        <div class="stream" id="stream">
+          <div class="empty" id="emptyState">
+            <div class="pincard" aria-hidden="true">
+              <div class="h"><span class="cy"></span> Jarvis</div>
+              <div class="lines"></div>
+            </div>
+            <strong>Pin Jarvis for quick access</strong>
+            <span>Click the pin icon in the top-right corner of the side panel.</span>
+          </div>
+        </div>
+
+        <div class="composer">
+          <div class="sc-menu" id="scMenu" hidden></div>
+          <div class="attach" id="attach" hidden></div>
+          <textarea id="input" rows="2" placeholder="Type / for commands"></textarea>
+          <div class="row">
+            <button class="perm" id="permBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M18 11V6a2 2 0 0 0-4 0M14 10V4a2 2 0 0 0-4 0v2M10 8V5a2 2 0 0 0-4 0v9M18 8a2 2 0 0 1 4 0v3a8 8 0 0 1-8 8h-2a8 8 0 0 1-6.7-3.6L2.5 15" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span id="permLabel">Ask before acting</span>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <div class="right">
+              <button class="iconbtn" id="micBtn" title="Voice input"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4" stroke-linecap="round"/></svg></button>
+              <button class="iconbtn" id="cursorBtn" title="Record a workflow"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 3l7 17 2.5-6.5L20 11 4 3Z" stroke-linejoin="round"/></svg></button>
+              <button class="iconbtn" id="plusBtn" title="Add context"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg></button>
+              <button class="send" id="sendBtn" title="Send" disabled><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M6 11l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            </div>
+          </div>
+        </div>
+        <div class="disclaimer">Jarvis is AI and can make mistakes. Please double-check responses.</div>
+      </section>
     </div>
 
     <script src="side_panel.js"></script>

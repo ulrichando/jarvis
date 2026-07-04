@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Authorize Jarvis for Chrome</title>
+    <style>
+      /* Jarvis design system — arc-reactor cyan on dark navy (mirrors src/web). */
+      :root {
+        color-scheme: dark;
+        --bg:            oklch(0.11 0.014 252);
+        --fg:            oklch(0.97 0.007 240);
+        --card:          oklch(0.155 0.022 250);
+        --panel:         oklch(0.185 0.022 250);
+        --primary:       oklch(0.80 0.155 198);
+        --primary-fg:    oklch(0.10 0.012 252);
+        --muted-fg:      oklch(0.74 0.032 235);
+        --border:        oklch(0.75 0.10 200 / 22%);
+        --border-soft:   oklch(0.75 0.10 200 / 12%);
+        --radius: 14px;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 40px;
+        padding: 48px 20px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .card {
+        width: 100%;
+        max-width: 540px;
+        background: var(--card);
+        border: 1px solid var(--border-soft);
+        border-radius: 20px;
+        padding: 40px 40px 32px;
+        box-shadow: 0 1px 0 oklch(1 0 0 / 4%) inset, 0 24px 60px -30px oklch(0 0 0 / 80%);
+      }
+      .logo {
+        width: 60px; height: 60px;
+        margin: 4px auto 26px;
+        display: block;
+        filter: drop-shadow(0 0 18px oklch(0.80 0.155 198 / 30%));
+      }
+      h1 {
+        margin: 0 0 26px;
+        text-align: center;
+        font-size: 21px;
+        font-weight: 500;
+        line-height: 1.4;
+        color: var(--muted-fg);
+      }
+      h1 b { color: var(--fg); font-weight: 650; }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border-soft);
+        border-radius: var(--radius);
+        padding: 20px 22px;
+      }
+      .panel h2 {
+        margin: 0 0 16px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: var(--muted-fg);
+      }
+      ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+      li { display: flex; align-items: flex-start; gap: 12px; font-size: 14.5px; }
+      li svg { flex: none; margin-top: 2px; color: var(--primary); }
+      .actions { margin-top: 28px; display: grid; gap: 6px; }
+      button {
+        font: inherit;
+        cursor: pointer;
+        border-radius: 10px;
+        border: 1px solid transparent;
+        transition: filter .12s ease, background .12s ease, color .12s ease;
+      }
+      .primary {
+        padding: 12px 16px;
+        background: var(--primary);
+        color: var(--primary-fg);
+        font-weight: 650;
+        font-size: 15px;
+      }
+      .primary:hover { filter: brightness(1.08); }
+      .primary:active { filter: brightness(0.96); }
+      .ghost {
+        padding: 11px 16px;
+        background: transparent;
+        color: var(--muted-fg);
+        font-size: 14.5px;
+      }
+      .ghost:hover { color: var(--fg); }
+      .foot {
+        text-align: center;
+        font-size: 12.5px;
+        color: var(--muted-fg);
+      }
+      .foot .host { color: oklch(0.80 0.155 198 / 85%); font-variant-numeric: tabular-nums; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <!-- Jarvis arc-reactor mark (src/web/public/jarvis-logo.svg) -->
+      <svg class="logo" viewBox="0 0 108 108" aria-hidden="true">
+        <circle cx="54" cy="54" r="30" fill="none" stroke="#00C6E0" stroke-width="3.5" />
+        <circle cx="54" cy="54" r="19" fill="none" stroke="#00C6E0" stroke-width="2" />
+        <circle cx="54" cy="54" r="11" fill="none" stroke="#00C6E0" stroke-width="1.2" />
+        <circle cx="54" cy="54" r="5.5" fill="#00C6E0" />
+      </svg>
+
+      <h1><b>Jarvis for Chrome</b> would like to connect to your Jarvis account</h1>
+
+      <div class="panel">
+        <h2>This connection will let Jarvis</h2>
+        <ul>
+          <li>
+            <svg width="17" height="17" viewBox="0 0 20 20" fill="none"><path d="M4 10.5l4 4 8-9" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>Connect to your Jarvis assistant running on this device</span>
+          </li>
+          <li>
+            <svg width="17" height="17" viewBox="0 0 20 20" fill="none"><path d="M4 10.5l4 4 8-9" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>See and read the pages you&rsquo;re viewing</span>
+          </li>
+          <li>
+            <svg width="17" height="17" viewBox="0 0 20 20" fill="none"><path d="M4 10.5l4 4 8-9" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>Act on web pages you approve &mdash; click, type, navigate, fill forms</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="actions">
+        <button id="authorize" class="primary">Authorize</button>
+        <button id="decline" class="ghost">Decline</button>
+      </div>
+    </div>
+
+    <div class="foot">
+      Connecting on this device &middot; Jarvis bridge <span class="host">127.0.0.1:8765</span>
+    </div>
+
+    <script src="authorize.js"></script>
+  </body>
+</html>

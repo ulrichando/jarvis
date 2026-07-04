@@ -12,6 +12,12 @@
 try { importScripts("safety.js"); } catch (e) { console.warn("[jarvis-ext] safety.js load failed", e); }
 
 const BRIDGE_HOST = "127.0.0.1:8765";
+// The Jarvis web app the extension logs in to. Authorize opens its
+// /extension/authorize page via Chrome's identity flow; the page mints a
+// per-user proxy JWT and hands it back. That JWT is the bridge credential —
+// no token pasting. The local bridge verifies it offline via the shared secret.
+//
+const JARVIS_WEB = "https://0wlan.com";
 const WS_KEEPALIVE_MS = 25_000;
 const RECONNECT_BASE_MS = 2000;
 const RECONNECT_MAX_MS = 30_000;
@@ -28,6 +34,34 @@ async function getToken() {
   return (bridge_token || "").trim();
 }
 
+// Log in to the Jarvis web account and receive the bridge credential — no
+// paste. Opens JARVIS_WEB/extension/authorize in Chrome's identity window;
+// after sign-in + consent the page redirects to the extension's
+// chromiumapp.org callback with the minted proxy JWT (+ email) in the fragment.
+async function login() {
+  if (!chrome.identity || !chrome.identity.launchWebAuthFlow) {
+    return { ok: false, error: "identity API unavailable" };
+  }
+  const redirectUri = chrome.identity.getRedirectURL(); // https://<id>.chromiumapp.org/
+  const authUrl = `${JARVIS_WEB}/extension/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`;
+  let finalUrl;
+  try {
+    finalUrl = await chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: true });
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+  if (!finalUrl) return { ok: false, error: "login cancelled" };
+  // Token + email ride the URL fragment (never sent to a server).
+  const params = new URLSearchParams((finalUrl.split("#")[1] || finalUrl.split("?")[1] || ""));
+  const token = (params.get("token") || "").trim();
+  const email = (params.get("email") || "").trim();
+  if (!token) return { ok: false, error: params.get("error") || "no token returned" };
+  await chrome.storage.local.set({ bridge_token: token, account_email: email });
+  reconnectDelay = RECONNECT_BASE_MS;
+  connect();
+  return { ok: true, email };
+}
+
 function setStatus(s) {
   status = s;
   chrome.runtime.sendMessage({ type: "jarvis_status", status, lastActions }).catch(() => {});
@@ -39,42 +73,83 @@ function logAction(action, ok) {
   chrome.runtime.sendMessage({ type: "jarvis_status", status, lastActions }).catch(() => {});
 }
 
+function notify(title, message) {
+  if (!chrome.notifications) return;
+  try {
+    chrome.notifications.create({
+      type: "basic",
+      iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+      title,
+      message: String(message).slice(0, 180),
+    });
+  } catch { /* notifications may be blocked */ }
+}
+
 async function connect() {
   clearTimeout(reconnectTimer);
   const token = await getToken();
   if (!token) { setStatus("no_token"); return; }
-  try { if (ws) ws.close(); } catch {}
+  // Replacing any prior socket (token re-save, storage change, dup startup
+  // trigger): tag it so its close handler won't schedule a competing reconnect
+  // that tears down the socket we're about to open — the old "connected →
+  // connecting → connected" flap.
+  if (ws) { ws._replaced = true; try { ws.close(); } catch {} }
   setStatus("connecting");
 
   const url = `ws://${BRIDGE_HOST}/ws?token=${encodeURIComponent(token)}`;
-  ws = new WebSocket(url);
+  const socket = new WebSocket(url);
+  ws = socket;
 
-  ws.addEventListener("open", () => {
-    ws.send(JSON.stringify({ type: "extension_hello", version: "3.0.0", token }));
+  socket.addEventListener("open", () => {
+    socket.send(JSON.stringify({ type: "extension_hello", version: "3.0.0", token }));
     clearInterval(keepaliveTimer);
-    keepaliveTimer = setInterval(() => { try { ws.send(JSON.stringify({ type: "ping" })); } catch {} }, WS_KEEPALIVE_MS);
+    keepaliveTimer = setInterval(() => { try { socket.send(JSON.stringify({ type: "ping" })); } catch {} }, WS_KEEPALIVE_MS);
   });
 
-  ws.addEventListener("message", async (ev) => {
+  socket.addEventListener("message", async (ev) => {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.type === "extension_hello_ack") { reconnectDelay = RECONNECT_BASE_MS; setStatus("connected"); return; }
-    if (msg.type === "extension_hello_nack") { setStatus("auth_error"); try { ws.close(); } catch {} return; }
+    if (msg.type === "extension_hello_nack") { setStatus("auth_error"); try { socket.close(); } catch {} return; }
     if (msg.type === "pong") return;
+    // Side-panel chat rides this same socket (bridge handleQuery). Forward the
+    // reply + thinking/idle status to the panel; these carry no cmd_id.
+    if (msg.type === "chat_response") {
+      chrome.runtime.sendMessage({ type: "jarvis_chat_response", text: msg.text }).catch(() => {});
+      if (pendingTaskRun) { notify("Scheduled task done", String(msg.text).slice(0, 180)); pendingTaskRun = null; }
+      else if (runHadActions) { chrome.storage.local.get("notifyOnComplete").then(({ notifyOnComplete }) => { if (notifyOnComplete) notify("Jarvis finished the task", String(msg.text).slice(0, 180)); }); }
+      runHadActions = false;
+      return;
+    }
+    if (msg.type === "status" && (msg.status === "thinking" || msg.status === "idle")) { chrome.runtime.sendMessage({ type: "jarvis_chat_status", status: msg.status }).catch(() => {}); return; }
+    // Browser-agent step events (actions / approval requests) → the panel.
+    if (msg.type === "agent_event") {
+      chrome.runtime.sendMessage({ type: "jarvis_agent_event", event: msg.event }).catch(() => {});
+      if (msg.event && msg.event.type === "action") runHadActions = true; // a real task ran → eligible for completion notify
+      // Notify on approval requests — the user has to act, and the panel may be closed.
+      if (msg.event && msg.event.type === "approval") notify("Jarvis needs approval", msg.event.label || "Approve an action to continue.");
+      return;
+    }
     if (!msg.cmd_id) return;
     const result = await dispatchCommand(msg);
     logAction(msg.action, result && result.ok !== false);
-    try { ws.send(JSON.stringify({ cmd_id: msg.cmd_id, ...result })); } catch {}
+    try { socket.send(JSON.stringify({ cmd_id: msg.cmd_id, ...result })); } catch {}
   });
 
-  ws.addEventListener("close", () => {
+  socket.addEventListener("close", () => {
     clearInterval(keepaliveTimer);
-    if (status !== "auth_error" && status !== "no_token") setStatus("disconnected");
+    // Only the live, non-replaced socket drives status + reconnect. A socket we
+    // deliberately replaced, or one that's no longer current, must stay silent.
+    if (socket._replaced || ws !== socket) return;
+    // A rejected token won't fix itself by retrying — wait for a new one
+    // (storage.onChanged calls connect()). Same for a missing token.
+    if (status === "auth_error" || status === "no_token") return;
+    setStatus("disconnected");
     reconnectTimer = setTimeout(connect, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
   });
 
-  ws.addEventListener("error", () => { try { ws.close(); } catch {} });
+  socket.addEventListener("error", () => { try { socket.close(); } catch {} });
 }
 
 // ── Command dispatch ─────────────────────────────────────────────────
@@ -86,6 +161,17 @@ async function dispatchCommand(cmd) {
   if (!self.JARVIS_SAFETY || typeof self.JARVIS_SAFETY.gate !== "function") {
     return { ok: false, error: "safety module unavailable — refusing command" };
   }
+  // Site permissions (#3 allow/block, #4 blocked categories): a blocked site
+  // refuses everything.
+  const site = await checkSitePermission(action, args);
+  if (site.allow !== true) return { ok: false, error: site.reason || "site blocked", site_blocked: true };
+  // SECURITY: a site-level "Always allow actions on this site" grant does NOT
+  // bypass the safety gate. Destructive/sensitive actions (delete/buy/pay,
+  // credential fields, exec_js, cookie read/write) STILL require per-action
+  // confirmation even on a trusted site — matching the approval copy ("Browse,
+  // click, and type") + the "won't purchase / enter credentials without input"
+  // footer. Blanket auto-confirm would be a cross-domain exfiltration path
+  // (e.g. get_cookies for an unrelated domain) — see security review 2026-07-03.
   const gate = self.JARVIS_SAFETY.gate({ action, args, confirmed });
   if (gate.allow !== true) return gate;
   try {
@@ -97,6 +183,10 @@ async function dispatchCommand(cmd) {
       case "screenshot":  return await bgScreenshot();
       case "get_cookies": return await bgGetCookies(args);
       case "set_cookies": return await bgSetCookies(args);
+      case "list_tabs":   return await bgListTabs();
+      case "activate_tab": return await bgActivateTab(args);
+      case "group_tabs":  return await bgGroupTabs(args);
+      case "download":    return await bgDownload(args);
       default:            return await forwardToContent(action, args, confirmed);
     }
   } catch (e) {
@@ -107,6 +197,60 @@ async function dispatchCommand(cmd) {
 async function activeTabId() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   return tab ? tab.id : null;
+}
+
+// ── Site permissions (#3 per-site allow/block, #4 default blocked categories) ─
+// Site-agnostic meta commands are never site-gated (orienting / navigating away).
+const ALWAYS_ALLOWED_ACTIONS = new Set(["get_url", "list_tabs", "activate_tab", "group_tabs", "back", "forward", "close_tab"]);
+function hostOf(url) { try { return new URL(url).hostname.toLowerCase(); } catch { return ""; } }
+async function activeTabUrl() {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  return (tab && tab.url) || "";
+}
+async function getSitePermissions() {
+  const { site_permissions } = await chrome.storage.local.get("site_permissions");
+  return { blocked: [], allowed: [], blockCategories: false, ...(site_permissions || {}) };
+}
+async function setSitePermissions(patch) {
+  const next = { ...(await getSitePermissions()), ...(patch || {}) };
+  await chrome.storage.local.set({ site_permissions: next });
+  return next;
+}
+// Gate a command against site permissions. navigate is judged on its
+// DESTINATION url; every other acting command on the active tab's current url.
+async function checkSitePermission(action, args) {
+  if (!self.JARVIS_SAFETY || typeof self.JARVIS_SAFETY.siteDecision !== "function") return { allow: true };
+  if (ALWAYS_ALLOWED_ACTIONS.has(action)) return { allow: true };
+  const url = (action === "navigate" && args && args.url) ? args.url : await activeTabUrl();
+  const host = hostOf(url);
+  if (!host) return { allow: true }; // non-web target (chrome://) — fails downstream anyway
+  return self.JARVIS_SAFETY.siteDecision(host, await getSitePermissions());
+}
+
+// ── Workflow recording (navigation + best-effort DOM) ────────────────────
+// Content-INDEPENDENT so it records on ANY page incl. chrome:// (unlike the
+// DOM-only recorder): captures top-frame navigations via webNavigation + the
+// content-script DOM steps where available. The panel adds voice narration.
+let wfRec = { active: false, steps: [] };
+function wfNavListener(d) {
+  if (!wfRec.active || d.frameId !== 0) return;
+  const step = { action: "navigate", url: d.url };
+  wfRec.steps.push(step);
+  chrome.runtime.sendMessage({ type: "jarvis_wf_step", step }).catch(() => {});
+}
+function wfStart() {
+  wfRec = { active: true, steps: [] };
+  try { if (chrome.webNavigation) chrome.webNavigation.onCommitted.addListener(wfNavListener); } catch {}
+  forwardToContent("record_start", {}, false).catch(() => {}); // best-effort DOM capture (no-op on chrome://)
+}
+async function wfStop() {
+  wfRec.active = false;
+  try { if (chrome.webNavigation) chrome.webNavigation.onCommitted.removeListener(wfNavListener); } catch {}
+  let domSteps = [];
+  try { const r = await forwardToContent("record_stop", {}, false); domSteps = (r && r.steps) || []; } catch {}
+  const steps = [...wfRec.steps, ...domSteps];
+  wfRec.steps = [];
+  return steps;
 }
 
 async function forwardToContent(action, args, confirmed) {
@@ -131,6 +275,11 @@ function waitForLoad(tabId, timeoutMs = 12_000) {
 
 async function bgNavigate({ url }) {
   if (!url) return { ok: false, error: "url required" };
+  let parsed;
+  try { parsed = new URL(url); } catch { return { ok: false, error: `invalid url: ${url}` }; }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return { ok: false, error: `refused scheme "${parsed.protocol}" — only http/https navigations are allowed` };
+  }
   const tabId = await activeTabId();
   const target = tabId || (await chrome.tabs.create({ url })).id;
   if (tabId) await chrome.tabs.update(tabId, { url });
@@ -163,10 +312,63 @@ async function bgGetCookies({ domain }) {
   return { ok: true, cookies };
 }
 
+async function bgListTabs() {
+  const tabs = await chrome.tabs.query({});
+  const groupTitles = {};
+  try {
+    if (chrome.tabGroups) for (const g of await chrome.tabGroups.query({})) groupTitles[g.id] = g.title || "";
+  } catch { /* tabGroups may be unavailable */ }
+  const grouped = (t) => typeof t.groupId === "number" && t.groupId >= 0;
+  return {
+    ok: true,
+    tabs: tabs.slice(0, 40).map((t) => ({
+      id: t.id, title: t.title || "", url: t.url || "", active: !!t.active,
+      groupId: grouped(t) ? t.groupId : null,
+      group: grouped(t) ? (groupTitles[t.groupId] || "") : null,
+    })),
+  };
+}
+
+async function bgActivateTab({ tab_id }) {
+  const id = Number(tab_id);
+  if (!Number.isInteger(id)) return { ok: false, error: "tab_id (a number from list_tabs) required" };
+  try { const t = await chrome.tabs.update(id, { active: true }); return { ok: true, id, url: (t && t.url) || "" }; }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+}
+
+// Corral tabs into a visible, labeled "Jarvis" group (reusing one if it exists),
+// so Jarvis's workspace is contained + obvious — the tab-group feature.
+async function bgGroupTabs({ tab_ids }) {
+  if (!chrome.tabs.group) return { ok: false, error: "tabGroups permission unavailable" };
+  let ids = Array.isArray(tab_ids) ? tab_ids.map(Number).filter(Number.isInteger) : [];
+  if (!ids.length) { const id = await activeTabId(); if (id) ids = [id]; }
+  if (!ids.length) return { ok: false, error: "no tabs to group" };
+  try {
+    let groupId;
+    if (chrome.tabGroups) {
+      const existing = await chrome.tabGroups.query({ title: "Jarvis" });
+      if (existing && existing.length) groupId = existing[0].id;
+    }
+    groupId = await chrome.tabs.group(groupId != null ? { tabIds: ids, groupId } : { tabIds: ids });
+    if (chrome.tabGroups) { try { await chrome.tabGroups.update(groupId, { title: "Jarvis", color: "cyan" }); } catch { /* title/color best-effort */ } }
+    return { ok: true, groupId, grouped: ids.length };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+}
+
+async function bgDownload({ url, filename }) {
+  if (!url) return { ok: false, error: "url required" };
+  if (!chrome.downloads) return { ok: false, error: "downloads permission unavailable" };
+  try {
+    const id = await chrome.downloads.download({ url, ...(filename ? { filename } : {}) });
+    return { ok: true, downloadId: id };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+}
+
 async function bgSetCookies({ domain, cookies }) {
+  const host = String(domain || "").replace(/^\./, ""); // a URL host can't carry a leading dot
   for (const c of cookies || []) {
     await chrome.cookies.set({
-      url: `https://${domain}${c.path || "/"}`,
+      url: `https://${host}${c.path || "/"}`,
       name: c.name, value: c.value, domain, path: c.path || "/", secure: c.secure ?? true,
     });
   }
@@ -177,8 +379,122 @@ async function bgSetCookies({ domain, cookies }) {
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === "jarvis_get_status") { sendResponse({ status, lastActions }); return; }
   if (msg && msg.type === "jarvis_reconnect") { reconnectDelay = RECONNECT_BASE_MS; connect(); sendResponse({ ok: true }); return; }
+  if (msg && msg.type === "jarvis_chat") { sendChat(msg.text, msg.mode, msg.image); sendResponse({ ok: true }); return; }
+  if (msg && msg.type === "jarvis_screenshot") { bgScreenshot().then(sendResponse).catch(() => sendResponse({ ok: false })); return true; }
+  if (msg && msg.type === "jarvis_active_url") { activeTabUrl().then((url) => sendResponse({ ok: true, url })).catch(() => sendResponse({ ok: false })); return true; }
+  if (msg && msg.type === "jarvis_allow_site") {
+    (async () => {
+      // Use the host bound to the approval (captured when it appeared) so a tab
+      // switch while the user decides can't grant the wrong site; fall back to
+      // the active tab only if the panel didn't supply one.
+      const host = hostOf(msg.url || await activeTabUrl());
+      const perms = await getSitePermissions();
+      if (host && !perms.allowed.includes(host)) await setSitePermissions({ allowed: [...perms.allowed, host] });
+      sendResponse({ ok: true, host });
+    })();
+    return true;
+  }
+  if (msg && msg.type === "jarvis_agent_approval") {
+    try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "agent_approval_decision", approvalId: msg.approvalId, approved: !!msg.approved })); } catch {}
+    sendResponse({ ok: true }); return;
+  }
+  if (msg && msg.type === "jarvis_login") { login().then(sendResponse); return true; } // async response
+  if (msg && msg.type === "jarvis_models") {
+    apiFetch("/api/models").then((r) => r.json()).then((d) => sendResponse({ ok: true, ...d }))
+      .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+    return true;
+  }
+  if (msg && msg.type === "jarvis_set_model") {
+    apiFetch("/api/model", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: msg.model }) })
+      .then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+    return true;
+  }
+  if (msg && msg.type === "jarvis_task_add")    { addTask(msg.task).then((t) => sendResponse({ ok: !!t, task: t })); return true; }
+  if (msg && msg.type === "jarvis_task_list")   { getTasks().then((tasks) => sendResponse({ ok: true, tasks })); return true; }
+  if (msg && msg.type === "jarvis_task_delete") { deleteTask(msg.id).then(() => sendResponse({ ok: true })); return true; }
+  if (msg && msg.type === "jarvis_record_start") { forwardToContent("record_start", {}, false).then(sendResponse).catch(() => sendResponse({ ok: false })); return true; }
+  if (msg && msg.type === "jarvis_record_stop")  { forwardToContent("record_stop", {}, false).then(sendResponse).catch(() => sendResponse({ ok: false })); return true; }
+  if (msg && msg.type === "jarvis_wf_start") { wfStart(); sendResponse({ ok: true }); return; }
+  if (msg && msg.type === "jarvis_wf_stop")  { wfStop().then((steps) => sendResponse({ ok: true, steps })); return true; }
+  if (msg && msg.type === "jarvis_ensure_group") { bgGroupTabs({}).then(sendResponse).catch(() => sendResponse({ ok: false })); return true; }
+  if (msg && msg.type === "jarvis_logout") { try { if (ws) { ws._replaced = true; ws.close(); } } catch {} setStatus("no_token"); sendResponse({ ok: true }); return; }
+  if (msg && msg.type === "jarvis_run_workflow") { runWorkflow(msg.steps).then(sendResponse).catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) })); return true; }
   return false;
 });
+
+// Replay a recorded workflow: run each step against the page, spaced out so the
+// page can react between steps.
+async function runWorkflow(steps) {
+  for (const s of steps || []) {
+    try { await forwardToContent(s.action, s.args || {}, true); } catch {}
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  return { ok: true, ran: (steps || []).length };
+}
+
+// Authenticated GET/POST to the local bridge REST API (host_permissions cover
+// 127.0.0.1:8765, so the SW can fetch it directly with the bridge credential).
+async function apiFetch(path, init) {
+  const token = await getToken();
+  return fetch(`http://${BRIDGE_HOST}${path}`, {
+    ...init,
+    headers: { ...(init && init.headers), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+  });
+}
+
+// Side-panel chat → bridge. The reply comes back async on the socket's message
+// handler (chat_response), which forwards it to the panel.
+async function sendChat(text, mode, image) {
+  const token = await getToken();
+  const payload = { type: "query", text, token, mode: mode === "auto" ? "auto" : "ask" };
+  if (image && image.data) payload.image = image; // { data: base64, media_type }
+  try { if (ws && ws.readyState === 1) ws.send(JSON.stringify(payload)); }
+  catch { /* socket died; panel shows the connect banner via status */ }
+}
+
+// ── Scheduled tasks (Convert to task) ────────────────────────────────
+const CADENCE_MIN = { hourly: 60, daily: 1440, weekly: 10080 };
+const TASK_PREFIX = "jarvis-task-"; // 12 chars — use .length, don't hardcode the offset
+let pendingTaskRun = null;
+let runHadActions = false; // did the current agent run take page actions (gates the completion notification) // set when a scheduled task is running → notify on its chat_response
+
+async function getTasks() { const { tasks } = await chrome.storage.local.get("tasks"); return Array.isArray(tasks) ? tasks : []; }
+async function addTask(input) {
+  const cadence = CADENCE_MIN[input.cadence] ? input.cadence : "daily";
+  const t = { id: "t" + Date.now(), prompt: String(input.prompt || "").slice(0, 2000), cadence, url: input.url || "", createdAt: Date.now() };
+  if (!t.prompt) return null;
+  const tasks = await getTasks(); tasks.push(t); await chrome.storage.local.set({ tasks });
+  if (chrome.alarms) chrome.alarms.create(TASK_PREFIX + t.id, { periodInMinutes: CADENCE_MIN[cadence], delayInMinutes: CADENCE_MIN[cadence] });
+  return t;
+}
+async function deleteTask(id) {
+  await chrome.storage.local.set({ tasks: (await getTasks()).filter((t) => t.id !== id) });
+  if (chrome.alarms) chrome.alarms.clear(TASK_PREFIX + id);
+}
+// A fired alarm wakes the SW, which races the WS reconnect — wait for the socket
+// before running the task, or it would silently no-op.
+async function ensureConnected(timeoutMs = 8000) {
+  if (ws && ws.readyState === 1) return true;
+  connect();
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (ws && ws.readyState === 1) return true;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return !!(ws && ws.readyState === 1);
+}
+if (chrome.alarms) {
+  chrome.alarms.onAlarm.addListener(async (alarm) => {
+    if (!alarm.name.startsWith(TASK_PREFIX)) return;
+    const task = (await getTasks()).find((t) => t.id === alarm.name.slice(TASK_PREFIX.length));
+    if (!task) { chrome.alarms.clear(alarm.name); return; }
+    if (!(await ensureConnected())) { notify("Scheduled task skipped", "Jarvis bridge unreachable — is the desktop app running?"); return; }
+    if (task.url) { try { await bgNavigate({ url: task.url }); } catch {} }
+    pendingTaskRun = task;
+    notify("Running scheduled task", task.prompt.slice(0, 100));
+    sendChat(task.prompt, "auto");
+  });
+}
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.bridge_token) { reconnectDelay = RECONNECT_BASE_MS; connect(); }
@@ -189,5 +505,11 @@ if (chrome.sidePanel) {
 }
 
 chrome.runtime.onStartup.addListener(connect);
-chrome.runtime.onInstalled.addListener(connect);
+chrome.runtime.onInstalled.addListener((details) => {
+  // First install only — show the OAuth-style consent screen (not on updates).
+  if (details && details.reason === "install") {
+    chrome.tabs.create({ url: chrome.runtime.getURL("authorize.html") }).catch(() => {});
+  }
+  connect();
+});
 connect();
