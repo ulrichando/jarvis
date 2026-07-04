@@ -346,7 +346,8 @@ async function bgSetCookies({ domain, cookies }) {
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === "jarvis_get_status") { sendResponse({ status, lastActions }); return; }
   if (msg && msg.type === "jarvis_reconnect") { reconnectDelay = RECONNECT_BASE_MS; connect(); sendResponse({ ok: true }); return; }
-  if (msg && msg.type === "jarvis_chat") { sendChat(msg.text, msg.mode); sendResponse({ ok: true }); return; }
+  if (msg && msg.type === "jarvis_chat") { sendChat(msg.text, msg.mode, msg.image); sendResponse({ ok: true }); return; }
+  if (msg && msg.type === "jarvis_screenshot") { bgScreenshot().then(sendResponse).catch(() => sendResponse({ ok: false })); return true; }
   if (msg && msg.type === "jarvis_agent_approval") {
     try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "agent_approval_decision", approvalId: msg.approvalId, approved: !!msg.approved })); } catch {}
     sendResponse({ ok: true }); return;
@@ -395,9 +396,11 @@ async function apiFetch(path, init) {
 
 // Side-panel chat → bridge. The reply comes back async on the socket's message
 // handler (chat_response), which forwards it to the panel.
-async function sendChat(text, mode) {
+async function sendChat(text, mode, image) {
   const token = await getToken();
-  try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "query", text, token, mode: mode === "auto" ? "auto" : "ask" })); }
+  const payload = { type: "query", text, token, mode: mode === "auto" ? "auto" : "ask" };
+  if (image && image.data) payload.image = image; // { data: base64, media_type }
+  try { if (ws && ws.readyState === 1) ws.send(JSON.stringify(payload)); }
   catch { /* socket died; panel shows the connect banner via status */ }
 }
 

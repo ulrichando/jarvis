@@ -144,6 +144,10 @@
       .composer .right { display: flex; align-items: center; gap: 2px; }
       .composer .iconbtn { width: 27px; height: 27px; }
       .composer .iconbtn.rec { color: var(--primary); }
+      .composer .attach { display: flex; align-items: center; gap: 8px; padding: 2px 2px 6px; }
+      .composer .attach img { width: 40px; height: 40px; object-fit: cover; border-radius: 7px; border: 1px solid var(--border); }
+      .composer .attach .x { color: var(--muted-fg); font-size: 14px; line-height: 1; padding: 3px 6px; border-radius: 6px; }
+      .composer .attach .x:hover { color: var(--fg); background: var(--panel); }
       .send { width: 27px; height: 27px; border-radius: 8px; background: var(--primary); color: var(--primary-fg); display: inline-flex; align-items: center; justify-content: center; }
       .send:hover { filter: brightness(1.08); }
       .send:disabled { opacity: .45; cursor: default; filter: none; }
@@ -266,6 +270,7 @@
 
         <div class="composer">
           <div class="sc-menu" id="scMenu" hidden></div>
+          <div class="attach" id="attach" hidden></div>
           <textarea id="input" rows="2" placeholder="Type / for commands"></textarea>
           <div class="row">
             <button class="perm" id="permBtn">

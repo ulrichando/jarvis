@@ -101,10 +101,11 @@ const stream = $("stream");
 const input = $("input");
 let thinkingEl = null;
 
+let pendingImage = null; // { data: base64, media_type } attached via the + menu
 function sizeInput() {
   input.style.height = "auto";
   input.style.height = Math.min(Math.max(input.scrollHeight, 46), 140) + "px";
-  $("sendBtn").disabled = input.value.trim() === "";
+  $("sendBtn").disabled = input.value.trim() === "" && !pendingImage;
 }
 
 function addMsg(text, who) {
@@ -175,14 +176,17 @@ function renderApproval(approvalId, label) {
 
 async function send() {
   const text = input.value.trim();
-  if (!text) return;
-  addMsg(text, "user");
+  if (!text && !pendingImage) return;
+  addMsg(text || "🖼 Image", "user");
+  const image = pendingImage; // captured before we clear the composer
   input.value = "";
+  clearAttachment();
   sizeInput();
   setThinking(true);
   try {
     // permMode ("ask"/"auto") drives whether the agent pauses for approval.
-    await chrome.runtime.sendMessage({ type: "jarvis_chat", text, mode: permMode });
+    // An attached image routes to a vision model (bridge handleQuery), not the tool loop.
+    await chrome.runtime.sendMessage({ type: "jarvis_chat", text, mode: permMode, image });
   } catch {
     receiveReply("Couldn't reach the Jarvis bridge. Is the desktop app running?");
   }
@@ -227,6 +231,36 @@ function toggleMic() {
   try { recog.start(); } catch {}
 }
 $("micBtn").addEventListener("click", toggleMic);
+
+// ── Image context (+ menu: Take a screenshot / Add an image) ─────────────
+function updateSendState() { $("sendBtn").disabled = input.value.trim() === "" && !pendingImage; }
+function clearAttachment() { pendingImage = null; const a = $("attach"); a.hidden = true; a.replaceChildren(); updateSendState(); }
+function attachImage(dataUrl, mediaType) {
+  const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl || "");
+  const data = m ? m[2] : null;
+  if (!data) { note("Couldn't read that image."); return; }
+  pendingImage = { data, media_type: (m && m[1]) || mediaType || "image/png" };
+  const a = $("attach"); a.replaceChildren();
+  const img = document.createElement("img"); img.src = dataUrl; // data: URL, panel CSP allows img
+  const x = document.createElement("button"); x.className = "x"; x.title = "Remove"; x.textContent = "✕";
+  x.addEventListener("click", clearAttachment);
+  a.append(img, x); a.hidden = false;
+  updateSendState();
+}
+async function takeScreenshot() {
+  const res = await chrome.runtime.sendMessage({ type: "jarvis_screenshot" }).catch(() => null);
+  if (res && res.ok && res.image_b64) attachImage(res.image_b64, "image/png");
+  else note("Couldn't capture this tab.");
+}
+function pickImage() {
+  const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*";
+  inp.onchange = () => { const f = inp.files && inp.files[0]; if (!f) return; const r = new FileReader(); r.onload = () => attachImage(r.result, f.type); r.readAsDataURL(f); };
+  inp.click();
+}
+$("plusBtn").addEventListener("click", () => openPop($("plusBtn"), [
+  { label: "Take a screenshot", icon: icon('<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3.5"/>'), onClick: takeScreenshot },
+  { label: "Add an image", icon: icon('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L6 21"/>'), onClick: pickImage },
+], { align: "right" }));
 
 // ── Shortcuts (type / in the composer) ─────────────────────────────────
 let SHORTCUTS = [];
