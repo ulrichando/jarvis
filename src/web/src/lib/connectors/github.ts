@@ -169,18 +169,27 @@ export async function listGithubRepos(): Promise<
 > {
   const c = await load();
   if (!c.github) return { ok: false, error: "GitHub not connected" };
-  let r: Response;
-  try {
-    r = await fetch(
-      `${GH}/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member`,
-      { headers: ghHeaders(c.github.token) },
-    );
-  } catch (e) {
-    return { ok: false, error: `Network error: ${String(e)}` };
+  // GitHub caps /user/repos at 100 per page — page through until a short page
+  // (the last one) so accounts with >100 repos see ALL of them, not just the
+  // 100 most-recently-pushed. Safety cap so a huge account can't spin forever.
+  const MAX_PAGES = 20; // up to 2000 repos
+  const raw: Array<Record<string, unknown>> = [];
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    let r: Response;
+    try {
+      r = await fetch(
+        `${GH}/user/repos?per_page=100&page=${page}&sort=pushed&affiliation=owner,collaborator,organization_member`,
+        { headers: ghHeaders(c.github.token) },
+      );
+    } catch (e) {
+      return { ok: false, error: `Network error: ${String(e)}` };
+    }
+    if (r.status === 401) return { ok: false, error: "GitHub token no longer valid — reconnect." };
+    if (!r.ok) return { ok: false, error: `GitHub error ${r.status}` };
+    const batch = (await r.json()) as Array<Record<string, unknown>>;
+    raw.push(...batch);
+    if (batch.length < 100) break; // last page reached
   }
-  if (r.status === 401) return { ok: false, error: "GitHub token no longer valid — reconnect." };
-  if (!r.ok) return { ok: false, error: `GitHub error ${r.status}` };
-  const raw = (await r.json()) as Array<Record<string, unknown>>;
   const repos: GithubRepo[] = raw.map((x) => ({
     full_name: String(x.full_name ?? ""),
     private: Boolean(x.private),
