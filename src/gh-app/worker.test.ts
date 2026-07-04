@@ -325,14 +325,35 @@ describe('gh-app worker code-session path (GH_APP_USE_CODE_SESSIONS)', () => {
   })
 
   test('FLAG OFF (no codeSessions dep) → sandbox path byte-identical: runs sandbox, never dispatches/persists a session', async () => {
-    const { store, done, sessions } = memStore([job(1)])
+    const { store, done, sessions } = memStore([job(1), { ...job(2), isPR: true }])
     let sandboxCalls = 0
     const d = deps(store, { runInSandbox: async () => { sandboxCalls++; return { ok: true } } })
     expect(d.codeSessions).toBeUndefined() // default deps carry NO session runner
     expect(await runWorkerOnce(d)).toBe('ran')
-    expect(sandboxCalls).toBe(1)
+    expect(await runWorkerOnce(d)).toBe('ran') // the isPR job — same sandbox path
+    expect(sandboxCalls).toBe(2)
     expect(sessions.length).toBe(0)
+    expect(done).toEqual([1, 2])
+  })
+
+  test('I2: isPR job with the flag ON still runs the SANDBOX — sessions are issue/comment-only in v1', async () => {
+    // The session path clones the DEFAULT branch (wrong tree for a PR job)
+    // and has no analog of the sandbox's untrusted-PR-head refusal
+    // (fork / non-allowlisted author) — so v1 routes PR jobs to the sandbox
+    // even when GH_APP_USE_CODE_SESSIONS is on.
+    const { store, done, failed, sessions } = memStore([{ ...job(1), isPR: true }])
+    const { cs, order } = csRecorder()
+    const { feedback, acked, reported } = fbRecorder()
+    let sandboxCalls = 0
+    const d = deps(store, { codeSessions: cs, feedback, runInSandbox: async () => { sandboxCalls++; return { ok: true, prUrl: 'https://github.com/o/r/pull/1' } } })
+    expect(await runWorkerOnce(d)).toBe('ran')
+    expect(sandboxCalls).toBe(1)
+    expect(order).toEqual([]) // never dispatched/polled/PR'd a session
+    expect(sessions.length).toBe(0)
+    expect(acked[0]!.sessionUrl).toBeUndefined() // sandbox-shaped ack — no live-session link
+    expect(reported[0]!.result.ok).toBe(true)
     expect(done).toEqual([1])
+    expect(failed.length).toBe(0)
   })
 })
 

@@ -54,7 +54,12 @@ export async function runWorkerOnce(deps: WorkerDeps): Promise<RunOutcome> {
   }
   try {
     token = await deps.mintToken(job.installationId, job.repo)
-    if (deps.codeSessions) {
+    // I2: PR jobs ALWAYS take the sandbox, even with code sessions on — the
+    // session path clones the DEFAULT branch (wrong tree for "fix this PR")
+    // and has no analog of the sandbox's untrusted-PR-head refusal (fork /
+    // non-allowlisted author, src/cli/src/gh-agent/task.ts). v1 scopes
+    // /code sessions to issue/comment jobs only.
+    if (deps.codeSessions && !job.isPR) {
       // — Phase C code-session path (GH_APP_USE_CODE_SESSIONS): dispatch the
       // job as a watchable /code session, poll it to completion, open the PR
       // through the session's PR route. Any service-call throw (dispatch /
