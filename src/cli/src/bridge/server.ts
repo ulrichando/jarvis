@@ -42,6 +42,7 @@ import {
   sendExtCommand,
 } from './ext_browse'
 import { runBrowserAgent } from './browserAgent'
+import { visionAnswer } from './vision'
 import { verifyProxyToken } from '../proxy/proxyJwt'
 import {
   deleteSessionsBetween,
@@ -232,33 +233,9 @@ const AGENT_MODEL = process.env.JARVIS_BRIDGE_AGENT_MODEL || 'deepseek-v4-pro'
 const pendingApprovals = new Map<string, (approved: boolean) => void>()
 
 // Image queries (screenshot / added image) go to a vision-capable model via the
-// proxy, which converts the Anthropic image block to pixels — deepseek-v4-pro
-// (the agent pin) can't see images. Plain Q&A, not the tool loop. Override the
-// model with JARVIS_BRIDGE_VISION_MODEL.
+// proxy — deepseek-v4-pro (the agent pin) can't see images. Override the model
+// with JARVIS_BRIDGE_VISION_MODEL. Logic lives in ./vision (unit-tested).
 const VISION_MODEL = process.env.JARVIS_BRIDGE_VISION_MODEL || 'gemini-flash'
-async function visionAnswer(text: string, image: { data: string; media_type?: string }): Promise<string> {
-  try {
-    const resp = await fetch(`${PROXY_URL}/v1/messages`, {
-      method: 'POST',
-      headers: proxyHeaders(),
-      body: JSON.stringify({
-        model: VISION_MODEL,
-        max_tokens: 1200,
-        messages: [{ role: 'user', content: [
-          { type: 'text', text: text || 'Describe this image.' },
-          { type: 'image', source: { type: 'base64', media_type: image.media_type || 'image/png', data: image.data } },
-        ] }],
-      }),
-      signal: AbortSignal.timeout(45_000),
-    })
-    const data: any = await resp.json()
-    if (data?.error) return `Error: ${data.error.message || JSON.stringify(data.error)}`
-    const texts = (Array.isArray(data?.content) ? data.content : []).filter((b: any) => b.type === 'text').map((b: any) => b.text).filter(Boolean)
-    return texts.join('\n') || '(no response)'
-  } catch (e: any) {
-    return `Error reaching the vision model: ${e?.message || e}`
-  }
-}
 
 async function handleQuery(ws: WebSocket, text: string, mode: 'ask' | 'auto' = 'ask', image?: { data: string; media_type?: string }): Promise<void> {
   broadcast({ type: 'status', status: 'thinking' })
@@ -269,7 +246,7 @@ async function handleQuery(ws: WebSocket, text: string, mode: 'ask' | 'auto' = '
     let reply: string
     if (image && image.data) {
       // Screenshot / added image → vision Q&A (a vision model, not the tool loop).
-      reply = await visionAnswer(text, image)
+      reply = await visionAnswer(text, image, { proxyUrl: PROXY_URL, headers: proxyHeaders(), model: VISION_MODEL })
     } else if (isExtensionConnected()) {
       // Chat that ACTS: drive the current page through the extension's tools.
       reply = await runBrowserAgent({
