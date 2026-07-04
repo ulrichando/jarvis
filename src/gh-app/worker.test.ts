@@ -304,6 +304,18 @@ describe('gh-app worker code-session path (GH_APP_USE_CODE_SESSIONS)', () => {
     expect(reported[0]!.result.sessionUrl).toBe(SURL)
   })
 
+  test('M1: poll archived → job failed with a clear archived error, PR never attempted', async () => {
+    const { store, done, failed } = memStore([job(1)])
+    const { cs, order } = csRecorder({ poll: async () => 'archived' })
+    const { feedback, reported } = fbRecorder()
+    expect(await runWorkerOnce(deps(store, { codeSessions: cs, feedback }))).toBe('failed')
+    expect(done.length).toBe(0)
+    expect(failed[0]!.error).toContain('archived')
+    expect(order).not.toContain('pr')
+    expect(reported[0]!.result.ok).toBe(false)
+    expect(reported[0]!.result.sessionUrl).toBe(SURL)
+  })
+
   test('openSessionPr throwing → job failed, report still resolves the thread with the link', async () => {
     const { store, done, failed } = memStore([job(1)])
     const { cs } = csRecorder({ openPr: async () => { throw new Error('session PR failed: HTTP 400') } })

@@ -101,7 +101,31 @@ export async function createCodeSession(
   return { sessionId: raw.session_id, sessionUrl: raw.session_url }
 }
 
-export type PollOutcome = 'done' | 'requires_action' | 'timeout'
+export type PollOutcome = 'done' | 'requires_action' | 'timeout' | 'archived'
+
+/**
+ * M3: a session the worker walks away from (timeout / requires_action) must
+ * not keep burning tokens unwatched — best-effort archive it (the /code
+ * sidebar can always unarchive). STRICTLY swallow+log: an archive failure
+ * never changes the poll outcome (mirrors the worker's feedback pattern).
+ */
+async function archiveAbandonedSession(
+  sessionId: string,
+  cfg: CodeSessionConfig,
+  deps: CodeSessionDeps,
+): Promise<void> {
+  try {
+    const res = await deps.fetch(`${cfg.webUrl}/api/bridge/v1/sessions/${sessionId}`, {
+      method: 'PATCH',
+      headers: { ...authHeaders(cfg), 'content-type': 'application/json' },
+      body: JSON.stringify({ archived: true }),
+      signal: AbortSignal.timeout(deps.fetchTimeoutMs?.poll ?? POLL_FETCH_TIMEOUT_MS),
+    })
+    if (!res.ok) deps.log?.(`codeSession: archive ${sessionId} failed (ignored): HTTP ${res.status}`)
+  } catch (e) {
+    deps.log?.(`codeSession: archive ${sessionId} failed (ignored): ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
 
 /**
  * Poll the session's `status` until the run finishes. The true lifecycle of
@@ -117,8 +141,11 @@ export type PollOutcome = 'done' | 'requires_action' | 'timeout'
  *   - the default interval is 2.5 s, shrinking the window where the real
  *     `running` slips between two polls.
  * 'requires_action' = the run stopped waiting on a human (open the session);
- * 'timeout' = the total-wait cap elapsed. Transient fetch failures are
- * tolerated — the deadline bounds them.
+ * 'timeout' = the total-wait cap elapsed; 'archived' = someone archived the
+ * session out from under the run — terminal (M1), never polled to timeout.
+ * On timeout/requires_action the abandoned session is best-effort archived
+ * (M3) so it stops burning tokens. Transient fetch failures are tolerated —
+ * the deadline bounds them.
  */
 export async function pollUntilDone(
   sessionId: string,
@@ -132,6 +159,11 @@ export async function pollUntilDone(
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   const deadline = now() + timeoutMs
   let sawRunning = false
+  // Abandoning outcomes archive the session on the way out (M3, best-effort).
+  const abandon = async (outcome: 'timeout' | 'requires_action'): Promise<PollOutcome> => {
+    await archiveAbandonedSession(sessionId, cfg, deps)
+    return outcome
+  }
   for (;;) {
     try {
       const res = await deps.fetch(`${cfg.webUrl}/api/bridge/v1/sessions/${sessionId}`, {
@@ -141,7 +173,8 @@ export async function pollUntilDone(
       if (res.ok) {
         const raw = (await res.json()) as { status?: unknown; worker_reported?: unknown }
         const s = typeof raw.status === 'string' ? raw.status : ''
-        if (s === 'requires_action') return 'requires_action'
+        if (s === 'archived') return 'archived' // terminal — and already archived, nothing to abandon
+        if (s === 'requires_action') return abandon('requires_action')
         // Only a REPORTED running counts — pre-connect, 'running' is just
         // the web's fall-through default and means nothing has run.
         if (s === 'running' && raw.worker_reported === true) sawRunning = true
@@ -150,7 +183,7 @@ export async function pollUntilDone(
     } catch (e) {
       deps.log?.(`codeSession: poll ${sessionId} failed (retrying): ${e instanceof Error ? e.message : String(e)}`)
     }
-    if (now() >= deadline) return 'timeout'
+    if (now() >= deadline) return abandon('timeout')
     await sleep(intervalMs)
   }
 }

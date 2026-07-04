@@ -90,7 +90,9 @@ export async function runWorkerOnce(deps: WorkerDeps): Promise<RunOutcome> {
       }
       const errText = outcome === 'timeout'
         ? 'code session timed out before completing'
-        : 'code session requires action — open the session to continue'
+        : outcome === 'archived'
+          ? 'code session was archived before completing'
+          : 'code session requires action — open the session to continue'
       await deps.store.markFailed(job.id, errText)
       deps.log?.(`worker: job ${job.id} failed: ${errText}`)
       await tellThread({ ok: false, error: errText, sessionUrl: s.sessionUrl })

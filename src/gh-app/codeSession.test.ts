@@ -167,7 +167,7 @@ describe('gh-app pollUntilDone', () => {
   test('requires_action resolves immediately', async () => {
     const { f, calls } = statuses(['running', 'requires_action'])
     expect(await pollUntilDone('s1', cfg, mkDeps(f), { intervalMs: 1, timeoutMs: 60_000 })).toBe('requires_action')
-    expect(calls.length).toBe(2)
+    expect(calls.filter((c) => c.init.method !== 'PATCH').length).toBe(2)
   })
 
   test('caps total wait — clean timeout outcome, no real sleeping (injected clock)', async () => {
@@ -176,12 +176,63 @@ describe('gh-app pollUntilDone', () => {
     const deps = mkDeps(f, { now: () => t, sleep: async (ms) => { t += ms } })
     const r = await pollUntilDone('s1', cfg, deps, { intervalMs: 5_000, timeoutMs: 20_000 })
     expect(r).toBe('timeout')
-    expect(calls.length).toBe(5) // t=0,5k,10k,15k,20k — bounded, then out
+    expect(calls.filter((c) => c.init.method !== 'PATCH').length).toBe(5) // t=0,5k,10k,15k,20k — bounded, then out
   })
 
   test('transient fetch failures (throw / non-OK) are tolerated until the deadline', async () => {
     const { f } = statuses([new Error('net down'), 502, 'running', 'idle'])
     expect(await pollUntilDone('s1', cfg, mkDeps(f), { intervalMs: 1, timeoutMs: 60_000 })).toBe('done')
+  })
+
+  test('M1: archived is TERMINAL — resolves immediately, never polls on to the timeout', async () => {
+    const { f, calls } = statuses(['running', 'archived'])
+    const r = await pollUntilDone('s1', cfg, mkDeps(f), { intervalMs: 1, timeoutMs: 60_000 })
+    expect(r).toBe('archived')
+    expect(calls.length).toBe(2) // stopped on the spot; no archive PATCH either — it already is
+  })
+
+  test('M3: timeout best-effort ARCHIVES the abandoned session (stop burning tokens)', async () => {
+    const patches: { url: string; init: RequestInit }[] = []
+    const { f, calls } = fakeFetch((url, init) => {
+      if (init.method === 'PATCH') { patches.push({ url, init }); return jsonRes(200, { id: 's1' }) }
+      return jsonRes(200, { id: 's1', status: 'running', worker_reported: true })
+    })
+    let t = 0
+    const deps = mkDeps(f, { now: () => t, sleep: async (ms) => { t += ms } })
+    expect(await pollUntilDone('s1', cfg, deps, { intervalMs: 5_000, timeoutMs: 10_000 })).toBe('timeout')
+    expect(patches.length).toBe(1)
+    expect(patches[0]!.url).toBe('http://web:3000/api/bridge/v1/sessions/s1')
+    expect(JSON.parse(String(patches[0]!.init.body))).toEqual({ archived: true })
+    expect(headersOf(patches[0]!).Authorization).toBe('Bearer local-api-token')
+    expect(calls[calls.length - 1]!.init.method).toBe('PATCH') // fired on the way out
+  })
+
+  test('M3: requires_action archives too — the worker will never resume it', async () => {
+    const patches: string[] = []
+    const { f } = fakeFetch((url, init) => {
+      if (init.method === 'PATCH') { patches.push(url); return jsonRes(200, { id: 's1' }) }
+      return jsonRes(200, { id: 's1', status: 'requires_action', worker_reported: true })
+    })
+    expect(await pollUntilDone('s1', cfg, mkDeps(f), { intervalMs: 1, timeoutMs: 60_000 })).toBe('requires_action')
+    expect(patches).toEqual(['http://web:3000/api/bridge/v1/sessions/s1'])
+  })
+
+  test('M3: archive failure is swallowed+logged — the outcome is unchanged (throw AND non-OK)', async () => {
+    const logs: string[] = []
+    const throwing = fakeFetch((_url, init) => {
+      if (init.method === 'PATCH') throw new Error('web down mid-archive')
+      return jsonRes(200, { id: 's1', status: 'requires_action', worker_reported: true })
+    })
+    expect(await pollUntilDone('s1', cfg, mkDeps(throwing.f, { log: (m) => logs.push(m) }), { intervalMs: 1, timeoutMs: 60_000 })).toBe('requires_action')
+    expect(logs.some((m) => m.includes('archive') && m.includes('web down mid-archive'))).toBe(true)
+
+    const nonOk = fakeFetch((_url, init) => {
+      if (init.method === 'PATCH') return jsonRes(500, {})
+      return jsonRes(200, { id: 's1', status: 'requires_action', worker_reported: true })
+    })
+    const logs2: string[] = []
+    expect(await pollUntilDone('s1', cfg, mkDeps(nonOk.f, { log: (m) => logs2.push(m) }), { intervalMs: 1, timeoutMs: 60_000 })).toBe('requires_action')
+    expect(logs2.some((m) => m.includes('archive') && m.includes('500'))).toBe(true)
   })
 })
 
