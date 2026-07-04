@@ -47,7 +47,19 @@ export type CodeSessionDeps = {
   sleep?: (ms: number) => Promise<void>
   now?: () => number
   log?: (m: string) => void
+  /** Test-only overrides for the per-call fetch abort timeouts (I1).
+   * Defaults: dispatch/poll 10 s; pr 90 s (it does real git work). */
+  fetchTimeoutMs?: { dispatch?: number; poll?: number; pr?: number }
 }
+
+// I1: every service fetch is abort-bounded — the poll loop is
+// iteration-bounded by its deadline, but a single hung HTTP call to
+// web:3000 would otherwise wedge the whole worker loop forever. A timed-out
+// fetch throws (TimeoutError), which the existing throw→markFailed+feedback
+// (dispatch/PR) and transient-tolerance (poll) paths already absorb.
+const DISPATCH_FETCH_TIMEOUT_MS = 10_000
+const POLL_FETCH_TIMEOUT_MS = 10_000
+const PR_FETCH_TIMEOUT_MS = 90_000
 
 const authHeaders = (cfg: CodeSessionConfig): Record<string, string> => ({
   Authorization: `Bearer ${cfg.bearerToken}`,
@@ -79,6 +91,7 @@ export async function createCodeSession(
       publicOrigin: cfg.publicOrigin,
       ...(cfg.model ? { model: cfg.model } : {}),
     }),
+    signal: AbortSignal.timeout(deps.fetchTimeoutMs?.dispatch ?? DISPATCH_FETCH_TIMEOUT_MS),
   })
   if (!res.ok) throw new Error(`code session dispatch failed: HTTP ${res.status}`)
   const raw = (await res.json()) as { session_id?: unknown; session_url?: unknown }
@@ -123,6 +136,7 @@ export async function pollUntilDone(
     try {
       const res = await deps.fetch(`${cfg.webUrl}/api/bridge/v1/sessions/${sessionId}`, {
         headers: authHeaders(cfg),
+        signal: AbortSignal.timeout(deps.fetchTimeoutMs?.poll ?? POLL_FETCH_TIMEOUT_MS),
       })
       if (res.ok) {
         const raw = (await res.json()) as { status?: unknown; worker_reported?: unknown }
@@ -156,6 +170,8 @@ export async function openSessionPr(
     method: 'POST',
     headers: { ...authHeaders(cfg), 'content-type': 'application/json' },
     body: JSON.stringify({}),
+    // Generous bound — createContainerPR does real git work (commit + push).
+    signal: AbortSignal.timeout(deps.fetchTimeoutMs?.pr ?? PR_FETCH_TIMEOUT_MS),
   })
   if (!res.ok) throw new Error(`session PR failed: HTTP ${res.status}`)
   const raw = (await res.json()) as { url?: unknown }

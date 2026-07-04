@@ -40,6 +40,24 @@ function mkDeps(f: typeof fetch, over: Partial<CodeSessionDeps> = {}): CodeSessi
   return { fetch: f, mintToken: async () => 'ghs_inst_tok', sleep: async () => {}, ...over }
 }
 
+// I1: a fetch that NEVER resolves on its own — it settles only when the
+// caller's AbortSignal fires (rejecting with the signal's TimeoutError). A
+// call site that forgot its signal would hang the test past its own timeout.
+function hangingFetch() {
+  const calls: { url: string; init: RequestInit }[] = []
+  const f = ((url: unknown, init?: unknown) => {
+    const i = (init ?? {}) as RequestInit
+    calls.push({ url: String(url), init: i })
+    return new Promise<Response>((_resolve, reject) => {
+      const s = i.signal
+      if (!s) return // no signal → never settles
+      if (s.aborted) return reject(s.reason)
+      s.addEventListener('abort', () => reject(s.reason), { once: true })
+    })
+  }) as typeof fetch
+  return { f, calls }
+}
+
 describe('gh-app createCodeSession', () => {
   test('mints the installation token for the job repo and dispatches with BOTH auth headers', async () => {
     const { f, calls } = fakeFetch(() => jsonRes(200, { session_id: 'ab12', session_url: 'https://0wlan.com/code/session_ab12' }))
@@ -182,6 +200,44 @@ describe('gh-app openSessionPr', () => {
     expect(openSessionPr('s1', cfg, mkDeps(bad.f))).rejects.toThrow(/HTTP 400/)
     const empty = fakeFetch(() => jsonRes(200, { branch: 'x' }))
     expect(openSessionPr('s1', cfg, mkDeps(empty.f))).rejects.toThrow(/missing url/)
+  })
+})
+
+describe('gh-app codeSession fetch abort-bounds (I1)', () => {
+  test('every service call carries an AbortSignal — dispatch, poll GET, PR POST', async () => {
+    const dispatch = fakeFetch(() => jsonRes(200, { session_id: 'ab12', session_url: 'https://0wlan.com/code/session_ab12' }))
+    await createCodeSession(job, cfg, mkDeps(dispatch.f))
+    expect(dispatch.calls[0]!.init.signal).toBeInstanceOf(AbortSignal)
+
+    const poll = fakeFetch(() => jsonRes(200, { id: 's1', status: 'running', worker_reported: true }))
+    let t = 0
+    await pollUntilDone('s1', cfg, mkDeps(poll.f, { now: () => t, sleep: async (ms) => { t += ms } }), { intervalMs: 5_000, timeoutMs: 5_000 })
+    expect(poll.calls[0]!.init.signal).toBeInstanceOf(AbortSignal)
+
+    const pr = fakeFetch(() => jsonRes(200, { url: 'https://github.com/o/r/pull/12' }))
+    await openSessionPr('s1', cfg, mkDeps(pr.f))
+    expect(pr.calls[0]!.init.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  test('a hung dispatch rejects at the abort timeout instead of wedging the worker loop', async () => {
+    const { f, calls } = hangingFetch()
+    await expect(createCodeSession(job, cfg, mkDeps(f, { fetchTimeoutMs: { dispatch: 20 } }))).rejects.toThrow()
+    expect(calls.length).toBe(1)
+  })
+
+  test('a hung poll GET is abort-bounded — treated as transient, deadline still wins', async () => {
+    const { f, calls } = hangingFetch()
+    let t = 0
+    const deps = mkDeps(f, { now: () => t, sleep: async (ms) => { t += ms }, fetchTimeoutMs: { poll: 10 } })
+    const r = await pollUntilDone('s1', cfg, deps, { intervalMs: 5_000, timeoutMs: 10_000 })
+    expect(r).toBe('timeout') // resolved — a hung web:3000 can no longer wedge the loop forever
+    expect(calls.length).toBeGreaterThanOrEqual(3)
+  })
+
+  test('a hung PR POST rejects at the abort timeout (→ the markFailed+feedback path)', async () => {
+    const { f, calls } = hangingFetch()
+    await expect(openSessionPr('s1', cfg, mkDeps(f, { fetchTimeoutMs: { pr: 20 } }))).rejects.toThrow()
+    expect(calls.length).toBe(1)
   })
 })
 
