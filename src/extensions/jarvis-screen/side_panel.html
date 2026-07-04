@@ -135,7 +135,7 @@
       .composer textarea {
         width: 100%; resize: none; border: none; outline: none; background: transparent; color: var(--fg);
         font: inherit; font-size: 13px; line-height: 1.4; padding: 0; margin: 0;
-        height: 21px; min-height: 21px; max-height: 108px; overflow-y: hidden; display: block;
+        height: 46px; min-height: 46px; max-height: 140px; overflow-y: auto; display: block;
       }
       .composer textarea::placeholder { color: var(--faint-fg); }
       .composer .row { display: flex; align-items: center; justify-content: space-between; margin-top: 3px; }
@@ -265,7 +265,7 @@
 
         <div class="composer">
           <div class="sc-menu" id="scMenu" hidden></div>
-          <textarea id="input" rows="1" placeholder="How can I help you today?"></textarea>
+          <textarea id="input" rows="2" placeholder="Type / for commands"></textarea>
           <div class="row">
             <button class="perm" id="permBtn">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M18 11V6a2 2 0 0 0-4 0M14 10V4a2 2 0 0 0-4 0v2M10 8V5a2 2 0 0 0-4 0v9M18 8a2 2 0 0 1 4 0v3a8 8 0 0 1-8 8h-2a8 8 0 0 1-6.7-3.6L2.5 15" stroke-linecap="round" stroke-linejoin="round"/></svg>

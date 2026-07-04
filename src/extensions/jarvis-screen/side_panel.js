@@ -101,7 +101,7 @@ let thinkingEl = null;
 
 function sizeInput() {
   input.style.height = "auto";
-  input.style.height = Math.min(Math.max(input.scrollHeight, 21), 108) + "px";
+  input.style.height = Math.min(Math.max(input.scrollHeight, 46), 140) + "px";
   $("sendBtn").disabled = input.value.trim() === "";
 }
 
@@ -192,6 +192,8 @@ input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     if (!$("scMenu").hidden) {
       const q = input.value.slice(1).toLowerCase();
+      const cmd = SLASH_COMMANDS.find((c) => c.name === q);
+      if (cmd) { e.preventDefault(); runCommand(cmd); return; }
       const first = SHORTCUTS.filter((s) => s.name.toLowerCase().includes(q))[0];
       if (first) { e.preventDefault(); useShortcut(first); return; }
     }
@@ -199,6 +201,9 @@ input.addEventListener("keydown", (e) => {
   }
 });
 $("sendBtn").addEventListener("click", send);
+// Claude-style placeholder: prompt for commands when idle, greet on focus.
+input.addEventListener("focus", () => { if (!input.value) input.placeholder = "How can I help you today?"; });
+input.addEventListener("blur", () => { if (!input.value) input.placeholder = "Type / for commands"; });
 
 // ── Shortcuts (type / in the composer) ─────────────────────────────────
 let SHORTCUTS = [];
@@ -219,11 +224,20 @@ function scRow(cls, key, text, onClick) {
   const p = document.createElement("span"); p.className = "p"; p.textContent = text;
   row.append(k, p); row.addEventListener("click", onClick); return row;
 }
+// Claude-style slash commands (conversation ops), shown above user shortcuts.
+const SLASH_COMMANDS = [
+  { name: "compact", desc: "Clear history, keep a summary", run: () => compactChat() },
+  { name: "clear", desc: "Clear the conversation", run: () => clearChat() },
+];
+function runCommand(c) { hideShortcuts(); input.value = ""; sizeInput(); input.placeholder = "Type / for commands"; c.run(); }
 function refreshShortcutMenu() {
   const m = $("scMenu");
   if (!input.value.startsWith("/")) { hideShortcuts(); return; }
   const q = input.value.slice(1).toLowerCase();
   m.replaceChildren();
+  for (const c of SLASH_COMMANDS.filter((c) => c.name.includes(q))) {
+    m.appendChild(scRow("cmd", "/" + c.name, c.desc, () => runCommand(c)));
+  }
   for (const s of SHORTCUTS.filter((s) => s.name.toLowerCase().includes(q))) {
     m.appendChild(scRow("", "/" + s.name, s.prompt, () => useShortcut(s)));
   }
@@ -252,16 +266,26 @@ function showShortcutForm() {
 }
 input.addEventListener("input", refreshShortcutMenu);
 
-$("newChat").addEventListener("click", () => {
+function clearChat() {
   stream.replaceChildren();
   thinkingEl = null;
-  const empty = document.createElement("div");
-  empty.className = "empty";
-  const s1 = document.createElement("strong"); s1.textContent = "New chat";
+  const empty = document.createElement("div"); empty.className = "empty"; empty.id = "emptyState";
+  const s1 = document.createElement("strong"); s1.textContent = "How can I help you today?";
   const s2 = document.createElement("span"); s2.textContent = "Ask Jarvis about this page, or give it a task.";
   empty.append(s1, s2);
   stream.appendChild(empty);
-});
+}
+// /compact — clear the visible conversation but keep a concise recap. (Each
+// message is handled independently, so this is a view/recall aid, not context
+// fed forward to the agent.)
+function compactChat() {
+  const asks = [...stream.querySelectorAll(".msg.user")].map((e) => e.textContent.trim()).filter(Boolean);
+  if (!asks.length) { note("Nothing to compact yet."); return; }
+  stream.replaceChildren();
+  thinkingEl = null;
+  addMsg("Summary of earlier — you asked: " + asks.map((a) => "“" + a.slice(0, 80) + "”").join("; "), "bot");
+}
+$("newChat").addEventListener("click", clearChat);
 
 // ── Popover menus (permission mode, 3-dot, model) ───────────────────────
 function openPop(anchor, items, { align = "left" } = {}) {
