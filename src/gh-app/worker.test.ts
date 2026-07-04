@@ -380,3 +380,76 @@ describe('gh-app capsFromEnv', () => {
       .toEqual({ concurrency: 2, timeoutSec: 900, dailyCap: 20 })
   })
 })
+
+describe('gh-app worker — merge command', () => {
+  const mergeJob = (over: Partial<NewJob> = {}): NewJob =>
+    ({ installationId: 555, repo: 'o/r', issueNumber: 13, task: 'merge', isPR: true, ...over })
+  // Local WorkerFeedback recorder — captures each report() result directly.
+  const mergeFb = () => {
+    const reported: any[] = []
+    const feedback = {
+      acknowledge: async () => 42,
+      report: async (_j: Job, _t: number | null, r: any) => { reported.push(r) },
+    }
+    return { feedback, reported }
+  }
+
+  test('`merge` on a PR → calls mergePr (squash default), markDone, reports the merge', async () => {
+    const { store, done, failed } = memStore([mergeJob()])
+    const merges: { repo: string; pr: number; method: string; token: string }[] = []
+    const { feedback, reported } = mergeFb()
+    const d = deps(store, {
+      mergePr: async (repo, pr, method, token) => { merges.push({ repo, pr, method, token }); return { ok: true } },
+      runInSandbox: async () => { throw new Error('sandbox must NOT run for a merge command') },
+      feedback,
+    })
+    expect(await runWorkerOnce(d)).toBe('ran')
+    expect(merges).toEqual([{ repo: 'o/r', pr: 13, method: 'squash', token: 'ghs_tok' }])
+    expect(done).toEqual([1])
+    expect(failed.length).toBe(0)
+    expect(reported[0]).toMatchObject({ ok: true, merged: { number: 13, method: 'squash' } })
+  })
+
+  test('explicit method: `merge rebase`', async () => {
+    const { store } = memStore([mergeJob({ task: 'merge rebase' })])
+    let method = ''
+    const d = deps(store, { mergePr: async (_r, _p, m) => { method = m; return { ok: true } } })
+    expect(await runWorkerOnce(d)).toBe('ran')
+    expect(method).toBe('rebase')
+  })
+
+  test('unmergeable PR → markFailed + reports the reason (#13), best-effort feedback', async () => {
+    const { store, done, failed } = memStore([mergeJob()])
+    const { feedback, reported } = mergeFb()
+    const d = deps(store, {
+      mergePr: async () => ({ ok: false, error: 'Pull Request is not mergeable' }),
+      feedback,
+    })
+    expect(await runWorkerOnce(d)).toBe('failed')
+    expect(done.length).toBe(0)
+    expect(failed[0]!.error).toContain('not mergeable')
+    expect(reported[0]?.ok).toBe(false)
+    expect(reported[0]?.error).toContain('#13')
+  })
+
+  test('`merge` on an ISSUE (not a PR) is NOT a merge — falls through to the run path', async () => {
+    const { store } = memStore([mergeJob({ isPR: false })])
+    let merged = false
+    let ran = false
+    const d = deps(store, {
+      mergePr: async () => { merged = true; return { ok: true } },
+      runInSandbox: async () => { ran = true; return { ok: true } },
+    })
+    await runWorkerOnce(d)
+    expect(merged).toBe(false)
+    expect(ran).toBe(true)
+  })
+
+  test('no mergePr dep wired → merge command falls through to the run path', async () => {
+    const { store } = memStore([mergeJob()])
+    let ran = false
+    const d = deps(store, { runInSandbox: async () => { ran = true; return { ok: true } } })
+    await runWorkerOnce(d)
+    expect(ran).toBe(true)
+  })
+})
