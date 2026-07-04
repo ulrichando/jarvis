@@ -202,7 +202,7 @@ describe('git proxy route', () => {
       const res = await GET(req, ctx(['owner', 'demo.git', 'info', 'refs']))
       expect(res.status).toBe(200)
       // The github.com forward carries the FRESH token, not the stale one.
-      const gh = fetchMock.mock.calls.find(([u]) => String(u).includes('github.com'))!
+      const gh = fetchMock.mock.calls.find(([u]) => new URL(String(u)).hostname === 'github.com')!
       expect((gh[1]?.headers as Headers).get('authorization')).toBe(
         'Basic ' + Buffer.from('x-access-token:ghs_fresh').toString('base64'),
       )
