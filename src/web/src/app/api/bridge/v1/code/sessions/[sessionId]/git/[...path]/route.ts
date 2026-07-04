@@ -3,9 +3,9 @@ import {
   findSession,
   validateGitCapToken,
   getSessionGitScope,
-  getSessionInstallationToken,
   appendSessionEvent,
 } from '@/lib/bridge/store'
+import { freshInstallationToken } from '@/lib/bridge/gh-app-token'
 import { getGithubToken } from '@/lib/connectors/github'
 import { parseGitRequest, assertRepoAllowed, forwardToGithub } from '@/lib/bridge/git-proxy'
 import { bridgeError } from '@/lib/bridge/errors'
@@ -61,11 +61,11 @@ async function handle(req: Request, ctx: Ctx): Promise<Response> {
   // External bot jobs (gh-app dispatch) carry a repo-scoped App installation
   // token in the session meta — inject THAT. Normal /code sessions have none
   // and keep today's global-PAT path byte-identical (incl. the 503).
-  // TOKEN-LIFETIME NOTE: v1 reads the raw stored installation token (~1h,
-  // repo-scoped) because the web holds no App private key to re-mint; bot job
-  // runs are minutes < 1h. A resumed/long session can outlive it — GitHub then
-  // 401s here and the failure is surfaced upstream. Re-mint is a v2 hardening.
-  const injected = getSessionInstallationToken(session)
+  // TOKEN-LIFETIME: stale/unknown-expiry tokens are re-minted through the
+  // gh-app per use (freshInstallationToken), so a session outliving the ~1h
+  // dispatch token keeps pushing. Refresh unconfigured/down → the stored
+  // token flows on and GitHub's 401 is surfaced upstream (the v1 behavior).
+  const injected = await freshInstallationToken(store, sessionId, session)
   const pat = injected ?? (await getGithubToken())
   if (!pat) return bridgeError(503, 'github_unavailable', 'GitHub not connected — reconnect in Settings')
   if (target.kind === 'service') {

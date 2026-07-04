@@ -184,6 +184,33 @@ describe('git proxy route', () => {
     expect(vi.mocked(getGithubToken)).not.toHaveBeenCalled()
   })
 
+  test('stale installation token is re-minted through the gh-app before injection', async () => {
+    vi.stubEnv('GH_APP_INTERNAL_URL', 'http://gh-app:8790')
+    vi.stubEnv('GH_APP_BRIDGE_TOKEN', 'svc-secret')
+    try {
+      // No installationTokenExpiresAt in meta → "unknown, refresh before use".
+      seed('owner/demo', 'git_cap', { installationToken: 'ghs_stale' })
+      const fetchMock = vi.fn(async (url: RequestInfo | URL, _init?: RequestInit) => {
+        if (String(url).includes('/internal/mint-token')) {
+          return new Response(JSON.stringify({ token: 'ghs_fresh', expiresAt: '2099-01-01T00:00:00Z' }), { status: 200 })
+        }
+        return new Response('OK', { status: 200, headers: { 'content-type': 'application/x-git-upload-pack-advertisement' } })
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      const { GET } = await route()
+      const req = new Request('http://h/info/refs?service=git-upload-pack', { headers: { authorization: basic('git_cap') } })
+      const res = await GET(req, ctx(['owner', 'demo.git', 'info', 'refs']))
+      expect(res.status).toBe(200)
+      // The github.com forward carries the FRESH token, not the stale one.
+      const gh = fetchMock.mock.calls.find(([u]) => new URL(String(u)).hostname === 'github.com')!
+      expect((gh[1]?.headers as Headers).get('authorization')).toBe(
+        'Basic ' + Buffer.from('x-access-token:ghs_fresh').toString('base64'),
+      )
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   test('injected token works with NO global PAT connected (external repo job)', async () => {
     seed('owner/demo', 'git_cap', { installationToken: 'ghs_inst_tok' })
     vi.mocked(getGithubToken).mockResolvedValue(null) // GitHub connector absent

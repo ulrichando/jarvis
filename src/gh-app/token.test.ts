@@ -1,7 +1,7 @@
 // src/gh-app/token.test.ts
 import { test, expect, describe } from 'bun:test'
 import { generateKeyPairSync, createVerify } from 'node:crypto'
-import { appJwt, installationToken } from './token.js'
+import { appJwt, installationToken, installationTokenForRepo } from './token.js'
 
 const { privateKey, publicKey } = generateKeyPairSync('rsa', {
   modulusLength: 2048,
@@ -74,5 +74,33 @@ describe('gh-app installationToken', () => {
     expect(err).not.toBeNull()
     expect(err!.message).toContain('401')
     expect(err!.message).not.toContain('secret.jwt.value')
+  })
+})
+
+describe('gh-app installationTokenForRepo', () => {
+  test('resolves the repo installation then mints a repo-scoped token', async () => {
+    const calls: { url: string; init: RequestInit | undefined }[] = []
+    const fakeFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init })
+      if (String(url).includes('/repos/')) {
+        return new Response(JSON.stringify({ id: 555 }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ token: 'ghs_fresh', expires_at: '2026-07-04T20:00:00Z' }), { status: 201 })
+    }) as typeof fetch
+    const r = await installationTokenForRepo(4242, privateKey, 'ulrichando/maxrun', { fetch: fakeFetch })
+    expect(r).toEqual({ token: 'ghs_fresh', expiresAt: '2026-07-04T20:00:00Z' })
+    expect(calls.length).toBe(2)
+    expect(calls[0]!.url).toBe('https://api.github.com/repos/ulrichando/maxrun/installation')
+    expect(calls[1]!.url).toBe('https://api.github.com/app/installations/555/access_tokens')
+    // Repo-scoped mint: repositories carries the bare repo NAME.
+    expect(JSON.parse(String(calls[1]!.init?.body)).repositories).toEqual(['maxrun'])
+  })
+
+  test('installation lookup failure rejects with status only', async () => {
+    const fakeFetch = (async () => new Response('{"message":"Not Found"}', { status: 404 })) as typeof fetch
+    let err: Error | null = null
+    try { await installationTokenForRepo(4242, privateKey, 'o/gone', { fetch: fakeFetch }) } catch (e) { err = e as Error }
+    expect(err).not.toBeNull()
+    expect(err!.message).toBe('installation lookup failed: HTTP 404')
   })
 })

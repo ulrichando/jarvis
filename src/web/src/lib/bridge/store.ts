@@ -908,6 +908,10 @@ interface ContainerMeta {
    *  EXTERNAL bot job (repo-scoped, ~1h). Absent on normal /code sessions —
    *  those keep the global-PAT path. The git proxy + host-side PR use it. */
   installationToken?: string
+  /** ISO expiry of installationToken, written by the refresh path
+   *  (gh-app-token.ts). Absent on dispatch-time meta — treated as "unknown,
+   *  refresh before use". */
+  installationTokenExpiresAt?: string
   /** The App bot's login — committer identity for external bot jobs. */
   botLogin?: string
 }
@@ -923,12 +927,14 @@ function parseContainerMeta(session: SessionRow | null): ContainerMeta {
 
 /** Record the docker container backing a session, plus its git proxy scope.
  *
- *  TOKEN-STORAGE DECISION (external gh-app jobs): v1 stores the RAW
+ *  TOKEN-STORAGE DECISION (external gh-app jobs): the dispatch stores the RAW
  *  installation token (repo-scoped, ~1h lifetime) in the session's container
- *  meta because the web holds no App private key and cannot re-mint one. Job
- *  runs complete in minutes — well inside the 1h window. Long-lived or resumed
- *  sessions may outlive the token (pushes/PRs then 401 and are surfaced, not
- *  swallowed); re-minting via the gh-app is a v2 hardening. */
+ *  meta because the web holds no App private key and cannot mint one itself.
+ *  Sessions that outlive it are handled by the v2 refresh path
+ *  (gh-app-token.ts::freshInstallationToken → the gh-app's
+ *  /internal/mint-token) at every use site; with refresh unconfigured
+ *  (GH_APP_INTERNAL_URL unset) behavior degrades to v1: the stale token 401s
+ *  and the failure is surfaced, not swallowed. */
 export function setSessionContainer(
   store: Store,
   sessionId: string,
@@ -966,6 +972,43 @@ export function validateGitCapToken(store: Store, sessionId: string, token: stri
 export function getSessionInstallationToken(session: SessionRow | null): string | null {
   const m = parseContainerMeta(session)
   return m.installationToken || null
+}
+
+/** Everything the token-refresh path needs in one read: the stored token, its
+ *  recorded expiry (null = unknown → refresh before use), and the repo to
+ *  re-mint for. */
+export function getSessionInstallationTokenInfo(session: SessionRow | null): {
+  token: string | null
+  expiresAt: string | null
+  repo: string | null
+} {
+  const m = parseContainerMeta(session)
+  return {
+    token: m.installationToken || null,
+    expiresAt: m.installationTokenExpiresAt || null,
+    repo: m.repo || null,
+  }
+}
+
+/** Refresh-path write: swap ONLY the installation token (+expiry) into the
+ *  session's container meta, preserving the rest of the blob (container id,
+ *  repo scope, cap token, bot login). No-op when the session has no meta. */
+export function updateSessionInstallationToken(
+  store: Store,
+  sessionId: string,
+  token: string,
+  expiresAt?: string,
+): void {
+  const m = parseContainerMeta(findSession(store, sessionId))
+  if (!m.container && !m.repo) return
+  const next: ContainerMeta = {
+    ...m,
+    installationToken: token,
+    ...(expiresAt ? { installationTokenExpiresAt: expiresAt } : {}),
+  }
+  store.db
+    .prepare('UPDATE sessions SET container_json = ? WHERE session_id = ?')
+    .run(JSON.stringify(next), sessionId)
 }
 
 /** The persisted CLI worker launch spec — enough to re-exec the worker into an
