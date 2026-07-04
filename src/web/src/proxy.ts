@@ -99,6 +99,17 @@ const SELF_AUTH_PATTERNS: RegExp[] = [
   /^\/api\/bridge\/v1\/sessions\/[^/]+\/teleport$/, // jarvis teleport <id>
 ]
 
+// GET-only self-auth: the CCR read routes the real teleport machinery
+// (fetchCodeSessionsFromSessionsAPI / fetchSession / pollRemoteSessionEvents)
+// polls. GET-only so the SAME paths' mutations (create / retitle / archive,
+// used by ultraplan) stay behind the shared-token gate. Each GET validates the
+// per-user token + ownership itself (authSessionOwner).
+const SELF_AUTH_GET_PATTERNS: RegExp[] = [
+  /^\/api\/v1\/sessions$/, //                 list your sessions
+  /^\/api\/v1\/sessions\/[^/]+$/, //          fetchSession metadata
+  /^\/api\/v1\/sessions\/[^/]+\/events$/, //  conversation events
+]
+
 // Host header allowlist (DNS-rebinding defense, parallel to the bridge
 // fix in commit f0150fb4). Even with a valid bearer token, requests
 // whose Host header isn't 127.0.0.1 / localhost / [::1] are refused.
@@ -278,6 +289,9 @@ export function proxy(req: NextRequest) {
   // the handler can accept a per-user bridge token. Host allowlist already
   // enforced above; the route validates the token + ownership itself.
   if (SELF_AUTH_PATTERNS.some((re) => re.test(path))) {
+    return NextResponse.next()
+  }
+  if (req.method === 'GET' && SELF_AUTH_GET_PATTERNS.some((re) => re.test(path))) {
     return NextResponse.next()
   }
 
