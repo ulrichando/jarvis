@@ -1,13 +1,19 @@
 import { execFile } from 'node:child_process'
 import { promises as fs } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
 import { readKeysEnvValue } from '../../utils/jarvisKeysEnv.js'
+import { getProjectDir } from '../../utils/sessionStoragePortable.js'
+import { detectCurrentRepository } from '../../utils/detectRepository.js'
 
-// Non-UI teleport logic shared by the /teleport slash picker (TeleportPicker.tsx)
-// and the pull path. Returns structured results (never process.exit / readline)
-// so it's safe to call from inside the live REPL.
+// Non-UI teleport logic shared by the /teleport slash picker (TeleportPicker.tsx).
+// Models claude.ai's teleport: SAME-REPO ONLY — you must be in a checkout of the
+// session's repo; we verify, check out the branch, and prepare the conversation
+// for an in-place resume. We do NOT clone cross-repo (claude.ai doesn't either;
+// cross-repo teleport is unimplemented upstream). Returns structured results
+// (never process.exit) so it's safe from inside the live REPL.
 
 const TIMEOUT_MS = 20_000
 const execFileP = promisify(execFile)
@@ -64,29 +70,6 @@ async function git(args: string[], cwd?: string): Promise<{ stdout: string; ok: 
   }
 }
 
-/** Clone a (possibly private) GitHub repo. Prefer `gh repo clone` — it uses the
- *  user's gh auth, so private repos work non-interactively; a bare
- *  `git clone https://…` would prompt for a password and fail with no TTY.
- *  Falls back to git (public repos / a configured credential helper). */
-async function cloneRepo(repo: string, dest: string): Promise<boolean> {
-  const CLONE_TIMEOUT_MS = 180_000 // clones can be large
-  try {
-    await execFileP('gh', ['repo', 'clone', repo, dest], { timeout: CLONE_TIMEOUT_MS })
-    return true
-  } catch {
-    try {
-      await execFileP(
-        'git',
-        ['-c', 'credential.interactive=false', 'clone', `https://github.com/${repo}.git`, dest],
-        { timeout: CLONE_TIMEOUT_MS },
-      )
-      return true
-    } catch {
-      return false
-    }
-  }
-}
-
 export async function fetchCloudSessions(): Promise<
   { ok: true; sessions: CloudSession[] } | { ok: false; error: string }
 > {
@@ -97,18 +80,44 @@ export async function fetchCloudSessions(): Promise<
   return { ok: true, sessions: res.data.sessions ?? [] }
 }
 
-export type PullResult = {
-  repo: string
-  branch: string
-  resumed: boolean
-  /** Absolute path the branch was checked out in. Set (and `cloned`) when the
-   *  session's repo differs from the current checkout, so we cloned it. */
-  clonedPath?: string
+/** Rewrite a container transcript so it resumes as a LOCAL session: point every
+ *  line's sessionId at a fresh local UUID (the cloud id is 16-hex, but the CLI
+ *  resume path is UUID-keyed) and rewrite the in-container cwd (/workspace/<repo>)
+ *  to the local checkout. Non-JSON lines pass through untouched. */
+export function rewriteTranscript(jsonl: string, sessionId: string, cwd: string): string {
+  const out: string[] = []
+  for (const line of jsonl.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const o = JSON.parse(line) as Record<string, unknown>
+      if ('sessionId' in o) o.sessionId = sessionId
+      if ('cwd' in o) o.cwd = cwd
+      out.push(JSON.stringify(o))
+    } catch {
+      out.push(line)
+    }
+  }
+  return out.join('\n') + '\n'
 }
 
-export async function pullSession(
+export type TeleportPrep =
+  // Conversation is ready — the picker calls context.resume(resumeId, …).
+  | { kind: 'resume'; repo: string; branch: string; resumeId: string }
+  // Branch checked out, but no conversation to resume (never happened / lost).
+  | { kind: 'checkout'; repo: string; branch: string }
+
+/**
+ * Prepare a teleport, claude.ai-style. Verifies you're in a checkout of the
+ * session's repo (else a clear mismatch error — no cloning), cleans/checks out
+ * the branch, and stages the conversation for an in-place resume. `mismatchRepo`
+ * is set when the only problem is being in the wrong repo, so the UI can guide.
+ */
+export async function prepareTeleport(
   id: string,
-): Promise<{ ok: true; result: PullResult } | { ok: false; error: string }> {
+): Promise<
+  | { ok: true; prep: TeleportPrep }
+  | { ok: false; error: string; mismatchRepo?: string }
+> {
   const a = auth()
   if ('error' in a) return { ok: false, error: a.error }
   const info = await getJson<{ repo?: string; branch?: string; native_jsonl?: string }>(
@@ -120,80 +129,51 @@ export async function pullSession(
   if (!repo || !branch) {
     return { ok: false, error: 'That session has no pushed branch yet — open a PR (or push) in the session first.' }
   }
-  // Defense-in-depth: branch reaches `git` argv — reject a name that could
-  // smuggle a flag (`-…`) or traverse (`..`), even from our own server.
+  // Argv-injection guards: branch + repo both reach `git` argv.
   if (!/^[A-Za-z0-9_./-]+$/.test(branch) || branch.startsWith('-') || branch.includes('..')) {
     return { ok: false, error: 'The session returned an unusable branch name.' }
   }
-  // Same for repo: it reaches `gh repo clone <repo> <dest>` and the derived
-  // dest basename. Require the GitHub owner/name grammar — each segment starts
-  // with an alphanumeric (so the arg can't be read as a flag), no `..` (so the
-  // dest can't escape the parent dir).
-  if (
-    !/^[A-Za-z0-9](?:[A-Za-z0-9._-]){0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(repo) ||
-    repo.includes('..')
-  ) {
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9._-]){0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(repo) || repo.includes('..')) {
     return { ok: false, error: 'The session returned an unusable repository name.' }
   }
 
-  // Where does the branch get checked out? If the current dir IS a checkout of
-  // the session's repo, teleport in place (a true resume). Otherwise the
-  // session is for a DIFFERENT repo (e.g. running /teleport from repo A,
-  // selecting a session for repo B) — clone it as a sibling so we never mutate
-  // the current session's tree, and land the branch + conversation there.
-  const inRepo = await git(['rev-parse', '--is-inside-work-tree'])
-  const remote = inRepo.ok ? (await git(['remote', 'get-url', 'origin'])).stdout : ''
-  const sameRepo = inRepo.ok && remote.includes(repo)
-
-  let workdir = process.cwd()
-  let clonedPath: string | undefined
-
-  if (sameRepo) {
-    const dirty = (await git(['status', '--porcelain'])).stdout
-    if (dirty) {
-      return { ok: false, error: 'Working directory is not clean. Commit or stash your changes before teleporting.' }
+  // Claude-style: you must be in a checkout of the session's repo.
+  const current = await detectCurrentRepository()
+  if (!current || current.toLowerCase() !== repo.toLowerCase()) {
+    return {
+      ok: false,
+      mismatchRepo: repo,
+      error: `Teleport needs a checkout of ${repo}. Open that repo in a terminal (cd into your ${repo} clone), then run /teleport again.`,
     }
-  } else {
-    // Clone target: a sibling of the current git root (or of cwd), named for
-    // the repo. Reuse an existing matching clone rather than re-cloning.
-    const gitRoot = inRepo.ok ? (await git(['rev-parse', '--show-toplevel'])).stdout : ''
-    const parent = path.dirname(gitRoot || process.cwd())
-    const dest = path.join(parent, repo.split('/').pop() || 'repo')
-    const destIsRepo = await git(['rev-parse', '--is-inside-work-tree'], dest)
-    const destRemote = destIsRepo.ok ? (await git(['remote', 'get-url', 'origin'], dest)).stdout : ''
-    if (!(destIsRepo.ok && destRemote.includes(repo))) {
-      if (destIsRepo.ok || (await fs.stat(dest).then(() => true).catch(() => false))) {
-        return { ok: false, error: `${dest} already exists and isn't ${repo}. Move it aside and retry.` }
-      }
-      const cloned = await cloneRepo(repo, dest)
-      if (!cloned) {
-        return { ok: false, error: `Could not clone ${repo}. Ensure \`gh auth login\` (or git creds) has access, then retry.` }
-      }
-    }
-    workdir = dest
-    clonedPath = dest
   }
 
-  // No `--` before the branch: `git checkout -- <x>` is a PATHSPEC restore, not
-  // a branch switch. The regex guard above (no leading `-`, no `..`) is the
-  // flag-injection defense, and execFile never shell-splits the single arg.
-  await git(['fetch', 'origin', branch], workdir)
-  let co = await git(['checkout', branch], workdir)
-  if (!co.ok) co = await git(['checkout', '-b', branch, `origin/${branch}`], workdir)
-  if (!co.ok) return { ok: false, error: `Could not check out ${branch}. Fetch it manually: git fetch origin ${branch}.` }
+  const dirty = (await git(['status', '--porcelain'])).stdout
+  if (dirty) {
+    return { ok: false, error: 'Working directory is not clean. Commit or stash your changes before teleporting.' }
+  }
 
-  let resumed = false
+  // No `--` before the branch: `git checkout -- <x>` restores a PATHSPEC, not a
+  // branch switch. The regex guard above is the flag-injection defense.
+  await git(['fetch', 'origin', branch])
+  let co = await git(['checkout', branch])
+  if (!co.ok) co = await git(['checkout', '-b', branch, `origin/${branch}`])
+  if (!co.ok) {
+    return { ok: false, error: `Could not check out ${branch}. Fetch it manually: git fetch origin ${branch}.` }
+  }
+
+  // Stage the conversation for an in-place resume (fresh local UUID).
   if (native_jsonl && native_jsonl.trim()) {
     try {
-      const { getProjectDir } = await import('../../utils/sessionStoragePortable.js')
-      const canonical = await fs.realpath(workdir).catch(() => workdir)
+      const root = (await git(['rev-parse', '--show-toplevel'])).stdout || process.cwd()
+      const canonical = await fs.realpath(root).catch(() => root)
+      const resumeId = randomUUID()
       const dir = getProjectDir(canonical)
       await fs.mkdir(dir, { recursive: true })
-      await fs.writeFile(path.join(dir, `${id}.jsonl`), native_jsonl, 'utf8')
-      resumed = true
+      await fs.writeFile(path.join(dir, `${resumeId}.jsonl`), rewriteTranscript(native_jsonl, resumeId, canonical), 'utf8')
+      return { ok: true, prep: { kind: 'resume', repo, branch, resumeId } }
     } catch {
-      /* branch checked out regardless */
+      /* fall through to checkout-only */
     }
   }
-  return { ok: true, result: { repo, branch, resumed, clonedPath } }
+  return { ok: true, prep: { kind: 'checkout', repo, branch } }
 }
