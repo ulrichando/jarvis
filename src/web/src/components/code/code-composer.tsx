@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useRef, useEffect, useState, useCallback, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import Link from "next/link";
 import {
   Cloud,
@@ -430,7 +430,7 @@ export function CodeComposer({
   }, [open]);
 
   // Pull the user's GitHub repos (when GitHub is connected) for the repo picker.
-  useEffect(() => {
+  const loadRepos = useCallback(() => {
     fetch("/api/github/repos")
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { ok?: boolean; repos?: { full_name: string }[] } | null) => {
@@ -438,6 +438,15 @@ export function CodeComposer({
       })
       .catch(() => {});
   }, []);
+  // On mount AND each time the repo picker opens — so connecting GitHub
+  // mid-session (in the Connectors modal) reflects in the picker without a full
+  // page reload. The old mount-only fetch left the list stale until refresh.
+  useEffect(() => {
+    loadRepos();
+  }, [loadRepos]);
+  useEffect(() => {
+    if (open === "repo") loadRepos();
+  }, [open, loadRepos]);
 
   const pill =
     "flex items-center gap-1.5 rounded-full border border-border/60 bg-accent/30 px-2.5 py-1 text-[12px] text-foreground/70 hover:bg-accent/50 hover:text-foreground transition-colors";
@@ -857,7 +866,7 @@ export function CodeComposer({
         )}
       </div>
 
-      {modal === "connectors" && <ConnectorsModal onClose={() => setModal(null)} />}
+      {modal === "connectors" && <ConnectorsModal onClose={() => { setModal(null); loadRepos(); }} />}
       {modal === "import" && <ImportIssueModal onClose={() => setModal(null)} onPick={(t) => onChange(t)} />}
     </div>
   );
