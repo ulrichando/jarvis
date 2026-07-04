@@ -94,6 +94,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   else if (msg.type === "jarvis_chat_status") setThinking(msg.status === "thinking");
   else if (msg.type === "jarvis_chat_response") receiveReply(msg.text);
   else if (msg.type === "jarvis_agent_event") handleAgentEvent(msg.event);
+  else if (msg.type === "jarvis_wf_step") { if (wfRecording && msg.step) { wfDisplay.push("Navigate to " + (msg.step.url || "")); renderRecordCard(); } }
 });
 
 // ── Chat ────────────────────────────────────────────────────────────────
@@ -277,27 +278,33 @@ $("plusBtn").addEventListener("click", () => openPop($("plusBtn"), [
 ], { align: "right" }));
 
 // ── Record a workflow → shortcut (pointer button, Claude-style) ──────────
-// Capture the user's page actions + voice narration, then turn them into a
-// reusable "/shortcut". Narration (what you say you're doing) becomes the
-// shortcut prompt; the first page is the "start from" URL.
-let wfRecording = false, wfNarration = [], wfRecog = null, wfStartUrl = "", wfCard = null;
+// CONTENT-INDEPENDENT: navigation is captured in the background (webNavigation)
+// and narration in the panel (Web Speech), so it records on ANY page incl.
+// chrome:// / New Tab (DOM click/type capture is best-effort on top). Narration
+// becomes the shortcut prompt; the first navigation is the "start from" URL.
+let wfRecording = false, wfNarration = [], wfDisplay = [], wfRecog = null, wfStartUrl = "", wfCard = null;
 
-async function toggleWorkflowRecord() {
+function toggleWorkflowRecord() {
   if (wfRecording) return stopWorkflowRecord();
-  const started = await chrome.runtime.sendMessage({ type: "jarvis_record_start" }).catch(() => ({ ok: false }));
-  if (!started || !started.ok) {
-    // record_start couldn't reach a content script — say WHY (chrome:// page vs
-    // a tab opened before the extension updated), which the old copy didn't.
-    const u = await chrome.runtime.sendMessage({ type: "jarvis_active_url" }).catch(() => null);
-    const url = (u && u.url) || "";
-    if (!url || /^(chrome|edge|about|chrome-extension|devtools|view-source):/i.test(url) || /^https?:\/\/chrome\.google\.com\/webstore/i.test(url)) {
-      note("Recording works on regular websites, not Chrome's internal pages (New Tab, Settings). Open a site like google.com first.");
-    } else {
-      note("Reload this page once, then record — it was open before the extension updated.");
-    }
-    return;
-  }
-  wfRecording = true; wfNarration = []; wfCard = null;
+  showWorkflowIntro();
+}
+function showWorkflowIntro() {
+  $("emptyState")?.remove();
+  const card = document.createElement("div"); card.className = "approval";
+  const t = document.createElement("div"); t.className = "at"; t.textContent = "Teach Jarvis your workflow"; card.appendChild(t);
+  const p = document.createElement("div"); p.style.cssText = "font-size:12.5px;color:var(--muted-fg);margin:3px 0 12px;line-height:1.45";
+  p.textContent = "Narrate what you're doing as you click through the steps. Jarvis records it and saves a reusable shortcut."; card.appendChild(p);
+  const frow = document.createElement("div"); frow.className = "arow";
+  const cancel = document.createElement("button"); cancel.className = "btn"; cancel.textContent = "Cancel"; cancel.style.cssText = "background:var(--panel);color:var(--fg)";
+  const start = document.createElement("button"); start.className = "btn btn-primary"; start.textContent = "Start recording";
+  cancel.addEventListener("click", () => card.remove());
+  start.addEventListener("click", () => { card.remove(); startWorkflowRecording(); });
+  frow.append(cancel, start); card.appendChild(frow);
+  stream.appendChild(card); stream.scrollTop = stream.scrollHeight;
+}
+async function startWorkflowRecording() {
+  wfRecording = true; wfNarration = []; wfDisplay = []; wfCard = null;
+  await chrome.runtime.sendMessage({ type: "jarvis_wf_start" }).catch(() => {}); // nav capture + best-effort DOM — works on any page
   const u = await chrome.runtime.sendMessage({ type: "jarvis_active_url" }).catch(() => null);
   wfStartUrl = (u && u.url) || "";
   startNarration();
@@ -310,7 +317,7 @@ function startNarration() {
   wfRecog.lang = navigator.language || "en-US";
   wfRecog.continuous = true; wfRecog.interimResults = false;
   wfRecog.onresult = (e) => {
-    for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript.trim(); if (t) { wfNarration.push(t); renderRecordCard(); } }
+    for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript.trim(); if (t) { wfNarration.push(t); wfDisplay.push("🗣 " + t); renderRecordCard(); } }
   };
   wfRecog.onerror = (e) => { if (e.error === "not-allowed") note("Mic blocked — recording actions only. Enable it in Settings to narrate."); };
   wfRecog.onend = () => { if (wfRecording) { try { wfRecog.start(); } catch {} } }; // keep listening across pauses
@@ -321,7 +328,7 @@ function renderRecordCard() {
   if (!wfCard) { $("emptyState")?.remove(); wfCard = document.createElement("div"); wfCard.className = "approval"; stream.appendChild(wfCard); }
   wfCard.replaceChildren();
   const t = document.createElement("div"); t.className = "at"; t.textContent = "● Recording — do the steps and narrate what you're doing"; wfCard.appendChild(t);
-  wfNarration.forEach((n, i) => {
+  wfDisplay.forEach((n, i) => {
     const row = document.createElement("div"); row.className = "task-row";
     const num = document.createElement("span"); num.style.cssText = "color:var(--primary);font-weight:600;flex:none"; num.textContent = (i + 1) + ".";
     const tx = document.createElement("span"); tx.className = "tx"; tx.textContent = n;
@@ -337,22 +344,24 @@ function renderRecordCard() {
 }
 async function cancelWorkflowRecord() {
   wfRecording = false; stopNarration();
-  await chrome.runtime.sendMessage({ type: "jarvis_record_stop" }).catch(() => {});
+  await chrome.runtime.sendMessage({ type: "jarvis_wf_stop" }).catch(() => {});
   if (wfCard) { wfCard.remove(); wfCard = null; }
 }
 async function stopWorkflowRecord() {
   wfRecording = false; stopNarration();
-  const res = await chrome.runtime.sendMessage({ type: "jarvis_record_stop" }).catch(() => ({ ok: false }));
+  const res = await chrome.runtime.sendMessage({ type: "jarvis_wf_stop" }).catch(() => ({ ok: false }));
   const steps = (res && res.steps) || [];
   if (wfCard) { wfCard.remove(); wfCard = null; }
   const narration = wfNarration.join(". ").trim();
   const prompt = narration || summarizeSteps(steps);
-  if (!prompt) { note("Nothing was recorded."); return; }
-  showCreateShortcutForm(slugify(prompt), prompt, wfStartUrl);
+  if (!prompt) { note("Nothing was recorded — narrate or click through the steps, then Stop."); return; }
+  const firstNav = steps.find((s) => s.action === "navigate");
+  showCreateShortcutForm(slugify(prompt), prompt, (firstNav && firstNav.url) || wfStartUrl);
 }
 function summarizeSteps(steps) {
   return (steps || []).map((s) => {
     const a = s.args || {};
+    if (s.action === "navigate") return "go to " + (s.url || "");
     if (s.action === "click") return "click " + (a.selector || "");
     if (s.action === "type") return "enter text in " + (a.selector || "");
     if (s.action === "select") return "select " + (a.value || "");

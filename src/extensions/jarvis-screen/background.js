@@ -227,6 +227,32 @@ async function checkSitePermission(action, args) {
   return self.JARVIS_SAFETY.siteDecision(host, await getSitePermissions());
 }
 
+// ── Workflow recording (navigation + best-effort DOM) ────────────────────
+// Content-INDEPENDENT so it records on ANY page incl. chrome:// (unlike the
+// DOM-only recorder): captures top-frame navigations via webNavigation + the
+// content-script DOM steps where available. The panel adds voice narration.
+let wfRec = { active: false, steps: [] };
+function wfNavListener(d) {
+  if (!wfRec.active || d.frameId !== 0) return;
+  const step = { action: "navigate", url: d.url };
+  wfRec.steps.push(step);
+  chrome.runtime.sendMessage({ type: "jarvis_wf_step", step }).catch(() => {});
+}
+function wfStart() {
+  wfRec = { active: true, steps: [] };
+  try { if (chrome.webNavigation) chrome.webNavigation.onCommitted.addListener(wfNavListener); } catch {}
+  forwardToContent("record_start", {}, false).catch(() => {}); // best-effort DOM capture (no-op on chrome://)
+}
+async function wfStop() {
+  wfRec.active = false;
+  try { if (chrome.webNavigation) chrome.webNavigation.onCommitted.removeListener(wfNavListener); } catch {}
+  let domSteps = [];
+  try { const r = await forwardToContent("record_stop", {}, false); domSteps = (r && r.steps) || []; } catch {}
+  const steps = [...wfRec.steps, ...domSteps];
+  wfRec.steps = [];
+  return steps;
+}
+
 async function forwardToContent(action, args, confirmed) {
   const tabId = await activeTabId();
   if (!tabId) return { ok: false, error: "no active tab" };
@@ -388,6 +414,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === "jarvis_task_delete") { deleteTask(msg.id).then(() => sendResponse({ ok: true })); return true; }
   if (msg && msg.type === "jarvis_record_start") { forwardToContent("record_start", {}, false).then(sendResponse).catch(() => sendResponse({ ok: false })); return true; }
   if (msg && msg.type === "jarvis_record_stop")  { forwardToContent("record_stop", {}, false).then(sendResponse).catch(() => sendResponse({ ok: false })); return true; }
+  if (msg && msg.type === "jarvis_wf_start") { wfStart(); sendResponse({ ok: true }); return; }
+  if (msg && msg.type === "jarvis_wf_stop")  { wfStop().then((steps) => sendResponse({ ok: true, steps })); return true; }
   if (msg && msg.type === "jarvis_ensure_group") { bgGroupTabs({}).then(sendResponse).catch(() => sendResponse({ ok: false })); return true; }
   if (msg && msg.type === "jarvis_logout") { try { if (ws) { ws._replaced = true; ws.close(); } } catch {} setStatus("no_token"); sendResponse({ ok: true }); return; }
   if (msg && msg.type === "jarvis_run_workflow") { runWorkflow(msg.steps).then(sendResponse).catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) })); return true; }
