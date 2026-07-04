@@ -254,3 +254,152 @@ def test_anthropic_adapter_caps_inrun_images():
             for b in m["content"]:
                 if isinstance(b, dict) and b.get("type") == "tool_result":
                     assert isinstance(b.get("content"), list) and b["content"]
+
+
+# ── Native computer_20251124 adapter (2026-07-04) ─────────────────────────────
+
+def _tiny_png_b64(w=640, h=400):
+    """Minimal real PNG (IHDR parseable) — no PIL dependency."""
+    import struct
+    import zlib
+
+    def chunk(typ, data):
+        return (struct.pack(">I", len(data)) + typ + data
+                + struct.pack(">I", zlib.crc32(typ + data) & 0xFFFFFFFF))
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    raw = b"".join(b"\x00" + b"\x00" * (w * 3) for _ in range(h))
+    return base64.b64encode(
+        b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+    ).decode()
+
+
+def test_native_anthropic_cu_gate(monkeypatch):
+    from pipeline.cu_adapters import native_anthropic_cu
+    monkeypatch.delenv("JARVIS_CU_NATIVE_ANTHROPIC", raising=False)
+    assert native_anthropic_cu("claude-sonnet-5") is True
+    assert native_anthropic_cu("claude-opus-4-8") is True
+    assert native_anthropic_cu("claude-sonnet-4-6") is True
+    assert native_anthropic_cu("claude-haiku-4-5") is False   # only the 20250124 surface
+    assert native_anthropic_cu("gpt-5.5") is False
+    assert native_anthropic_cu("gemini-3-flash-preview") is False
+    monkeypatch.setenv("JARVIS_CU_NATIVE_ANTHROPIC", "0")     # kill-switch → SOM everywhere
+    assert native_anthropic_cu("claude-opus-4-8") is False
+
+
+def test_make_adapter_native_routing(monkeypatch):
+    from pipeline.cu_adapters import make_adapter
+    from pipeline.cu_adapters.anthropic_adapter import (AnthropicCUAdapter,
+                                                        AnthropicNativeCUAdapter)
+    monkeypatch.delenv("JARVIS_CU_NATIVE_ANTHROPIC", raising=False)
+    assert isinstance(make_adapter("claude-sonnet-5", "s"), AnthropicNativeCUAdapter)
+    assert type(make_adapter("claude-haiku-4-5", "s")) is AnthropicCUAdapter
+    monkeypatch.setenv("JARVIS_CU_NATIVE_ANTHROPIC", "0")
+    assert type(make_adapter("claude-sonnet-5", "s")) is AnthropicCUAdapter
+
+
+def _capturing_native(model, system="sys prompt"):
+    from pipeline.cu_adapters.anthropic_adapter import AnthropicNativeCUAdapter
+    captured = {}
+
+    class _Block:
+        def __init__(self, **k):
+            self.__dict__.update(k)
+
+    class _Resp:
+        content = []
+
+    class _Msgs:
+        def __init__(self):
+            self.resp = _Resp()
+
+        def create(self, **k):
+            captured.clear()
+            captured.update(k)
+            return self.resp
+
+    class _Client:
+        def __init__(self):
+            self.messages = _Msgs()
+
+    client = _Client()
+    return AnthropicNativeCUAdapter(model, system, client=client), captured, client, _Block
+
+
+def test_native_adapter_declares_computer_20251124():
+    a, captured, _client, _Block = _capturing_native("claude-sonnet-4-6")
+    a.seed("do it", _tiny_png_b64(640, 400))
+    asyncio.run(a.next_step())
+    tool = captured["tools"][0]
+    assert tool["type"] == "computer_20251124" and tool["name"] == "computer"
+    assert tool["display_width_px"] == 640 and tool["display_height_px"] == 400
+    assert tool["enable_zoom"] is True
+    assert captured["extra_headers"]["anthropic-beta"] == "computer-use-2025-11-24"
+    sysb = captured["system"]
+    assert sysb[-1]["cache_control"] == {"type": "ephemeral"}       # prefix cache kept
+    assert captured["output_config"] == {"effort": "medium"}        # effort inherited
+
+
+def test_native_adapter_translates_and_scales():
+    a, _captured, client, _Block = _capturing_native("claude-opus-4-8")
+    a.seed("go", _tiny_png_b64(640, 400))
+    a.screen_size = (1280, 800)  # frame 640x400 → scale 2.0
+    client.messages.resp.content = [
+        _Block(type="tool_use", id="t1", name="computer",
+               input={"action": "left_click", "coordinate": [10, 20], "text": "ctrl+shift"}),
+        _Block(type="tool_use", id="t2", name="computer",
+               input={"action": "zoom", "region": [1, 2, 3, 4]}),
+    ]
+    res = asyncio.run(a.next_step())
+    c1, c2 = res.calls
+    assert c1.action == "click"
+    assert c1.args["coordinate"] == [20, 40] and c1.args["button"] == "left"
+    assert c1.args["modifiers"] == ["ctrl", "shift"]
+    assert c2.action == "capture"
+    assert c2.args == {"action": "capture", "mode": "vision", "region": [2, 4, 6, 8]}
+    # History echoes the ORIGINAL native input, not the translation.
+    tool_uses = [b for b in a.messages[-1]["content"] if b.get("type") == "tool_use"]
+    assert tool_uses[0]["input"]["action"] == "left_click"
+
+
+def test_native_translation_table():
+    a, _c, _cl, _b = _capturing_native("claude-opus-4-8")   # no scale set → 1.0
+
+    def t(inp):
+        return a._translate(inp)
+
+    assert t({"action": "screenshot"}) == {"action": "capture", "mode": "vision"}
+    assert t({"action": "type", "text": "hi"}) == {"action": "type", "text": "hi"}
+    assert t({"action": "key", "text": "Return"}) == {"action": "key", "keys": "Return"}
+    assert t({"action": "hold_key", "text": "shift", "duration": 2}) == {
+        "action": "hold_key", "keys": "shift", "seconds": 2}
+    assert t({"action": "wait", "duration": 1.5}) == {"action": "wait", "seconds": 1.5}
+    assert t({"action": "scroll", "coordinate": [5, 6], "scroll_direction": "up",
+              "scroll_amount": 2}) == {
+        "action": "scroll", "coordinate": [5, 6], "direction": "up", "amount": 2}
+    assert t({"action": "left_click_drag", "start_coordinate": [1, 2], "coordinate": [3, 4]}) == {
+        "action": "drag", "from_coordinate": [1, 2], "to_coordinate": [3, 4]}
+    assert t({"action": "right_click", "coordinate": [7, 8]}) == {
+        "action": "right_click", "coordinate": [7, 8]}
+    assert t({"action": "cursor_position"}) == {"action": "cursor_position"}
+    # Unknown native action passes through — executor errors, model adapts.
+    assert t({"action": "made_up", "x": 1}) == {"action": "made_up", "x": 1}
+
+
+def test_native_frame_dims_fixed_at_seed():
+    a, _c, _cl, _b = _capturing_native("claude-sonnet-5")
+    a.seed("go", _tiny_png_b64(640, 400))
+    assert a._frame_size == (640, 400)
+    # A zoom crop arriving later must NOT change the display declaration.
+    a.add_results([ToolResult("t1", "{}", _tiny_png_b64(100, 50))])
+    assert a._frame_size == (640, 400)
+    tool = a._native_tool()
+    assert (tool["display_width_px"], tool["display_height_px"]) == (640, 400)
+
+
+def test_native_max_px_tiers():
+    from computer_use_service import _native_max_px
+    assert _native_max_px("claude-sonnet-5") == 2576
+    assert _native_max_px("claude-opus-4-8") == 2576
+    assert _native_max_px("claude-sonnet-4-6") == 1568
