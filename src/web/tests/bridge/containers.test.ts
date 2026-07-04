@@ -178,14 +178,18 @@ describe('launchContainerSession', () => {
     expect(gitcfg).toBeTruthy()
     expect(gitcfg).toContain("user.name 'tester'")
     expect(gitcfg).toContain("user.email 'tester@users.noreply.github.com'")
-    // The credential helper stores the per-session CAP token for the PROXY host
-    // — never the real PAT, never github.com. The proxy injects the real token.
-    expect(gitcfg).toContain('credential.helper store')
+    // The per-session CAP token is served by a STATIC helper script — never
+    // `credential.helper store` (a single proxy 401 makes git ERASE a stored
+    // credential, wedging every later push), never the real PAT. The proxy
+    // injects the real token host-side.
+    expect(gitcfg).toContain('credential.helper /jarvis-config/git-cred')
+    expect(gitcfg).not.toContain('credential.helper store')
     expect(gitcfg).not.toContain('ghp_test_token')
-    expect(gitcfg).toContain('x-access-token:git_')
-    expect(gitcfg).toContain('@127.0.0.1:3000')
+    expect(gitcfg).toContain("password=%s") // helper emits the cap token
+    expect(gitcfg).toContain('git_') // the minted cap token is baked into the script
     expect(gitcfg).not.toContain('@github.com') // no real github credential
-    expect(gitcfg).toContain('.git-credentials')
+    // The erasable store file is actively removed, not just unused.
+    expect(gitcfg).toContain('rm -f "$HOME/.git-credentials"')
 
     // The CLI child gets NO GitHub token; the appended prompt tells it to push
     // (via the proxy) and that PRs open from the host panel, not gh.
@@ -1294,6 +1298,28 @@ describe('resumeContainerWorker (auto-resume on reopen)', () => {
       return { stdout: '', stderr: '' }
     }
     expect(await resumeContainerWorker(store, sessionId, aliveExec)).toBe(false)
+  })
+
+  test('re-asserts the static git credential helper on reopen — even with a live worker (heals wedged creds)', async () => {
+    const store = getStore()
+    const sessionId = makeSession()
+    await launchOnce(sessionId)
+    const calls: string[][] = []
+    const aliveExec: DockerExec = async (args) => {
+      calls.push(args)
+      if (args[0] === 'inspect') return { stdout: 'true\n', stderr: '' }
+      if (args.some((a) => a.includes('awk'))) return { stdout: '1\n', stderr: '' } // worker alive
+      return { stdout: '', stderr: '' }
+    }
+    await resumeContainerWorker(store, sessionId, aliveExec)
+    const heal = calls
+      .map((c) => c.join(' '))
+      .find((c) => c.includes('credential.helper /jarvis-config/git-cred'))
+    expect(heal).toBeTruthy()
+    expect(heal).toContain('git_') // the session cap token is baked into the script
+    expect(heal).not.toContain('credential.helper store')
+    // And it scrubs a repo-local helper a wedged agent may have hand-rolled.
+    expect(heal).toContain('--unset-all credential.helper')
   })
 
   test('returns false with no spec, and when the container is gone', async () => {
