@@ -27,10 +27,11 @@ const COL_GAP = '  '
 
 type State =
   | { s: 'loading' }
-  | { s: 'picking'; sessions: CloudSession[]; repo: string }
+  | { s: 'picking'; sessions: CloudSession[]; repo: string | null }
   | { s: 'resuming'; id: string }
   | { s: 'done'; branch: string }
-  | { s: 'empty'; repo: string | null }
+  | { s: 'empty' }
+  | { s: 'mismatch'; repo: string }
   | { s: 'error'; message: string }
 
 export function TeleportPicker({
@@ -51,7 +52,9 @@ export function TeleportPicker({
       setState({ s: 'resuming', id })
       const r = await prepareTeleport(id)
       if (!r.ok) {
-        setState({ s: 'error', message: r.error })
+        // Cross-repo isn't an error — it's "go to that repo" guidance.
+        if (r.mismatchRepo) setState({ s: 'mismatch', repo: r.mismatchRepo })
+        else setState({ s: 'error', message: r.error })
         return
       }
       if (r.prep.kind === 'resume' && context?.resume) {
@@ -85,10 +88,19 @@ export function TeleportPicker({
         setState({ s: 'error', message: r.error })
         return
       }
-      // Claude parity: only sessions for the repo you're in are teleportable.
-      const mine = repo ? r.sessions.filter((s) => s.repo.toLowerCase() === repo.toLowerCase()) : []
-      if (mine.length === 0) setState({ s: 'empty', repo })
-      else setState({ s: 'picking', sessions: mine, repo: repo! })
+      if (r.sessions.length === 0) {
+        setState({ s: 'empty' })
+        return
+      }
+      // Show ALL sessions with a repo column. Same-repo (current) ones resume
+      // in place; picking a different-repo one gives a "cd into <repo>" tip.
+      // Current-repo sessions float to the top so the teleportable ones are handy.
+      const sorted = [...r.sessions].sort((a, b) => {
+        const ar = repo && a.repo.toLowerCase() === repo.toLowerCase() ? 0 : 1
+        const br = repo && b.repo.toLowerCase() === repo.toLowerCase() ? 0 : 1
+        return ar - br || (b.updated_at ?? 0) - (a.updated_at ?? 0)
+      })
+      setState({ s: 'picking', sessions: sorted, repo })
     })()
     return () => {
       cancelled = true
@@ -98,7 +110,8 @@ export function TeleportPicker({
   useKeybinding('confirm:no', () => onDone('Teleport cancelled'), { context: 'Confirmation' })
   useKeybinding('confirm:yes', () => onDone('Teleported.'), {
     context: 'Confirmation',
-    isActive: state.s === 'done' || state.s === 'error' || state.s === 'empty',
+    isActive:
+      state.s === 'done' || state.s === 'error' || state.s === 'empty' || state.s === 'mismatch',
   })
 
   let body: React.ReactNode = null
@@ -114,12 +127,24 @@ export function TeleportPicker({
     case 'empty':
       body = (
         <Box flexDirection="column" gap={1}>
+          <Text>You have no cloud sessions yet.</Text>
+          <Text dimColor>Start one from a shell: jarvis cloud &quot;fix the failing test&quot;</Text>
+          <Text dimColor>
+            Press <Text bold>Enter</Text> to close.
+          </Text>
+        </Box>
+      )
+      break
+    case 'mismatch':
+      body = (
+        <Box flexDirection="column" gap={1}>
           <Text>
-            No cloud sessions for {state.repo ? <Text bold>{state.repo}</Text> : 'this directory'}.
+            That session is for <Text bold>{state.repo}</Text> — teleport resumes in place, so you
+            need to be in that repo.
           </Text>
           <Text dimColor>
-            Teleport is per-repo (like claude.ai): open the repo whose session you want (cd into
-            that checkout), then run /teleport there.
+            Open it in a terminal (cd into your {state.repo} checkout), then run /teleport there.
+            Same-repo sessions here resume directly.
           </Text>
           <Text dimColor>
             Press <Text bold>Enter</Text> to close.
@@ -131,14 +156,18 @@ export function TeleportPicker({
       const meta = state.sessions.map((s) => ({
         ...s,
         timeString: s.updated_at ? formatRelativeTime(new Date(s.updated_at)) : '',
+        here: !!state.repo && s.repo.toLowerCase() === state.repo.toLowerCase(),
       }))
       const timeW = Math.max(UPDATED_STRING.length, ...meta.map((m) => m.timeString.length))
+      const repoW = Math.max('Repository'.length, ...meta.map((m) => m.repo.length))
       const options = meta.map((m) => ({
-        label: `${m.timeString.padEnd(timeW)}${COL_GAP}${m.title}`,
+        // A ›/space marker flags the sessions you can resume right here.
+        label: `${m.here ? '›' : ' '} ${m.timeString.padEnd(timeW)}${COL_GAP}${m.repo.padEnd(repoW)}${COL_GAP}${m.title}`,
         value: m.session_id,
       }))
-      const maxVisible = Math.max(1, Math.min(state.sessions.length, rows - 8))
+      const maxVisible = Math.max(1, Math.min(state.sessions.length, rows - 9))
       const showScroll = state.sessions.length > maxVisible
+      const hereCount = meta.filter((m) => m.here).length
       body = (
         <Box flexDirection="column">
           <Text bold>
@@ -149,12 +178,25 @@ export function TeleportPicker({
                 ({focusedIndex} of {state.sessions.length})
               </Text>
             )}
-            <Text dimColor> ({state.repo})</Text>:
+            :
+          </Text>
+          <Text dimColor>
+            {state.repo ? (
+              <>
+                › {hereCount} resume here in <Text bold>{state.repo}</Text>; others need you to cd
+                into their repo first.
+              </>
+            ) : (
+              <>Pick a session; you&apos;ll teleport it from a checkout of its repo.</>
+            )}
           </Text>
           <Box flexDirection="column" marginTop={1}>
             <Box marginLeft={2}>
               <Text bold dimColor>
+                {'  '}
                 {UPDATED_STRING.padEnd(timeW)}
+                {COL_GAP}
+                {'Repository'.padEnd(repoW)}
                 {COL_GAP}
                 Session Title
               </Text>
