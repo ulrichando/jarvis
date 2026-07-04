@@ -13,7 +13,18 @@ function show(view) {
   // NOTE: do NOT auto-size the textarea here — on panel open the layout isn't
   // settled, so scrollHeight reads bogus-large and pins a tall inline height.
   // CSS gives the single-line height; sizeInput() only grows it on real input.
-  if (view === "main") refreshStatus();
+  if (view === "main") { refreshStatus(); ensureTabGroup(); }
+}
+
+// Match Claude for Chrome: reaching the chat (opening the panel) drops the
+// current tab into a visible "Jarvis" tab group right away — the workspace is
+// obvious before the agent does anything. Once per panel open; silent no-op on
+// a non-groupable tab (chrome://, no tab).
+let groupEnsured = false;
+function ensureTabGroup() {
+  if (groupEnsured) return;
+  groupEnsured = true;
+  chrome.runtime.sendMessage({ type: "jarvis_ensure_group" }).catch(() => {});
 }
 
 // ── Onboarding ─────────────────────────────────────────────────────────

@@ -374,6 +374,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
   if (msg && msg.type === "jarvis_site_perms_set") { setSitePermissions(msg.patch).then((perms) => sendResponse({ ok: true, perms })).catch(() => sendResponse({ ok: false })); return true; }
+  if (msg && msg.type === "jarvis_ensure_group") { bgGroupTabs({}).then(sendResponse).catch(() => sendResponse({ ok: false })); return true; }
   if (msg && msg.type === "jarvis_run_workflow") { runWorkflow(msg.steps).then(sendResponse).catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) })); return true; }
   return false;
 });
