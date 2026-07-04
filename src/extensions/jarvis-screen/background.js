@@ -161,12 +161,18 @@ async function dispatchCommand(cmd) {
   if (!self.JARVIS_SAFETY || typeof self.JARVIS_SAFETY.gate !== "function") {
     return { ok: false, error: "safety module unavailable — refusing command" };
   }
-  // Site permissions first (#3 allow/block, #4 blocked categories): a blocked
-  // site refuses everything; an EXPLICITLY allowed site auto-confirms (the
-  // user's "Always allow actions on this site" grant), skipping the safety prompt.
+  // Site permissions (#3 allow/block, #4 blocked categories): a blocked site
+  // refuses everything.
   const site = await checkSitePermission(action, args);
   if (site.allow !== true) return { ok: false, error: site.reason || "site blocked", site_blocked: true };
-  const gate = self.JARVIS_SAFETY.gate({ action, args, confirmed: confirmed || site.autoConfirm === true });
+  // SECURITY: a site-level "Always allow actions on this site" grant does NOT
+  // bypass the safety gate. Destructive/sensitive actions (delete/buy/pay,
+  // credential fields, exec_js, cookie read/write) STILL require per-action
+  // confirmation even on a trusted site — matching the approval copy ("Browse,
+  // click, and type") + the "won't purchase / enter credentials without input"
+  // footer. Blanket auto-confirm would be a cross-domain exfiltration path
+  // (e.g. get_cookies for an unrelated domain) — see security review 2026-07-03.
+  const gate = self.JARVIS_SAFETY.gate({ action, args, confirmed });
   if (gate.allow !== true) return gate;
   try {
     switch (action) {
@@ -352,7 +358,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === "jarvis_active_url") { activeTabUrl().then((url) => sendResponse({ ok: true, url })).catch(() => sendResponse({ ok: false })); return true; }
   if (msg && msg.type === "jarvis_allow_site") {
     (async () => {
-      const host = hostOf(await activeTabUrl());
+      // Use the host bound to the approval (captured when it appeared) so a tab
+      // switch while the user decides can't grant the wrong site; fall back to
+      // the active tab only if the panel didn't supply one.
+      const host = hostOf(msg.url || await activeTabUrl());
       const perms = await getSitePermissions();
       if (host && !perms.allowed.includes(host)) await setSitePermissions({ allowed: [...perms.allowed, host] });
       sendResponse({ ok: true, host });

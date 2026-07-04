@@ -106,8 +106,9 @@
     host = _s(host).toLowerCase();
     perms = perms || {};
     if (!host) return { allow: true };
-    // Explicitly allowed → auto-confirm too ("Always allow actions on this site").
-    if (hostInList(host, perms.allowed)) return { allow: true, autoConfirm: true };
+    // Explicitly allowed → the site gate passes. (This does NOT auto-confirm
+    // destructive actions — the safety gate still applies; see background.js.)
+    if (hostInList(host, perms.allowed)) return { allow: true };
     if (hostInList(host, perms.blocked)) return { allow: false, reason: `Jarvis is blocked on ${host} (per your settings).` };
     if (perms.blockCategories === true) { // opt-in; off unless the user turned it on
       const cat = matchBlockedCategory(host);

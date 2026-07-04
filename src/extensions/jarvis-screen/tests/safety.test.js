@@ -84,13 +84,16 @@ describe("safety.siteDecision (#3 per-site perms, #4 blocked categories)", () =>
   test("user allow-list OVERRIDES an enabled blocked category", () => {
     expect(safety.siteDecision("chase.com", perms({ blockCategories: true, allowed: ["chase.com"] })).allow).toBe(true);
   });
-  test("explicitly allowed host auto-confirms (Always allow actions on this site)", () => {
+  test("SECURITY: an 'always allowed' site still confirms destructive/sensitive actions", () => {
+    // The site gate passes on an allowed host, and carries NO auto-confirm flag...
     const r = safety.siteDecision("github.com", perms({ allowed: ["github.com"] }));
     expect(r.allow).toBe(true);
-    expect(r.autoConfirm).toBe(true);
-  });
-  test("an allowed-by-default host does NOT auto-confirm", () => {
-    expect(safety.siteDecision("example.com", perms()).autoConfirm).toBeUndefined();
+    expect(r.autoConfirm).toBeUndefined();
+    // ...and the safety gate is independent: destructive + cookie/exec actions
+    // still require per-action confirmation regardless of site trust.
+    expect(safety.gate({ action: "click", args: { selector: "button.delete" } }).needs_confirmation).toBe(true);
+    expect(safety.gate({ action: "get_cookies", args: { domain: "chase.com" } }).needs_confirmation).toBe(true);
+    expect(safety.gate({ action: "exec_js" }).needs_confirmation).toBe(true);
   });
   test("empty host (chrome://, blank tab) is allowed — nothing web to act on", () => {
     expect(safety.siteDecision("", perms({ blockCategories: true })).allow).toBe(true);

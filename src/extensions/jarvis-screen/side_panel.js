@@ -156,6 +156,10 @@ function renderApproval(approvalId, label) {
   setThinking(false);
   $("emptyState")?.remove();
   const card = document.createElement("div"); card.className = "approval";
+  // Bind an "Always allow" grant to the host active WHEN THIS APPROVAL APPEARED
+  // (≈ the acting tab; the agent is paused), not whatever's active at click time.
+  let approvalUrl = null;
+  chrome.runtime.sendMessage({ type: "jarvis_active_url" }).then((r) => { approvalUrl = (r && r.url) || null; }).catch(() => {});
   const hdr = document.createElement("div"); hdr.className = "at"; hdr.textContent = "New permissions required"; card.appendChild(hdr);
   const desc = document.createElement("div"); desc.style.cssText = "font-size:12.5px;color:var(--muted-fg);margin:1px 0 10px"; desc.textContent = label; card.appendChild(desc);
   const decide = (approved) => {
@@ -175,7 +179,7 @@ function renderApproval(approvalId, label) {
   card.appendChild(opt("Allow this action", "", true, () => decide(true)));
   card.appendChild(opt("Decline", "", false, () => decide(false)));
   card.appendChild(opt("Always allow actions on this site", "Browse, click, and type", false, async () => {
-    await chrome.runtime.sendMessage({ type: "jarvis_allow_site" }).catch(() => {});
+    await chrome.runtime.sendMessage({ type: "jarvis_allow_site", url: approvalUrl }).catch(() => {});
     decide(true);
   }));
   const foot = document.createElement("div"); foot.style.cssText = "font-size:11px;color:var(--faint-fg);margin-top:10px;line-height:1.4";
