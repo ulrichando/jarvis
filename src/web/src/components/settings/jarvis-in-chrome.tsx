@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Globe, Plus, X, Loader2 } from "lucide-react";
+import { Globe, Plus, X, Loader2, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -20,6 +20,57 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
       <h2 className="text-[17px] font-semibold">{children}</h2>
       <div className="mt-2 border-t border-border/60" />
     </div>
+  );
+}
+
+// Download the packed extension (public/jarvis-in-chrome.zip, committed +
+// served statically) and load it unpacked. This is what makes "use it in the
+// browser" possible from the server — no Chrome Web Store, no repo checkout.
+function DownloadExtensionSection() {
+  const steps = [
+    <>
+      Download and <span className="font-medium text-foreground">unzip</span>{" "}
+      <span className="font-mono">jarvis-in-chrome.zip</span>.
+    </>,
+    <>
+      Open <span className="font-mono">chrome://extensions</span> and turn on{" "}
+      <span className="font-medium text-foreground">Developer mode</span> (top right).
+    </>,
+    <>
+      Click <span className="font-medium text-foreground">Load unpacked</span> and select the
+      unzipped <span className="font-mono">jarvis-in-chrome</span> folder.
+    </>,
+    <>
+      Open the Jarvis side panel and paste your bridge token (Settings →{" "}
+      <span className="font-medium text-foreground">API Tokens</span> or Remote Control).
+    </>,
+  ];
+  return (
+    <section>
+      <SectionTitle>Download the extension</SectionTitle>
+      <div className="flex flex-wrap items-center gap-3">
+        {/* Static asset in public/ — served at /jarvis-in-chrome.zip in any
+            deploy (part of the Next build output). */}
+        <a href="/jarvis-in-chrome.zip" download>
+          <Button size="sm">
+            <Download className="mr-1.5 size-3.5" /> Download for Chrome
+          </Button>
+        </a>
+        <span className="text-[12.5px] text-muted-foreground/80">
+          Works in Chrome, Edge, Brave, and other Chromium browsers.
+        </span>
+      </div>
+      <ol className="mt-4 space-y-2 text-[13px] text-muted-foreground">
+        {steps.map((s, i) => (
+          <li key={i} className="flex gap-2.5">
+            <span className="mt-px flex size-[18px] shrink-0 items-center justify-center rounded-full bg-accent/60 text-[11px] font-medium text-foreground">
+              {i + 1}
+            </span>
+            <span className="leading-5">{s}</span>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 
@@ -130,14 +181,15 @@ export function JarvisInChromeSection() {
             <p className="mt-1 text-[13px] leading-5 text-muted-foreground">{statusText}</p>
             <p className="mt-1.5 text-[12.5px] leading-5 text-muted-foreground/80">
               Jarvis acts on web pages through the <span className="font-mono">jarvis-screen</span>{" "}
-              extension. It isn&apos;t on the Chrome Web Store — load it unpacked from{" "}
-              <span className="font-mono">src/extensions/jarvis-screen</span> (see its README), then
-              paste the bridge token in the extension&apos;s side panel. Your preferences below apply
-              once it connects.
+              extension. It isn&apos;t on the Chrome Web Store — download it below, load it unpacked,
+              then paste the bridge token in the extension&apos;s side panel. Your preferences below
+              apply once it connects.
             </p>
           </div>
         </div>
       </section>
+
+      <DownloadExtensionSection />
 
       <section>
         <SectionTitle>Jarvis in Chrome settings</SectionTitle>
