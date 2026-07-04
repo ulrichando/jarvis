@@ -135,6 +135,52 @@ class TestWouldDiscardTranscript:
         assert ja._would_discard_transcript("open the browser please") is False
 
 
+class TestBargeinVeto:
+    """jarvis_agent._bargein_veto — the echo-bargein twin of the rescue's
+    discard-probe: doomed transcripts must not clip live TTS, but
+    deliberate stops always must."""
+
+    def test_kill_phrase_never_vetoed(self, monkeypatch):
+        import jarvis_agent as ja
+        # Even if the gates would discard it, a kill-phrase interrupts.
+        monkeypatch.setattr(ja, "_would_discard_transcript", lambda t: True)
+        assert ja._bargein_veto("stop") is False
+        assert ja._bargein_veto("okay hold on a second") is False
+
+    def test_whisper_hallucination_vetoed(self, monkeypatch):
+        import jarvis_agent as ja
+        monkeypatch.setattr(ja, "_is_silent", lambda: False)
+        monkeypatch.setattr(ja, "_is_unaddressed_ambient", lambda t: False)
+        assert ja._bargein_veto("thank you.") is True
+
+    def test_bare_filler_vetoed(self, monkeypatch):
+        import jarvis_agent as ja
+        monkeypatch.setattr(ja, "_is_silent", lambda: False)
+        monkeypatch.setattr(ja, "_is_unaddressed_ambient", lambda t: False)
+        assert ja._bargein_veto("hmm") is True
+
+    def test_real_speech_not_vetoed(self, monkeypatch):
+        import jarvis_agent as ja
+        monkeypatch.setattr(ja, "_is_silent", lambda: False)
+        monkeypatch.setattr(ja, "_is_unaddressed_ambient", lambda t: False)
+        assert ja._bargein_veto("actually make it five pm instead") is False
+
+    def test_bare_no_still_interrupts(self, monkeypatch):
+        """'no' is deliberately NOT a filler token (stt_gate comment) — a
+        listener's bare 'no' must keep clipping TTS."""
+        import jarvis_agent as ja
+        monkeypatch.setattr(ja, "_is_silent", lambda: False)
+        monkeypatch.setattr(ja, "_is_unaddressed_ambient", lambda t: False)
+        assert ja._bargein_veto("no") is False
+
+    def test_exception_fails_open(self, monkeypatch):
+        import jarvis_agent as ja
+        def boom(t):
+            raise RuntimeError("gate exploded")
+        monkeypatch.setattr(ja, "_would_discard_transcript", boom)
+        assert ja._bargein_veto("anything else") is False
+
+
 class TestResurrectBlocked:
     """JarvisAgent._jarvis_resurrect_blocked — deliberate stops and silent
     mode must keep a rescue-killed delivery dead. Called unbound with a

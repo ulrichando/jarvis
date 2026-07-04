@@ -702,6 +702,24 @@ def _would_discard_transcript(text: str) -> bool:
     return False
 
 
+def _bargein_veto(text: str) -> bool:
+    """Echo-bargein guard: veto a mid-TTS interrupt for a transcript the
+    turn gates will discard anyway — UNLESS it carries a kill-phrase
+    (deliberate "stop"/"wait"/"cancel" always interrupts; belt-and-
+    suspenders — no kill word is garbage-classified today, but this
+    invariant must survive future token-set edits). Companion to the
+    turn_rescue discard-probe: that one stops doomed transcripts from
+    killing a pending reply at turn completion; this one stops them from
+    clipping live TTS (2026-07-04 04:07: whisper-hallucinated 'Thank
+    you.' cut a spoken ack it then never replaced)."""
+    try:
+        if _KILL_PHRASES.search(text):
+            return False
+        return _would_discard_transcript(text)
+    except Exception:
+        return False  # fail open — barge-in keeps working no matter what
+
+
 # Ambient-backchannel suppressor (2026-07-02). With the addressing gate
 # OFF (always-answer room, above), every overheard utterance reaches the
 # LLM, which is trusted to return an EMPTY string on ambient audio
@@ -5917,6 +5935,12 @@ def _register_state_tracking_handlers(session) -> None:
                 text, speaking_tracker.current_speaking_text(), honor_cooldown=True
             ):
                 return  # JARVIS hearing itself — not a real interruption
+            if _bargein_veto(text):
+                logger.info(
+                    "[echo-bargein] transcript would be discarded by the "
+                    f"turn gates — not interrupting for it: {text[:60]!r}"
+                )
+                return
             logger.info(f"[echo-bargein] novel speech during TTS → interrupt: {text[:60]!r}")
             echo_gate.note_bargein()  # arm cooldown so residual echo from cancelled TTS doesn't re-trigger
             session.interrupt(force=True)  # force: framework interruption is disabled in echo-aware mode, so a plain interrupt() would raise + no-op
