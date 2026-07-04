@@ -6029,6 +6029,22 @@ async function run(): Promise<CommanderCommand> {
       process.exit(process.exitCode ?? 0);
     });
 
+  // jarvis computer-use — drive the local computer-use sidecar (:8771) from the
+  // terminal (#50). Same executor/safety stack as the voice tool + web page;
+  // approval cards become y/s/N terminal prompts. docs/runbook/computer-use.md
+  program
+    .command("computer-use")
+    .description("Drive the desktop via the local computer-use sidecar")
+    .argument("<task...>", 'Natural-language task, e.g. "open the file manager"')
+    .option("--model <id>", "Model to drive with (sidecar allowlist applies)")
+    .option("--auto", "Skip per-action approval prompts (blocklist still applies)")
+    .option("--session <id>", "Continue a named sidecar conversation")
+    .option("--url <base>", "Sidecar base URL (default http://127.0.0.1:8771)")
+    .action(async (taskWords: string[], opts: { model?: string; auto?: boolean; session?: string; url?: string }) => {
+      const { runComputerUse } = await import("./computer-use/main.js");
+      process.exit(await runComputerUse(taskWords.join(" "), opts));
+    });
+
   program
     .command("uninstall")
     .description(
