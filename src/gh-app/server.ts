@@ -44,6 +44,8 @@ export type ServerDeps = {
     serviceToken: string
     forRepo: (repo: string) => Promise<InstallationToken>
   }
+  /** Where GET / sends a human (default: the Jarvis web settings bot card). */
+  homeUrl?: string
   log?: (m: string) => void
 }
 
@@ -64,6 +66,16 @@ export function makeApp(deps: ServerDeps): (req: Request) => Promise<Response> {
     const path = url.pathname
 
     if (req.method === 'GET' && path === '/health') return new Response('ok', { status: 200 })
+
+    // A human landing on the service root (gh.0wlan.com) gets sent to the
+    // Jarvis web settings card for the bot (install link + usage) instead of
+    // a bare 404 — every machine route above/below is untouched.
+    if (req.method === 'GET' && path === '/') {
+      return new Response(null, {
+        status: 302,
+        headers: { location: deps.homeUrl ?? 'https://0wlan.com/settings?tab=applications' },
+      })
+    }
 
     if (req.method === 'GET' && path === '/setup') {
       return new Response(setupPageHtml(deps.base), { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } })
@@ -285,6 +297,7 @@ if (import.meta.main) {
     // Re-read on every callback (not the boot-time `creds` snapshot) so the
     // takeover window closes the moment the FIRST callback writes the file.
     credsExist: () => credsFromEnvOrFile(env) !== null,
+    homeUrl: env.GH_APP_HOME_URL,
     // Token-refresh mint for the web (long-lived bot /code sessions). Shares
     // the dispatch route's service token — both sides already hold it.
     ...(creds && env.GH_APP_BRIDGE_TOKEN
