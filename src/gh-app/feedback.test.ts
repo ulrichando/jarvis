@@ -145,6 +145,11 @@ describe('gh-app feedback messages', () => {
     expect(resultMessage({ ok: true })).toContain('✅ Done.')
   })
 
+  test('resultMessage: a merge outcome → "✅ Merged #N (method)"', () => {
+    expect(resultMessage({ ok: true, merged: { number: 13, method: 'squash' } })).toContain('✅ Merged **#13** (squash)')
+    expect(resultMessage({ ok: true, merged: { number: 7, method: 'rebase' } })).toContain('✅ Merged **#7** (rebase)')
+  })
+
   test('resultMessage: failed without error text still reads sanely', () => {
     expect(resultMessage({ ok: false })).toContain('unknown error')
   })

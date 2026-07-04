@@ -19,7 +19,7 @@ export type FeedbackDeps = { fetch: typeof fetch }
  * enrichments (the in-container engine knows them) mapped when present.
  * sessionUrl (Phase C) is set on the code-session path — the watchable
  * /code transcript the outcome message links to. */
-export type SandboxResult = { ok: boolean; prUrl?: string; noChanges?: boolean; error?: string; sessionUrl?: string }
+export type SandboxResult = { ok: boolean; prUrl?: string; noChanges?: boolean; error?: string; sessionUrl?: string; merged?: { number: number; method: string } }
 
 const API = 'https://api.github.com'
 
@@ -53,7 +53,9 @@ export function resultMessage(r: SandboxResult): string {
   // Empty when absent → the sandbox shapes stay byte-identical.
   const watch = r.sessionUrl ? ` · [watch the run](${r.sessionUrl})` : ''
   let body: string
-  if (r.ok && r.prUrl) {
+  if (r.ok && r.merged) {
+    body = `✅ Merged **#${r.merged.number}** (${r.merged.method}).`
+  } else if (r.ok && r.prUrl) {
     const n = prNumberFromUrl(r.prUrl)
     body = n
       ? `✅ Done — opened **#${n}** for this. [Review it](${r.prUrl})${watch}.`

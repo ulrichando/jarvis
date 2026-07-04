@@ -11,12 +11,22 @@
 import type { Job, JobStore } from './jobs.js'
 import type { SandboxResult, WorkerFeedback } from './feedback.js'
 import type { WorkerCodeSessions } from './codeSession.js'
+import { parseMergeCommand, type MergeMethod } from './merge.js'
 
 export type WorkerDeps = {
   store: JobStore
   /** Mint a short-lived installation token scoped to the job's repo. */
   mintToken: (installationId: number, repo: string) => Promise<string>
   runInSandbox: (job: Job, token: string) => Promise<SandboxResult>
+  /** Merge a PR (the `@jarvis-gh-bot merge` command). When present, a merge
+   * command on a PR is handled here (a direct API merge) instead of a code
+   * task. Absent → merge commands fall through to the normal run path. */
+  mergePr?: (
+    repo: string,
+    prNumber: number,
+    method: MergeMethod,
+    token: string,
+  ) => Promise<{ ok: true } | { ok: false; error: string }>
   /** Phase C (GH_APP_USE_CODE_SESSIONS): when present, jobs run as watchable
    * /code sessions (dispatch → poll → PR) INSTEAD of runInSandbox. Absent —
    * the default — the sandbox path is byte-identical to before Phase C. */
@@ -54,6 +64,31 @@ export async function runWorkerOnce(deps: WorkerDeps): Promise<RunOutcome> {
   }
   try {
     token = await deps.mintToken(job.installationId, job.repo)
+    // `@jarvis-gh-bot merge [squash|merge|rebase]` on a PR → merge it directly
+    // via the API (a distinct action, not a code task). Author-gated upstream
+    // (webhook allowlist); GitHub itself refuses an unmergeable PR (conflicts /
+    // required checks) and we report the reason. Only on a PR + when the merge
+    // dep is wired; else it falls through to the normal run path.
+    const mergeCmd = deps.mergePr && job.isPR ? parseMergeCommand(job.task) : null
+    if (mergeCmd) {
+      if (deps.feedback) {
+        try {
+          tracking = await deps.feedback.acknowledge(job, token)
+          if (tracking !== null) await deps.store.setTrackingComment(job.id, tracking)
+        } catch (e) { deps.log?.(`worker: job ${job.id} acknowledge failed (ignored): ${errMsg(e)}`) }
+      }
+      const m = await deps.mergePr!(job.repo, job.issueNumber, mergeCmd.method, token)
+      if (m.ok) {
+        await deps.store.markDone(job.id)
+        deps.log?.(`worker: job ${job.id} merged ${job.repo}#${job.issueNumber} (${mergeCmd.method})`)
+        await tellThread({ ok: true, merged: { number: job.issueNumber, method: mergeCmd.method } })
+        return 'ran'
+      }
+      await deps.store.markFailed(job.id, m.error)
+      deps.log?.(`worker: job ${job.id} merge failed: ${m.error}`)
+      await tellThread({ ok: false, error: `couldn't merge #${job.issueNumber}: ${m.error}` })
+      return 'failed'
+    }
     // I2: PR jobs ALWAYS take the sandbox, even with code sessions on — the
     // session path clones the DEFAULT branch (wrong tree for "fix this PR")
     // and has no analog of the sandbox's untrusted-PR-head refusal (fork /
