@@ -257,3 +257,19 @@ describe('POST /internal/mint-token', () => {
     expect(await res.text()).toBe('mint failed')
   })
 })
+
+describe('GET / (service root)', () => {
+  test('redirects a human to the Jarvis settings bot card by default', async () => {
+    const { app } = harness()
+    const res = await app(new Request('http://x/'))
+    expect(res.status).toBe(302)
+    expect(res.headers.get('location')).toBe('https://0wlan.com/settings?tab=applications')
+  })
+
+  test('GH_APP_HOME_URL override wins; non-root junk still 404s', async () => {
+    const { app } = harness({ homeUrl: 'https://example.com/bots' })
+    const res = await app(new Request('http://x/'))
+    expect(res.headers.get('location')).toBe('https://example.com/bots')
+    expect((await app(new Request('http://x/nope'))).status).toBe(404)
+  })
+})
