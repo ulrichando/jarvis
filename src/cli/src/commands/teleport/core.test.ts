@@ -48,3 +48,18 @@ test('pullSession: server branch that could smuggle a git flag is rejected', asy
   expect(r.ok).toBe(false)
   if (!r.ok) expect(r.error).toMatch(/unusable branch/i)
 })
+
+test('pullSession: server repo name that could smuggle a gh flag / traverse is rejected', async () => {
+  for (const repo of ['-evil/x', 'o/..', '../etc', 'o/r; rm -rf']) {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ repo, branch: 'main' }), { status: 200 })) as typeof fetch
+    const r = await pullSession('abc123')
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toMatch(/unusable repository/i)
+  }
+  // A normal repo passes the guard (fails later at the git step, not the regex).
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ repo: 'ulrichando/Gova', branch: 'main' }), { status: 200 })) as typeof fetch
+  const ok = await pullSession('abc123')
+  if (!ok.ok) expect(ok.error).not.toMatch(/unusable repository/i)
+})

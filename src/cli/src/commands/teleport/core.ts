@@ -125,6 +125,16 @@ export async function pullSession(
   if (!/^[A-Za-z0-9_./-]+$/.test(branch) || branch.startsWith('-') || branch.includes('..')) {
     return { ok: false, error: 'The session returned an unusable branch name.' }
   }
+  // Same for repo: it reaches `gh repo clone <repo> <dest>` and the derived
+  // dest basename. Require the GitHub owner/name grammar — each segment starts
+  // with an alphanumeric (so the arg can't be read as a flag), no `..` (so the
+  // dest can't escape the parent dir).
+  if (
+    !/^[A-Za-z0-9](?:[A-Za-z0-9._-]){0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(repo) ||
+    repo.includes('..')
+  ) {
+    return { ok: false, error: 'The session returned an unusable repository name.' }
+  }
 
   // Where does the branch get checked out? If the current dir IS a checkout of
   // the session's repo, teleport in place (a true resume). Otherwise the
