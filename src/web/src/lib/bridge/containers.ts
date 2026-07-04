@@ -162,7 +162,10 @@ function repoDirName(repoFullName: string): string {
 }
 
 export function validRepoFullName(repo: string): boolean {
-  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo);
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) return false;
+  // A charset-valid segment that is nothing but dots (`.` / `..`) is path
+  // traversal, not a repo name — aligned with git-proxy.ts::validName.
+  return repo.split("/").every((seg) => !/^\.+$/.test(seg));
 }
 
 /**
