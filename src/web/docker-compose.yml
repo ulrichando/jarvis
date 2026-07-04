@@ -69,6 +69,13 @@ services:
       # (the host daemon interprets the sandbox -v paths, so they must resolve
       # identically inside `web`).
       - ${JARVIS_WORKSPACES_ROOT:-/srv/jarvis/workspaces}:${JARVIS_WORKSPACES_ROOT:-/srv/jarvis/workspaces}
+      # Persist ~/.jarvis across container rebuilds: connectors.json (the GitHub
+      # connector), bridge.db (/code sessions + environments + git scopes),
+      # mcp.json. Without this every `docker compose up --build web` — a routine
+      # deploy — WIPES them (they otherwise live only in the container's
+      # ephemeral layer), so the connector "disconnects" and /code sessions
+      # vanish on every deploy.
+      - jarvis_web_home:/home/jarvis/.jarvis
     depends_on:
       docker-proxy: { condition: service_started }
       postgres: { condition: service_healthy }
@@ -205,6 +212,9 @@ volumes:
   caddy_config:
   pg_data:
   gh_app_data:
+  # The web app's ~/.jarvis (connectors + /code bridge.db + mcp) — durable across
+  # rebuilds/deploys. See the web service's volumes note.
+  jarvis_web_home:
 
 networks:
   default:
