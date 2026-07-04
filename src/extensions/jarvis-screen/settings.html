@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Jarvis settings</title>
+  <style>
+    /* Jarvis design system — arc-reactor cyan on dark navy (mirrors the panel). */
+    :root {
+      color-scheme: dark;
+      --bg: oklch(0.11 0.014 252); --fg: oklch(0.97 0.007 240);
+      --card: oklch(0.155 0.022 250); --panel: oklch(0.185 0.022 250);
+      --primary: oklch(0.80 0.155 198); --primary-fg: oklch(0.10 0.012 252);
+      --muted-fg: oklch(0.74 0.032 235); --faint-fg: oklch(0.60 0.028 235);
+      --border: oklch(0.75 0.10 200 / 20%); --border-soft: oklch(0.75 0.10 200 / 11%);
+      --danger: oklch(0.68 0.19 25);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg);
+      font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+    button { font: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+    a { color: var(--primary); }
+    .top { display: flex; align-items: center; justify-content: space-between; padding: 26px 32px 20px; }
+    .top h1 { font-size: 22px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+    .acct { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted-fg); font-size: 13px; }
+    .wrap { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 30px; max-width: 1040px; padding: 4px 32px 48px; }
+    nav .navitem { display: block; width: 100%; text-align: left; padding: 9px 14px; border-radius: 9px; color: var(--muted-fg); font-size: 14px; margin-bottom: 2px; }
+    nav .navitem.active { background: var(--card); color: var(--fg); font-weight: 600; }
+    nav .navitem:hover { color: var(--fg); }
+    nav .logout { display: inline-flex; align-items: center; gap: 8px; margin-top: 16px; padding: 9px 14px; color: var(--danger); font-size: 14px; }
+    nav .logout:hover { text-decoration: underline; }
+    .card { border: 1px solid var(--border-soft); border-radius: 14px; background: var(--card); padding: 22px 24px; margin-bottom: 18px; max-width: 720px; }
+    .card h2 { font-size: 16px; margin: 0 0 4px; }
+    .card .sub { color: var(--muted-fg); font-size: 13px; margin: 0 0 16px; }
+    .flexrow { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .flexrow .lbl { font-weight: 600; font-size: 13.5px; }
+    .flexrow .lbl small { display: block; color: var(--faint-fg); font-weight: 400; font-size: 12.5px; margin-top: 2px; }
+    .btn { background: var(--primary); color: var(--primary-fg); border-radius: 9px; padding: 9px 16px; font-weight: 600; font-size: 13.5px; }
+    .btn.ghost { background: var(--panel); color: var(--fg); border: 1px solid var(--border-soft); }
+    .btn.sm { padding: 5px 12px; font-size: 12.5px; }
+    .site { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-top: 1px solid var(--border-soft); font-size: 13.5px; }
+    .muted { color: var(--faint-fg); font-size: 13px; padding: 4px 0; }
+    input.txt { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--fg); padding: 8px 11px; font: inherit; font-size: 13.5px; outline: none; }
+    input.txt:focus { border-color: oklch(0.80 0.155 198 / 55%); }
+    select.txt { width: auto; }
+    .sc-add { display: grid; grid-template-columns: 180px 1fr auto; gap: 8px; margin-top: 14px; }
+    main section[hidden] { display: none; }
+    /* toggle */
+    .switch { position: relative; display: inline-block; width: 42px; height: 24px; flex: none; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .switch .slider { position: absolute; inset: 0; background: var(--panel); border: 1px solid var(--border); border-radius: 999px; transition: .15s; }
+    .switch .slider::before { content: ""; position: absolute; width: 18px; height: 18px; left: 2px; top: 2px; background: var(--muted-fg); border-radius: 50%; transition: .15s; }
+    .switch input:checked + .slider { background: var(--primary); border-color: var(--primary); }
+    .switch input:checked + .slider::before { transform: translateX(18px); background: var(--primary-fg); }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <h1>Jarvis settings</h1>
+    <span class="acct" id="acct">…</span>
+  </div>
+  <div class="wrap">
+    <nav>
+      <button class="navitem active" data-sec="permissions">Permissions</button>
+      <button class="navitem" data-sec="shortcuts">Shortcuts</button>
+      <button class="navitem" data-sec="options">Options</button>
+      <button class="logout" id="logout">⎋ Log out</button>
+    </nav>
+    <main>
+      <!-- Permissions -->
+      <section data-sec="permissions">
+        <div class="card">
+          <h2>Notifications</h2>
+          <p class="sub">Get notified when tasks complete or need your input.</p>
+          <div class="flexrow">
+            <div class="lbl">Task completion notifications<small id="notifSub">Off</small></div>
+            <label class="switch"><input type="checkbox" id="notifToggle"><span class="slider"></span></label>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Microphone</h2>
+          <p class="sub">Enable microphone access to dictate into the chat by voice.</p>
+          <button class="btn" id="micBtn">Allow Microphone Access</button>
+          <span class="muted" id="micState" style="margin-left:12px"></span>
+        </div>
+        <div class="card">
+          <h2>Your approved sites</h2>
+          <p class="sub">You have allowed Jarvis to take all actions (browse, click, type) on these sites.</p>
+          <div id="approved"></div>
+        </div>
+        <div class="card">
+          <h2>Blocked sites</h2>
+          <p class="sub">Jarvis will never act on these sites.</p>
+          <div id="blocked"></div>
+        </div>
+      </section>
+
+      <!-- Shortcuts -->
+      <section data-sec="shortcuts" hidden>
+        <div class="card">
+          <h2>Shortcuts</h2>
+          <p class="sub">Saved instructions you can send by typing <b>/</b> in the chat.</p>
+          <div id="shortcutList"></div>
+          <div class="sc-add">
+            <input class="txt" id="scName" placeholder="name (e.g. unsubscribe)">
+            <input class="txt" id="scPrompt" placeholder="the instruction to send">
+            <button class="btn" id="scAdd">Add</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Options -->
+      <section data-sec="options" hidden>
+        <div class="card">
+          <h2>Default action mode</h2>
+          <p class="sub">Whether Jarvis asks before acting, or acts automatically.</p>
+          <select class="txt" id="modeSel">
+            <option value="ask">Ask before acting</option>
+            <option value="auto">Act automatically</option>
+          </select>
+        </div>
+        <div class="card">
+          <div class="flexrow">
+            <div class="lbl">Group tabs automatically<small>Corral the current tab into a "Jarvis" group when the panel opens.</small></div>
+            <label class="switch"><input type="checkbox" id="autoGroupToggle"><span class="slider"></span></label>
+          </div>
+        </div>
+        <div class="card">
+          <div class="flexrow">
+            <div class="lbl">Block financial, adult &amp; pirated sites<small>Refuse to act on these categories by default.</small></div>
+            <label class="switch"><input type="checkbox" id="catToggle"><span class="slider"></span></label>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="settings.js"></script>
+</body>
+</html>

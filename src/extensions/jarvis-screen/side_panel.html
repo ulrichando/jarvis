@@ -143,6 +143,7 @@
       .perm:hover { color: var(--fg); border-color: var(--border); }
       .composer .right { display: flex; align-items: center; gap: 2px; }
       .composer .iconbtn { width: 27px; height: 27px; }
+      .composer .iconbtn.rec { color: var(--primary); }
       .send { width: 27px; height: 27px; border-radius: 8px; background: var(--primary); color: var(--primary-fg); display: inline-flex; align-items: center; justify-content: center; }
       .send:hover { filter: brightness(1.08); }
       .send:disabled { opacity: .45; cursor: default; filter: none; }
@@ -273,6 +274,7 @@
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
             <div class="right">
+              <button class="iconbtn" id="micBtn" title="Voice input"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4" stroke-linecap="round"/></svg></button>
               <button class="iconbtn" id="cursorBtn" title="Point at an element"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 3l7 17 2.5-6.5L20 11 4 3Z" stroke-linejoin="round"/></svg></button>
               <button class="iconbtn" id="plusBtn" title="Add context"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg></button>
               <button class="send" id="sendBtn" title="Send" disabled><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M6 11l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>

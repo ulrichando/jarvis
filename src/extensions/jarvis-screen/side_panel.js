@@ -24,7 +24,9 @@ let groupEnsured = false;
 function ensureTabGroup() {
   if (groupEnsured) return;
   groupEnsured = true;
-  chrome.runtime.sendMessage({ type: "jarvis_ensure_group" }).catch(() => {});
+  chrome.storage.local.get("autoGroup").then(({ autoGroup }) => { // default on; Settings → Options can turn it off
+    if (autoGroup !== false) chrome.runtime.sendMessage({ type: "jarvis_ensure_group" }).catch(() => {});
+  });
 }
 
 // ── Onboarding ─────────────────────────────────────────────────────────
@@ -205,6 +207,27 @@ $("sendBtn").addEventListener("click", send);
 input.addEventListener("focus", () => { if (!input.value) input.placeholder = "How can I help you today?"; });
 input.addEventListener("blur", () => { if (!input.value) input.placeholder = "Type / for commands"; });
 
+// Voice input (Web Speech API) — dictate into the composer. Grant mic in Settings
+// (or the first use prompts). Results append to whatever's typed.
+let recog = null, recognizing = false;
+function toggleMic() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { note("Voice input isn't supported here."); return; }
+  if (recognizing) { try { recog.stop(); } catch {} return; }
+  recog = new SR();
+  recog.lang = navigator.language || "en-US";
+  recog.interimResults = false;
+  recog.onstart = () => { recognizing = true; $("micBtn").classList.add("rec"); };
+  recog.onend = () => { recognizing = false; $("micBtn").classList.remove("rec"); };
+  recog.onerror = (e) => { note(e.error === "not-allowed" ? "Microphone blocked — enable it in Settings → Permissions." : "Voice input error."); };
+  recog.onresult = (e) => {
+    const t = Array.from(e.results).map((r) => r[0].transcript).join(" ").trim();
+    if (t) { input.value = (input.value ? input.value + " " : "") + t; sizeInput(); input.focus(); }
+  };
+  try { recog.start(); } catch {}
+}
+$("micBtn").addEventListener("click", toggleMic);
+
 // ── Shortcuts (type / in the composer) ─────────────────────────────────
 let SHORTCUTS = [];
 const DEFAULT_SHORTCUTS = [
@@ -343,7 +366,7 @@ $("menuBtn").addEventListener("click", () => openPop($("menuBtn"), [
   { label: "Scheduled tasks", icon: icon('<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" stroke-linecap="round"/>'), onClick: showTaskList },
   { label: recording ? "Stop recording" : "Record workflow", icon: icon(recording ? '<rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor"/>' : '<circle cx="12" cy="12" r="5" fill="currentColor"/>'), onClick: toggleRecord },
   { label: "Workflows",       icon: icon('<path d="M6 4l14 8-14 8V4Z" stroke-linejoin="round"/>'), onClick: showWorkflows },
-  { label: "Settings",        icon: icon('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.2A1.6 1.6 0 0 0 6.8 19l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 4 13.6H4a2 2 0 1 1 0-4h.2A1.6 1.6 0 0 0 5.6 7l-.1-.1A2 2 0 1 1 8.3 4.1l.1.1A1.6 1.6 0 0 0 11 3.3V3a2 2 0 1 1 4 0v.2A1.6 1.6 0 0 0 17.7 4.6l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.6 1.6 0 0 0 20.7 10H21a2 2 0 1 1 0 4h-.2Z"/>'), onClick: showSettings },
+  { label: "Settings",        icon: icon('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.2A1.6 1.6 0 0 0 6.8 19l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 4 13.6H4a2 2 0 1 1 0-4h.2A1.6 1.6 0 0 0 5.6 7l-.1-.1A2 2 0 1 1 8.3 4.1l.1.1A1.6 1.6 0 0 0 11 3.3V3a2 2 0 1 1 4 0v.2A1.6 1.6 0 0 0 17.7 4.6l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.6 1.6 0 0 0 20.7 10H21a2 2 0 1 1 0 4h-.2Z"/>'), onClick: () => chrome.runtime.openOptionsPage() },
   { label: "Language", chev: true, icon: icon('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/>'), onClick: () => note("Language — coming soon") },
 ], { align: "right" }));
 
@@ -437,62 +460,7 @@ function showTaskList() {
   }).catch(() => {});
 }
 
-// ── Settings: site permissions (#3 allow/block, #4 blocked categories) ──
-async function showSettings() {
-  const res = await chrome.runtime.sendMessage({ type: "jarvis_site_perms_get" }).catch(() => null);
-  const perms = (res && res.perms) || { blocked: [], allowed: [], blockCategories: false };
-  const host = (res && res.host) || "";
-  const decision = (res && res.decision) || { allow: true };
-  $("emptyState")?.remove();
-  const card = document.createElement("div"); card.className = "approval";
-  const t = document.createElement("div"); t.className = "at"; t.textContent = "Site permissions"; card.appendChild(t);
-
-  const setPerms = async (patch) => {
-    const r = await chrome.runtime.sendMessage({ type: "jarvis_site_perms_set", patch }).catch(() => null);
-    if (r && r.ok) { card.remove(); showSettings(); } // re-render with fresh state
-  };
-
-  // Current site — one contextual action based on its state.
-  if (host) {
-    const row = document.createElement("div"); row.className = "task-row";
-    const isAllowed = perms.allowed.includes(host);
-    const isBlocked = perms.blocked.includes(host);
-    const label = document.createElement("span"); label.className = "tx";
-    label.textContent = host + (isAllowed ? " · allowed (override)" : isBlocked ? " · blocked" : decision.allow ? "" : " · blocked by default");
-    const btn = document.createElement("button"); btn.className = "btn"; btn.style.cssText = "background:var(--panel);color:var(--fg)";
-    if (isAllowed) { btn.textContent = "Reset"; btn.onclick = () => setPerms({ allowed: perms.allowed.filter((h) => h !== host) }); }
-    else if (isBlocked) { btn.textContent = "Unblock"; btn.onclick = () => setPerms({ blocked: perms.blocked.filter((h) => h !== host) }); }
-    else if (!decision.allow) { btn.textContent = "Allow here"; btn.onclick = () => setPerms({ allowed: [...perms.allowed, host] }); }
-    else { btn.textContent = "Block here"; btn.onclick = () => setPerms({ blocked: [...perms.blocked, host] }); }
-    row.append(label, btn); card.appendChild(row);
-  }
-
-  // Managed lists (blocked + allowed) with per-entry remove.
-  const listSection = (title, key) => {
-    const hosts = perms[key] || [];
-    if (!hosts.length) return;
-    const h = document.createElement("div"); h.textContent = title; h.style.cssText = "font-size:11px;opacity:.6;margin:8px 0 2px";
-    card.appendChild(h);
-    for (const hn of hosts) {
-      const row = document.createElement("div"); row.className = "task-row";
-      const txt = document.createElement("span"); txt.className = "tx"; txt.textContent = hn;
-      const del = document.createElement("button"); del.className = "iconbtn"; del.title = "Remove"; del.textContent = "✕";
-      del.onclick = () => setPerms({ [key]: hosts.filter((x) => x !== hn) });
-      row.append(txt, del); card.appendChild(row);
-    }
-  };
-  listSection("Blocked", "blocked");
-  listSection("Allowed (overrides)", "allowed");
-
-  // #4 default blocked categories toggle.
-  const cat = document.createElement("label"); cat.className = "task-row"; cat.style.cssText = "cursor:pointer;margin-top:8px;gap:8px";
-  const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = perms.blockCategories === true;
-  cb.onchange = () => chrome.runtime.sendMessage({ type: "jarvis_site_perms_set", patch: { blockCategories: cb.checked } }).catch(() => {});
-  const cl = document.createElement("span"); cl.className = "tx"; cl.textContent = "Block financial / adult / pirated sites by default";
-  cat.append(cb, cl); card.appendChild(cat);
-
-  stream.appendChild(card); stream.scrollTop = stream.scrollHeight;
-}
+// Settings now open as a full page (settings.html via options_ui) from the ⋮ menu.
 
 // ── Workflow recording (feature 10) ────────────────────────────────────
 let recording = false;

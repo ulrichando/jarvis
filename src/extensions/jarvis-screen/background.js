@@ -117,12 +117,15 @@ async function connect() {
     if (msg.type === "chat_response") {
       chrome.runtime.sendMessage({ type: "jarvis_chat_response", text: msg.text }).catch(() => {});
       if (pendingTaskRun) { notify("Scheduled task done", String(msg.text).slice(0, 180)); pendingTaskRun = null; }
+      else if (runHadActions) { chrome.storage.local.get("notifyOnComplete").then(({ notifyOnComplete }) => { if (notifyOnComplete) notify("Jarvis finished the task", String(msg.text).slice(0, 180)); }); }
+      runHadActions = false;
       return;
     }
     if (msg.type === "status" && (msg.status === "thinking" || msg.status === "idle")) { chrome.runtime.sendMessage({ type: "jarvis_chat_status", status: msg.status }).catch(() => {}); return; }
     // Browser-agent step events (actions / approval requests) → the panel.
     if (msg.type === "agent_event") {
       chrome.runtime.sendMessage({ type: "jarvis_agent_event", event: msg.event }).catch(() => {});
+      if (msg.event && msg.event.type === "action") runHadActions = true; // a real task ran → eligible for completion notify
       // Notify on approval requests — the user has to act, and the panel may be closed.
       if (msg.event && msg.event.type === "approval") notify("Jarvis needs approval", msg.event.label || "Approve an action to continue.");
       return;
@@ -364,17 +367,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === "jarvis_task_delete") { deleteTask(msg.id).then(() => sendResponse({ ok: true })); return true; }
   if (msg && msg.type === "jarvis_record_start") { forwardToContent("record_start", {}, false).then(sendResponse).catch(() => sendResponse({ ok: false })); return true; }
   if (msg && msg.type === "jarvis_record_stop")  { forwardToContent("record_stop", {}, false).then(sendResponse).catch(() => sendResponse({ ok: false })); return true; }
-  if (msg && msg.type === "jarvis_site_perms_get") {
-    (async () => {
-      const host = hostOf(await activeTabUrl());
-      const perms = await getSitePermissions();
-      const decision = self.JARVIS_SAFETY ? self.JARVIS_SAFETY.siteDecision(host, perms) : { allow: true };
-      sendResponse({ ok: true, perms, host, decision });
-    })();
-    return true;
-  }
-  if (msg && msg.type === "jarvis_site_perms_set") { setSitePermissions(msg.patch).then((perms) => sendResponse({ ok: true, perms })).catch(() => sendResponse({ ok: false })); return true; }
   if (msg && msg.type === "jarvis_ensure_group") { bgGroupTabs({}).then(sendResponse).catch(() => sendResponse({ ok: false })); return true; }
+  if (msg && msg.type === "jarvis_logout") { try { if (ws) { ws._replaced = true; ws.close(); } } catch {} setStatus("no_token"); sendResponse({ ok: true }); return; }
   if (msg && msg.type === "jarvis_run_workflow") { runWorkflow(msg.steps).then(sendResponse).catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) })); return true; }
   return false;
 });
@@ -410,7 +404,8 @@ async function sendChat(text, mode) {
 // ── Scheduled tasks (Convert to task) ────────────────────────────────
 const CADENCE_MIN = { hourly: 60, daily: 1440, weekly: 10080 };
 const TASK_PREFIX = "jarvis-task-"; // 12 chars — use .length, don't hardcode the offset
-let pendingTaskRun = null; // set when a scheduled task is running → notify on its chat_response
+let pendingTaskRun = null;
+let runHadActions = false; // did the current agent run take page actions (gates the completion notification) // set when a scheduled task is running → notify on its chat_response
 
 async function getTasks() { const { tasks } = await chrome.storage.local.get("tasks"); return Array.isArray(tasks) ? tasks : []; }
 async function addTask(input) {
