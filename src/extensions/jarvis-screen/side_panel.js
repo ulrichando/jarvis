@@ -285,7 +285,18 @@ let wfRecording = false, wfNarration = [], wfRecog = null, wfStartUrl = "", wfCa
 async function toggleWorkflowRecord() {
   if (wfRecording) return stopWorkflowRecord();
   const started = await chrome.runtime.sendMessage({ type: "jarvis_record_start" }).catch(() => ({ ok: false }));
-  if (!started || !started.ok) { note("Open a normal web page first, then record."); return; }
+  if (!started || !started.ok) {
+    // record_start couldn't reach a content script — say WHY (chrome:// page vs
+    // a tab opened before the extension updated), which the old copy didn't.
+    const u = await chrome.runtime.sendMessage({ type: "jarvis_active_url" }).catch(() => null);
+    const url = (u && u.url) || "";
+    if (!url || /^(chrome|edge|about|chrome-extension|devtools|view-source):/i.test(url) || /^https?:\/\/chrome\.google\.com\/webstore/i.test(url)) {
+      note("Recording works on regular websites, not Chrome's internal pages (New Tab, Settings). Open a site like google.com first.");
+    } else {
+      note("Reload this page once, then record — it was open before the extension updated.");
+    }
+    return;
+  }
   wfRecording = true; wfNarration = []; wfCard = null;
   const u = await chrome.runtime.sendMessage({ type: "jarvis_active_url" }).catch(() => null);
   wfStartUrl = (u && u.url) || "";
