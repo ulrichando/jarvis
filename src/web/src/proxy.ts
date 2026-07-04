@@ -84,6 +84,21 @@ const PUBLIC_PATHS = new Set<string>([
   '/api/mcp/oauth/callback',
 ])
 
+// Self-authenticating per-user API routes — bypass the SHARED-token gate so a
+// per-user bridge token (jarvis auth login / Settings → API Tokens) reaches the
+// handler, which validates it itself via resolveBridgeToken + an ownership
+// check. This is what lets the CLI (keys pull / cloud / teleport) authenticate
+// online with a per-user token instead of the single shared JARVIS_LOCAL_API_TOKEN.
+// STRICT ALLOWLIST — only routes that do their own robust auth. NEVER add a
+// route that leans on the shared-token gate for protection (e.g.
+// v1/admin/enqueue, unauthenticated by design). The Host allowlist (checked
+// earlier) still applies; only the shared-token requirement is waived.
+const SELF_AUTH_PATTERNS: RegExp[] = [
+  /^\/api\/bridge\/v1\/keys$/, //                      jarvis keys pull
+  /^\/api\/bridge\/v1\/cli\/sessions$/, //             jarvis cloud / teleport picker
+  /^\/api\/bridge\/v1\/sessions\/[^/]+\/teleport$/, // jarvis teleport <id>
+]
+
 // Host header allowlist (DNS-rebinding defense, parallel to the bridge
 // fix in commit f0150fb4). Even with a valid bearer token, requests
 // whose Host header isn't 127.0.0.1 / localhost / [::1] are refused.
@@ -256,6 +271,13 @@ export function proxy(req: NextRequest) {
   }
 
   if (PUBLIC_PATHS.has(path)) {
+    return NextResponse.next()
+  }
+
+  // Per-user self-authenticating routes: waive the shared-token requirement so
+  // the handler can accept a per-user bridge token. Host allowlist already
+  // enforced above; the route validates the token + ownership itself.
+  if (SELF_AUTH_PATTERNS.some((re) => re.test(path))) {
     return NextResponse.next()
   }
 
