@@ -309,23 +309,31 @@ export async function launchContainerSession(
   // egress is an allowlist squid proxy; the child reaches this app via
   // host.docker.internal (NO_PROXY) instead of 127.0.0.1.
   const netLevel = envConfig.networkLevel;
-  const isolated = netLevel !== "full";
+  // Container-facing origin for the git-proxy + CCR callback. A caller (the
+  // gh-app dispatch) may pass it explicitly; otherwise it comes from the deploy
+  // env (JARVIS_CODE_INTERNAL_ORIGIN=http://web:3000 on the containerized VPS),
+  // so EVERY container session — not just bot jobs — reaches this app
+  // internally. Unset (local/desktop) → the host.docker.internal path below.
+  const internalBaseUrl = opts.internalBaseUrl ?? process.env.JARVIS_CODE_INTERNAL_ORIGIN;
+  // A configured internal origin FORCES the isolated bridge path: the container
+  // must join jarvis-code-bridge to reach web:3000, and a host-network (`full`)
+  // container can't (web is expose-only, not host-published). Without one, the
+  // env's own networkLevel decides.
+  const isolated = netLevel !== "full" || !!internalBaseUrl;
   const netName = `jarvis-net-${sessionId}`;
   const proxyName = `jarvis-egress-${sessionId}`;
   const netArgs = isolated
     ? ["--network", netName, "--add-host=host.docker.internal:host-gateway"]
     : ["--network=host"];
-  // Containerized deploy (behind a proxy, host.docker.internal unreachable):
-  // the child reaches this app + the model proxy over a shared bridge, naming
-  // them by compose service. Only active when internalBaseUrl is supplied AND
-  // isolated (the `full`/host-network path already sees the host directly).
-  const internalMode = isolated && !!opts.internalBaseUrl;
+  // Containerized deploy (host.docker.internal unreachable): the child reaches
+  // this app + the model proxy over a shared bridge, naming them by service.
+  const internalMode = isolated && !!internalBaseUrl;
   const CODE_BRIDGE_NET = process.env.JARVIS_CODE_BRIDGE_NETWORK || "jarvis-code-bridge";
   // The child's callback/git-proxy origin. internalMode → the service-name
   // origin (e.g. http://web:3000) reached over CODE_BRIDGE_NET; else isolated →
   // swap 127.0.0.1 for the host-gateway alias; else (host net) → as-is.
   const childBaseUrl = internalMode
-    ? opts.internalBaseUrl!.replace(/\/+$/, "")
+    ? internalBaseUrl!.replace(/\/+$/, "")
     : isolated
       ? opts.baseUrl.replace(/\/\/(?:127\.0\.0\.1|localhost)(:|\/|$)/, "//host.docker.internal$1")
       : opts.baseUrl;
@@ -682,7 +690,7 @@ export async function launchContainerSession(
       ? Array.from(
           new Set(
             [
-              hostOf(opts.internalBaseUrl!),
+              hostOf(internalBaseUrl!),
               hostOf(proxyHealthUrl),
               "localhost",
               "127.0.0.1",
