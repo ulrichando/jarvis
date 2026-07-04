@@ -25,7 +25,7 @@
 ### Task A2: host-side PR/committer use the injected token + bot identity for external jobs
 **Files:** `src/web/src/lib/connectors/github.ts` (`openPullRequest`/`githubPrStatus`), `src/web/src/lib/bridge/containers.ts:365,383-384,876-884`
 - [ ] Add an **optional token param** to `openPullRequest` (+ `githubPrStatus`) — when passed, authenticate with it instead of `load().github.token`. Default path unchanged.
-- [ ] In `createContainerPR` (`containers.ts:834-888`): when the session has `installationId`, mint a token and pass it to `openPullRequest`; committer identity (git config at 383-384) = the App bot (`talos[bot]`) instead of `githubStatus().login`.
+- [ ] In `createContainerPR` (`containers.ts:834-888`): when the session has `installationId`, mint a token and pass it to `openPullRequest`; committer identity (git config at 383-384) = the App bot (`talos-hq[bot]`) instead of `githubStatus().login`.
 - [ ] TDD: external-job PR opens with the installation token + bot identity; normal `/code` PR unchanged.
 
 ## Phase B — web: session-URL stamping + the cross-service dispatch route
@@ -66,7 +66,7 @@ The security reviews moved the design off a few plan assumptions. What actually 
 - **`isPR` jobs stay on `runInSandbox` even with the flag on** (v1): the sandbox's fork/untrusted-PR-head refusal + PR-branch checkout has no session analog yet. Only issue/comment jobs use `/code` sessions.
 
 ## Phase D — deploy + live E2E (held)
-- [ ] Set in `.env.production` (both compose services share the `env_file`): `GH_APP_BRIDGE_TOKEN=<random>` (dispatch service token), `GH_APP_USE_CODE_SESSIONS=1` (activate — default OFF in code), `GH_APP_WEB_URL=http://web:3000` (internal web service), `GH_APP_PUBLIC_CODE_ORIGIN=https://0wlan.com`, `GH_APP_BOT_LOGIN=<the deployed App's real bot slug, e.g. jarvis[bot]>` (M2 — default `talos[bot]` won't match; only affects commit attribution, not auth), and **add `web` to `JARVIS_WEB_ALLOWED_HOSTS`** (M4 — else every dispatch 403s at proxy.ts's Host allowlist). Confirm `JARVIS_LOCAL_API_TOKEN` is already shared (it is). Size `GH_APP_TIMEOUT_SEC` for session mode (default 900s is the *total* poll budget incl. container clone/setup — bump for heavy repos).
+- [ ] Set in `.env.production` (both compose services share the `env_file`): `GH_APP_BRIDGE_TOKEN=<random>` (dispatch service token), `GH_APP_USE_CODE_SESSIONS=1` (activate — default OFF in code), `GH_APP_WEB_URL=http://web:3000` (internal web service), `GH_APP_PUBLIC_CODE_ORIGIN=https://0wlan.com`, `GH_APP_BOT_LOGIN=<the deployed App's real bot slug, e.g. jarvis[bot]>` (M2 — default `talos-hq[bot]` won't match; only affects commit attribution, not auth), and **add `web` to `JARVIS_WEB_ALLOWED_HOSTS`** (M4 — else every dispatch 403s at proxy.ts's Host allowlist). Confirm `JARVIS_LOCAL_API_TOKEN` is already shared (it is). Size `GH_APP_TIMEOUT_SEC` for session mode (default 900s is the *total* poll budget incl. container clone/setup — bump for heavy repos).
 - [ ] Validate: `docker compose config` parses; web + gh-app suites green; normal `/code` still works (create a session the old way — regression check).
 - [ ] **HELD (live):** `@talos fix X` on an issue on `maxrun` → a `/code` session appears at `0wlan.com/code/session_<id>`, watchable, opens a PR whose body links back to the session. Human-run.
 
