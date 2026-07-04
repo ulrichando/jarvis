@@ -109,11 +109,17 @@ function sizeInput() {
   $("sendBtn").disabled = input.value.trim() === "" && !pendingImage;
 }
 
-function addMsg(text, who) {
+function addMsg(text, who, imageDataUrl) {
   $("emptyState")?.remove();
   const el = document.createElement("div");
   el.className = `msg ${who}`;
-  el.textContent = text;
+  if (imageDataUrl) {
+    const img = document.createElement("img"); img.src = imageDataUrl; img.className = "msg-img";
+    el.appendChild(img);
+    if (text) { const span = document.createElement("span"); span.textContent = text; el.appendChild(span); }
+  } else {
+    el.textContent = text;
+  }
   stream.appendChild(el);
   stream.scrollTop = stream.scrollHeight;
   return el;
@@ -194,8 +200,9 @@ function renderApproval(approvalId, label) {
 async function send() {
   const text = input.value.trim();
   if (!text && !pendingImage) return;
-  addMsg(text || "🖼 Image", "user");
   const image = pendingImage; // captured before we clear the composer
+  const imgUrl = image ? `data:${image.media_type || "image/png"};base64,${image.data}` : null;
+  addMsg(text, "user", imgUrl); // show the attached image in the chat, not just the text
   input.value = "";
   clearAttachment();
   sizeInput();
