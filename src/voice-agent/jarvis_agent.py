@@ -670,6 +670,40 @@ def _is_unaddressed_ambient(text: str) -> bool:
     return not _recent_interaction(window)
 
 
+def _would_discard_transcript(text: str) -> bool:
+    """PURE mirror of on_user_turn_completed's reply-less discard gates.
+
+    True when this transcript, arriving as a completed user turn, would be
+    dropped without ever producing a reply — silent mode (minus its
+    wake-phrase escape), the stt garbage gate (fillers / stutters / whisper
+    hallucinations), or the unaddressed-ambient gate. resilience.turn_rescue
+    consults this BEFORE flipping an uninterruptible speech interruptible:
+    the framework interrupts the current speech before on_user_turn_completed
+    runs (agent_activity.py — interrupt ~20 lines ahead of the gates), so a
+    doomed transcript that rescues kills an in-flight delivery and then dies
+    in the gates, leaving completed tool work silently unvoiced (live
+    2026-07-04: TV babble 'Mommy. Mommy.' killed a finished web_search
+    delivery, then got stt-gate-dropped). Decisions only — NO side effects
+    (never un-silences, never touches the addressed-window stamp). Keep in
+    sync when adding reply-less gates to on_user_turn_completed.
+    """
+    t = (text or "").strip()
+    if not t:
+        return True
+    try:
+        if _is_silent() and not _is_command(t, _WAKE_PATTERNS):
+            return True
+        from pipeline.stt_gate import is_garbage_transcript
+        garbage, _reason = is_garbage_transcript(t)
+        if garbage:
+            return True
+        if _is_unaddressed_ambient(t):
+            return True
+    except Exception:
+        return False  # fail open — rescue keeps its pre-2026-07-04 behavior
+    return False
+
+
 # Ambient-backchannel suppressor (2026-07-02). With the addressing gate
 # OFF (always-answer room, above), every overheard utterance reaches the
 # LLM, which is trusted to return an EMPTY string on ambient audio
@@ -4295,6 +4329,23 @@ class JarvisAgent(Agent):
     # Phase 4 of the registry migration (2026-04-30); the registry's
     # RegistrySubagent + DESKTOP_INSTRUCTIONS reproduces it 1:1.
 
+    # Duck-typed hooks for resilience.turn_rescue, which holds `self._agent`
+    # inside the patched AgentActivity and must not import this module
+    # (resilience/ stays framework-adjacent; jarvis_agent imports IT).
+    def _jarvis_would_discard_transcript(self, text: str) -> bool:
+        return _would_discard_transcript(text)
+
+    def _jarvis_resurrect_blocked(self, text: str) -> bool:
+        # Never resurrect an interrupted delivery over a deliberate stop
+        # ("stop" / "cancel" / "hold on"…) or while silent mode owns the
+        # room — the user asked for quiet; staying dead is the feature.
+        try:
+            if _is_silent():
+                return True
+            return bool(text) and bool(_KILL_PHRASES.search(text))
+        except Exception:
+            return True  # fail closed — a skipped resurrect is benign
+
     async def on_enter(self) -> None:
         # Base Agent.on_enter is a no-op pass; preserve the contract.
         await super().on_enter()
@@ -7416,6 +7467,12 @@ async def entrypoint(ctx: JobContext) -> None:
                         output_profile=_aec.get("output_profile"),
                         apm_delay_ms_p50=_aec.get("apm_delay_ms_p50"),
                         dtln_latency_ms_p95=_aec.get("dtln_latency_ms_p95"),
+                        tool_call_count=len(
+                            getattr(session, "_jarvis_tool_calls_this_turn", None) or []
+                        ),
+                        had_tool_error=bool(
+                            getattr(session, "_jarvis_had_tool_error_this_turn", False)
+                        ),
                     )
                     # ── Autonomous self-improvement loop (fire-and-forget) ──
                     # Mirrors the upstream "background review thread that
