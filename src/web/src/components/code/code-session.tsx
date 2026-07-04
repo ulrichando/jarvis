@@ -454,6 +454,15 @@ export function CodeSession({
   const [answered, setAnswered] = useState<Set<string>>(new Set());
   // Cheap +/- summary for the header indicator (full diff lives in the panel).
   const [diffStat, setDiffStat] = useState<{ adds: number; dels: number } | null>(null);
+  // Branch + staleness from the summary poll — key the post-turn suggestion
+  // chips (stale = captured diff, container gone → PR creation impossible).
+  const [diffBranch, setDiffBranch] = useState<string>("");
+  const [diffStale, setDiffStale] = useState(false);
+  // The branch's PR (if any) for the suggestion chips; looked up when a turn
+  // completes, set directly when "Create pull request" succeeds.
+  const [prInfo, setPrInfo] = useState<{ url: string; number?: number } | null>(null);
+  const [creatingPr, setCreatingPr] = useState(false);
+  const [suggestErr, setSuggestErr] = useState<string | null>(null);
   // Server-synced pinned message uuids (fetched once; passed to MessageActions).
   const [pinnedUuids, setPinnedUuids] = useState<Set<string>>(new Set());
   // The container init steps (status events) collapse into one "Initialized
@@ -490,6 +499,10 @@ export function CodeSession({
     setLive(null);
     setAnswered(new Set());
     setInitOpen(true);
+    setDiffBranch("");
+    setDiffStale(false);
+    setPrInfo(null);
+    setSuggestErr(null);
     initAutoCollapsed.current = false;
     pendingSendRef.current = false;
     let active = true;
@@ -591,10 +604,13 @@ export function CodeSession({
       try {
         const r = await fetch(`/api/bridge/v1/sessions/${sessionId}/diff?summary=1`);
         if (r.ok && active) {
-          const stat = ((await r.json()) as { stat?: string }).stat ?? "";
+          const j = (await r.json()) as { stat?: string; branch?: string; stale?: boolean };
+          const stat = j.stat ?? "";
           const adds = Number(/(\d+) insertion/.exec(stat)?.[1] ?? 0);
           const dels = Number(/(\d+) deletion/.exec(stat)?.[1] ?? 0);
           setDiffStat(adds || dels ? { adds, dels } : null);
+          setDiffBranch(j.branch ?? "");
+          setDiffStale(!!j.stale);
         }
       } catch {
         /* transient */
@@ -733,6 +749,51 @@ export function CodeSession({
   useEffect(() => {
     onRunningChange?.(busy);
   }, [busy, onRunningChange]);
+
+  // Turn is over and the session has changes → look up whether the branch
+  // already has a PR, powering the claude.ai-style suggestion chips below the
+  // transcript (Create pull request / View pull request / Review changes).
+  const turnIdle = !busy && !live;
+  useEffect(() => {
+    if (!turnIdle || !diffBranch) return;
+    let active = true;
+    fetch(`/api/bridge/v1/sessions/${sessionId}/pr-status?branch=${encodeURIComponent(diffBranch)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: { pr?: { url: string; number: number } | null } | null) => {
+        if (active && j !== null) setPrInfo(j?.pr ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [turnIdle, diffBranch, sessionId]);
+
+  // The suggestion-chip "Create pull request" — same host action as the Diff
+  // panel's button (commits pending work, pushes, opens the PR host-side).
+  const createPrQuick = async () => {
+    setCreatingPr(true);
+    setSuggestErr(null);
+    try {
+      const r = await fetch(`/api/bridge/v1/sessions/${sessionId}/pr`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "full" }),
+      });
+      const j = (await r.json()) as { url?: string; error?: { message?: string } | string };
+      if (r.ok && j.url) {
+        setPrInfo({ url: j.url });
+        window.open(j.url, "_blank", "noopener");
+      } else {
+        setSuggestErr(
+          (typeof j.error === "string" ? j.error : j.error?.message) ?? "Could not create PR",
+        );
+      }
+    } catch {
+      setSuggestErr("Could not create PR");
+    } finally {
+      setCreatingPr(false);
+    }
+  };
 
   // Desktop notification when a turn ends or the session needs input, but only
   // if the tab is backgrounded (claude.ai/code notifies you to come back).
@@ -1089,6 +1150,42 @@ export function CodeSession({
           {(waiting || running) && !live && (
             <div className="flex items-center gap-2 pt-1 text-orange-500">
               <span className="inline-block animate-pulse text-[18px] leading-none">✳</span>
+            </div>
+          )}
+
+          {/* Post-turn suggestions (claude.ai/code parity): the session has
+              changes — offer the obvious next actions instead of going quiet.
+              "Create pull request" needs the live container, so it hides when
+              the diff is a captured snapshot (container reclaimed). */}
+          {turnIdle && diffStat && (
+            <div className="flex flex-wrap items-center gap-2 pt-1.5">
+              {prInfo ? (
+                <a
+                  href={prInfo.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center rounded-full border border-border px-3 py-1 text-[12px] text-foreground/85 hover:bg-accent/40"
+                >
+                  View pull request{prInfo.number ? ` #${prInfo.number}` : ""} ↗
+                </a>
+              ) : diffStale ? null : (
+                <button
+                  type="button"
+                  onClick={createPrQuick}
+                  disabled={creatingPr}
+                  className="inline-flex items-center rounded-full border border-border px-3 py-1 text-[12px] text-foreground/85 hover:bg-accent/40 disabled:opacity-60"
+                >
+                  {creatingPr ? "Creating pull request…" : "Create pull request"}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => onTogglePanel("diff")}
+                className="inline-flex items-center rounded-full border border-border px-3 py-1 text-[12px] text-foreground/85 hover:bg-accent/40"
+              >
+                Review changes
+              </button>
+              {suggestErr && <span className="text-[11.5px] text-red-500">{suggestErr}</span>}
             </div>
           )}
         </div>

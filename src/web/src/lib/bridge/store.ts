@@ -258,6 +258,16 @@ export function initSchema(db: Database.Database): void {
   } catch {
     /* column already present */
   }
+  // Additive (2026-07-04, diff persistence): the last non-empty container diff
+  // ({branch,base,ahead,stat,diff,at}). The "View changes" chip + Diff panel
+  // read live container state, which evaporates on idle reclaim / redeploy /
+  // an agent fetch that catches base up — this snapshot keeps a completed
+  // session's changes viewable afterward (claude.ai/code parity).
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN last_diff_json TEXT')
+  } catch {
+    /* column already present */
+  }
   db.exec(`CREATE TABLE IF NOT EXISTS session_groups (
     group_id TEXT PRIMARY KEY,
     user_id TEXT,
@@ -910,6 +920,40 @@ export function getWorkerSpec(store: Store, sessionId: string): WorkerSpec | nul
   if (!row?.worker_spec_json) return null
   try {
     return JSON.parse(row.worker_spec_json) as WorkerSpec
+  } catch {
+    return null
+  }
+}
+
+/** The last non-empty diff captured from the session container, so "View
+ *  changes" outlives the container (idle reclaim / redeploy / base catch-up). */
+export interface DiffSnapshot {
+  branch: string
+  base: string
+  ahead: number
+  stat: string
+  diff: string
+  /** Unix-ms capture time. */
+  at: number
+}
+
+export function setDiffSnapshot(
+  store: Store,
+  sessionId: string,
+  snap: DiffSnapshot,
+): void {
+  store.db
+    .prepare('UPDATE sessions SET last_diff_json = ? WHERE session_id = ?')
+    .run(JSON.stringify(snap), sessionId)
+}
+
+export function getDiffSnapshot(store: Store, sessionId: string): DiffSnapshot | null {
+  const row = store.db
+    .prepare('SELECT last_diff_json FROM sessions WHERE session_id = ?')
+    .get(sessionId) as { last_diff_json: string | null } | undefined
+  if (!row?.last_diff_json) return null
+  try {
+    return JSON.parse(row.last_diff_json) as DiffSnapshot
   } catch {
     return null
   }
