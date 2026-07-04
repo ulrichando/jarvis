@@ -29,6 +29,7 @@ import { KimiToolTrace, type ToolTraceEntry } from "./kimi-tool-trace";
 import { KimiSwarmProgress } from "./kimi-swarm-progress";
 import { cn } from "@/lib/utils";
 import { MODELS_META } from "@/lib/ai/models-meta";
+import { estimateCostUsd } from "@/lib/ai/pricing";
 import { useVoiceRead } from "@/stores/voice-read";
 
 // Synthetic-prompt patterns the chat layer's plumbing emits but the
@@ -903,28 +904,9 @@ function ErrorRetryPill({
 // ── Usage / cost chip ────────────────────────────────────────────────────────
 //
 // Per-turn token + dollar cost shown beneath the assistant message.
-// Pricing is best-effort and approximate — model providers shift these
-// often. We hard-code the common ones; missing entries fall back to
-// "—" for cost. Token counts are always shown when available.
-
-const PRICING: Record<string, { inputPer1M: number; outputPer1M: number }> = {
-  // Anthropic
-  "claude-opus-4-7": { inputPer1M: 15, outputPer1M: 75 },
-  "claude-sonnet-4-6": { inputPer1M: 3, outputPer1M: 15 },
-  "claude-haiku-4-5": { inputPer1M: 1, outputPer1M: 5 },
-  // OpenAI (rough)
-  "gpt-5": { inputPer1M: 5, outputPer1M: 20 },
-  "gpt-5-mini": { inputPer1M: 0.5, outputPer1M: 2 },
-  o3: { inputPer1M: 60, outputPer1M: 240 },
-  // Google
-  "gemini-2.5-pro": { inputPer1M: 1.25, outputPer1M: 5 },
-  "gemini-2.5-flash": { inputPer1M: 0.1, outputPer1M: 0.4 },
-  // DeepSeek
-  "deepseek-chat": { inputPer1M: 0.14, outputPer1M: 0.28 },
-  "deepseek-reasoner": { inputPer1M: 0.55, outputPer1M: 2.19 },
-  "deepseek-v4-pro": { inputPer1M: 0.55, outputPer1M: 2.19 },
-  "deepseek-v4-flash": { inputPer1M: 0.14, outputPer1M: 0.28 },
-};
+// Pricing comes from the shared best-effort table (lib/ai/pricing) — the
+// same one Settings → Usage aggregates use. Models without a list price
+// show tokens with no dollar figure.
 
 function formatCost(cost: number): string {
   if (cost === 0) return "free";
@@ -951,11 +933,7 @@ function UsageChip({
   };
 }) {
   const { inputTokens, outputTokens, reasoningTokens, model } = usage;
-  const pricing = model ? PRICING[model] : undefined;
-  const cost = pricing
-    ? (inputTokens * pricing.inputPer1M + outputTokens * pricing.outputPer1M) /
-      1_000_000
-    : null;
+  const cost = model ? estimateCostUsd(model, inputTokens, outputTokens) : null;
   return (
     <div className="mt-1 flex items-center gap-2 text-[10.5px] text-muted-foreground/70 select-none">
       {/* Friendly label (e.g. "Claude Sonnet 4.6") with the raw id on

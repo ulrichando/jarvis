@@ -7,6 +7,7 @@ import {
   ensureConversation,
   extractText,
   maybeUpdateLastAssistantMessage,
+  recordUsageEvent,
   saveAssistantMessage,
   saveUserMessage,
 } from "@/lib/chat/persist";
@@ -882,6 +883,16 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
           `[chat] finish=length — output truncated at ${totalUsage.outputTokens} tokens (mode=${mode ?? "regular"})`,
         );
       }
+      // Meter the turn before any early return — workspace/design turns
+      // without a conversation still cost tokens. Feeds Settings → Usage.
+      await recordUsageEvent({
+        userId,
+        conversationId: conversation?.id,
+        model: modelId,
+        tokensIn: totalUsage.inputTokens,
+        tokensOut: totalUsage.outputTokens,
+        cacheReadTokens: totalUsage.cachedInputTokens,
+      });
       // Fence-recovery fallback: when the model ignored the bolt
       // protocol and dumped code in ```language fenced blocks, write
       // those blocks as files server-side so the user doesn't end up

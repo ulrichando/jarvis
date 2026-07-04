@@ -87,6 +87,14 @@ const patchSchema = z.object({
     })
     .partial()
     .optional(),
+  usage: z
+    .object({
+      // null clears the budget (same convention as provider apiKey).
+      monthlyBudgetUsd: z.number().positive().max(1_000_000).or(z.null()).optional(),
+      costAlerts: z.boolean().optional(),
+    })
+    .partial()
+    .optional(),
   integrations: z
     .object({
       github: z
@@ -162,6 +170,20 @@ export async function PATCH(req: Request) {
     nextConnections.ollama = nextOllama;
   }
 
+  // Usage: null clears the budget, matching the provider-key convention.
+  const nextUsage = { ...current.usage };
+  if (patch.usage) {
+    if (patch.usage.monthlyBudgetUsd !== undefined) {
+      nextUsage.monthlyBudgetUsd =
+        patch.usage.monthlyBudgetUsd === null
+          ? undefined
+          : patch.usage.monthlyBudgetUsd;
+    }
+    if (patch.usage.costAlerts !== undefined) {
+      nextUsage.costAlerts = patch.usage.costAlerts;
+    }
+  }
+
   const next = settingsSchema.parse({
     ...current,
     user: { ...current.user, ...(patch.user ?? {}) },
@@ -173,6 +195,7 @@ export async function PATCH(req: Request) {
     appearance: { ...current.appearance, ...(patch.appearance ?? {}) },
     chrome: { ...current.chrome, ...(patch.chrome ?? {}) },
     integrations: nextIntegrations,
+    usage: nextUsage,
   });
 
   const saved = await saveSettings(next);

@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import type { UIMessage } from "ai";
 import { db, persistenceEnabled, schema } from "@/lib/db";
+import { estimateCostUsd } from "@/lib/ai/pricing";
 
 export const LOCAL_USER_ID = "00000000-0000-0000-0000-000000000001";
 export const LOCAL_USER_EMAIL = "local@jarvis";
@@ -125,6 +126,48 @@ export async function saveAssistantMessage({
     .set({ updatedAt: new Date() })
     .where(eq(schema.conversations.id, conversationId));
   return row?.id ?? null;
+}
+
+/**
+ * One usage_events row per completed model turn — the metering behind
+ * Settings → Usage. Independent of message persistence so workspace/design
+ * turns without a conversation still count. Never throws: metering must
+ * not break the chat path.
+ */
+export async function recordUsageEvent({
+  userId,
+  conversationId,
+  model,
+  tokensIn,
+  tokensOut,
+  cacheReadTokens,
+}: {
+  userId: string;
+  conversationId?: string | null;
+  model: string;
+  tokensIn?: number;
+  tokensOut?: number;
+  cacheReadTokens?: number;
+}) {
+  if (!db) return;
+  const inTok = tokensIn ?? 0;
+  const outTok = tokensOut ?? 0;
+  // Stored cost is the estimate at write time (audit trail); aggregates
+  // re-price from tokens at read time so pricing fixes apply retroactively.
+  const cost = estimateCostUsd(model, inTok, outTok);
+  try {
+    await db.insert(schema.usageEvents).values({
+      userId,
+      conversationId: conversationId ?? null,
+      model,
+      tokensIn: inTok,
+      tokensOut: outTok,
+      cacheReadTokens: cacheReadTokens ?? 0,
+      costUsd: cost != null ? cost.toFixed(6) : null,
+    });
+  } catch (err) {
+    console.error("[usage] failed to record usage event", err);
+  }
 }
 
 /**
