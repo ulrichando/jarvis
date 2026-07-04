@@ -262,6 +262,114 @@ $("plusBtn").addEventListener("click", () => openPop($("plusBtn"), [
   { label: "Add an image", icon: icon('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L6 21"/>'), onClick: pickImage },
 ], { align: "right" }));
 
+// ── Record a workflow → shortcut (pointer button, Claude-style) ──────────
+// Capture the user's page actions + voice narration, then turn them into a
+// reusable "/shortcut". Narration (what you say you're doing) becomes the
+// shortcut prompt; the first page is the "start from" URL.
+let wfRecording = false, wfNarration = [], wfRecog = null, wfStartUrl = "", wfCard = null;
+
+async function toggleWorkflowRecord() {
+  if (wfRecording) return stopWorkflowRecord();
+  const started = await chrome.runtime.sendMessage({ type: "jarvis_record_start" }).catch(() => ({ ok: false }));
+  if (!started || !started.ok) { note("Open a normal web page first, then record."); return; }
+  wfRecording = true; wfNarration = []; wfCard = null;
+  const u = await chrome.runtime.sendMessage({ type: "jarvis_active_url" }).catch(() => null);
+  wfStartUrl = (u && u.url) || "";
+  startNarration();
+  renderRecordCard();
+}
+function startNarration() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return; // narration optional — actions are still captured
+  wfRecog = new SR();
+  wfRecog.lang = navigator.language || "en-US";
+  wfRecog.continuous = true; wfRecog.interimResults = false;
+  wfRecog.onresult = (e) => {
+    for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript.trim(); if (t) { wfNarration.push(t); renderRecordCard(); } }
+  };
+  wfRecog.onerror = (e) => { if (e.error === "not-allowed") note("Mic blocked — recording actions only. Enable it in Settings to narrate."); };
+  wfRecog.onend = () => { if (wfRecording) { try { wfRecog.start(); } catch {} } }; // keep listening across pauses
+  try { wfRecog.start(); } catch {}
+}
+function stopNarration() { if (wfRecog) { try { wfRecog.onend = null; wfRecog.stop(); } catch {} wfRecog = null; } }
+function renderRecordCard() {
+  if (!wfCard) { $("emptyState")?.remove(); wfCard = document.createElement("div"); wfCard.className = "approval"; stream.appendChild(wfCard); }
+  wfCard.replaceChildren();
+  const t = document.createElement("div"); t.className = "at"; t.textContent = "● Recording — do the steps and narrate what you're doing"; wfCard.appendChild(t);
+  wfNarration.forEach((n, i) => {
+    const row = document.createElement("div"); row.className = "task-row";
+    const num = document.createElement("span"); num.style.cssText = "color:var(--primary);font-weight:600;flex:none"; num.textContent = (i + 1) + ".";
+    const tx = document.createElement("span"); tx.className = "tx"; tx.textContent = n;
+    row.append(num, tx); wfCard.appendChild(row);
+  });
+  const frow = document.createElement("div"); frow.className = "arow"; frow.style.marginTop = "9px";
+  const cancel = document.createElement("button"); cancel.className = "btn"; cancel.textContent = "Cancel"; cancel.style.cssText = "background:var(--panel);color:var(--fg)";
+  const stop = document.createElement("button"); stop.className = "btn btn-primary"; stop.textContent = "Stop & save";
+  cancel.addEventListener("click", cancelWorkflowRecord);
+  stop.addEventListener("click", stopWorkflowRecord);
+  frow.append(cancel, stop); wfCard.appendChild(frow);
+  stream.scrollTop = stream.scrollHeight;
+}
+async function cancelWorkflowRecord() {
+  wfRecording = false; stopNarration();
+  await chrome.runtime.sendMessage({ type: "jarvis_record_stop" }).catch(() => {});
+  if (wfCard) { wfCard.remove(); wfCard = null; }
+}
+async function stopWorkflowRecord() {
+  wfRecording = false; stopNarration();
+  const res = await chrome.runtime.sendMessage({ type: "jarvis_record_stop" }).catch(() => ({ ok: false }));
+  const steps = (res && res.steps) || [];
+  if (wfCard) { wfCard.remove(); wfCard = null; }
+  const narration = wfNarration.join(". ").trim();
+  const prompt = narration || summarizeSteps(steps);
+  if (!prompt) { note("Nothing was recorded."); return; }
+  showCreateShortcutForm(slugify(prompt), prompt, wfStartUrl);
+}
+function summarizeSteps(steps) {
+  return (steps || []).map((s) => {
+    const a = s.args || {};
+    if (s.action === "click") return "click " + (a.selector || "");
+    if (s.action === "type") return "enter text in " + (a.selector || "");
+    if (s.action === "select") return "select " + (a.value || "");
+    return s.action;
+  }).join("; ");
+}
+function slugify(text) { return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").split("-").slice(0, 4).join("-") || "workflow"; }
+function showCreateShortcutForm(name, prompt, startFrom) {
+  $("emptyState")?.remove();
+  const card = document.createElement("div"); card.className = "approval";
+  const t = document.createElement("div"); t.className = "at"; t.textContent = "Create shortcut"; card.appendChild(t);
+  const lbl = (text) => { const l = document.createElement("div"); l.textContent = text; l.style.cssText = "font-size:11px;opacity:.6;margin:9px 0 3px"; card.appendChild(l); };
+  const nameI = document.createElement("input"); nameI.className = "task-sel"; nameI.style.marginTop = "0"; nameI.value = name;
+  const promptI = document.createElement("textarea"); promptI.className = "task-ta"; promptI.value = prompt;
+  const urlI = document.createElement("input"); urlI.className = "task-sel"; urlI.style.marginTop = "0"; urlI.placeholder = "https://example.com"; urlI.value = startFrom || "";
+  lbl("Name"); card.appendChild(nameI); lbl("Prompt"); card.appendChild(promptI); lbl("Start from (optional)"); card.appendChild(urlI);
+  const schedRow = document.createElement("label"); schedRow.className = "task-row"; schedRow.style.cssText = "cursor:pointer;gap:8px;margin-top:9px";
+  const schedCb = document.createElement("input"); schedCb.type = "checkbox";
+  const schedSel = document.createElement("select"); schedSel.className = "task-sel"; schedSel.style.cssText = "margin:6px 0 0;width:auto"; schedSel.hidden = true;
+  for (const [v, l] of [["hourly", "Every hour"], ["daily", "Every day"], ["weekly", "Every week"]]) { const o = document.createElement("option"); o.value = v; o.textContent = l; schedSel.appendChild(o); }
+  schedSel.value = "daily";
+  schedCb.addEventListener("change", () => { schedSel.hidden = !schedCb.checked; });
+  const sl = document.createElement("span"); sl.className = "tx"; sl.textContent = "Schedule this shortcut";
+  schedRow.append(schedCb, sl); card.append(schedRow, schedSel);
+  const frow = document.createElement("div"); frow.className = "arow"; frow.style.marginTop = "10px";
+  const cancel = document.createElement("button"); cancel.className = "btn"; cancel.textContent = "Cancel"; cancel.style.cssText = "background:var(--panel);color:var(--fg)";
+  const save = document.createElement("button"); save.className = "btn btn-primary"; save.textContent = "Create shortcut";
+  cancel.addEventListener("click", () => card.remove());
+  save.addEventListener("click", async () => {
+    const n = nameI.value.trim().replace(/\s+/g, "-").toLowerCase(); const p = promptI.value.trim();
+    if (!n || !p) return;
+    SHORTCUTS = [...SHORTCUTS.filter((x) => x.name !== n), { name: n, prompt: p, url: urlI.value.trim() || undefined }];
+    await chrome.storage.local.set({ shortcuts: SHORTCUTS });
+    if (schedCb.checked) await chrome.runtime.sendMessage({ type: "jarvis_task_add", task: { prompt: p, cadence: schedSel.value, url: urlI.value.trim() } }).catch(() => {});
+    card.remove();
+    addMsg(`✓ Shortcut "/${n}" saved${schedCb.checked ? " + scheduled" : ""}. Type / in the chat to use it.`, "bot");
+  });
+  frow.append(cancel, save); card.appendChild(frow);
+  stream.appendChild(card); stream.scrollTop = stream.scrollHeight;
+}
+$("cursorBtn").addEventListener("click", toggleWorkflowRecord);
+
 // ── Shortcuts (type / in the composer) ─────────────────────────────────
 let SHORTCUTS = [];
 const DEFAULT_SHORTCUTS = [

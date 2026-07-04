@@ -348,6 +348,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === "jarvis_reconnect") { reconnectDelay = RECONNECT_BASE_MS; connect(); sendResponse({ ok: true }); return; }
   if (msg && msg.type === "jarvis_chat") { sendChat(msg.text, msg.mode, msg.image); sendResponse({ ok: true }); return; }
   if (msg && msg.type === "jarvis_screenshot") { bgScreenshot().then(sendResponse).catch(() => sendResponse({ ok: false })); return true; }
+  if (msg && msg.type === "jarvis_active_url") { activeTabUrl().then((url) => sendResponse({ ok: true, url })).catch(() => sendResponse({ ok: false })); return true; }
   if (msg && msg.type === "jarvis_agent_approval") {
     try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "agent_approval_decision", approvalId: msg.approvalId, approved: !!msg.approved })); } catch {}
     sendResponse({ ok: true }); return;
