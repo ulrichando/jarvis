@@ -278,6 +278,67 @@ type TeleportEventsResponse = {
 }
 
 /**
+ * JARVIS-mode transcript fetch. jarvis-web exposes a session's SDK event stream
+ * at GET /v1/sessions/{id}/events as `{ data: Entry[], has_more, last_id }` —
+ * entries are the Entry directly (no `payload` wrapper), and the cursor is
+ * `after_id`/`last_id` (not `cursor`/`next_cursor`). The proxy self-auths this
+ * path for a per-user bridge token; the Anthropic teleport-events path is not
+ * implemented there. Non-transcript entries (user_prompt/status/result) are
+ * returned as-is and dropped later by isTranscriptMessage().
+ */
+async function getJarvisWebSessionEvents(
+  sessionId: string,
+  accessToken: string,
+): Promise<Entry[] | null> {
+  const url = `${getOauthConfig().BASE_API_URL}/v1/sessions/${sessionId}/events`
+  const headers = { ...getOAuthHeaders(accessToken) }
+  const all: Entry[] = []
+  let afterId: string | undefined
+  const maxPages = 100
+  for (let page = 0; page < maxPages; page++) {
+    let response
+    try {
+      response = await axios.get<{
+        data: unknown[]
+        has_more?: boolean
+        last_id?: string | null
+      }>(url, {
+        headers,
+        params: afterId ? { after_id: afterId } : undefined,
+        timeout: 20000,
+        validateStatus: status => status < 500,
+      })
+    } catch (e) {
+      logError(
+        new Error(`JARVIS teleport events fetch failed: ${(e as AxiosError).message}`),
+      )
+      return null
+    }
+    if (response.status === 404) return page === 0 ? null : all
+    if (response.status === 401) {
+      throw new Error(
+        'Your session has expired. Please run /login to sign in again.',
+      )
+    }
+    if (response.status !== 200) {
+      logError(new Error(`JARVIS teleport events returned ${response.status}`))
+      return null
+    }
+    const { data, has_more, last_id } = response.data
+    if (!Array.isArray(data)) return null
+    for (const ev of data) {
+      if (ev != null) all.push(ev as Entry)
+    }
+    if (!has_more || last_id == null) break
+    afterId = String(last_id)
+  }
+  logForDebugging(
+    `[teleport] Fetched ${all.length} JARVIS session events for ${sessionId}`,
+  )
+  return all
+}
+
+/**
  * Get worker events (transcript) via the CCR v2 Sessions API. Replaces
  * getSessionLogsViaOAuth once session-ingress is retired.
  *
@@ -293,6 +354,14 @@ export async function getTeleportEvents(
   accessToken: string,
   orgUUID: string,
 ): Promise<Entry[] | null> {
+  // JARVIS mode: the Anthropic teleport-events + session-ingress endpoints don't
+  // exist on jarvis-web, and the proxy doesn't self-auth them → 401
+  // "auth required" (which this function turns into a misleading "session
+  // expired"). The session transcript instead lives at /v1/sessions/{id}/events
+  // as SDK-shaped entries (assistant/user/system), self-authed by the proxy.
+  if (process.env.JARVIS_CCR_BASE_URL) {
+    return getJarvisWebSessionEvents(sessionId, accessToken)
+  }
   const baseUrl = `${getOauthConfig().BASE_API_URL}/v1/code/sessions/${sessionId}/teleport-events`
   const headers = {
     ...getOAuthHeaders(accessToken),
