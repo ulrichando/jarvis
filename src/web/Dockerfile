@@ -48,6 +48,12 @@ WORKDIR /app
 RUN apk add --no-cache docker-cli tini ca-certificates git
 # Non-root runtime user (Alpine's adduser).
 RUN adduser -D -u 10001 jarvis
+# Pre-create ~/.jarvis owned by the runtime user. On first mount, a fresh named
+# volume (jarvis_web_home in docker-compose.yml) inherits the ownership of the
+# image dir at its mount point — so this makes the volume land as 10001:10001
+# instead of root, which the non-root app (USER 10001) could not write (no
+# bridge.db / connectors.json → /code + the GitHub connector break).
+RUN mkdir -p /home/jarvis/.jarvis && chown 10001:10001 /home/jarvis/.jarvis
 COPY --from=build --chown=10001:10001 /app ./
 # Strip build-time-only tooling from the runtime image. drizzle-kit (the
 # migration CLI, run OUTSIDE the container per docs/runbook/deploy-online.md)
