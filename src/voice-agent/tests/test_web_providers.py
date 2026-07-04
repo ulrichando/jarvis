@@ -143,3 +143,81 @@ def test_web_search_prefers_credentialed_provider():
         assert "Hit" in out and "http://hit" in out
     finally:
         pr.reset_providers("web")
+
+
+def test_web_search_empty_provider_answer_is_honest_no_results():
+    """A backend that ANSWERS with zero results must yield an honest "No results"
+    message — not fall through to the DDG scraper, whose CAPTCHA page told the
+    model the whole stack was rate-limited (live failure 2026-07-04)."""
+    import asyncio
+
+    from tools import _provider_registry as pr
+    from tools.web_providers import WebSearchProvider
+    from tools.web_tools import _handle_web_search
+
+    class EmptySearch(WebSearchProvider):
+        name = "fake-empty"
+
+        def is_available(self):
+            return True
+
+        def supports_search(self):
+            return True
+
+        def search(self, query, limit=5):
+            return {"success": True, "data": {"web": []}}
+
+    pr.reset_providers("web")
+    pr.register_provider("web", "fake-empty", EmptySearch())
+    try:
+        out = asyncio.run(_handle_web_search({"query": "hyperspecific nonsense", "limit": 3}))
+        assert "No results" in out
+        assert "rate-limit" not in out.lower()
+    finally:
+        pr.reset_providers("web")
+
+
+def test_web_search_empty_falls_to_next_provider():
+    """First backend empty → the second configured backend serves the query
+    (the tavily-behind-searxng fallback rung; registry order is name-sorted)."""
+    import asyncio
+
+    from tools import _provider_registry as pr
+    from tools.web_providers import WebSearchProvider
+    from tools.web_tools import _handle_web_search
+
+    class EmptySearch(WebSearchProvider):
+        name = "a-empty"
+
+        def is_available(self):
+            return True
+
+        def supports_search(self):
+            return True
+
+        def search(self, query, limit=5):
+            return {"success": True, "data": {"web": []}}
+
+    class HitSearch(WebSearchProvider):
+        name = "b-hit"
+
+        def is_available(self):
+            return True
+
+        def supports_search(self):
+            return True
+
+        def search(self, query, limit=5):
+            return {
+                "success": True,
+                "data": {"web": [{"title": "Hit", "url": "http://hit", "description": "d", "position": 1}]},
+            }
+
+    pr.reset_providers("web")
+    pr.register_provider("web", "a-empty", EmptySearch())
+    pr.register_provider("web", "b-hit", HitSearch())
+    try:
+        out = asyncio.run(_handle_web_search({"query": "anything", "limit": 3}))
+        assert "Hit" in out and "http://hit" in out
+    finally:
+        pr.reset_providers("web")

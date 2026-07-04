@@ -6,12 +6,15 @@ implementations are battle-tested in production; this file re-registers them
 through the registry framework so they appear via load_all_livekit_tools()
 alongside the other self-registering tools.
 
-Backend: DuckDuckGo HTML endpoint (keyless, no rate-limit auth token required).
-Falls back to DDG Instant Answer JSON API when the HTML endpoint returns a
-CAPTCHA/anomaly page.
+Backend: the configured credentialed providers (plugins/web/* — e.g. a
+self-hosted SearXNG via SEARXNG_URL, tavily, exa …), walked in name order so a
+later backend covers an earlier one's error or empty answer. The keyless
+DuckDuckGo HTML endpoint (with Instant Answer fallback on CAPTCHA) is the last
+resort only when no provider is configured or all of them error.
 
 Required env var:
-  None — uses DuckDuckGo which is keyless. Both tools are always available.
+  None — with no provider configured it uses keyless DuckDuckGo. Both tools
+  are always available.
 
 Notes:
   - web_search is async (awaits the blocking urllib call in a thread).
@@ -144,33 +147,54 @@ async def _handle_web_search(args: dict) -> str:
 
     logger.info("web_search → %r (n=%d)", query, n)
 
-    # Prefer a credentialed search backend when one is configured — better
-    # ranking and immune to DDG's IP-based CAPTCHA. Falls back to keyless DDG
-    # when no provider is available or the provider errors / returns nothing.
+    # Prefer credentialed search backends when configured — better ranking and
+    # immune to DDG's IP-based CAPTCHA. Walk every available backend in order
+    # (e.g. searxng → tavily) so one backend's failure isn't the end. A backend
+    # that ANSWERS with zero results is an honest "no results" — these are
+    # meta/ranked engines, the keyless DDG scraper won't do better — so say so
+    # instead of falling through to DDG, whose CAPTCHA page reads as "rate
+    # limited" and sent the model into rephrase spirals (live 2026-07-04: ~10
+    # rephrases/min CAPTCHA-suspended every upstream engine). DDG remains the
+    # fallback only when NO backend is configured or every one of them errors.
     try:
-        from tools.web_providers import first_search_provider, run_provider_search
+        from tools.web_providers import run_provider_search, search_providers
 
-        _prov = first_search_provider()
+        _providers = search_providers()
     except Exception:  # noqa: BLE001 — the provider layer must never break web_search
-        _prov = None
-    if _prov is not None:
+        _providers = []
+    _provider_answered = False
+    for _prov in _providers:
         try:
             _pres = await run_provider_search(_prov, query, n)
-            if isinstance(_pres, dict) and _pres.get("success"):
-                _items = (_pres.get("data") or {}).get("web") or []
-                _formatted = _format_provider_results(_items, n)
-                if _formatted:
-                    logger.info(
-                        "[web_search] served by credentialed backend %r",
-                        getattr(_prov, "name", "?"),
-                    )
-                    return _formatted
-        except Exception as e:  # noqa: BLE001 — fall through to DDG on any error
+        except Exception as e:  # noqa: BLE001 — try the next backend on any error
             logger.warning(
-                "[web_search] credentialed backend %r failed (%s); using DDG",
+                "[web_search] credentialed backend %r failed (%s); trying next",
                 getattr(_prov, "name", "?"),
                 e,
             )
+            continue
+        if not (isinstance(_pres, dict) and _pres.get("success")):
+            continue
+        _provider_answered = True
+        _items = (_pres.get("data") or {}).get("web") or []
+        _formatted = _format_provider_results(_items, n)
+        if _formatted:
+            logger.info(
+                "[web_search] served by credentialed backend %r",
+                getattr(_prov, "name", "?"),
+            )
+            return _formatted
+    if _provider_answered:
+        logger.info("[web_search] all credentialed backends answered empty for %r", query)
+        return (
+            f"No results for {query!r}. The search backend answered but found "
+            "nothing — the query is likely too specific (quoted phrases, "
+            "site: filters, invented terms). Try ONE broader rephrase at most. "
+            "If that also finds nothing, escalate to browser_task or answer "
+            "from your own knowledge with uncertainty marked. Do NOT fire more "
+            "rephrase variations — rapid repeated searches get the upstream "
+            "engines temporarily suspended."
+        )
 
     url = "https://html.duckduckgo.com/html/"
     params = _up.urlencode({"q": query})
@@ -396,8 +420,11 @@ _WEB_SEARCH_SCHEMA = {
         "  1. <title>\n"
         "     <url>\n"
         "     <snippet>\n\n"
-        "Backend: DuckDuckGo HTML endpoint (keyless). Falls back to DDG Instant "
-        "Answer JSON API on rate-limit / CAPTCHA."
+        "Backend: the configured meta-search / credentialed providers "
+        "(e.g. self-hosted SearXNG), with keyless DuckDuckGo only as last "
+        "resort. If this tool says 'No results', try ONE broader rephrase at "
+        "most — do NOT fire many rephrased variations in a row; rapid "
+        "repeated searches get the upstream engines temporarily suspended."
     ),
     "parameters": {
         "type": "object",

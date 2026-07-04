@@ -53,6 +53,236 @@ class TestShouldRescue:
         monkeypatch.setenv("JARVIS_TURN_RESCUE_DISABLED", "1")
         assert turn_rescue.should_rescue("open the browser", False) is False
 
+    def test_discard_probe_vetoes_rescue(self, monkeypatch):
+        """A transcript the turn gates will StopResponse must never flip the
+        speech — rescuing it kills an in-flight delivery for nothing (the
+        framework interrupts BEFORE the gates run). Live 2026-07-04."""
+        from pipeline import echo_gate, speaking_tracker
+        monkeypatch.setattr(echo_gate, "is_echo", lambda t, s, **kw: False)
+        monkeypatch.setattr(speaking_tracker, "current_speaking_text", lambda: "tts")
+        assert turn_rescue.should_rescue(
+            "mommy. mommy.", False, discard_probe=lambda t: True
+        ) is False
+
+    def test_discard_probe_non_true_result_ignored(self, monkeypatch):
+        """Only a literal True vetoes — a Mock/garbage probe result must not
+        change rescue behavior (fail toward the pre-veto path)."""
+        from unittest.mock import MagicMock
+        from pipeline import echo_gate, speaking_tracker
+        monkeypatch.setattr(echo_gate, "is_echo", lambda t, s, **kw: False)
+        monkeypatch.setattr(speaking_tracker, "current_speaking_text", lambda: "tts")
+        assert turn_rescue.should_rescue(
+            "open the browser", False, discard_probe=lambda t: MagicMock()
+        ) is True
+
+    def test_discard_probe_exception_ignored(self, monkeypatch):
+        from pipeline import echo_gate, speaking_tracker
+        monkeypatch.setattr(echo_gate, "is_echo", lambda t, s, **kw: False)
+        monkeypatch.setattr(speaking_tracker, "current_speaking_text", lambda: "tts")
+        def boom(t):
+            raise RuntimeError("probe exploded")
+        assert turn_rescue.should_rescue(
+            "open the browser", False, discard_probe=boom
+        ) is True
+
+
+class TestWouldDiscardTranscript:
+    """jarvis_agent._would_discard_transcript — the pure gate mirror the
+    rescue consults. Gates monkeypatched via the jarvis_agent module so the
+    tests never read the REAL ~/.jarvis flag files on this machine."""
+
+    def test_silent_mode_discards_non_wake(self, monkeypatch):
+        import jarvis_agent as ja
+        monkeypatch.setattr(ja, "_is_silent", lambda: True)
+        assert ja._would_discard_transcript("see you all time. thanks again.") is True
+
+    def test_silent_mode_wake_phrase_passes(self, monkeypatch):
+        import jarvis_agent as ja
+        monkeypatch.setattr(ja, "_is_silent", lambda: True)
+        monkeypatch.setattr(ja, "_is_command", lambda text, pats: True)
+        monkeypatch.setattr(ja, "_is_unaddressed_ambient", lambda t: False)
+        assert ja._would_discard_transcript("jarvis wake up") is False
+
+    def test_garbage_stutter_discards(self, monkeypatch):
+        import jarvis_agent as ja
+        monkeypatch.setattr(ja, "_is_silent", lambda: False)
+        monkeypatch.setattr(ja, "_is_unaddressed_ambient", lambda t: False)
+        assert ja._would_discard_transcript("mommy. mommy.") is True
+
+    def test_whisper_hallucination_discards(self, monkeypatch):
+        import jarvis_agent as ja
+        monkeypatch.setattr(ja, "_is_silent", lambda: False)
+        monkeypatch.setattr(ja, "_is_unaddressed_ambient", lambda t: False)
+        assert ja._would_discard_transcript("thank you.") is True
+
+    def test_unaddressed_ambient_discards(self, monkeypatch):
+        import jarvis_agent as ja
+        monkeypatch.setattr(ja, "_is_silent", lambda: False)
+        monkeypatch.setattr(ja, "_is_unaddressed_ambient", lambda t: True)
+        assert ja._would_discard_transcript("moving on to the next segment") is True
+
+    def test_clean_directed_text_passes(self, monkeypatch):
+        import jarvis_agent as ja
+        monkeypatch.setattr(ja, "_is_silent", lambda: False)
+        monkeypatch.setattr(ja, "_is_unaddressed_ambient", lambda t: False)
+        assert ja._would_discard_transcript("open the browser please") is False
+
+    def test_gate_exception_fails_open(self, monkeypatch):
+        import jarvis_agent as ja
+        def boom():
+            raise RuntimeError("gate exploded")
+        monkeypatch.setattr(ja, "_is_silent", boom)
+        assert ja._would_discard_transcript("open the browser please") is False
+
+
+class TestBargeinVeto:
+    """jarvis_agent._bargein_veto — the echo-bargein twin of the rescue's
+    discard-probe: doomed transcripts must not clip live TTS, but
+    deliberate stops always must."""
+
+    def test_kill_phrase_never_vetoed(self, monkeypatch):
+        import jarvis_agent as ja
+        # Even if the gates would discard it, a kill-phrase interrupts.
+        monkeypatch.setattr(ja, "_would_discard_transcript", lambda t: True)
+        assert ja._bargein_veto("stop") is False
+        assert ja._bargein_veto("okay hold on a second") is False
+
+    def test_whisper_hallucination_vetoed(self, monkeypatch):
+        import jarvis_agent as ja
+        monkeypatch.setattr(ja, "_is_silent", lambda: False)
+        monkeypatch.setattr(ja, "_is_unaddressed_ambient", lambda t: False)
+        assert ja._bargein_veto("thank you.") is True
+
+    def test_bare_filler_vetoed(self, monkeypatch):
+        import jarvis_agent as ja
+        monkeypatch.setattr(ja, "_is_silent", lambda: False)
+        monkeypatch.setattr(ja, "_is_unaddressed_ambient", lambda t: False)
+        assert ja._bargein_veto("hmm") is True
+
+    def test_real_speech_not_vetoed(self, monkeypatch):
+        import jarvis_agent as ja
+        monkeypatch.setattr(ja, "_is_silent", lambda: False)
+        monkeypatch.setattr(ja, "_is_unaddressed_ambient", lambda t: False)
+        assert ja._bargein_veto("actually make it five pm instead") is False
+
+    def test_bare_no_still_interrupts(self, monkeypatch):
+        """'no' is deliberately NOT a filler token (stt_gate comment) — a
+        listener's bare 'no' must keep clipping TTS."""
+        import jarvis_agent as ja
+        monkeypatch.setattr(ja, "_is_silent", lambda: False)
+        monkeypatch.setattr(ja, "_is_unaddressed_ambient", lambda t: False)
+        assert ja._bargein_veto("no") is False
+
+    def test_exception_fails_open(self, monkeypatch):
+        import jarvis_agent as ja
+        def boom(t):
+            raise RuntimeError("gate exploded")
+        monkeypatch.setattr(ja, "_would_discard_transcript", boom)
+        assert ja._bargein_veto("anything else") is False
+
+
+class TestResurrectBlocked:
+    """JarvisAgent._jarvis_resurrect_blocked — deliberate stops and silent
+    mode must keep a rescue-killed delivery dead. Called unbound with a
+    dummy self (the method reads module state only)."""
+
+    def test_stop_phrase_blocks(self, monkeypatch):
+        import jarvis_agent as ja
+        monkeypatch.setattr(ja, "_is_silent", lambda: False)
+        assert ja.JarvisAgent._jarvis_resurrect_blocked(object(), "stop") is True
+
+    def test_silent_mode_blocks(self, monkeypatch):
+        import jarvis_agent as ja
+        monkeypatch.setattr(ja, "_is_silent", lambda: True)
+        assert ja.JarvisAgent._jarvis_resurrect_blocked(object(), "what's the weather") is True
+
+    def test_normal_speech_does_not_block(self, monkeypatch):
+        import jarvis_agent as ja
+        monkeypatch.setattr(ja, "_is_silent", lambda: False)
+        assert ja.JarvisAgent._jarvis_resurrect_blocked(object(), "what's the weather") is False
+
+
+class TestResurrection:
+    """_schedule_resurrect — the killed delivery comes back iff the rescuing
+    turn produced nothing, the kill really landed, and nothing blocks it."""
+
+    def _stubs(self, agent_state="listening", interrupted=True, blocked=False):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        sess = SimpleNamespace(agent_state=agent_state, generate_reply=MagicMock())
+        activity = SimpleNamespace(
+            _session=sess,
+            _agent=SimpleNamespace(_jarvis_resurrect_blocked=lambda t: blocked),
+        )
+        killed = SimpleNamespace(interrupted=interrupted)
+        return activity, sess, killed
+
+    @pytest.fixture(autouse=True)
+    def _fast_grace(self, monkeypatch):
+        monkeypatch.setattr(turn_rescue, "_RESURRECT_GRACE_S", 0.01)
+        monkeypatch.setattr(turn_rescue, "_last_resurrect_mono", 0.0)
+
+    @pytest.mark.asyncio
+    async def test_resurrects_when_rescuing_turn_went_silent(self):
+        import asyncio
+        activity, sess, killed = self._stubs()
+        turn_rescue._schedule_resurrect(activity, killed, "moving.", turn_rescue._rescue_seq)
+        await asyncio.sleep(0.08)
+        assert sess.generate_reply.called
+        assert "interrupted" in sess.generate_reply.call_args.kwargs["instructions"]
+
+    @pytest.mark.asyncio
+    async def test_no_resurrect_when_reply_in_progress(self):
+        import asyncio
+        activity, sess, killed = self._stubs(agent_state="speaking")
+        turn_rescue._schedule_resurrect(activity, killed, "moving.", turn_rescue._rescue_seq)
+        await asyncio.sleep(0.08)
+        assert not sess.generate_reply.called
+
+    @pytest.mark.asyncio
+    async def test_no_resurrect_when_delivery_completed(self):
+        import asyncio
+        activity, sess, killed = self._stubs(interrupted=False)
+        turn_rescue._schedule_resurrect(activity, killed, "moving.", turn_rescue._rescue_seq)
+        await asyncio.sleep(0.08)
+        assert not sess.generate_reply.called
+
+    @pytest.mark.asyncio
+    async def test_no_resurrect_when_blocked(self):
+        import asyncio
+        activity, sess, killed = self._stubs(blocked=True)
+        turn_rescue._schedule_resurrect(activity, killed, "stop", turn_rescue._rescue_seq)
+        await asyncio.sleep(0.08)
+        assert not sess.generate_reply.called
+
+    @pytest.mark.asyncio
+    async def test_superseded_by_newer_rescue_defers(self, monkeypatch):
+        import asyncio
+        activity, sess, killed = self._stubs()
+        stale_seq = turn_rescue._rescue_seq
+        monkeypatch.setattr(turn_rescue, "_rescue_seq", stale_seq + 1)
+        turn_rescue._schedule_resurrect(activity, killed, "moving.", stale_seq)
+        await asyncio.sleep(0.08)
+        assert not sess.generate_reply.called
+
+    @pytest.mark.asyncio
+    async def test_cooldown_limits_to_one(self, monkeypatch):
+        import asyncio, time as _t
+        activity, sess, killed = self._stubs()
+        monkeypatch.setattr(turn_rescue, "_last_resurrect_mono", _t.monotonic())
+        turn_rescue._schedule_resurrect(activity, killed, "moving.", turn_rescue._rescue_seq)
+        await asyncio.sleep(0.08)
+        assert not sess.generate_reply.called
+
+    @pytest.mark.asyncio
+    async def test_kill_switch_disables(self, monkeypatch):
+        import asyncio
+        monkeypatch.setenv("JARVIS_TURN_RESCUE_RESURRECT_DISABLED", "1")
+        activity, sess, killed = self._stubs()
+        turn_rescue._schedule_resurrect(activity, killed, "moving.", turn_rescue._rescue_seq)
+        await asyncio.sleep(0.08)
+        assert not sess.generate_reply.called
+
 
 class TestInstall:
     def test_install_wraps_and_is_idempotent(self):
