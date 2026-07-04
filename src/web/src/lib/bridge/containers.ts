@@ -683,6 +683,13 @@ export async function launchContainerSession(
       CLAUDE_CODE_USE_CCR_V2: "1",
       CLAUDE_CODE_WORKER_EPOCH: String(epoch),
       CLAUDE_CODE_ENVIRONMENT_KIND: "bridge",
+      // The workbench CLI is headless — it authenticates via the local model
+      // proxy + the per-session worker token, never an interactive account
+      // login. Skip the `jarvis auth login` gate (which otherwise exits the CLI
+      // immediately: "Authentication required"), the same way the gh-app sandbox
+      // path does. JARVIS_DISABLE_AUTH (routingEnv) is the proxy-side switch; this
+      // is the CLI-startup login gate — a distinct flag.
+      JARVIS_REQUIRE_LOGIN: "0",
       // The browser-facing session URL, so the agent can link PRs back to it.
       JARVIS_SESSION_URL: `${opts.baseUrl.replace(/\/+$/, "")}/code/session_${sessionId}`,
       // Global-scope prompt caching (an experimental firstParty beta) emits

@@ -67,5 +67,9 @@ describe('launch keeps the real PAT out of the container', () => {
     expect(flat.some((c) => /GH_TOKEN=|GITHUB_TOKEN=/.test(c))).toBe(false)
     // The git scope is persisted for the proxy to enforce.
     expect(getSessionGitScope(findSession(getStore(), sid)!)).toEqual(['owner/demo'])
+    // The headless workbench CLI must skip the interactive `jarvis auth login`
+    // gate, else it exits immediately ("Authentication required") and never runs.
+    const cli = flat.find((c) => c.includes('cli.tsx'))!
+    expect(cli).toContain('JARVIS_REQUIRE_LOGIN=0')
   })
 })
