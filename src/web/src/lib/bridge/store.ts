@@ -1100,6 +1100,16 @@ export function appendUserText(store: Store, sessionId: string, text: string): v
 }
 
 /**
+ * machine_name marker for the gh-app bot's DEDICATED environment (dispatch
+ * creates it; owned by the box user so its sessions are watchable + list in the
+ * /code sidebar). Hidden from the environment PICKER so it doesn't show as a
+ * selectable "Cloud" env — the sessions stay visible, the env doesn't clutter,
+ * matching claude.ai/code (which keeps its agent env out of the picker). Single
+ * source of truth shared by the dispatch route + the environments picker route.
+ */
+export const BOT_ENV_MACHINE = "gh-app-bot";
+
+/**
  * Registered machines (workers), most-recently-seen first. When `userId` is
  * given, only that user's machines are returned (per-user CCR scoping).
  */

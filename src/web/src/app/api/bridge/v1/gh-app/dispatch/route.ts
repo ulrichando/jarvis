@@ -4,6 +4,7 @@ import { getStore } from "@/lib/bridge/db";
 import {
   appendInbound,
   appendSessionEvent,
+  BOT_ENV_MACHINE,
   createEnvironment,
   getOrCreateSession,
   listEnvironments,
@@ -38,10 +39,9 @@ export const runtime = "nodejs";
 // the container. Jobs run in minutes — well inside the token's lifetime.
 // Spec: docs/superpowers/specs/2026-07-03-jarvis-gh-app-code-session-design.md
 
-/** machine_name marker for the bot's dedicated environments. User /code envs
- *  use "Cloud container" (environments/cloud route), so this can never collide
- *  with — or be picked up instead of — an env the user configured. */
-const BOT_ENV_MACHINE = "gh-app-bot";
+// BOT_ENV_MACHINE (imported from the store) marks the bot's dedicated env. User
+// /code envs use "Cloud container", so it never collides with — or is picked up
+// instead of — an env the user configured; and the picker hides it (store.ts).
 
 function serviceTokenOk(req: Request): boolean {
   const expected = process.env.GH_APP_BRIDGE_TOKEN ?? "";

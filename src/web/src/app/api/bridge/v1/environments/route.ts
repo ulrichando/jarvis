@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getStore } from '@/lib/bridge/db'
-import { listEnvironments, reapStaleSandboxes, isEnvironmentOnline, ensureDefaultCloudEnv } from '@/lib/bridge/store'
+import { listEnvironments, reapStaleSandboxes, isEnvironmentOnline, ensureDefaultCloudEnv, BOT_ENV_MACHINE } from '@/lib/bridge/store'
 import { getUserId } from '@/lib/auth-helpers'
 import { bridgeError } from '@/lib/bridge/errors'
 
@@ -16,7 +16,12 @@ export async function GET(req: Request): Promise<NextResponse> {
     ensureDefaultCloudEnv(store, userId) // always offer a "Default" cloud env (claude.ai parity)
     reapStaleSandboxes(store) // lazy GC of stale cloud sandboxes
     const now = Date.now()
-    const environments = listEnvironments(store, userId).map((e) => ({
+    const environments = listEnvironments(store, userId)
+      // Hide the gh-app bot's dedicated env from the picker — it's owned by the
+      // user (so its sessions stay watchable in the sidebar) but is not a
+      // user-selectable environment. Matches claude.ai/code.
+      .filter((e) => e.machine_name !== BOT_ENV_MACHINE)
+      .map((e) => ({
       environment_id: e.environment_id,
       machine_name: e.machine_name,
       directory: e.directory,
