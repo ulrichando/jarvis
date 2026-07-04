@@ -33,6 +33,20 @@
     return t.replace(/\s+/g, " ").slice(0, 80);
   }
 
+  // Authoritative destructive-click gate: runs on the RESOLVED element, so it
+  // catches a "Delete account" button whose selector never mentions delete
+  // (the background's selector pre-check can't). Returns a needs_confirmation
+  // refusal when the element looks destructive and the user hasn't confirmed,
+  // else null. Safety module may be absent in a bare unit test — then skip.
+  function _confirmGate(label, ctx) {
+    if (ctx && ctx.confirmed) return null;
+    const S = (typeof globalThis !== "undefined" && globalThis.JARVIS_SAFETY) || null;
+    if (S && typeof S.isDestructiveText === "function" && S.isDestructiveText(label)) {
+      return { ok: false, needs_confirmation: true, error: `"${label}" looks destructive — needs confirmation` };
+    }
+    return null;
+  }
+
   // ── Reading ────────────────────────────────────────────────────────
   function ext_get_url() {
     return ok({ url: location.href, title: document.title });
@@ -74,24 +88,70 @@
     });
   }
 
+  // Recent console messages captured by console_hook.js (MAIN world) → content.js.
+  function ext_read_console(args = {}) {
+    const buf = (typeof globalThis !== "undefined" && globalThis.__jarvisConsole) || [];
+    const rows = (args.level ? buf.filter((m) => m.level === args.level) : buf).slice(-50);
+    return ok({ messages: rows, count: rows.length });
+  }
+
+  // Recent network requests via the Resource Timing API (no permissions needed).
+  function ext_read_network() {
+    try {
+      const entries = (typeof performance !== "undefined" && performance.getEntriesByType)
+        ? performance.getEntriesByType("resource") : [];
+      const rows = entries.slice(-60).map((e) => ({
+        url: e.name, type: e.initiatorType, ms: Math.round(e.duration || 0), size: e.transferSize || 0,
+      }));
+      return ok({ requests: rows, count: rows.length });
+    } catch (e) { return err(e.message); }
+  }
+
   // ── Mouse ──────────────────────────────────────────────────────────
   function _fire(el, type, init) {
     el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, ...(init || {}) }));
   }
 
-  function ext_click(args = {}) {
+  function ext_click(args = {}, ctx = {}) {
     try {
       const el = _one(args.selector);
+      const label = _label(el);
+      const blocked = _confirmGate(label, ctx);
+      if (blocked) return blocked;
       try { el.scrollIntoView({ block: "center" }); } catch {} // best-effort; never fail the click on it
       _fire(el, "mousedown"); _fire(el, "mouseup");
       if (typeof el.click === "function") el.click(); else _fire(el, "click");
-      return ok({ clicked: _label(el) });
+      return ok({ clicked: label });
     } catch (e) { return err(e.message); }
   }
 
-  function ext_right_click(args = {}) {
-    try { const el = _one(args.selector); el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); return ok(); }
-    catch (e) { return err(e.message); }
+  function ext_right_click(args = {}, ctx = {}) {
+    try {
+      const el = _one(args.selector);
+      const blocked = _confirmGate(_label(el), ctx);
+      if (blocked) return blocked;
+      el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+      return ok();
+    } catch (e) { return err(e.message); }
+  }
+
+  // Click the first interactive element whose visible text matches — the
+  // reliable way to "click the Buy now button" without guessing a CSS selector.
+  function ext_click_text(args = {}, ctx = {}) {
+    try {
+      const needle = (args.text || "").trim().toLowerCase();
+      if (!needle) return err("text required");
+      const els = [...document.querySelectorAll("a,button,[role=button],input[type=submit],input[type=button],summary,label,[onclick]")];
+      const el = els.find((e) => (e.innerText || e.textContent || e.value || e.getAttribute("aria-label") || "").trim().toLowerCase().includes(needle));
+      if (!el) return err(`no clickable element with text: ${args.text}`);
+      const label = _label(el);
+      const blocked = _confirmGate(label, ctx);
+      if (blocked) return blocked;
+      try { el.scrollIntoView({ block: "center" }); } catch {}
+      _fire(el, "mousedown"); _fire(el, "mouseup");
+      if (typeof el.click === "function") el.click(); else _fire(el, "click");
+      return ok({ clicked: label });
+    } catch (e) { return err(e.message); }
   }
 
   function ext_hover(args = {}) {
@@ -210,12 +270,66 @@
     return ok({ action: "close_requested" });
   }
 
+  // ── Workflow recording ────────────────────────────────────────────
+  // Records the user's clicks + field edits (as replayable click/type/select
+  // steps with computed selectors). Single-page for v1 — a navigation reloads
+  // the content script and ends the recording.
+  let _recording = false;
+  let _recSteps = [];
+  const _esc = (s) => (typeof CSS !== "undefined" && CSS.escape ? CSS.escape(s) : String(s).replace(/[^\w-]/g, "\\$&"));
+  function _cssSelector(el) {
+    if (!el || el.nodeType !== 1) return "";
+    if (el.id) return "#" + _esc(el.id);
+    const parts = [];
+    let cur = el;
+    while (cur && cur.nodeType === 1 && parts.length < 5) {
+      if (cur.id) { parts.unshift("#" + _esc(cur.id)); break; }
+      let sel = cur.tagName.toLowerCase();
+      if (cur.classList && cur.classList.length) sel += "." + [...cur.classList].slice(0, 2).map(_esc).join(".");
+      const parent = cur.parentElement;
+      if (parent) {
+        const sibs = [...parent.children].filter((s) => s.tagName === cur.tagName);
+        if (sibs.length > 1) sel += `:nth-of-type(${sibs.indexOf(cur) + 1})`;
+      }
+      parts.unshift(sel);
+      cur = parent;
+    }
+    return parts.join(" > ");
+  }
+  function _onRecClick(e) {
+    if (!_recording) return;
+    const sel = _cssSelector(e.target);
+    if (sel) _recSteps.push({ action: "click", args: { selector: sel } });
+  }
+  function _onRecChange(e) {
+    if (!_recording) return;
+    const el = e.target, sel = _cssSelector(el);
+    if (!sel) return;
+    if (el.tagName === "SELECT") _recSteps.push({ action: "select", args: { selector: sel, value: el.value } });
+    else if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") _recSteps.push({ action: "type", args: { selector: sel, text: el.value } });
+  }
+  function ext_record_start() {
+    _recording = true; _recSteps = [];
+    document.addEventListener("click", _onRecClick, true);
+    document.addEventListener("change", _onRecChange, true);
+    return ok();
+  }
+  function ext_record_stop() {
+    _recording = false;
+    document.removeEventListener("click", _onRecClick, true);
+    document.removeEventListener("change", _onRecChange, true);
+    return ok({ steps: _recSteps });
+  }
+
   const HANDLERS = {
     get_url: ext_get_url,
     extract_text: ext_extract_text,
     find_by_text: ext_find_by_text,
     dom_summary: ext_dom_summary,
+    read_console: ext_read_console,
+    read_network: ext_read_network,
     click: ext_click,
+    click_text: ext_click_text,
     right_click: ext_right_click,
     hover: ext_hover,
     drag: ext_drag,
@@ -227,14 +341,18 @@
     scroll: ext_scroll,
     wait_for: ext_wait_for,
     close_tab: ext_close_tab,
+    record_start: ext_record_start,
+    record_stop: ext_record_stop,
   };
 
   const api = {
     HANDLERS,
     ext_get_url, ext_extract_text, ext_find_by_text, ext_dom_summary,
-    ext_click, ext_right_click, ext_hover, ext_drag, ext_select,
+    ext_read_console, ext_read_network,
+    ext_click, ext_click_text, ext_right_click, ext_hover, ext_drag, ext_select,
     ext_type, ext_fill_form, ext_submit, ext_press_key,
     ext_scroll, ext_wait_for, ext_close_tab,
+    ext_record_start, ext_record_stop,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root) root.JARVIS_ACTIONS = api;
