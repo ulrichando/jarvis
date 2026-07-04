@@ -2,6 +2,8 @@ import * as path from 'path'
 import { setCwd } from '../../utils/Shell.js'
 import { setOriginalCwd } from '../../bootstrap/state.js'
 import { findGitRoot } from '../../utils/git.js'
+import { clearRepositoryCaches } from '../../utils/detectRepository.js'
+import { resetGitFileWatcher } from '../../utils/git/gitFilesystem.js'
 import {
   getKnownPathsForRepo,
   filterExistingPaths,
@@ -40,6 +42,15 @@ const realDeps: RepoSwitchDeps = {
     process.chdir(p)
     setCwd(p)
     setOriginalCwd(p)
+    // The repo-detection caches (repositoryWithHostCache + the gitWatcher
+    // remote-url/branch cache) are cwd-independent and were already warmed with
+    // the OLD repo when the picker rendered. Without busting them the resume's
+    // validateSessionRepository still reads the old repo → false "not_in_repo".
+    // (The --teleport flag never hits this: it chdirs at startup before anything
+    // caches.) ponytail: reset is the blunt-but-correct tool for a mid-session
+    // repo change, which normal operation never does.
+    clearRepositoryCaches()
+    resetGitFileWatcher()
     // Seed tracked-paths config so the next teleport into this repo is instant.
     void updateGithubRepoPathMapping()
   },
