@@ -45,7 +45,7 @@ function post(body: unknown, token?: string): Request {
 const validBody = {
   repo: 'octo/maxrun',
   installationToken: 'ghs_inst_tok',
-  botLogin: 'jarvis-gh-bot',
+  botLogin: 'jvs',
   task: 'fix the flaky test in ci.yml',
   publicOrigin: 'https://0wlan.com/',
   model: 'claude-opus-4-8',
@@ -157,7 +157,7 @@ describe('POST /api/bridge/v1/gh-app/dispatch', () => {
       baseUrl: 'https://0wlan.com',
       model: 'claude-opus-4-8',
       installationToken: 'ghs_inst_tok',
-      botLogin: 'jarvis-gh-bot',
+      botLogin: 'jvs',
     })
     // Service-token route: the browser-session path is never touched.
     expect(vi.mocked(getUserId)).not.toHaveBeenCalled()

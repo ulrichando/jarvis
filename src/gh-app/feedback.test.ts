@@ -126,7 +126,7 @@ describe('gh-app feedback report', () => {
 describe('gh-app feedback messages', () => {
   test('workingMessage quotes the task and carries the self-marker', () => {
     const m = workingMessage('add HELLO.md')
-    expect(m).toContain('**jarvis-gh-bot** is on it — working on:')
+    expect(m).toContain('**jvs** is on it — working on:')
     expect(m).toContain('> add HELLO.md')
     expect(m).toContain(SELF_MARKER)
   })
@@ -179,7 +179,7 @@ describe('gh-app feedback session links (Phase C)', () => {
 
   test('workingMessage WITHOUT a session url is byte-identical to the sandbox shape', () => {
     expect(workingMessage('add HELLO.md')).toBe(
-      `🤖 **jarvis-gh-bot** is on it — working on:\n\n> add HELLO.md\n\n${SELF_MARKER}`,
+      `🤖 **jvs** is on it — working on:\n\n> add HELLO.md\n\n${SELF_MARKER}`,
     )
   })
 

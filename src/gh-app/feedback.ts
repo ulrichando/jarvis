@@ -40,7 +40,7 @@ export function workingMessage(task: string, sessionUrl?: string): string {
   // Code-session path only (Phase C): link the live, watchable /code run.
   // Without a url the sandbox shape stays byte-identical.
   const watch = sessionUrl ? `\n\n▶︎ Watch it live: ${sessionUrl}` : ''
-  return `🤖 **jarvis-gh-bot** is on it — working on:\n\n${quoted}${watch}\n\n${SELF_MARKER}`
+  return `🤖 **jvs** is on it — working on:\n\n${quoted}${watch}\n\n${SELF_MARKER}`
 }
 
 export function prNumberFromUrl(prUrl: string): number | null {

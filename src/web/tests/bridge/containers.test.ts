@@ -876,20 +876,20 @@ describe('launchContainerSession', () => {
       baseUrl: 'https://0wlan.com',
       proxyHealthy: async () => false,
       installationToken: 'ghs_inst_tok',
-      botLogin: 'jarvis-gh-bot',
+      botLogin: 'jvs',
       exec,
     })
     const flat = calls.map((c) => c.join(' '))
     // Committer = the App bot, not the connected user ('tester').
     const gitcfg = flat.find((c) => c.includes('git config --global user.name'))!
-    expect(gitcfg).toContain("user.name 'jarvis-gh-bot'")
-    expect(gitcfg).toContain("user.email 'jarvis-gh-bot@users.noreply.github.com'")
+    expect(gitcfg).toContain("user.name 'jvs'")
+    expect(gitcfg).toContain("user.email 'jvs@users.noreply.github.com'")
     expect(gitcfg).not.toContain('tester')
     // The installation token lands in the session meta (for the git proxy +
     // host-side PR)…
     const meta = JSON.parse(findSession(store, sessionId)!.container_json!)
     expect(meta.installationToken).toBe('ghs_inst_tok')
-    expect(meta.botLogin).toBe('jarvis-gh-bot')
+    expect(meta.botLogin).toBe('jvs')
     // …but NEVER in any docker command line (the claude.ai/code invariant:
     // tokens stay host-side; the container only holds the per-session cap).
     expect(flat.some((c) => c.includes('ghs_inst_tok'))).toBe(false)
@@ -923,7 +923,7 @@ describe('launchContainerSession', () => {
       baseUrl: 'https://0wlan.com',
       proxyHealthy: async () => false,
       installationToken: 'ghs_inst_tok',
-      botLogin: 'jarvis-gh-bot',
+      botLogin: 'jvs',
       exec: fakeDocker().exec,
     })
     const exec: DockerExec = async () => ({ stdout: '@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' })
@@ -967,7 +967,7 @@ describe('launchContainerSession', () => {
       baseUrl: 'https://0wlan.com',
       proxyHealthy: async () => false,
       installationToken: 'ghs_inst_tok',
-      botLogin: 'jarvis-gh-bot',
+      botLogin: 'jvs',
       exec: fakeDocker().exec,
     })
     const sessionUrl = `https://0wlan.com/code/session_${sessionId}`
@@ -1142,7 +1142,7 @@ describe('launchContainerSession', () => {
       baseUrl: 'https://0wlan.com',
       proxyHealthy: async () => false,
       installationToken: 'ghs_inst_tok',
-      botLogin: 'jarvis-gh-bot',
+      botLogin: 'jvs',
       exec: fakeDocker().exec,
     })
     const exec: DockerExec = async (args) =>
