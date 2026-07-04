@@ -25,7 +25,7 @@ _DEFAULT_TTL_S = 20.0
 _MAX_PX_OPUS = 2576
 _MAX_PX_VISION = 1568
 _MAX_DOWNSCALE_PX = 1280
-_HIRES_MODEL_MARKERS = ("opus-4-7", "opus-4-8", "fable-5")
+_HIRES_MODEL_MARKERS = ("opus-4-7", "opus-4-8", "fable-5", "sonnet-5")
 _TRAIL_MAXLEN = 3
 
 # On-screen text is UNTRUSTED. Flag obvious prompt-injection phrasing in any

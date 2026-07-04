@@ -120,6 +120,7 @@ Don't trust training data for model names — these were verified online per the
 
 | Model id | Provider | Notes |
 |---|---|---|
+| `claude-sonnet-5` | Anthropic | newest balanced tier (added 2026-07-04; 2576px hi-res input) |
 | `claude-sonnet-4-6` | Anthropic | sidecar default; strongest on OSWorld (~72.7%) |
 | `claude-opus-4-8` | Anthropic | most capable |
 | `claude-opus-4-7` | Anthropic | allowed (sidecar set) |
