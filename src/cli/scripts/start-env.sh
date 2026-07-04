@@ -183,7 +183,17 @@ export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1   # enable swarm/agent-teams
 # now live on the local jarvis-web (api/bridge/v1 responds, auth-gated), so
 # surface it + point it there. Override JARVIS_CCR_BASE_URL for a non-local web.
 export JARVIS_ULTRAPLAN="${JARVIS_ULTRAPLAN:-1}"
+# CCR / teleport backend. Prefer the linked JARVIS server from keys.env
+# (JARVIS_SERVER_URL, e.g. https://0wlan.com → …/api), else local dev. This is
+# what the real teleport machinery (fetchCodeSessionsFromSessionsAPI, /teleport,
+# --teleport) hits for /v1/sessions.
+if [ -z "${JARVIS_CCR_BASE_URL:-}" ] && [ -n "${JARVIS_SERVER_URL:-}" ]; then
+  export JARVIS_CCR_BASE_URL="${JARVIS_SERVER_URL%/}/api"
+fi
 export JARVIS_CCR_BASE_URL="${JARVIS_CCR_BASE_URL:-http://127.0.0.1:3000/api}"
+# Teleport/CCR auth = the Remote Control bridge token (per-user), not a claude.ai
+# OAuth token. teleport/api.js uses JARVIS_CCR_TOKEN as the Bearer in JARVIS mode.
+export JARVIS_CCR_TOKEN="${JARVIS_CCR_TOKEN:-${JARVIS_BRIDGE_TOKEN:-}}"
 
 if [ "$JARVIS_SANDBOX_ENABLED" = "1" ]; then
   JARVIS_FLAG_SETTINGS='{"sandbox":{"enabled":true}}'
