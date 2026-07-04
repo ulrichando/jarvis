@@ -547,6 +547,60 @@ describe('launchContainerSession', () => {
     expect(cli).toContain('HTTP_PROXY=http://jarvis-egress-e9e9000011223344:3128')
   })
 
+  test('internalBaseUrl (containerized deploy) routes the child to internal origins over the shared bridge; session URL stays public', async () => {
+    process.env.JARVIS_CLI_PROXY_URL = 'http://hub:4000'
+    try {
+      const store = getStore()
+      const env = createEnvironment(store, {
+        machine_name: 'gh-app-bot',
+        directory: '/workspace',
+        git_repo_url: 'https://github.com/owner/demo',
+        max_sessions: 4,
+        worker_type: 'container',
+        user_id: '00000000-0000-0000-0000-000000000001',
+      })
+      getOrCreateSession(store, 'ab12000011223344', env.environment_id)
+      setEnvironmentConfig(store, env.environment_id, {
+        envVars: {},
+        setupScript: '',
+        networkLevel: 'trusted',
+        customAllowlist: [],
+      })
+      const { calls, exec } = fakeDocker()
+      await launchContainerSession(store, {
+        sessionId: 'ab12000011223344',
+        repoFullName: 'owner/demo',
+        baseUrl: 'https://0wlan.com', // PUBLIC — the browser session URL
+        internalBaseUrl: 'http://web:3000', // container-facing — git-proxy + callback
+        proxyHealthy: async () => true,
+        exec,
+      })
+      const flat = calls.map((c) => c.join(' '))
+      // The workbench joins the shared internal bridge (so `web`/`hub` resolve).
+      expect(
+        flat.some((c) => c.startsWith('network connect jarvis-code-bridge jarvis-code-ab12000011223344')),
+      ).toBe(true)
+      // git-proxy remote uses the INTERNAL origin, not the public CF origin.
+      expect(
+        flat.some((c) => c.includes('http://web:3000/api/bridge/v1/code/sessions/ab12000011223344/git/')),
+      ).toBe(true)
+      const cli = flat.find((c) => c.includes('cli.tsx'))!
+      // CCR callback (sdkUrl) → internal origin; NEVER the host-gateway alias.
+      expect(cli).toContain('web:3000/api/bridge/v1/code/sessions/ab12000011223344')
+      expect(cli).not.toContain('host.docker.internal')
+      expect(cli).not.toContain('0wlan.com/api/')
+      // The browser session URL stays PUBLIC (the watch link).
+      expect(cli).toContain('JARVIS_SESSION_URL=https://0wlan.com/code/session_ab12000011223344')
+      // Model proxy reached by service name over the bridge.
+      expect(cli).toContain('ANTHROPIC_BASE_URL=http://hub:4000')
+      // NO_PROXY names the internal hosts so the CLI reaches them directly (not squid).
+      expect(cli).toMatch(/NO_PROXY=[^ ]*\bweb\b/)
+      expect(cli).toMatch(/NO_PROXY=[^ ]*\bhub\b/)
+    } finally {
+      delete process.env.JARVIS_CLI_PROXY_URL
+    }
+  })
+
   test('default network level (full) keeps --network=host + 127.0.0.1 callback', async () => {
     const sessionId = makeSession()
     const store = getStore()

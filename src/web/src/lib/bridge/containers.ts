@@ -189,8 +189,19 @@ export async function launchContainerSession(
   opts: {
     sessionId: string;
     repoFullName: string;
-    /** http://host:port — where the in-container child reaches this app. */
+    /** http://host:port — the PUBLIC origin the browser session URL is built
+     *  from (JARVIS_SESSION_URL). Also the child's callback/git-proxy origin
+     *  UNLESS internalBaseUrl is set (see below). */
     baseUrl: string;
+    /** Container-facing origin for the git-proxy + CCR callback, for deploys
+     *  where this app is NOT reachable via host.docker.internal (containerized
+     *  behind Cloudflare: web is expose-only, the model proxy binds loopback).
+     *  When set (isolated only), the workbench also joins the shared
+     *  `jarvis-code-bridge` network so this origin's host (e.g. http://web:3000)
+     *  resolves by service name, while `baseUrl` stays PUBLIC for the session
+     *  URL — the two diverge on such deploys. Unset (local/desktop): the child
+     *  reaches this app via the host.docker.internal rewrite of baseUrl. */
+    internalBaseUrl?: string;
     /** The model the user picked (a MODELS_META id). Routed through the local
      *  proxy when it is up (any provider), else `--model` for Claude-direct. */
     model?: string;
@@ -303,11 +314,20 @@ export async function launchContainerSession(
   const netArgs = isolated
     ? ["--network", netName, "--add-host=host.docker.internal:host-gateway"]
     : ["--network=host"];
-  // When isolated the child cannot use 127.0.0.1 for the callback — swap it for
-  // the host gateway alias.
-  const childBaseUrl = isolated
-    ? opts.baseUrl.replace(/\/\/(?:127\.0\.0\.1|localhost)(:|\/|$)/, "//host.docker.internal$1")
-    : opts.baseUrl;
+  // Containerized deploy (behind a proxy, host.docker.internal unreachable):
+  // the child reaches this app + the model proxy over a shared bridge, naming
+  // them by compose service. Only active when internalBaseUrl is supplied AND
+  // isolated (the `full`/host-network path already sees the host directly).
+  const internalMode = isolated && !!opts.internalBaseUrl;
+  const CODE_BRIDGE_NET = process.env.JARVIS_CODE_BRIDGE_NETWORK || "jarvis-code-bridge";
+  // The child's callback/git-proxy origin. internalMode → the service-name
+  // origin (e.g. http://web:3000) reached over CODE_BRIDGE_NET; else isolated →
+  // swap 127.0.0.1 for the host-gateway alias; else (host net) → as-is.
+  const childBaseUrl = internalMode
+    ? opts.internalBaseUrl!.replace(/\/+$/, "")
+    : isolated
+      ? opts.baseUrl.replace(/\/\/(?:127\.0\.0\.1|localhost)(:|\/|$)/, "//host.docker.internal$1")
+      : opts.baseUrl;
 
   // 1. Set up a cloud container
   await step("Set up a cloud container", async () => {
@@ -360,6 +380,16 @@ export async function launchContainerSession(
       "sleep",
       "infinity",
     ]);
+    // Containerized deploy: join the shared internal bridge so the child
+    // resolves this app + the model proxy by service name. internal:true — only
+    // web+hub live there, so egress stays squid-only and postgres/docker-proxy
+    // stay unreachable. Best-effort: a miss surfaces at the clone step below.
+    if (internalMode) {
+      await exec(["network", "connect", CODE_BRIDGE_NET, name]).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        emit(store, sessionId, `⚠ shared bridge (${CODE_BRIDGE_NET}) attach failed — ${msg.slice(0, 160)}`);
+      });
+    }
     setSessionContainer(store, sessionId, {
       container: name,
       repo: repoFullName,
@@ -573,10 +603,15 @@ export async function launchContainerSession(
     const meta = opts.model ? MODELS_META[opts.model] : undefined;
     // Host-side URL (the web server probes this); the child reaches the same
     // proxy at host.docker.internal on an isolated network.
+    // internalMode reaches the proxy by its compose service name over the shared
+    // bridge (set JARVIS_CLI_PROXY_URL=http://hub:4000), so no host-gateway swap;
+    // plain isolated swaps 127.0.0.1 for the host-gateway alias; host net → as-is.
     const proxyHealthUrl = process.env.JARVIS_CLI_PROXY_URL || "http://127.0.0.1:4000";
-    const proxyUrl = isolated
-      ? proxyHealthUrl.replace(/\/\/(?:127\.0\.0\.1|localhost)(:|\/|$)/, "//host.docker.internal$1")
-      : proxyHealthUrl;
+    const proxyUrl = internalMode
+      ? proxyHealthUrl
+      : isolated
+        ? proxyHealthUrl.replace(/\/\/(?:127\.0\.0\.1|localhost)(:|\/|$)/, "//host.docker.internal$1")
+        : proxyHealthUrl;
     const probe =
       opts.proxyHealthy ??
       (() =>
@@ -616,6 +651,29 @@ export async function launchContainerSession(
       }
     }
 
+    // NO_PROXY: internalMode reaches web + the model proxy directly over the
+    // shared bridge (not via squid), so name their service hosts; else only the
+    // host-gateway alias is a direct hop.
+    const hostOf = (u: string): string => {
+      try {
+        return new URL(u).hostname;
+      } catch {
+        return "";
+      }
+    };
+    const noProxyHosts = internalMode
+      ? Array.from(
+          new Set(
+            [
+              hostOf(opts.internalBaseUrl!),
+              hostOf(proxyHealthUrl),
+              "localhost",
+              "127.0.0.1",
+            ].filter(Boolean),
+          ),
+        ).join(",")
+      : "host.docker.internal,localhost,127.0.0.1";
+
     const childEnv: Record<string, string> = {
       // User-configured env vars first, so the worker-handshake + routing keys
       // below always win over anything the user set with the same name.
@@ -641,8 +699,8 @@ export async function launchContainerSession(
         HTTPS_PROXY: `http://${proxyName}:3128`,
         http_proxy: `http://${proxyName}:3128`,
         https_proxy: `http://${proxyName}:3128`,
-        NO_PROXY: "host.docker.internal,localhost,127.0.0.1",
-        no_proxy: "host.docker.internal,localhost,127.0.0.1",
+        NO_PROXY: noProxyHosts,
+        no_proxy: noProxyHosts,
       }),
       // NO GH_TOKEN/GITHUB_TOKEN: the real GitHub credential never enters the
       // container. git auths to the host-side proxy via the cap-token credential

@@ -39,6 +39,9 @@ services:
         # Inlined into the client bundle at build time → set your domain.
         NEXT_PUBLIC_PTY_URL: ${NEXT_PUBLIC_PTY_URL:-}
     restart: unless-stopped
+    # default = the stack (postgres, docker-proxy, caddy, hub); jarvis-code-bridge
+    # = the internal bridge /code workbench containers join to reach the git-proxy.
+    networks: [default, jarvis-code-bridge]
     env_file:
       - path: .env.production
         required: false
@@ -82,6 +85,9 @@ services:
       context: ../cli
       dockerfile: Dockerfile.hub
     restart: unless-stopped
+    # Also on jarvis-code-bridge so /code workbench containers reach the model
+    # proxy by service name (hub:4000) when host.docker.internal is unreachable.
+    networks: [default, jarvis-code-bridge]
     env_file:
       - path: .env.production
         required: false
@@ -199,3 +205,17 @@ volumes:
   caddy_config:
   pg_data:
   gh_app_data:
+
+networks:
+  default:
+  # Shared INTERNAL bridge: /code workbench containers join it at launch to
+  # reach the web app (git-proxy + CCR callback) and the hub (model proxy) by
+  # service name — the path that host.docker.internal can't serve here (web is
+  # expose-only, hub binds host-loopback) and the public 0wlan.com can't (CF
+  # bot-challenge). internal:true → no external egress via this net (session
+  # egress stays squid-only); only web+hub+workbench attach, so postgres +
+  # docker-proxy remain unreachable from session containers. containers.ts
+  # connects the workbench with `docker network connect jarvis-code-bridge`.
+  jarvis-code-bridge:
+    name: jarvis-code-bridge
+    internal: true
