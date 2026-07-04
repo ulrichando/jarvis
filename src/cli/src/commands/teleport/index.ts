@@ -96,6 +96,12 @@ async function pull(base: string, token: string, id: string): Promise<string> {
   if (!repo || !branch) {
     return 'That session has no pushed branch yet — open a PR (or push) in the session first.'
   }
+  // Defense-in-depth: branch reaches `git` argv. A name starting with `-`
+  // (or containing `..`) could smuggle a flag / traverse — reject it even
+  // though it comes from our own server.
+  if (!/^[A-Za-z0-9_./-]+$/.test(branch) || branch.startsWith('-') || branch.includes('..')) {
+    return 'The session returned an unusable branch name.'
+  }
 
   // Only teleport when we're already in a matching checkout — a slash command
   // shouldn't clone into or mutate an unrelated repo under the running session.
@@ -113,8 +119,9 @@ async function pull(base: string, token: string, id: string): Promise<string> {
   }
 
   const cwd = process.cwd()
-  await git(['fetch', 'origin', branch], cwd)
-  let co = await git(['checkout', branch], cwd)
+  await git(['fetch', 'origin', '--', branch], cwd)
+  let co = await git(['checkout', '--', branch], cwd)
+  // No `--` before a new-branch name in `checkout -b`; the regex above is the guard.
   if (!co.ok) co = await git(['checkout', '-b', branch, `origin/${branch}`], cwd)
   if (!co.ok) return `Could not check out ${branch}. Fetch it manually: git fetch origin ${branch}.`
 

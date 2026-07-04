@@ -75,6 +75,11 @@ export async function jarvisTeleport(sessionId?: string): Promise<void> {
   if (!repo || !branch) {
     bridgeFail('That session has no pushed branch yet — open a PR (or push) in the session first.')
   }
+  // Defense-in-depth: branch reaches `git` argv — reject a name that could
+  // smuggle a flag (`-…`) or traverse (`..`), even from our own server.
+  if (!/^[A-Za-z0-9_./-]+$/.test(branch!) || branch!.startsWith('-') || branch!.includes('..')) {
+    bridgeFail('The session returned an unusable branch name.')
+  }
 
   // Locate the repo: reuse the current checkout if it matches, else clone.
   let cwd = process.cwd()
@@ -102,8 +107,8 @@ export async function jarvisTeleport(sessionId?: string): Promise<void> {
   }
 
   process.stdout.write(`Fetching branch ${branch} …\n`)
-  await git(['fetch', 'origin', branch], cwd)
-  let co = await git(['checkout', branch], cwd)
+  await git(['fetch', 'origin', '--', branch], cwd)
+  let co = await git(['checkout', '--', branch], cwd)
   if (!co.ok) co = await git(['checkout', '-b', branch, `origin/${branch}`], cwd)
   if (!co.ok) bridgeFail(`Could not check out ${branch}. Fetch it manually: git fetch origin ${branch}.`)
 
