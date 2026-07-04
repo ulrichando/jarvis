@@ -25,7 +25,19 @@ export function bridgeAuth(): { base: string; token: string } {
   if (!base || !token) {
     bridgeFail('Not linked to a JARVIS server. Run `jarvis auth login` first.')
   }
-  return { base: base.replace(/\/+$/, ''), token }
+  return { base: normalizeBase(base), token }
+}
+
+/** Reduce a configured base to the bare ORIGIN. JARVIS_BRIDGE_BASE_URL is
+ *  written as `https://host/api/bridge`, but every call path here already
+ *  includes the full `/api/bridge/v1/...` — without stripping it the URL
+ *  doubles to `/api/bridge/api/bridge/v1/...` (404). JARVIS_SERVER_URL is
+ *  already a bare origin and passes through unchanged. */
+export function normalizeBase(base: string): string {
+  return base
+    .replace(/\/+$/, '')
+    .replace(/\/api\/bridge$/, '')
+    .replace(/\/api$/, '')
 }
 
 export async function bridgeFetch<T>(

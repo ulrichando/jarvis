@@ -29,7 +29,10 @@ function auth(): { base: string; token: string } | { error: string } {
   if (!base || !token) {
     return { error: 'Not linked to a JARVIS server. Run `jarvis auth login` first.' }
   }
-  return { base: base.replace(/\/+$/, ''), token }
+  // Bare origin — JARVIS_BRIDGE_BASE_URL carries a /api/bridge suffix the call
+  // paths below already include, so strip it to avoid a doubled path (404).
+  const origin = base.replace(/\/+$/, '').replace(/\/api\/bridge$/, '').replace(/\/api$/, '')
+  return { base: origin, token }
 }
 
 async function getJson<T>(
