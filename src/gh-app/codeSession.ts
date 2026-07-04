@@ -1,0 +1,257 @@
+// src/gh-app/codeSession.ts — Phase C: run a bot job as a watchable /code
+// session instead of the throwaway sandbox (GH_APP_USE_CODE_SESSIONS).
+//
+// Three service calls against the web app over the internal docker network:
+//   createCodeSession → POST /api/bridge/v1/gh-app/dispatch
+//        (mints the App installation token here — the web holds no App
+//        private key — and passes it raw; the route stores it in the
+//        session's container meta where the scoped git proxy + host-side PR
+//        path pick it up)
+//   pollUntilDone     → GET  /api/bridge/v1/sessions/{id}   (the `status`
+//        field, ccrSessionStatus: running/idle/requires_action)
+//   openSessionPr     → POST /api/bridge/v1/sessions/{id}/pr (the EXISTING
+//        session PR route — createContainerPR commits as the bot and stamps
+//        the session URL into the PR body + Jarvis-Session trailer)
+//
+// Auth on every call: `Authorization: Bearer <JARVIS_LOCAL_API_TOKEN>`
+// satisfies src/web proxy.ts's network bearer gate (and the PR route's
+// v1-permissive worker check); the dispatch route's OWN service token rides
+// the dedicated X-GH-App-Token header — the two must never share a header.
+//
+// Everything is injected (fetch + token minter + clock/sleep) so tests are
+// hermetic — no web app, no GitHub, no real waiting.
+// Spec: docs/superpowers/specs/2026-07-03-jarvis-gh-app-code-session-design.md
+import type { Job } from './jobs.js'
+
+export type CodeSessionConfig = {
+  /** Internal web-service base (docker network), e.g. http://web:3000. */
+  webUrl: string
+  /** JARVIS_LOCAL_API_TOKEN — proxy.ts's network bearer gate. */
+  bearerToken: string
+  /** GH_APP_BRIDGE_TOKEN — the dispatch route's own service token. */
+  serviceToken: string
+  /** Browser-facing origin the session links are built on (NOT the internal
+   * webUrl — links land in GitHub threads and PR bodies). */
+  publicOrigin: string
+  /** The App bot's committer identity, e.g. `<app-slug>[bot]`. */
+  botLogin: string
+  model?: string
+}
+
+export type CodeSessionDeps = {
+  fetch: typeof fetch
+  /** Mint a short-lived installation token scoped to the job's repo — the
+   * same minter the worker uses (the gh-app holds the App private key). */
+  mintToken: (installationId: number, repo: string) => Promise<string>
+  /** Injected for tests; defaults to real timers/clock. */
+  sleep?: (ms: number) => Promise<void>
+  now?: () => number
+  log?: (m: string) => void
+  /** Test-only overrides for the per-call fetch abort timeouts (I1).
+   * Defaults: dispatch/poll 10 s; pr 90 s (it does real git work). */
+  fetchTimeoutMs?: { dispatch?: number; poll?: number; pr?: number }
+}
+
+// I1: every service fetch is abort-bounded — the poll loop is
+// iteration-bounded by its deadline, but a single hung HTTP call to
+// web:3000 would otherwise wedge the whole worker loop forever. A timed-out
+// fetch throws (TimeoutError), which the existing throw→markFailed+feedback
+// (dispatch/PR) and transient-tolerance (poll) paths already absorb.
+const DISPATCH_FETCH_TIMEOUT_MS = 10_000
+const POLL_FETCH_TIMEOUT_MS = 10_000
+const PR_FETCH_TIMEOUT_MS = 90_000
+
+const authHeaders = (cfg: CodeSessionConfig): Record<string, string> => ({
+  Authorization: `Bearer ${cfg.bearerToken}`,
+})
+
+/**
+ * Mint the job's installation token and dispatch the task as a /code
+ * session. Throws on any failure (status-only — never echoes the token);
+ * the worker maps a throw to markFailed + best-effort thread feedback.
+ */
+export async function createCodeSession(
+  job: Job,
+  cfg: CodeSessionConfig,
+  deps: CodeSessionDeps,
+): Promise<{ sessionId: string; sessionUrl: string }> {
+  const installationToken = await deps.mintToken(job.installationId, job.repo)
+  const res = await deps.fetch(`${cfg.webUrl}/api/bridge/v1/gh-app/dispatch`, {
+    method: 'POST',
+    headers: {
+      ...authHeaders(cfg),
+      'X-GH-App-Token': cfg.serviceToken,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      repo: job.repo,
+      installationToken,
+      botLogin: cfg.botLogin,
+      task: job.task,
+      publicOrigin: cfg.publicOrigin,
+      ...(cfg.model ? { model: cfg.model } : {}),
+    }),
+    signal: AbortSignal.timeout(deps.fetchTimeoutMs?.dispatch ?? DISPATCH_FETCH_TIMEOUT_MS),
+  })
+  if (!res.ok) throw new Error(`code session dispatch failed: HTTP ${res.status}`)
+  const raw = (await res.json()) as { session_id?: unknown; session_url?: unknown }
+  if (typeof raw.session_id !== 'string' || !raw.session_id || typeof raw.session_url !== 'string' || !raw.session_url) {
+    throw new Error('code session dispatch: response missing session_id/session_url')
+  }
+  return { sessionId: raw.session_id, sessionUrl: raw.session_url }
+}
+
+export type PollOutcome = 'done' | 'requires_action' | 'timeout' | 'archived'
+
+/**
+ * M3: a session the worker walks away from (timeout / requires_action) must
+ * not keep burning tokens unwatched — best-effort archive it (the /code
+ * sidebar can always unarchive). STRICTLY swallow+log: an archive failure
+ * never changes the poll outcome (mirrors the worker's feedback pattern).
+ */
+async function archiveAbandonedSession(
+  sessionId: string,
+  cfg: CodeSessionConfig,
+  deps: CodeSessionDeps,
+): Promise<void> {
+  try {
+    const res = await deps.fetch(`${cfg.webUrl}/api/bridge/v1/sessions/${sessionId}`, {
+      method: 'PATCH',
+      headers: { ...authHeaders(cfg), 'content-type': 'application/json' },
+      body: JSON.stringify({ archived: true }),
+      signal: AbortSignal.timeout(deps.fetchTimeoutMs?.poll ?? POLL_FETCH_TIMEOUT_MS),
+    })
+    if (!res.ok) deps.log?.(`codeSession: archive ${sessionId} failed (ignored): HTTP ${res.status}`)
+  } catch (e) {
+    deps.log?.(`codeSession: archive ${sessionId} failed (ignored): ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
+/**
+ * Poll the session's `status` until the run finishes. The true lifecycle of
+ * a fresh session is `running` (the pre-connect DEFAULT — no
+ * worker_state_json yet, zero work done) → `idle` (the CLI worker PUTs
+ * worker_status:'idle' at connect, BEFORE replaying the seeded task) →
+ * `running` (the actual turn) → `idle` (truly done). So (C1):
+ *   - `sawRunning` arms ONLY on a REPORTED running (`worker_reported` true —
+ *     the web GET's "worker_state_json exists" flag), never on the
+ *     pre-connect default;
+ *   - 'done' = `idle` observed after that — the init-idle can never
+ *     conclude the poll;
+ *   - the default interval is 2.5 s, shrinking the window where the real
+ *     `running` slips between two polls.
+ * 'requires_action' = the run stopped waiting on a human (open the session);
+ * 'timeout' = the total-wait cap elapsed; 'archived' = someone archived the
+ * session out from under the run — terminal (M1), never polled to timeout.
+ * On timeout/requires_action the abandoned session is best-effort archived
+ * (M3) so it stops burning tokens. Transient fetch failures are tolerated —
+ * the deadline bounds them.
+ */
+export async function pollUntilDone(
+  sessionId: string,
+  cfg: CodeSessionConfig,
+  deps: CodeSessionDeps,
+  opts: { intervalMs?: number; timeoutMs?: number } = {},
+): Promise<PollOutcome> {
+  const intervalMs = opts.intervalMs ?? 2_500
+  const timeoutMs = opts.timeoutMs ?? 900_000 // mirrors the sandbox's 900 s default cap
+  const now = deps.now ?? Date.now
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
+  const deadline = now() + timeoutMs
+  let sawRunning = false
+  // Abandoning outcomes archive the session on the way out (M3, best-effort).
+  const abandon = async (outcome: 'timeout' | 'requires_action'): Promise<PollOutcome> => {
+    await archiveAbandonedSession(sessionId, cfg, deps)
+    return outcome
+  }
+  for (;;) {
+    try {
+      const res = await deps.fetch(`${cfg.webUrl}/api/bridge/v1/sessions/${sessionId}`, {
+        headers: authHeaders(cfg),
+        signal: AbortSignal.timeout(deps.fetchTimeoutMs?.poll ?? POLL_FETCH_TIMEOUT_MS),
+      })
+      if (res.ok) {
+        const raw = (await res.json()) as { status?: unknown; worker_reported?: unknown }
+        const s = typeof raw.status === 'string' ? raw.status : ''
+        if (s === 'archived') return 'archived' // terminal — and already archived, nothing to abandon
+        if (s === 'requires_action') return abandon('requires_action')
+        // Only a REPORTED running counts — pre-connect, 'running' is just
+        // the web's fall-through default and means nothing has run.
+        if (s === 'running' && raw.worker_reported === true) sawRunning = true
+        else if (s === 'idle' && sawRunning) return 'done'
+      }
+    } catch (e) {
+      deps.log?.(`codeSession: poll ${sessionId} failed (retrying): ${e instanceof Error ? e.message : String(e)}`)
+    }
+    if (now() >= deadline) return abandon('timeout')
+    await sleep(intervalMs)
+  }
+}
+
+/**
+ * Open the PR through the session's EXISTING PR route (createContainerPR
+ * commits as the bot via the session-meta installation token and stamps the
+ * session URL into the PR body + `Jarvis-Session:` trailer). Returns the PR
+ * (or compare) URL; throws on failure.
+ */
+export async function openSessionPr(
+  sessionId: string,
+  cfg: CodeSessionConfig,
+  deps: CodeSessionDeps,
+): Promise<{ url: string }> {
+  const res = await deps.fetch(`${cfg.webUrl}/api/bridge/v1/sessions/${sessionId}/pr`, {
+    method: 'POST',
+    headers: { ...authHeaders(cfg), 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+    // Generous bound — createContainerPR does real git work (commit + push).
+    signal: AbortSignal.timeout(deps.fetchTimeoutMs?.pr ?? PR_FETCH_TIMEOUT_MS),
+  })
+  if (!res.ok) throw new Error(`session PR failed: HTTP ${res.status}`)
+  const raw = (await res.json()) as { url?: unknown }
+  if (typeof raw.url !== 'string' || !raw.url) throw new Error('session PR: response missing url')
+  return { url: raw.url }
+}
+
+// --- env wiring (server.ts main block) ---
+
+/** The Phase C rollout flag. DEFAULT OFF — the sandbox path stays
+ * byte-identical until GH_APP_USE_CODE_SESSIONS=1|true is set. */
+export function useCodeSessions(env: Record<string, string | undefined>): boolean {
+  const v = (env.GH_APP_USE_CODE_SESSIONS ?? '').trim().toLowerCase()
+  return v === '1' || v === 'true'
+}
+
+const stripSlash = (s: string) => s.replace(/\/+$/, '')
+
+export function codeSessionConfigFromEnv(env: Record<string, string | undefined>): CodeSessionConfig {
+  return {
+    // Compose-stack default: the `web` service on the internal docker network.
+    webUrl: stripSlash(env.GH_APP_WEB_URL ?? 'http://web:3000'),
+    bearerToken: env.JARVIS_LOCAL_API_TOKEN ?? '',
+    serviceToken: env.GH_APP_BRIDGE_TOKEN ?? '',
+    publicOrigin: stripSlash(env.GH_APP_PUBLIC_CODE_ORIGIN ?? 'https://0wlan.com'),
+    // Default matches the bot identity the thread feedback already presents
+    // (**talos**); override with the deployed App's real slug.
+    botLogin: env.GH_APP_BOT_LOGIN ?? 'talos-hq[bot]',
+    model: env.GH_APP_SESSION_MODEL || undefined,
+  }
+}
+
+/** The worker-shaped hooks (mirror of workerFeedback/jobStore bindings). */
+export type WorkerCodeSessions = {
+  create: (job: Job) => Promise<{ sessionId: string; sessionUrl: string }>
+  poll: (sessionId: string) => Promise<PollOutcome>
+  openPr: (sessionId: string) => Promise<{ url: string }>
+}
+
+export function makeCodeSessions(
+  cfg: CodeSessionConfig,
+  deps: CodeSessionDeps,
+  opts: { intervalMs?: number; timeoutMs?: number } = {},
+): WorkerCodeSessions {
+  return {
+    create: (job) => createCodeSession(job, cfg, deps),
+    poll: (sessionId) => pollUntilDone(sessionId, cfg, deps, opts),
+    openPr: (sessionId) => openSessionPr(sessionId, cfg, deps),
+  }
+}

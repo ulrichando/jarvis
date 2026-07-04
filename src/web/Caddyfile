@@ -13,6 +13,12 @@
 	@searx host searx.0wlan.com
 	reverse_proxy @searx searxng:8080
 
+	# gh.0wlan.com → JARVIS GitHub App (webhook + setup). Same
+	# Access-EXCLUDED cloudflared ingress pattern as searx — GitHub's webhook
+	# POSTs can't pass SSO; the HMAC signature on /webhook is the auth.
+	@ghapp host gh.0wlan.com
+	reverse_proxy @ghapp gh-app:8790
+
 	# /code terminal websocket → the pty-server (8772). Rides the tunnel + app
 	# auth; the socket additionally requires a per-session HS256 token in its
 	# init frame (JARVIS_PTY_REQUIRE_AUTH=1 in compose).

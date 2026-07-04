@@ -1,8 +1,8 @@
-# JARVIS gh-app × /code — run each `@jarvis-gh-bot` job as a watchable `/code` session (design)
+# JARVIS gh-app × /code — run each `@talos` job as a watchable `/code` session (design)
 
 **Status:** design / awaiting review · **Date:** 2026-07-03
 
-**Goal:** `@jarvis-gh-bot <task>` runs the job as a real jarvis **`/code` session** — isolated, **watchable + steerable** at `0wlan.com/code/<id>`, **persistent** (history preserved), and **linked from the GitHub thread + PR** — instead of a throwaway headless sandbox. This is the self-hosted, GitHub-triggered equivalent of **claude.ai/code**.
+**Goal:** `@talos <task>` runs the job as a real jarvis **`/code` session** — isolated, **watchable + steerable** at `0wlan.com/code/<id>`, **persistent** (history preserved), and **linked from the GitHub thread + PR** — instead of a throwaway headless sandbox. This is the self-hosted, GitHub-triggered equivalent of **claude.ai/code**.
 
 ## Fact-check: the claude.ai/code model we're matching (from Anthropic docs)
 
@@ -17,7 +17,7 @@
 ## Architecture
 
 ```
-@jarvis-gh-bot webhook → gh-app worker
+@talos webhook → gh-app worker
    → POST /api/bridge/v1/sessions  (internal, service-token auth)
         { externalRepo: "ulrichando/maxrun", installationToken, task, autonomous:true }
    → /code creates an isolated session: clone maxrun via the scoped git proxy
@@ -70,3 +70,29 @@ The throwaway-sandbox path (`runInSandbox`) is **replaced** by the session path 
 - `src/web` is **stock Next.js 16.2.6 + React 19.2.4** (from `vercel/next.js`, not a fork). The `AGENTS.md` "NOT the Next.js you know" banner is **Next.js 16's own auto-generated agent-rule** warning that v16 has breaking API changes vs. older versions (which is what's in the implementer's training data). Mitigation: **read the bundled docs at `node_modules/next/dist/docs/` (01-app, index.md) before writing any route/server-component code.** Bounded risk — the docs ship in-repo.
 - The `/code` clone/auth path assumes user workspaces; the external-repo adaptation is the riskiest change — must not regress normal `/code`.
 - Live-VPS-only checks (proxy wiring, the session actually watchable) — verified during build against the box.
+
+## v2 amendment — installation-token refresh (2026-07-04)
+
+v1 minted the ~1h App installation token once at dispatch and stored it raw in
+the session's container meta; any session outliving it (steered runs, late PR
+opens, follow-up pushes) hit GitHub 401s ("git push failed … token may have
+expired"). v2 makes the token refreshable at every use site while keeping the
+v1 trust shape (the web never holds the App private key):
+
+- **gh-app `POST /internal/mint-token`** (`server.ts`): body `{ repo }`
+  (owner/name), auth `x-gh-app-token: GH_APP_BRIDGE_TOKEN` — the SAME shared
+  service token the web's dispatch route verifies, direction inverted; no new
+  secret. Resolves the repo's installation, mints a repo-scoped token
+  (`token.ts::installationTokenForRepo`), returns `{ token, expiresAt }`.
+  Route is inert (404) without creds + bridge token.
+- **web `lib/bridge/gh-app-token.ts::freshInstallationToken`**: called at the
+  four token use sites (git proxy, PR open, PR status, merge). Returns the
+  stored token while it has >5 min left; otherwise re-mints via the gh-app and
+  persists `{ installationToken, installationTokenExpiresAt }` back into the
+  session meta. Dispatch-time meta records no expiry → the first use costs one
+  mint round-trip, then the persisted expiry gates. Any refresh failure falls
+  back to the stored token — exact v1 behavior, the GitHub 401 surfaces
+  upstream.
+- **Env (web service):** `GH_APP_INTERNAL_URL=http://gh-app:8790` (compose
+  service name; both services already share `.env.production`). Unset →
+  refresh disabled, v1 behavior byte-for-byte.

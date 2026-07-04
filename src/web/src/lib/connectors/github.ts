@@ -169,18 +169,27 @@ export async function listGithubRepos(): Promise<
 > {
   const c = await load();
   if (!c.github) return { ok: false, error: "GitHub not connected" };
-  let r: Response;
-  try {
-    r = await fetch(
-      `${GH}/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member`,
-      { headers: ghHeaders(c.github.token) },
-    );
-  } catch (e) {
-    return { ok: false, error: `Network error: ${String(e)}` };
+  // GitHub caps /user/repos at 100 per page — page through until a short page
+  // (the last one) so accounts with >100 repos see ALL of them, not just the
+  // 100 most-recently-pushed. Safety cap so a huge account can't spin forever.
+  const MAX_PAGES = 20; // up to 2000 repos
+  const raw: Array<Record<string, unknown>> = [];
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    let r: Response;
+    try {
+      r = await fetch(
+        `${GH}/user/repos?per_page=100&page=${page}&sort=pushed&affiliation=owner,collaborator,organization_member`,
+        { headers: ghHeaders(c.github.token) },
+      );
+    } catch (e) {
+      return { ok: false, error: `Network error: ${String(e)}` };
+    }
+    if (r.status === 401) return { ok: false, error: "GitHub token no longer valid — reconnect." };
+    if (!r.ok) return { ok: false, error: `GitHub error ${r.status}` };
+    const batch = (await r.json()) as Array<Record<string, unknown>>;
+    raw.push(...batch);
+    if (batch.length < 100) break; // last page reached
   }
-  if (r.status === 401) return { ok: false, error: "GitHub token no longer valid — reconnect." };
-  if (!r.ok) return { ok: false, error: `GitHub error ${r.status}` };
-  const raw = (await r.json()) as Array<Record<string, unknown>>;
   const repos: GithubRepo[] = raw.map((x) => ({
     full_name: String(x.full_name ?? ""),
     private: Boolean(x.private),
@@ -242,16 +251,20 @@ export type PrStatus = {
  * PR + CI status for `<repo>` branch `<branch>` (the /code Diff panel). Finds
  * the PR opened from the branch, then summarizes its head commit's check runs.
  * Returns nulls (not an error) when nothing is open yet so the panel can poll.
+ * `token` (optional): authenticate with THIS token instead of the stored PAT —
+ * external gh-app jobs pass their App installation token; default unchanged.
  */
 export async function githubPrStatus(
   repo: string,
   branch: string,
+  token?: string,
 ): Promise<{ ok: true; status: PrStatus } | { ok: false; error: string }> {
   const c = await load();
-  if (!c.github) return { ok: false, error: "GitHub not connected" };
+  const auth = token || c.github?.token;
+  if (!auth) return { ok: false, error: "GitHub not connected" };
   if (!isRepo(repo)) return { ok: false, error: "Invalid repo" };
   const owner = repo.split("/")[0];
-  const h = ghHeaders(c.github.token);
+  const h = ghHeaders(auth);
   try {
     const pr = await fetch(
       `${GH}/repos/${repo}/pulls?head=${owner}:${encodeURIComponent(branch)}&state=all&per_page=1`,
@@ -300,6 +313,8 @@ export async function githubPrStatus(
  * Open a PR head→base (host-side, with the real PAT — so the container never
  * needs a GitHub token). On 422 (a PR already exists for head→base) returns the
  * existing open PR instead of erroring.
+ * `token` (optional): authenticate with THIS token instead of the stored PAT —
+ * external gh-app jobs pass their App installation token; default unchanged.
  */
 export async function openPullRequest(
   repo: string,
@@ -308,21 +323,23 @@ export async function openPullRequest(
   title: string,
   body: string,
   draft = false,
+  token?: string,
 ): Promise<{ ok: true; url: string; number: number } | { ok: false; error: string }> {
   const c = await load();
-  if (!c.github) return { ok: false, error: "GitHub not connected" };
+  const auth = token || c.github?.token;
+  if (!auth) return { ok: false, error: "GitHub not connected" };
   if (!isRepo(repo)) return { ok: false, error: "Invalid repo" };
   try {
     const r = await fetch(`${GH}/repos/${repo}/pulls`, {
       method: "POST",
-      headers: ghHeaders(c.github.token),
+      headers: ghHeaders(auth),
       body: JSON.stringify({ title, head, base, body, draft }),
     });
     if (r.status === 422) {
       const owner = repo.split("/")[0];
       const ex = await fetch(
         `${GH}/repos/${repo}/pulls?head=${owner}:${encodeURIComponent(head)}&state=open&per_page=1`,
-        { headers: ghHeaders(c.github.token) },
+        { headers: ghHeaders(auth) },
       );
       if (ex.ok) {
         const a = (await ex.json()) as Array<{ html_url?: string; number?: number }>;
@@ -338,19 +355,23 @@ export async function openPullRequest(
   }
 }
 
-/** Merge a PR by number (host-side, with the real PAT). Squash by default. */
+/** Merge a PR by number (host-side, with the real PAT). Squash by default.
+ * `token` (optional): authenticate with THIS token instead of the stored PAT —
+ * external gh-app jobs pass their App installation token; default unchanged. */
 export async function mergePullRequest(
   repo: string,
   number: number,
   method: "squash" | "merge" | "rebase" = "squash",
+  token?: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const c = await load();
-  if (!c.github) return { ok: false, error: "GitHub not connected" };
+  const auth = token || c.github?.token;
+  if (!auth) return { ok: false, error: "GitHub not connected" };
   if (!isRepo(repo) || !isPrNum(number)) return { ok: false, error: "Invalid repo or number" };
   try {
     const r = await fetch(`${GH}/repos/${repo}/pulls/${number}/merge`, {
       method: "PUT",
-      headers: ghHeaders(c.github.token),
+      headers: ghHeaders(auth),
       body: JSON.stringify({ merge_method: method }),
     });
     if (!r.ok) return { ok: false, error: `Merge not allowed (${r.status}) — checks pending or branch protected.` };

@@ -129,4 +129,29 @@ describe('GET /environments', () => {
     expect(names).not.toContain('Cloud container')
     expect(body.environments.find((e) => e.machine_name === 'Moon')?.online).toBe(true)
   })
+
+  test('hides the gh-app bot env from the picker (Claude parity), keeping it a real owned env', async () => {
+    const store = getStore()
+    const bot = createEnvironment(store, {
+      machine_name: 'gh-app-bot',
+      directory: '/workspace',
+      git_repo_url: 'https://github.com/o/r',
+      max_sessions: 4,
+      worker_type: 'container',
+      user_id: USER,
+    })
+    // It IS a real, user-owned env — so the dispatch reuse-lookup and the
+    // watchable-session sidebar (listSessions) still see it and its sessions.
+    expect(listEnvironments(store, USER).some((e) => e.environment_id === bot.environment_id)).toBe(true)
+    // …but the PICKER route filters it out, so it doesn't show as a selectable
+    // "Cloud" environment (matching claude.ai/code, which hides its agent env).
+    const { GET } = await import('@/app/api/bridge/v1/environments/route')
+    const res = await GET(new Request('http://127.0.0.1:3000/api/bridge/v1/environments'))
+    const body = (await res.json()) as {
+      environments: Array<{ machine_name: string; environment_id: string }>
+    }
+    expect(body.environments.some((e) => e.machine_name === 'gh-app-bot')).toBe(false)
+    expect(body.environments.some((e) => e.environment_id === bot.environment_id)).toBe(false)
+    expect(body.environments.some((e) => e.machine_name === 'Default')).toBe(true) // real envs still shown
+  })
 })

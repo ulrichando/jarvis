@@ -1,0 +1,35 @@
+[Unit]
+Description=JARVIS — GitHub agent: poll @jarvis mentions and open PRs
+Documentation=file:/home/ulrich/Documents/Projects/jarvis/docs/superpowers/specs/2026-07-02-jarvis-gh-agent-design.md
+After=network-online.target jarvis-proxy.service
+Wants=network-online.target jarvis-proxy.service
+# Page the phone if a sweep fails, same as the other core units. The nested
+# jarvis -p reuses the persistent jarvis-proxy.service on :4000 (Wants= keeps it
+# up), so the sweep never spins its own session proxy or races the stale-kill.
+OnFailure=jarvis-alert@%n.service
+
+[Service]
+Type=oneshot
+# One poll sweep: list new @jarvis mentions by allowlisted authors, then for
+# each clone -> jarvis -p -> branch -> open PR (issue) / push+comment (PR).
+# Exits when the sweep finishes; the timer re-arms it.
+#
+# NOTE: this runs a FULL `jarvis -p` agent (needs network + $HOME + bash), so
+# the strict dep-check-style sandbox (ProtectHome=read-only, AF_UNIX-only,
+# SystemCallFilter) deliberately does NOT apply here — it would break the agent.
+# Isolation is the P2 layer instead: author-allowlist + throwaway clone +
+# never-auto-merge + untrusted-PR-head refusal. A container/namespace sandbox is
+# tracked as P3+ hardening (see the spec) and is the right layer for the VPS.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStartPre=/bin/mkdir -p %h/.local/share/jarvis/logs
+ExecStart=/home/ulrich/Documents/Projects/jarvis/bin/jarvis gh-agent --once --repo ulrichando/jarvis
+# A single task may run jarvis -p up to executionTimeoutSec (default 600s) plus
+# clone/push overhead; give the sweep headroom before systemd kills it.
+TimeoutStartSec=900
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+StandardOutput=append:%h/.local/share/jarvis/logs/gh-agent.log
+StandardError=append:%h/.local/share/jarvis/logs/gh-agent.log
+
+# No [Install] — triggered by the timer only.

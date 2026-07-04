@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/bridge/db";
 import { findSession } from "@/lib/bridge/store";
+import { freshInstallationToken } from "@/lib/bridge/gh-app-token";
 import { githubPrStatus } from "@/lib/connectors/github";
 import { authorizeSession } from "@/lib/bridge/authz";
 import { bridgeError } from "@/lib/bridge/errors";
@@ -19,12 +20,19 @@ export async function GET(
   const empty = NextResponse.json({ pr: null, checks: null, sha: null, repo: null });
   if (!branch) return empty;
   try {
-    const session = findSession(getStore(), sessionId);
+    const store = getStore();
+    const session = findSession(store, sessionId);
     const meta = session?.container_json
       ? (JSON.parse(session.container_json) as { repo?: string })
       : null;
     if (!meta?.repo) return empty;
-    const r = await githubPrStatus(meta.repo, branch);
+    // External bot-job sessions (gh-app dispatch) carry an App installation
+    // token — authenticate the lookup with it (refreshed through the gh-app
+    // when stale); normal sessions call exactly as before (stored PAT).
+    const injected = await freshInstallationToken(store, sessionId, session);
+    const r = injected
+      ? await githubPrStatus(meta.repo, branch, injected)
+      : await githubPrStatus(meta.repo, branch);
     if (!r.ok) return empty;
     return NextResponse.json({ ...r.status, repo: meta.repo });
   } catch (err) {

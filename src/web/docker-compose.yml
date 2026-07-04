@@ -40,6 +40,9 @@ services:
         # Inlined into the client bundle at build time → set your domain.
         NEXT_PUBLIC_PTY_URL: ${NEXT_PUBLIC_PTY_URL:-}
     restart: unless-stopped
+    # default = the stack (postgres, docker-proxy, caddy, hub); jarvis-code-bridge
+    # = the internal bridge /code workbench containers join to reach the git-proxy.
+    networks: [default, jarvis-code-bridge]
     env_file:
       - path: .env.production
         required: false
@@ -70,6 +73,13 @@ services:
       # (the host daemon interprets the sandbox -v paths, so they must resolve
       # identically inside `web`).
       - ${JARVIS_WORKSPACES_ROOT:-/srv/jarvis/workspaces}:${JARVIS_WORKSPACES_ROOT:-/srv/jarvis/workspaces}
+      # Persist ~/.jarvis across container rebuilds: connectors.json (the GitHub
+      # connector), bridge.db (/code sessions + environments + git scopes),
+      # mcp.json. Without this every `docker compose up --build web` — a routine
+      # deploy — WIPES them (they otherwise live only in the container's
+      # ephemeral layer), so the connector "disconnects" and /code sessions
+      # vanish on every deploy.
+      - jarvis_web_home:/home/jarvis/.jarvis
     depends_on:
       docker-proxy: { condition: service_started }
       postgres: { condition: service_healthy }
@@ -87,6 +97,9 @@ services:
       context: ../cli
       dockerfile: Dockerfile.hub
     restart: unless-stopped
+    # Also on jarvis-code-bridge so /code workbench containers reach the model
+    # proxy by service name (hub:4000) when host.docker.internal is unreachable.
+    networks: [default, jarvis-code-bridge]
     env_file:
       - path: .env.production
         required: false
@@ -143,6 +156,43 @@ services:
       SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET in .env.production}
     expose: ["8080"]
 
+  # JARVIS GitHub App (gh.0wlan.com): @jarvis on an installed repo → GitHub
+  # webhook → signature-verified intake → Postgres job queue → worker mints a
+  # per-installation token and spawns a sandboxed jarvis container (via
+  # docker-proxy, same restricted path as the /code sandboxes) that opens the
+  # PR as the App. The public hostname is a cloudflared ingress EXCLUDED from
+  # Cloudflare Access (GitHub can't do SSO; the HMAC signature is the auth).
+  # Build context is the repo root — the image doubles as the SANDBOX image
+  # (bin/ + src/cli inside; `image:` tags it on the host daemon so the worker
+  # can spawn it by name). GH_APP_ID / GH_APP_PRIVATE_KEY /
+  # GH_APP_WEBHOOK_SECRET / GH_APP_ALLOWLIST / DATABASE_URL / provider keys
+  # come from .env.production (or /setup captures creds into gh_app_data).
+  gh-app:
+    build:
+      context: ../..
+      dockerfile: src/gh-app/Dockerfile
+    image: jarvis-gh-app
+    restart: unless-stopped
+    env_file:
+      - path: .env.production
+        required: false
+    environment:
+      DOCKER_HOST: tcp://docker-proxy:2375
+      GH_APP_PORT: "8790"
+      GH_APP_BASE_URL: ${GH_APP_BASE_URL:-https://gh.0wlan.com}
+      GH_APP_SANDBOX_IMAGE: ${GH_APP_SANDBOX_IMAGE:-jarvis-gh-app}
+    volumes:
+      - gh_app_data:/data
+    depends_on:
+      docker-proxy: { condition: service_started }
+      postgres: { condition: service_healthy }
+    expose: ["8790"]
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:8790/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
   postgres:
     image: postgres:16
     restart: unless-stopped
@@ -194,8 +244,25 @@ volumes:
   caddy_data:
   caddy_config:
   pg_data:
+  gh_app_data:
+  # The web app's ~/.jarvis (connectors + /code bridge.db + mcp) — durable across
+  # rebuilds/deploys. See the web service's volumes note.
+  jarvis_web_home:
 
 networks:
-  default: {}
+  default:
+  # Cloud computer-use desktop's segment: web (:8771 SSE) + caddy (:6080 noVNC)
+  # reach the sandbox; postgres/docker-proxy stay unreachable from it.
   cu-net:
     driver: bridge
+  # Shared INTERNAL bridge: /code workbench containers join it at launch to
+  # reach the web app (git-proxy + CCR callback) and the hub (model proxy) by
+  # service name — the path that host.docker.internal can't serve here (web is
+  # expose-only, hub binds host-loopback) and the public 0wlan.com can't (CF
+  # bot-challenge). internal:true → no external egress via this net (session
+  # egress stays squid-only); only web+hub+workbench attach, so postgres +
+  # docker-proxy remain unreachable from session containers. containers.ts
+  # connects the workbench with `docker network connect jarvis-code-bridge`.
+  jarvis-code-bridge:
+    name: jarvis-code-bridge
+    internal: true

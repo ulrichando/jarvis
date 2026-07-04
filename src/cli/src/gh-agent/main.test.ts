@@ -39,66 +39,96 @@ function captureStderr(): { text: () => string; restore: () => void } {
 }
 
 describe('gh-agent runGhAgentOnce', () => {
-  test('acks ONLY the allowlisted author (with self-marker); ignored mention is marked handled', async () => {
+  test('executes ONLY the allowlisted mention; executed + ignored are both marked handled', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ghm-'))
     const { run, posts } = recorder(comments)
-    await runGhAgentOnce({ repo: 'o/r', dryRun: false }, { run, cfg: { ...DEFAULTS, allowlist: ['ulrichando'] }, cursorDir: dir })
-    expect(posts).toHaveLength(1)
-    expect(posts[0].join(' ')).toContain('repos/o/r/issues/13/comments')
-    // Every ack carries the self-marker so the next sweep can filter it out.
-    expect(posts[0].some(a => a.includes(SELF_MARKER))).toBe(true)
-    // Both the acked AND the ignored (non-allowlisted) mention are handled now.
+    const seen: number[] = []
+    const execute = async (_repo: string, m: any) => { seen.push(m.id); return { ok: true } }
+    await runGhAgentOnce({ repo: 'o/r', dryRun: false }, { run, cfg: { ...DEFAULTS, allowlist: ['ulrichando'] }, cursorDir: dir, execute })
+    expect(seen).toEqual([2])
+    // P2: the sweep itself posts nothing — comments/PRs are the executor's job.
+    expect(posts).toHaveLength(0)
+    // Both the executed AND the ignored (non-allowlisted) mention are handled now.
     const handled = readHandledIds('o/r', dir)
     expect(handled.has(2)).toBe(true)
     expect(handled.has(3)).toBe(true)
     rmSync(dir, { recursive: true, force: true })
   })
 
-  test('no-replay: a second sweep over the same comments posts zero acks (id dedupe)', async () => {
+  test('no-replay: a second sweep over the same comments executes zero tasks (id dedupe)', async () => {
     // GitHub's ?since= is INCLUSIVE (updated_at >= since), so a real second
     // sweep re-fetches the mention it just handled. The stub models that by
     // returning the same comments regardless of `since`. Without comment-id
-    // dedupe the agent posts a duplicate acknowledgement.
+    // dedupe the agent executes the same task twice.
     const dir = mkdtempSync(join(tmpdir(), 'ghm-'))
-    const { run, posts } = recorder(comments)
-    const deps = { run, cfg: { ...DEFAULTS, allowlist: ['ulrichando'] }, cursorDir: dir }
+    const { run } = recorder(comments)
+    let executed = 0
+    const execute = async () => { executed++; return { ok: true } }
+    const deps = { run, cfg: { ...DEFAULTS, allowlist: ['ulrichando'] }, cursorDir: dir, execute }
     await runGhAgentOnce({ repo: 'o/r', dryRun: false }, deps)
-    expect(posts).toHaveLength(1)
+    expect(executed).toBe(1)
     await runGhAgentOnce({ repo: 'o/r', dryRun: false }, deps)
-    expect(posts).toHaveLength(1)
+    expect(executed).toBe(1)
     rmSync(dir, { recursive: true, force: true })
   })
 
-  test('dry-run posts nothing AND persists nothing; the real run still consumes the mention', async () => {
+  test('dry-run executes nothing AND persists nothing; the real run still consumes the mention', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ghm-'))
     const { run, posts } = recorder(comments)
-    const deps = { run, cfg: { ...DEFAULTS, allowlist: ['ulrichando'] }, cursorDir: dir }
+    let executed = 0
+    const execute = async () => { executed++; return { ok: true } }
+    const deps = { run, cfg: { ...DEFAULTS, allowlist: ['ulrichando'] }, cursorDir: dir, execute }
     await runGhAgentOnce({ repo: 'o/r', dryRun: true }, deps)
+    expect(executed).toBe(0)
     expect(posts).toHaveLength(0)
     // NOTHING written: no cursor, no handled ids — a preview must not consume.
     expect(readdirSync(dir)).toEqual([])
-    // The real run right after still sees + acks the mention.
+    // The real run right after still sees + executes the mention.
     await runGhAgentOnce({ repo: 'o/r', dryRun: false }, deps)
-    expect(posts).toHaveLength(1)
+    expect(executed).toBe(1)
     rmSync(dir, { recursive: true, force: true })
   })
 
-  test('failed ack is NOT marked handled (retried next sweep) and sets exitCode', async () => {
+  test('real run calls execute for allowlisted mention; failure leaves id unhandled', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ghm-'))
+    const { run } = recorder(comments)
+    const seen: number[] = []
+    let result = { ok: true as boolean }
+    const execute = async (_repo: string, m: any) => { seen.push(m.id); return result }
+    await runGhAgentOnce({ repo: 'o/r', dryRun: false }, { run, cfg: { ...DEFAULTS, allowlist: ['ulrichando'] }, cursorDir: dir, execute })
+    expect(seen).toEqual([2]) // only the allowlisted author's mention
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('dry-run does not call execute', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ghm-'))
+    const { run } = recorder(comments)
+    let called = 0
+    const execute = async () => { called++; return { ok: true } }
+    await runGhAgentOnce({ repo: 'o/r', dryRun: true }, { run, cfg: { ...DEFAULTS, allowlist: ['ulrichando'] }, cursorDir: dir, execute })
+    expect(called).toBe(0)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('failed execution is NOT marked handled (retried next sweep) and sets exitCode', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ghm-'))
     const prevExit = process.exitCode
     try {
-      const bad = recorder(comments, { postCode: 1 })
+      const { run } = recorder(comments)
       const cfg = { ...DEFAULTS, allowlist: ['ulrichando'] }
-      await runGhAgentOnce({ repo: 'o/r', dryRun: false }, { run: bad.run, cfg, cursorDir: dir })
-      expect(bad.posts).toHaveLength(1) // attempted…
+      let result: { ok: boolean } = { ok: false }
+      let executed = 0
+      const execute = async () => { executed++; return result }
+      await runGhAgentOnce({ repo: 'o/r', dryRun: false }, { run, cfg, cursorDir: dir, execute })
+      expect(executed).toBe(1) // attempted…
       expect(process.exitCode).toBe(1) // …failed loudly…
       const handled = readHandledIds('o/r', dir)
       expect(handled.has(2)).toBe(false) // …and NOT consumed.
       expect(handled.has(3)).toBe(true) // ignored mention is still handled.
-      // Next sweep (POST healthy again) retries and lands the ack.
-      const good = recorder(comments)
-      await runGhAgentOnce({ repo: 'o/r', dryRun: false }, { run: good.run, cfg, cursorDir: dir })
-      expect(good.posts).toHaveLength(1)
+      // Next sweep (executor healthy again) retries and lands the task.
+      result = { ok: true }
+      await runGhAgentOnce({ repo: 'o/r', dryRun: false }, { run, cfg, cursorDir: dir, execute })
+      expect(executed).toBe(2)
       expect(readHandledIds('o/r', dir).has(2)).toBe(true)
     } finally {
       process.exitCode = prevExit
@@ -106,7 +136,7 @@ describe('gh-agent runGhAgentOnce', () => {
     }
   })
 
-  test('failed ack stays inside the since-window (retry works against REAL ?since= semantics)', async () => {
+  test('failed execution stays inside the since-window (retry works against REAL ?since= semantics)', async () => {
     // The always-return stub above hides a trap: if the sweep advanced the
     // cursor to maxUpdatedAt (12:00) past the FAILED mention (11:00), a real
     // GitHub fetch (updated_at >= since) would never return it again — the
@@ -119,30 +149,27 @@ describe('gh-agent runGhAgentOnce', () => {
         { id: 2, body: '@jarvis do X', user: { login: 'ulrichando' }, created_at: '2026-07-01T11:00:00Z', updated_at: '2026-07-01T11:00:00Z', issue_url: 'https://api.github.com/repos/o/r/issues/13', html_url: 'u13' },
         { id: 3, body: 'unrelated chatter', user: { login: 'bob' }, created_at: '2026-07-01T12:00:00Z', updated_at: '2026-07-01T12:00:00Z', issue_url: 'https://api.github.com/repos/o/r/issues/14', html_url: 'u14' },
       ]
-      const sinceAware = (postCode: number) => {
-        const posts: string[][] = []
+      const sinceAware = () => {
         const run: GhRunner = async (args) => {
-          if (args.includes('POST')) {
-            posts.push(args)
-            return { stdout: '{}', stderr: '', code: postCode }
-          }
           const since = decodeURIComponent(args[1].match(/since=([^&]+)/)![1])
           const visible = all.filter(c => new Date(c.updated_at).getTime() >= new Date(since).getTime())
           return { stdout: JSON.stringify([visible]), stderr: '', code: 0 }
         }
-        return { run, posts }
+        return { run }
       }
       const cfg = { ...DEFAULTS, allowlist: ['ulrichando'] }
       // Seed the window before the fixtures (default first-run cursor is
       // now-1h, which would filter these 2026-07-01 comments out entirely).
       advanceCursor('o/r', '2026-07-01T10:00:00Z', dir)
-      const bad = sinceAware(1)
-      await runGhAgentOnce({ repo: 'o/r', dryRun: false }, { run: bad.run, cfg, cursorDir: dir })
-      expect(bad.posts).toHaveLength(1) // attempted, failed
-      // Next sweep, POST healthy: the failed mention MUST still be in-window.
-      const good = sinceAware(0)
-      await runGhAgentOnce({ repo: 'o/r', dryRun: false }, { run: good.run, cfg, cursorDir: dir })
-      expect(good.posts).toHaveLength(1) // retried + landed
+      let result: { ok: boolean } = { ok: false }
+      let executed = 0
+      const execute = async () => { executed++; return result }
+      await runGhAgentOnce({ repo: 'o/r', dryRun: false }, { run: sinceAware().run, cfg, cursorDir: dir, execute })
+      expect(executed).toBe(1) // attempted, failed
+      // Next sweep, executor healthy: the failed mention MUST still be in-window.
+      result = { ok: true }
+      await runGhAgentOnce({ repo: 'o/r', dryRun: false }, { run: sinceAware().run, cfg, cursorDir: dir, execute })
+      expect(executed).toBe(2) // retried + landed
       expect(readHandledIds('o/r', dir).has(2)).toBe(true)
     } finally {
       process.exitCode = prevExit

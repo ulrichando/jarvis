@@ -5,6 +5,7 @@ import {
   getSessionGitScope,
   appendSessionEvent,
 } from '@/lib/bridge/store'
+import { freshInstallationToken } from '@/lib/bridge/gh-app-token'
 import { getGithubToken } from '@/lib/connectors/github'
 import { parseGitRequest, assertRepoAllowed, forwardToGithub } from '@/lib/bridge/git-proxy'
 import { bridgeError } from '@/lib/bridge/errors'
@@ -57,7 +58,15 @@ async function handle(req: Request, ctx: Ctx): Promise<Response> {
     })
     return bridgeError(403, 'forbidden', 'Repository not in session scope')
   }
-  const pat = await getGithubToken()
+  // External bot jobs (gh-app dispatch) carry a repo-scoped App installation
+  // token in the session meta — inject THAT. Normal /code sessions have none
+  // and keep today's global-PAT path byte-identical (incl. the 503).
+  // TOKEN-LIFETIME: stale/unknown-expiry tokens are re-minted through the
+  // gh-app per use (freshInstallationToken), so a session outliving the ~1h
+  // dispatch token keeps pushing. Refresh unconfigured/down → the stored
+  // token flows on and GitHub's 401 is surfaced upstream (the v1 behavior).
+  const injected = await freshInstallationToken(store, sessionId, session)
+  const pat = injected ?? (await getGithubToken())
   if (!pat) return bridgeError(503, 'github_unavailable', 'GitHub not connected — reconnect in Settings')
   if (target.kind === 'service') {
     // Audit the data op (not the chatty info/refs probe) to the server log.

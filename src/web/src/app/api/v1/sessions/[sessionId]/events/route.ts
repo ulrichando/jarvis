@@ -3,6 +3,7 @@ import { getStore } from '@/lib/bridge/db'
 import { appendInbound, listSessionEvents } from '@/lib/bridge/store'
 import { extractBearer } from '@/lib/bridge/auth'
 import { bridgeError } from '@/lib/bridge/errors'
+import { authSessionOwner } from '../route'
 
 // CCR-compat event stream — the teleport/ultraplan poller
 // (pollRemoteSessionEvents). See ../../environment_providers/route.ts header.
@@ -19,11 +20,13 @@ export async function GET(
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params
+  const store = getStore()
+  const auth = authSessionOwner(store, req, sessionId)
+  if ('deny' in auth) return auth.deny
   const afterId = new URL(req.url).searchParams.get('after_id')
   const sinceRaw = Number(afterId ?? '0')
   const since = Number.isFinite(sinceRaw) && sinceRaw >= 0 ? sinceRaw : 0
   try {
-    const store = getStore()
     const rows = listSessionEvents(store, sessionId, since)
     const data = rows.map((r) => JSON.parse(r.payload_json) as unknown)
     const lastRowid = rows.length ? rows[rows.length - 1].rowid : since

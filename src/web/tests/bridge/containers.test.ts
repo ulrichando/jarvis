@@ -1,5 +1,6 @@
 import { describe, expect, test, beforeEach, afterEach, vi } from 'vitest'
 import { _resetForTests, getStore } from '@/lib/bridge/db'
+import { verifyProxyToken } from '@/lib/bridge/proxyJwt'
 import {
   getOrCreateSession,
   createEnvironment,
@@ -13,6 +14,7 @@ import {
   getInboundFloorSeq,
   setSessionContainer,
   archiveSession,
+  clearSessionContainer,
 } from '@/lib/bridge/store'
 import {
   launchContainerSession,
@@ -177,14 +179,18 @@ describe('launchContainerSession', () => {
     expect(gitcfg).toBeTruthy()
     expect(gitcfg).toContain("user.name 'tester'")
     expect(gitcfg).toContain("user.email 'tester@users.noreply.github.com'")
-    // The credential helper stores the per-session CAP token for the PROXY host
-    // — never the real PAT, never github.com. The proxy injects the real token.
-    expect(gitcfg).toContain('credential.helper store')
+    // The per-session CAP token is served by a STATIC helper script — never
+    // `credential.helper store` (a single proxy 401 makes git ERASE a stored
+    // credential, wedging every later push), never the real PAT. The proxy
+    // injects the real token host-side.
+    expect(gitcfg).toContain('credential.helper /jarvis-config/git-cred')
+    expect(gitcfg).not.toContain('credential.helper store')
     expect(gitcfg).not.toContain('ghp_test_token')
-    expect(gitcfg).toContain('x-access-token:git_')
-    expect(gitcfg).toContain('@127.0.0.1:3000')
+    expect(gitcfg).toContain("password=%s") // helper emits the cap token
+    expect(gitcfg).toContain('git_') // the minted cap token is baked into the script
     expect(gitcfg).not.toContain('@github.com') // no real github credential
-    expect(gitcfg).toContain('.git-credentials')
+    // The erasable store file is actively removed, not just unused.
+    expect(gitcfg).toContain('rm -f "$HOME/.git-credentials"')
 
     // The CLI child gets NO GitHub token; the appended prompt tells it to push
     // (via the proxy) and that PRs open from the host panel, not gh.
@@ -271,6 +277,49 @@ describe('launchContainerSession', () => {
     const cli = calls.map((c) => c.join(' ')).find((c) => c.includes('cli.tsx'))!
     expect(cli).toContain('JARVIS_PROVIDER=deepseek')
     expect(cli).toContain('JARVIS_MODEL=deepseek-v4-pro')
+  })
+
+  test('proxy auth-enforced deploy: the CLI carries a signed proxy JWT as ANTHROPIC_AUTH_TOKEN', async () => {
+    const secret = 'test-proxy-jwt-secret-abcdefghijklmnop012345'
+    process.env.JARVIS_PROXY_JWT_SECRET = secret
+    try {
+      const sessionId = makeSession()
+      const store = getStore()
+      const { calls, exec } = fakeDocker()
+      await launchContainerSession(store, {
+        sessionId,
+        repoFullName: 'owner/demo',
+        baseUrl: 'http://127.0.0.1:3000',
+        proxyHealthy: async () => true, // proxy up → the JWT-minting path
+        exec,
+      })
+      const cli = calls.map((c) => c.join(' ')).find((c) => c.includes('cli.tsx'))!
+      const m = /ANTHROPIC_AUTH_TOKEN=([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/.exec(cli)
+      expect(m).toBeTruthy()
+      // The token verifies against the SAME secret the hub uses, and is scoped
+      // to this session.
+      const res = verifyProxyToken(m![1], secret)
+      expect(res.ok).toBe(true)
+      expect(res.ok && res.claims.sub).toBe(`code-session:${sessionId}`)
+    } finally {
+      delete process.env.JARVIS_PROXY_JWT_SECRET
+    }
+  })
+
+  test('no proxy secret (auth-less local proxy): no ANTHROPIC_AUTH_TOKEN is minted', async () => {
+    delete process.env.JARVIS_PROXY_JWT_SECRET
+    const sessionId = makeSession()
+    const store = getStore()
+    const { calls, exec } = fakeDocker()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => true,
+      exec,
+    })
+    const cli = calls.map((c) => c.join(' ')).find((c) => c.includes('cli.tsx'))!
+    expect(cli).not.toContain('ANTHROPIC_AUTH_TOKEN=')
   })
 
   test('runs the setup script when the repo has .jarvis/setup.sh', async () => {
@@ -372,6 +421,71 @@ describe('launchContainerSession', () => {
       stderr: '',
     }))
     expect('error' in result).toBe(true)
+  })
+
+  test('getContainerDiff persists a snapshot and serves it (stale) once the container is gone', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec: fakeDocker().exec,
+    })
+    const fakeOut = [
+      '@@BRANCH@@jarvis/add-vision',
+      '@@BASE@@origin/main',
+      '@@AHEAD@@1',
+      '@@STAT@@',
+      ' ulrich.py | 3 +++',
+      ' 1 file changed, 3 insertions(+)',
+      '@@DIFF@@',
+      'diff --git a/ulrich.py b/ulrich.py',
+      '+import cv2',
+    ].join('\n')
+    const diffExec: DockerExec = async (args) =>
+      args[0] === 'exec' && args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: fakeOut, stderr: '' }
+        : { stdout: '', stderr: '' }
+    // A summary poll (the header chip) captures the snapshot — including the
+    // diff body, via its one-time internal full read on stat change.
+    const summary = await getContainerDiff(store, sessionId, diffExec, true)
+    expect('error' in summary).toBe(false)
+
+    // Container stopped/removed → exec rejects. Serve the capture, marked stale.
+    const deadExec: DockerExec = async () => {
+      throw new Error('container not running')
+    }
+    const afterDeath = await getContainerDiff(store, sessionId, deadExec)
+    expect('error' in afterDeath).toBe(false)
+    if ('error' in afterDeath) return
+    expect(afterDeath.stale).toBe(true)
+    expect(afterDeath.branch).toBe('jarvis/add-vision')
+    expect(afterDeath.stat).toContain('1 file changed')
+    expect(afterDeath.diff).toContain('+import cv2')
+
+    // An EMPTY live read (agent fetch caught base up / tree reverted) also
+    // falls back to the capture rather than blanking the panel.
+    const emptyOut = ['@@BRANCH@@jarvis/add-vision', '@@BASE@@origin/main', '@@AHEAD@@0', '@@STAT@@', '@@DIFF@@'].join('\n')
+    const emptyExec: DockerExec = async (args) =>
+      args[0] === 'exec' && args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: emptyOut, stderr: '' }
+        : { stdout: '', stderr: '' }
+    const emptyFallback = await getContainerDiff(store, sessionId, emptyExec)
+    expect('error' in emptyFallback).toBe(false)
+    if ('error' in emptyFallback) return
+    expect(emptyFallback.stale).toBe(true)
+    expect(emptyFallback.diff).toContain('+import cv2')
+
+    // Even after reclaim clears container_json entirely (the 12h idle reaper),
+    // the session's changes stay viewable.
+    clearSessionContainer(store, sessionId)
+    const afterReclaim = await getContainerDiff(store, sessionId, deadExec)
+    expect('error' in afterReclaim).toBe(false)
+    if ('error' in afterReclaim) return
+    expect(afterReclaim.stale).toBe(true)
+    expect(afterReclaim.stat).toContain('1 file changed')
   })
 
   test('createContainerPR pushes in-container and opens the PR host-side', async () => {
@@ -547,6 +661,60 @@ describe('launchContainerSession', () => {
     expect(cli).toContain('HTTP_PROXY=http://jarvis-egress-e9e9000011223344:3128')
   })
 
+  test('internalBaseUrl (containerized deploy) routes the child to internal origins over the shared bridge; session URL stays public', async () => {
+    process.env.JARVIS_CLI_PROXY_URL = 'http://hub:4000'
+    try {
+      const store = getStore()
+      const env = createEnvironment(store, {
+        machine_name: 'gh-app-bot',
+        directory: '/workspace',
+        git_repo_url: 'https://github.com/owner/demo',
+        max_sessions: 4,
+        worker_type: 'container',
+        user_id: '00000000-0000-0000-0000-000000000001',
+      })
+      getOrCreateSession(store, 'ab12000011223344', env.environment_id)
+      setEnvironmentConfig(store, env.environment_id, {
+        envVars: {},
+        setupScript: '',
+        networkLevel: 'trusted',
+        customAllowlist: [],
+      })
+      const { calls, exec } = fakeDocker()
+      await launchContainerSession(store, {
+        sessionId: 'ab12000011223344',
+        repoFullName: 'owner/demo',
+        baseUrl: 'https://0wlan.com', // PUBLIC — the browser session URL
+        internalBaseUrl: 'http://web:3000', // container-facing — git-proxy + callback
+        proxyHealthy: async () => true,
+        exec,
+      })
+      const flat = calls.map((c) => c.join(' '))
+      // The workbench joins the shared internal bridge (so `web`/`hub` resolve).
+      expect(
+        flat.some((c) => c.startsWith('network connect jarvis-code-bridge jarvis-code-ab12000011223344')),
+      ).toBe(true)
+      // git-proxy remote uses the INTERNAL origin, not the public CF origin.
+      expect(
+        flat.some((c) => c.includes('http://web:3000/api/bridge/v1/code/sessions/ab12000011223344/git/')),
+      ).toBe(true)
+      const cli = flat.find((c) => c.includes('cli.tsx'))!
+      // CCR callback (sdkUrl) → internal origin; NEVER the host-gateway alias.
+      expect(cli).toContain('web:3000/api/bridge/v1/code/sessions/ab12000011223344')
+      expect(cli).not.toContain('host.docker.internal')
+      expect(cli).not.toContain('0wlan.com/api/')
+      // The browser session URL stays PUBLIC (the watch link).
+      expect(cli).toContain('JARVIS_SESSION_URL=https://0wlan.com/code/session_ab12000011223344')
+      // Model proxy reached by service name over the bridge.
+      expect(cli).toContain('ANTHROPIC_BASE_URL=http://hub:4000')
+      // NO_PROXY names the internal hosts so the CLI reaches them directly (not squid).
+      expect(cli).toMatch(/NO_PROXY=[^ ]*\bweb\b/)
+      expect(cli).toMatch(/NO_PROXY=[^ ]*\bhub\b/)
+    } finally {
+      delete process.env.JARVIS_CLI_PROXY_URL
+    }
+  })
+
   test('default network level (full) keeps --network=host + 127.0.0.1 callback', async () => {
     const sessionId = makeSession()
     const store = getStore()
@@ -562,6 +730,33 @@ describe('launchContainerSession', () => {
     expect(flat.some((c) => c.startsWith('run -d') && c.includes('--network=host'))).toBe(true)
     expect(flat.some((c) => c.startsWith('network create'))).toBe(false)
     expect(flat.find((c) => c.includes('cli.tsx'))!).toContain('127.0.0.1:3000')
+  })
+
+  test('JARVIS_CODE_INTERNAL_ORIGIN forces a normal (default/full-env) session onto the bridge — reaches web:3000, no --network=host', async () => {
+    process.env.JARVIS_CODE_INTERNAL_ORIGIN = 'http://web:3000'
+    try {
+      const sessionId = makeSession() // default env → networkLevel 'full'
+      const store = getStore()
+      const { calls, exec } = fakeDocker()
+      await launchContainerSession(store, {
+        sessionId,
+        repoFullName: 'owner/demo',
+        baseUrl: 'http://0.0.0.0:3000', // what tasks/route.ts derives from req.url — unreachable
+        proxyHealthy: async () => false,
+        exec,
+      })
+      const flat = calls.map((c) => c.join(' '))
+      // Forced isolated: private net + bridge join, NOT --network=host.
+      expect(flat.some((c) => c.includes('--network=host'))).toBe(false)
+      expect(flat.some((c) => c.startsWith(`network connect jarvis-code-bridge jarvis-code-${sessionId}`))).toBe(true)
+      // git-proxy + callback use web:3000, never the unreachable 0.0.0.0 origin.
+      expect(flat.some((c) => c.includes('http://web:3000/api/bridge/v1/code/sessions/'))).toBe(true)
+      const cli = flat.find((c) => c.includes('cli.tsx'))!
+      expect(cli).toContain('web:3000/api/bridge/v1/code/sessions/')
+      expect(cli).not.toContain('0.0.0.0:3000/api/')
+    } finally {
+      delete process.env.JARVIS_CODE_INTERNAL_ORIGIN
+    }
   })
 
   test('createContainerPR draft mode opens a draft PR host-side', async () => {
@@ -670,6 +865,235 @@ describe('launchContainerSession', () => {
     expect(flat.find((c) => c.includes('cli.tsx'))!).toContain('--mcp-config /jarvis-config/.mcp.json')
   })
 
+  // ── External bot jobs (gh-app dispatch): injected installation token ────
+  test('external job: bot committer identity, token in meta but NEVER in the container', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    const { calls, exec } = fakeDocker()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'https://0wlan.com',
+      proxyHealthy: async () => false,
+      installationToken: 'ghs_inst_tok',
+      botLogin: 'talos',
+      exec,
+    })
+    const flat = calls.map((c) => c.join(' '))
+    // Committer = the App bot, not the connected user ('tester').
+    const gitcfg = flat.find((c) => c.includes('git config --global user.name'))!
+    expect(gitcfg).toContain("user.name 'talos'")
+    expect(gitcfg).toContain("user.email 'talos@users.noreply.github.com'")
+    expect(gitcfg).not.toContain('tester')
+    // The installation token lands in the session meta (for the git proxy +
+    // host-side PR)…
+    const meta = JSON.parse(findSession(store, sessionId)!.container_json!)
+    expect(meta.installationToken).toBe('ghs_inst_tok')
+    expect(meta.botLogin).toBe('talos')
+    // …but NEVER in any docker command line (the claude.ai/code invariant:
+    // tokens stay host-side; the container only holds the per-session cap).
+    expect(flat.some((c) => c.includes('ghs_inst_tok'))).toBe(false)
+  })
+
+  test('regression: no installationToken → committer + persisted meta byte-identical', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    const { calls, exec } = fakeDocker()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec,
+    })
+    const gitcfg = calls.map((c) => c.join(' ')).find((c) => c.includes('git config --global user.name'))!
+    expect(gitcfg).toContain("user.name 'tester'")
+    expect(gitcfg).toContain("user.email 'tester@users.noreply.github.com'")
+    // The meta JSON carries EXACTLY today's keys — no external-job fields.
+    const meta = JSON.parse(findSession(store, sessionId)!.container_json!)
+    expect(Object.keys(meta).sort()).toEqual(['container', 'extraRepos', 'gitCapToken', 'repo'])
+  })
+
+  test('createContainerPR passes the injected token to openPullRequest for external jobs', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'https://0wlan.com',
+      proxyHealthy: async () => false,
+      installationToken: 'ghs_inst_tok',
+      botLogin: 'talos',
+      exec: fakeDocker().exec,
+    })
+    const exec: DockerExec = async () => ({ stdout: '@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' })
+    const { openPullRequest } = await import('@/lib/connectors/github')
+    vi.mocked(openPullRequest).mockClear()
+    const r = await createContainerPR(store, sessionId, exec)
+    expect('error' in r).toBe(false)
+    expect(vi.mocked(openPullRequest)).toHaveBeenCalledWith(
+      'owner/demo', 'jarvis/session-x', 'main', expect.any(String), expect.any(String), false, 'ghs_inst_tok',
+    )
+  })
+
+  test('regression: createContainerPR without a token calls openPullRequest exactly as today', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec: fakeDocker().exec,
+    })
+    const exec: DockerExec = async () => ({ stdout: '@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' })
+    const { openPullRequest } = await import('@/lib/connectors/github')
+    vi.mocked(openPullRequest).mockClear()
+    await createContainerPR(store, sessionId, exec)
+    // 6 args — NO trailing token argument on the normal path.
+    expect(vi.mocked(openPullRequest)).toHaveBeenCalledWith(
+      'owner/demo', 'jarvis/session-x', 'main', expect.any(String), expect.any(String), false,
+    )
+  })
+
+  // ── Session-URL stamping (external bot jobs): PR body + commit trailer link
+  // back to the watchable run, claude.ai/code style. Normal sessions unchanged.
+  test('external job: PR body + in-container commit carry the session URL + Jarvis-Session trailer', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'https://0wlan.com',
+      proxyHealthy: async () => false,
+      installationToken: 'ghs_inst_tok',
+      botLogin: 'talos',
+      exec: fakeDocker().exec,
+    })
+    const sessionUrl = `https://0wlan.com/code/session_${sessionId}`
+    const calls: string[][] = []
+    const exec: DockerExec = async (args) => {
+      calls.push(args)
+      return args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: '@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' }
+        : { stdout: '', stderr: '' }
+    }
+    const { openPullRequest } = await import('@/lib/connectors/github')
+    vi.mocked(openPullRequest).mockClear()
+    const r = await createContainerPR(store, sessionId, exec)
+    expect('error' in r).toBe(false)
+    // Commit message (in-container script) carries the trailer.
+    const script = calls.map((c) => c.join(' ')).find((c) => c.includes('@@BRANCH@@'))!
+    expect(script).toContain(`Jarvis-Session: ${sessionUrl}`)
+    // PR body carries the link + trailer (title stays the default).
+    const [, , , title, body] = vi.mocked(openPullRequest).mock.calls[0]
+    expect(title).toBe('Changes from a Jarvis /code session')
+    expect(body).toContain('From a Jarvis /code session.') // default kept, only appended
+    expect(body).toContain(`/code/session_${sessionId}`)
+    expect(body).toContain(`Jarvis-Session: ${sessionUrl}`)
+  })
+
+  // ── Push-failure surfacing: a swallowed `git push` 401 (e.g. an expired
+  // installation token) must NOT yield a compare/PR URL for a branch that
+  // never reached the remote — the caller gets a clear error instead.
+  test('createContainerPR surfaces a failed in-container push instead of a compare URL', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec: fakeDocker().exec,
+    })
+    const scripts: string[] = []
+    const exec: DockerExec = async (args) => {
+      scripts.push(args.join(' '))
+      return args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: '@@PUSH@@fail\n@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' }
+        : { stdout: '', stderr: '' }
+    }
+    const { openPullRequest } = await import('@/lib/connectors/github')
+    vi.mocked(openPullRequest).mockClear()
+    const r = await createContainerPR(store, sessionId, exec)
+    expect('error' in r).toBe(true)
+    if (!('error' in r)) return
+    expect(r.error.toLowerCase()).toContain('push')
+    // No PR is opened for an unpushed branch.
+    expect(vi.mocked(openPullRequest)).not.toHaveBeenCalled()
+    // The real in-container script checks the push exit code + emits the marker.
+    const script = scripts.find((s) => s.includes('@@BRANCH@@'))!
+    expect(script).toContain('@@PUSH@@')
+    expect(script).toContain('git push -u origin')
+  })
+
+  test('createContainerPR compose mode also surfaces a failed push (no compose URL to an unpushed branch)', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec: fakeDocker().exec,
+    })
+    const exec: DockerExec = async (args) =>
+      args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: '@@PUSH@@fail\n@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' }
+        : { stdout: '', stderr: '' }
+    const r = await createContainerPR(store, sessionId, exec, 'compose')
+    expect('error' in r).toBe(true)
+  })
+
+  test('createContainerPR happy path with an explicit push-ok marker is unchanged', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec: fakeDocker().exec,
+    })
+    const exec: DockerExec = async (args) =>
+      args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: '@@PUSH@@ok\n@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' }
+        : { stdout: '', stderr: '' }
+    const r = await createContainerPR(store, sessionId, exec)
+    expect('error' in r).toBe(false)
+    if ('error' in r) return
+    expect(r.url).toBe('https://github.com/owner/demo/pull/7')
+    expect(r.branch).toBe('jarvis/session-x')
+  })
+
+  test('regression: normal session PR body + commit message are stamped-free (byte-identical)', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      proxyHealthy: async () => false,
+      exec: fakeDocker().exec,
+    })
+    const calls: string[][] = []
+    const exec: DockerExec = async (args) => {
+      calls.push(args)
+      return args.some((a) => a.includes('@@BRANCH@@'))
+        ? { stdout: '@@BASE@@main\n@@BRANCH@@jarvis/session-x\n', stderr: '' }
+        : { stdout: '', stderr: '' }
+    }
+    const { openPullRequest } = await import('@/lib/connectors/github')
+    vi.mocked(openPullRequest).mockClear()
+    await createContainerPR(store, sessionId, exec)
+    const script = calls.map((c) => c.join(' ')).find((c) => c.includes('@@BRANCH@@'))!
+    expect(script).toContain("git commit -m 'Changes from a Jarvis /code session'")
+    expect(script).not.toContain('Jarvis-Session')
+    const [, , , title, body] = vi.mocked(openPullRequest).mock.calls[0]
+    expect(title).toBe('Changes from a Jarvis /code session')
+    expect(body).toBe('From a Jarvis /code session.')
+  })
+
   test('multi-repo: clones each extra repo alongside the primary', async () => {
     const sessionId = makeSession()
     const store = getStore()
@@ -699,11 +1123,39 @@ describe('launchContainerSession', () => {
     })
     const exec: DockerExec = async (args) =>
       args.some((a) => a.includes('rev-parse')) ? { stdout: 'jarvis/session-x\n', stderr: '' } : { stdout: '', stderr: '' }
-    const { mergePullRequest } = await import('@/lib/connectors/github')
+    const { mergePullRequest, githubPrStatus } = await import('@/lib/connectors/github')
+    vi.mocked(githubPrStatus).mockClear()
     const r = await mergeContainerPR(store, sessionId, exec)
     expect('merged' in r).toBe(true)
-    // PR number 7 comes from the githubPrStatus mock.
+    // PR number 7 comes from the githubPrStatus mock. Normal sessions call
+    // exactly as today — NO trailing token argument on either lookup or merge.
+    expect(vi.mocked(githubPrStatus)).toHaveBeenCalledWith('owner/demo', 'jarvis/session-x')
     expect(vi.mocked(mergePullRequest)).toHaveBeenCalledWith('owner/demo', 7)
+  })
+
+  test('mergeContainerPR threads the injected installation token to pr-status + merge for external jobs', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'https://0wlan.com',
+      proxyHealthy: async () => false,
+      installationToken: 'ghs_inst_tok',
+      botLogin: 'talos',
+      exec: fakeDocker().exec,
+    })
+    const exec: DockerExec = async (args) =>
+      args.some((a) => a.includes('rev-parse')) ? { stdout: 'jarvis/session-x\n', stderr: '' } : { stdout: '', stderr: '' }
+    const { mergePullRequest, githubPrStatus } = await import('@/lib/connectors/github')
+    vi.mocked(githubPrStatus).mockClear()
+    vi.mocked(mergePullRequest).mockClear()
+    const r = await mergeContainerPR(store, sessionId, exec)
+    expect('merged' in r).toBe(true)
+    // Both host-side REST calls authenticate as the App installation, not the
+    // box owner's PAT.
+    expect(vi.mocked(githubPrStatus)).toHaveBeenCalledWith('owner/demo', 'jarvis/session-x', 'ghs_inst_tok')
+    expect(vi.mocked(mergePullRequest)).toHaveBeenCalledWith('owner/demo', 7, 'squash', 'ghs_inst_tok')
   })
 
   test('stopContainerSession removes the recorded container', async () => {
@@ -768,6 +1220,18 @@ describe('validRepoFullName', () => {
     expect(validRepoFullName('owner/repo/extra')).toBe(false)
     expect(validRepoFullName('owner/../etc')).toBe(false)
     expect(validRepoFullName('owner/re po')).toBe(false)
+  })
+
+  test('rejects dot-only segments (traversal), aligned with the git proxy validName', () => {
+    // `.` / `..` pass the charset regex but are path traversal, not repo names.
+    expect(validRepoFullName('owner/..')).toBe(false)
+    expect(validRepoFullName('owner/.')).toBe(false)
+    expect(validRepoFullName('../repo')).toBe(false)
+    expect(validRepoFullName('./repo')).toBe(false)
+    expect(validRepoFullName('../..')).toBe(false)
+    // Leading dots are fine when the segment isn't ONLY dots (.github is real).
+    expect(validRepoFullName('owner/.github')).toBe(true)
+    expect(validRepoFullName('.dotorg/repo')).toBe(true)
   })
 })
 
@@ -900,6 +1364,28 @@ describe('resumeContainerWorker (auto-resume on reopen)', () => {
       return { stdout: '', stderr: '' }
     }
     expect(await resumeContainerWorker(store, sessionId, aliveExec)).toBe(false)
+  })
+
+  test('re-asserts the static git credential helper on reopen — even with a live worker (heals wedged creds)', async () => {
+    const store = getStore()
+    const sessionId = makeSession()
+    await launchOnce(sessionId)
+    const calls: string[][] = []
+    const aliveExec: DockerExec = async (args) => {
+      calls.push(args)
+      if (args[0] === 'inspect') return { stdout: 'true\n', stderr: '' }
+      if (args.some((a) => a.includes('awk'))) return { stdout: '1\n', stderr: '' } // worker alive
+      return { stdout: '', stderr: '' }
+    }
+    await resumeContainerWorker(store, sessionId, aliveExec)
+    const heal = calls
+      .map((c) => c.join(' '))
+      .find((c) => c.includes('credential.helper /jarvis-config/git-cred'))
+    expect(heal).toBeTruthy()
+    expect(heal).toContain('git_') // the session cap token is baked into the script
+    expect(heal).not.toContain('credential.helper store')
+    // And it scrubs a repo-local helper a wedged agent may have hand-rolled.
+    expect(heal).toContain('--unset-all credential.helper')
   })
 
   test('returns false with no spec, and when the container is gone', async () => {

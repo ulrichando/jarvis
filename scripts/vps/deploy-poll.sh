@@ -86,13 +86,18 @@ rollback() {
   exit 1
 }
 
-if git -C "$REPO" diff --name-only "$OLD..$NEW" -- src/web src/cli | grep -q .; then
+if git -C "$REPO" diff --name-only "$OLD..$NEW" -- src/web src/cli src/gh-app | grep -q .; then
   cd "$WEB"
   "${COMPOSE[@]}" build >>"$LOG" 2>&1 || rollback
   "${COMPOSE[@]}" up -d >>"$LOG" 2>&1 || rollback
   if git -C "$REPO" diff --name-only "$OLD..$NEW" -- src/web/Caddyfile | grep -q .; then
     # Caddyfile is bind-mounted :ro — content changes need an explicit restart.
     "${COMPOSE[@]}" restart caddy >>"$LOG" 2>&1 || rollback
+  fi
+  if git -C "$REPO" diff --name-only "$OLD..$NEW" -- src/web/searxng | grep -q .; then
+    # searxng settings.yml is bind-mounted — content changes need a restart
+    # (up -d won't recreate on a mounted-file change alone).
+    "${COMPOSE[@]}" restart searxng >>"$LOG" 2>&1 || rollback
   fi
   ok=0
   for _ in 1 2 3; do

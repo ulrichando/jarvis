@@ -85,12 +85,12 @@ describe('forwardToGithub', () => {
 })
 
 describe('git proxy route', () => {
-  function seed(scopeRepo = 'owner/demo', cap = 'git_cap') {
+  function seed(scopeRepo = 'owner/demo', cap = 'git_cap', extraMeta: Record<string, string> = {}) {
     const store = getStore()
     store.db
       .prepare('INSERT INTO sessions (session_id, environment_id, archived, created_at, worker_epoch) VALUES (?, NULL, 0, ?, 0)')
       .run('sess1', Date.now())
-    setSessionContainer(store, 'sess1', { container: 'c', repo: scopeRepo, gitCapToken: cap })
+    setSessionContainer(store, 'sess1', { container: 'c', repo: scopeRepo, gitCapToken: cap, ...extraMeta })
   }
   function basic(cap: string) {
     return 'Basic ' + Buffer.from(`x-access-token:${cap}`).toString('base64')
@@ -165,5 +165,81 @@ describe('git proxy route', () => {
     const req = new Request('http://h/info/refs?service=git-upload-pack', { headers: { authorization: basic('git_cap') } })
     const res = await GET(req, ctx(['owner', 'demo.git', 'info', 'refs']))
     expect(res.status).toBe(503)
+  })
+
+  // ── External bot jobs (gh-app dispatch): per-session injected installation
+  // token. Sessions WITHOUT one must keep today's global-PAT path byte-identical.
+  test('session meta with installationToken → forwards THAT token, never reads the PAT', async () => {
+    seed('owner/demo', 'git_cap', { installationToken: 'ghs_inst_tok', botLogin: 'talos' })
+    vi.mocked(getGithubToken).mockClear()
+    const { GET } = await route()
+    const req = new Request('http://h/info/refs?service=git-upload-pack', { headers: { authorization: basic('git_cap') } })
+    const res = await GET(req, ctx(['owner', 'demo.git', 'info', 'refs']))
+    expect(res.status).toBe(200)
+    const [, init] = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect((init.headers as Headers).get('authorization')).toBe(
+      'Basic ' + Buffer.from('x-access-token:ghs_inst_tok').toString('base64'),
+    )
+    // The global-PAT lookup is skipped entirely for token-injected sessions.
+    expect(vi.mocked(getGithubToken)).not.toHaveBeenCalled()
+  })
+
+  test('stale installation token is re-minted through the gh-app before injection', async () => {
+    vi.stubEnv('GH_APP_INTERNAL_URL', 'http://gh-app:8790')
+    vi.stubEnv('GH_APP_BRIDGE_TOKEN', 'svc-secret')
+    try {
+      // No installationTokenExpiresAt in meta → "unknown, refresh before use".
+      seed('owner/demo', 'git_cap', { installationToken: 'ghs_stale' })
+      const fetchMock = vi.fn(async (url: RequestInfo | URL, _init?: RequestInit) => {
+        if (String(url).includes('/internal/mint-token')) {
+          return new Response(JSON.stringify({ token: 'ghs_fresh', expiresAt: '2099-01-01T00:00:00Z' }), { status: 200 })
+        }
+        return new Response('OK', { status: 200, headers: { 'content-type': 'application/x-git-upload-pack-advertisement' } })
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      const { GET } = await route()
+      const req = new Request('http://h/info/refs?service=git-upload-pack', { headers: { authorization: basic('git_cap') } })
+      const res = await GET(req, ctx(['owner', 'demo.git', 'info', 'refs']))
+      expect(res.status).toBe(200)
+      // The github.com forward carries the FRESH token, not the stale one.
+      const gh = fetchMock.mock.calls.find(([u]) => new URL(String(u)).hostname === 'github.com')!
+      expect((gh[1]?.headers as Headers).get('authorization')).toBe(
+        'Basic ' + Buffer.from('x-access-token:ghs_fresh').toString('base64'),
+      )
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  test('injected token works with NO global PAT connected (external repo job)', async () => {
+    seed('owner/demo', 'git_cap', { installationToken: 'ghs_inst_tok' })
+    vi.mocked(getGithubToken).mockResolvedValue(null) // GitHub connector absent
+    const { GET } = await route()
+    const req = new Request('http://h/info/refs?service=git-upload-pack', { headers: { authorization: basic('git_cap') } })
+    const res = await GET(req, ctx(['owner', 'demo.git', 'info', 'refs']))
+    expect(res.status).toBe(200)
+  })
+
+  test('regression: no installationToken → the global PAT is used, as today', async () => {
+    seed('owner/demo', 'git_cap')
+    vi.mocked(getGithubToken).mockClear()
+    const { GET } = await route()
+    const req = new Request('http://h/info/refs?service=git-upload-pack', { headers: { authorization: basic('git_cap') } })
+    const res = await GET(req, ctx(['owner', 'demo.git', 'info', 'refs']))
+    expect(res.status).toBe(200)
+    expect(vi.mocked(getGithubToken)).toHaveBeenCalledTimes(1)
+    const [, init] = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect((init.headers as Headers).get('authorization')).toBe(
+      'Basic ' + Buffer.from('x-access-token:PAT').toString('base64'),
+    )
+  })
+
+  test('out-of-scope repo still 403s even with an injected token', async () => {
+    seed('owner/demo', 'git_cap', { installationToken: 'ghs_inst_tok' })
+    const { GET } = await route()
+    const req = new Request('http://h/info/refs?service=git-upload-pack', { headers: { authorization: basic('git_cap') } })
+    const res = await GET(req, ctx(['evil', 'other.git', 'info', 'refs']))
+    expect(res.status).toBe(403)
+    expect((fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0)
   })
 })

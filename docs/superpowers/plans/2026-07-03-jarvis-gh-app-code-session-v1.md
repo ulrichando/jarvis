@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development. Steps use `- [ ]`.
 > **READ FIRST:** the design spec `docs/superpowers/specs/2026-07-03-jarvis-gh-app-code-session-design.md` and the `/code` system map in that spec's companion exploration. `src/web` is **stock Next.js 16.2.6** — before touching any route, read `src/web/node_modules/next/dist/docs/01-app/01-getting-started/15-route-handlers.md` + `16-proxy.md`. Route handlers take `ctx: { params: Promise<...> }` (await it); middleware is `src/web/src/proxy.ts`.
 
-**Goal:** `@jarvis-gh-bot <task>` runs as a real, watchable jarvis `/code` session (clone via the scoped git-proxy, autonomous run, PR opened by the host) with the **session URL stamped into the PR + tracking comment**, replacing the throwaway sandbox.
+**Goal:** `@talos <task>` runs as a real, watchable jarvis `/code` session (clone via the scoped git-proxy, autonomous run, PR opened by the host) with the **session URL stamped into the PR + tracking comment**, replacing the throwaway sandbox.
 
 **Architecture:** gh-app worker → `POST /api/bridge/v1/gh-app/dispatch` (new, service-token) → `runRoutine`-style create (env for the external repo + injected installation token → seed `bypassPermissions` + the task → `launchContainerSession` with an explicit public origin) → poll session status → `POST /sessions/{id}/pr` (stamped) → gh-app updates the tracking comment with the session link + PR. Fallback to the sandbox behind `GH_APP_USE_CODE_SESSIONS` for one release.
 
@@ -25,7 +25,7 @@
 ### Task A2: host-side PR/committer use the injected token + bot identity for external jobs
 **Files:** `src/web/src/lib/connectors/github.ts` (`openPullRequest`/`githubPrStatus`), `src/web/src/lib/bridge/containers.ts:365,383-384,876-884`
 - [ ] Add an **optional token param** to `openPullRequest` (+ `githubPrStatus`) — when passed, authenticate with it instead of `load().github.token`. Default path unchanged.
-- [ ] In `createContainerPR` (`containers.ts:834-888`): when the session has `installationId`, mint a token and pass it to `openPullRequest`; committer identity (git config at 383-384) = the App bot (`jarvis-gh-bot[bot]`) instead of `githubStatus().login`.
+- [ ] In `createContainerPR` (`containers.ts:834-888`): when the session has `installationId`, mint a token and pass it to `openPullRequest`; committer identity (git config at 383-384) = the App bot (`talos-hq[bot]`) instead of `githubStatus().login`.
 - [ ] TDD: external-job PR opens with the installation token + bot identity; normal `/code` PR unchanged.
 
 ## Phase B — web: session-URL stamping + the cross-service dispatch route
@@ -55,14 +55,24 @@
 - [ ] `workingMessage` → include "▶︎ Watch it live: `<session_url>`". `resultMessage` ok → include the session link alongside the PR (`✅ Opened #N · [watch the run](<session_url>)`).
 - [ ] TDD: the working + result comments contain the session URL when present.
 
+## As-built reconciliation (contract changed from the plan during security review — this is the truth)
+The security reviews moved the design off a few plan assumptions. What actually shipped:
+- **Raw installation token is passed + stored, NOT `installationId`.** The web has no App private key, so the gh-app mints the repo-scoped ~1h token (`src/gh-app/token.ts`) and passes it as `installationToken` in the dispatch body; the web persists it in the session's `container_json` meta (never serialized into any API response — verified). Bound: jobs run minutes < 1h; a session outliving the token is a v2 re-mint hardening. (Recorded in commit `48f2f375`.)
+- **Dispatch service token is a dedicated `X-GH-App-Token` header, not `Authorization`.** `Authorization: Bearer <JARVIS_LOCAL_API_TOKEN>` is claimed by `src/web/src/proxy.ts`'s prod gate; the route reads its `GH_APP_BRIDGE_TOKEN` from `X-GH-App-Token` (constant-time; inert when unset). The gh-app sends **both** headers.
+- **`botLogin` is required** in the dispatch body (external commits attributed to the bot).
+- **PR open reuses the existing `POST /sessions/{id}/pr`** with the bearer (its `authorizeMutation` passes on any non-empty bearer) — no new PR endpoint; `createContainerPR` picks the meta token, commits as the bot, stamps `Jarvis-Session:`, and now hard-fails on a swallowed push error.
+- **Bot jobs get a dedicated locked-down env** (`machine_name:"gh-app-bot"`, `networkLevel:'trusted'`, no user `envVars`/setup) — never a user `/code` env.
+- **Done-signal:** the session GET returns `worker_reported` + `status`; the poll arms `sawRunning` only on a genuinely reported `running`, so it never concludes "done" on the CLI's pre-task init-idle. 2.5s interval; `AbortSignal.timeout` on every fetch; `archived` terminal; timeout/`requires_action` best-effort-archive the abandoned session.
+- **`isPR` jobs stay on `runInSandbox` even with the flag on** (v1): the sandbox's fork/untrusted-PR-head refusal + PR-branch checkout has no session analog yet. Only issue/comment jobs use `/code` sessions.
+
 ## Phase D — deploy + live E2E (held)
-- [ ] Set `GH_APP_BRIDGE_TOKEN` (both services), `JARVIS_WEB_ALLOWED_HOSTS += web`, `GH_APP_PUBLIC_CODE_ORIGIN=https://0wlan.com`, `GH_APP_USE_CODE_SESSIONS=1` in `.env.production`; the gh-app compose service needs the App creds volume already present.
+- [ ] Set in `.env.production` (both compose services share the `env_file`): `GH_APP_BRIDGE_TOKEN=<random>` (dispatch service token), `GH_APP_USE_CODE_SESSIONS=1` (activate — default OFF in code), `GH_APP_WEB_URL=http://web:3000` (internal web service), `GH_APP_PUBLIC_CODE_ORIGIN=https://0wlan.com`, `GH_APP_BOT_LOGIN=<the deployed App's real bot slug, e.g. jarvis[bot]>` (M2 — default `talos-hq[bot]` won't match; only affects commit attribution, not auth), and **add `web` to `JARVIS_WEB_ALLOWED_HOSTS`** (M4 — else every dispatch 403s at proxy.ts's Host allowlist). Confirm `JARVIS_LOCAL_API_TOKEN` is already shared (it is). Size `GH_APP_TIMEOUT_SEC` for session mode (default 900s is the *total* poll budget incl. container clone/setup — bump for heavy repos).
 - [ ] Validate: `docker compose config` parses; web + gh-app suites green; normal `/code` still works (create a session the old way — regression check).
-- [ ] **HELD (live):** `@jarvis-gh-bot fix X` on `maxrun` → a `/code` session appears at `0wlan.com/code/session_<id>`, watchable, opens a PR whose body links back to the session. Human-run.
+- [ ] **HELD (live):** `@talos fix X` on an issue on `maxrun` → a `/code` session appears at `0wlan.com/code/session_<id>`, watchable, opens a PR whose body links back to the session. Human-run.
 
 ## Self-review / risks
-- Additivity: A1/A2/B1 must leave normal `/code` byte-identical when no `installationId`/token/override is present — every task has a regression test for that.
-- **1-hour token:** store `installationId`, mint per-request in the proxy/PR path — never a raw token at rest (SQLite).
+- Additivity: A1/A2/B1 leave normal `/code` byte-identical when no `installationToken`/override is present; the gh-app flag OFF is byte-identical to `runInSandbox` — every task has a regression test for that.
+- **1-hour token:** stored raw in session meta (see As-built) — bounded by minutes-long jobs; re-mint for >1h sessions is v2.
 - **Origin:** always use the explicit `publicOrigin`, never `req.url`, for `baseUrl`/session-url (avoids internal-host links + broken child callbacks).
-- **Two auth layers:** the gh-app must pass both `src/proxy.ts` (Host allowlist + local token) and the new route's service-token.
-- **DB is in-process SQLite:** the gh-app integrates over HTTP only; the token minting for the proxy lives inside the Next process.
+- **Two auth layers:** the gh-app passes both `src/proxy.ts` (Host allowlist + `Authorization` local token) and the route's `X-GH-App-Token` service-token.
+- **DB is in-process SQLite:** the gh-app integrates over HTTP only.

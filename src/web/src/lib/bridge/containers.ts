@@ -10,18 +10,22 @@ import {
   clearSessionContainer,
   findEnvironment,
   findSession,
+  getDiffSnapshot,
   getWorkerSpec,
   parseEnvironmentConfig,
   resumeFloorSeq,
+  setDiffSnapshot,
   setInboundFloorSeq,
   setSessionContainer,
   setSessionToken,
   setWorkerSpec,
   type Store,
 } from "./store";
+import { freshInstallationToken } from "./gh-app-token";
 import { githubStatus } from "../connectors/github";
 import { MODELS_META } from "../ai/models-meta";
 import { listMcpServers } from "../mcp/store";
+import { signProxyToken } from "./proxyJwt";
 
 // Container-backed /code sessions (decisions-pending §12, modeled on
 // claude.ai/code's init sequence):
@@ -177,6 +181,46 @@ function shq(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+/** In-container path of the static git credential helper script. Lives in
+ *  /jarvis-config (created early, writable by the exec user) so it works
+ *  whether or not the image user can write /usr/local/bin. */
+const GIT_CRED_HELPER_PATH = "/jarvis-config/git-cred";
+
+/**
+ * Sh command installing a STATIC git credential helper: a script that always
+ * answers `get` with the session's cap token. Deliberately NOT
+ * `credential.helper store` + ~/.git-credentials: on any 401 from the git
+ * proxy (cap-token remint on relaunch, a transient auth failure) git calls the
+ * store helper's `erase`, which deletes the credential line — after that every
+ * push finds no credential and git tries to PROMPT, wedging the session with
+ * "could not read Username for 'http://web:3000'". A helper program has no
+ * erase, so a rejected request can never evict the credential. (Claude Code's
+ * sandbox git proxy ships a helper binary rather than a cred file for the same
+ * reason.) The helper answers for every host — harmless: the token is
+ * per-session and only the proxy accepts it.
+ */
+function gitCredHelperCmd(gitCapToken: string, workdir?: string): string {
+  const lines = [
+    "#!/bin/sh",
+    '[ "$1" = get ] || exit 0',
+    `printf 'username=%s\\npassword=%s\\n' x-access-token '${gitCapToken}'`,
+  ];
+  return [
+    "mkdir -p /jarvis-config",
+    `printf '%s\\n' ${lines.map((l) => shq(l)).join(" ")} > ${GIT_CRED_HELPER_PATH}`,
+    `chmod 700 ${GIT_CRED_HELPER_PATH}`,
+    // Unset-all BEFORE set: with multiple existing values (old baked images,
+    // agent-added helpers) a plain `git config` set fails. Also drop any
+    // repo-local helper a wedged agent hand-rolled, and the store-file remnant.
+    "{ git config --global --unset-all credential.helper 2>/dev/null || true; }",
+    ...(workdir
+      ? [`{ git -C ${shq(workdir)} config --unset-all credential.helper 2>/dev/null || true; }`]
+      : []),
+    `git config --global credential.helper ${GIT_CRED_HELPER_PATH}`,
+    `rm -f "$HOME/.git-credentials"`,
+  ].join(" && ");
+}
+
 /**
  * Launch a container session: container → clone → optional setup → CLI.
  * Emits one status session_event per init step (the /code session view
@@ -189,8 +233,19 @@ export async function launchContainerSession(
   opts: {
     sessionId: string;
     repoFullName: string;
-    /** http://host:port — where the in-container child reaches this app. */
+    /** http://host:port — the PUBLIC origin the browser session URL is built
+     *  from (JARVIS_SESSION_URL). Also the child's callback/git-proxy origin
+     *  UNLESS internalBaseUrl is set (see below). */
     baseUrl: string;
+    /** Container-facing origin for the git-proxy + CCR callback, for deploys
+     *  where this app is NOT reachable via host.docker.internal (containerized
+     *  behind Cloudflare: web is expose-only, the model proxy binds loopback).
+     *  When set (isolated only), the workbench also joins the shared
+     *  `jarvis-code-bridge` network so this origin's host (e.g. http://web:3000)
+     *  resolves by service name, while `baseUrl` stays PUBLIC for the session
+     *  URL — the two diverge on such deploys. Unset (local/desktop): the child
+     *  reaches this app via the host.docker.internal rewrite of baseUrl. */
+    internalBaseUrl?: string;
     /** The model the user picked (a MODELS_META id). Routed through the local
      *  proxy when it is up (any provider), else `--model` for Claude-direct. */
     model?: string;
@@ -208,6 +263,15 @@ export async function launchContainerSession(
      *  globally-enabled connector. The web /code UI always sends an explicit
      *  array (opt-in; empty by default), so no connector rides along unasked. */
     connectors?: string[];
+    /** EXTERNAL bot job (gh-app dispatch): a repo-scoped GitHub App
+     *  installation token (~1h). Persisted into the session container meta so
+     *  the scoped git proxy + host-side PR path authenticate with it. It is
+     *  NEVER placed in the container (env or argv) — the container only ever
+     *  holds the per-session cap token. Absent for normal /code sessions,
+     *  which then behave byte-identically to before this field existed. */
+    installationToken?: string;
+    /** The App bot's login — the committer identity for external bot jobs. */
+    botLogin?: string;
   },
 ): Promise<void> {
   const exec = opts.exec ?? realDockerExec;
@@ -288,17 +352,34 @@ export async function launchContainerSession(
   // egress is an allowlist squid proxy; the child reaches this app via
   // host.docker.internal (NO_PROXY) instead of 127.0.0.1.
   const netLevel = envConfig.networkLevel;
-  const isolated = netLevel !== "full";
+  // Container-facing origin for the git-proxy + CCR callback. A caller (the
+  // gh-app dispatch) may pass it explicitly; otherwise it comes from the deploy
+  // env (JARVIS_CODE_INTERNAL_ORIGIN=http://web:3000 on the containerized VPS),
+  // so EVERY container session — not just bot jobs — reaches this app
+  // internally. Unset (local/desktop) → the host.docker.internal path below.
+  const internalBaseUrl = opts.internalBaseUrl ?? process.env.JARVIS_CODE_INTERNAL_ORIGIN;
+  // A configured internal origin FORCES the isolated bridge path: the container
+  // must join jarvis-code-bridge to reach web:3000, and a host-network (`full`)
+  // container can't (web is expose-only, not host-published). Without one, the
+  // env's own networkLevel decides.
+  const isolated = netLevel !== "full" || !!internalBaseUrl;
   const netName = `jarvis-net-${sessionId}`;
   const proxyName = `jarvis-egress-${sessionId}`;
   const netArgs = isolated
     ? ["--network", netName, "--add-host=host.docker.internal:host-gateway"]
     : ["--network=host"];
-  // When isolated the child cannot use 127.0.0.1 for the callback — swap it for
-  // the host gateway alias.
-  const childBaseUrl = isolated
-    ? opts.baseUrl.replace(/\/\/(?:127\.0\.0\.1|localhost)(:|\/|$)/, "//host.docker.internal$1")
-    : opts.baseUrl;
+  // Containerized deploy (host.docker.internal unreachable): the child reaches
+  // this app + the model proxy over a shared bridge, naming them by service.
+  const internalMode = isolated && !!internalBaseUrl;
+  const CODE_BRIDGE_NET = process.env.JARVIS_CODE_BRIDGE_NETWORK || "jarvis-code-bridge";
+  // The child's callback/git-proxy origin. internalMode → the service-name
+  // origin (e.g. http://web:3000) reached over CODE_BRIDGE_NET; else isolated →
+  // swap 127.0.0.1 for the host-gateway alias; else (host net) → as-is.
+  const childBaseUrl = internalMode
+    ? internalBaseUrl!.replace(/\/+$/, "")
+    : isolated
+      ? opts.baseUrl.replace(/\/\/(?:127\.0\.0\.1|localhost)(:|\/|$)/, "//host.docker.internal$1")
+      : opts.baseUrl;
 
   // 1. Set up a cloud container
   await step("Set up a cloud container", async () => {
@@ -351,11 +432,25 @@ export async function launchContainerSession(
       "sleep",
       "infinity",
     ]);
+    // Containerized deploy: join the shared internal bridge so the child
+    // resolves this app + the model proxy by service name. internal:true — only
+    // web+hub live there, so egress stays squid-only and postgres/docker-proxy
+    // stay unreachable. Best-effort: a miss surfaces at the clone step below.
+    if (internalMode) {
+      await exec(["network", "connect", CODE_BRIDGE_NET, name]).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        emit(store, sessionId, `⚠ shared bridge (${CODE_BRIDGE_NET}) attach failed — ${msg.slice(0, 160)}`);
+      });
+    }
     setSessionContainer(store, sessionId, {
       container: name,
       repo: repoFullName,
       extraRepos,
       gitCapToken,
+      // External bot jobs only — the spread keeps the persisted JSON
+      // byte-identical for normal sessions (no extra keys).
+      ...(opts.installationToken ? { installationToken: opts.installationToken } : {}),
+      ...(opts.botLogin ? { botLogin: opts.botLogin } : {}),
     });
     if (cacheHit) emit(store, sessionId, "◌ Restored cached environment (setup skipped)");
   });
@@ -372,26 +467,23 @@ export async function launchContainerSession(
   const proxyOrigin = childBaseUrl.replace(/\/+$/, "");
   const proxyRemote = (full: string): string =>
     `${proxyOrigin}/api/bridge/v1/code/sessions/${sessionId}/git/${full}.git`;
-  const proxyHostUrl = new URL(proxyOrigin);
-  // Credential-helper line: the CAP token as the password for the PROXY host.
-  // The real PAT is never written into the container.
-  const credLine = `${proxyHostUrl.protocol}//x-access-token:${gitCapToken}@${proxyHostUrl.host}`;
-
-  // Committer identity + the cap credential so `git commit`/`push` work
-  // non-interactively through the proxy. Runs on EVERY launch (cache restores
-  // scrub creds; cap tokens are per-session). Must run BEFORE clone/fetch so the
-  // credential helper can authorize them. Non-fatal: a hiccup warns rather than
-  // aborting the launch.
+  // Committer identity + the cap-token credential HELPER so `git commit`/
+  // `push` work non-interactively through the proxy (see gitCredHelperCmd for
+  // why a helper script and not `credential.helper store`). Runs on EVERY
+  // launch (cache restores scrub creds; cap tokens are per-session). Must run
+  // BEFORE clone/fetch so the credential helper can authorize them. Non-fatal:
+  // a hiccup warns rather than aborting the launch.
   const configureGitProxy = async (): Promise<void> => {
-    const login = gh.login || "jarvis";
+    // External bot jobs commit as the App bot, not the connected user.
+    const login =
+      opts.installationToken && opts.botLogin ? opts.botLogin : gh.login || "jarvis";
     const email = `${login}@users.noreply.github.com`;
     const cmd = [
       `git config --global user.name ${shq(login)}`,
       `git config --global user.email ${shq(email)}`,
-      `git config --global credential.helper store`,
+      gitCredHelperCmd(gitCapToken),
       `git config --global init.defaultBranch main`,
       `git config --global --add safe.directory ${shq(workdir)}`,
-      `(umask 077; printf '%s\\n' ${shq(credLine)} > "$HOME/.git-credentials")`,
     ].join(" && ");
     try {
       await exec(["exec", name, "sh", "-c", cmd]);
@@ -479,7 +571,10 @@ export async function launchContainerSession(
     // re-write it for THIS session. Non-fatal — caching is an optimization.
     if (cacheEnabled && hasEnvSetup && cacheTag) {
       try {
-        await exec(["exec", name, "sh", "-c", `rm -f "$HOME/.git-credentials"`]).catch(() => {});
+        await exec([
+          "exec", name, "sh", "-c",
+          `rm -f "$HOME/.git-credentials" ${GIT_CRED_HELPER_PATH}`,
+        ]).catch(() => {});
         await exec(["commit", name, cacheTag]);
         await configureGitProxy();
         emit(store, sessionId, "◌ Cached environment snapshot for faster next launch");
@@ -558,10 +653,15 @@ export async function launchContainerSession(
     const meta = opts.model ? MODELS_META[opts.model] : undefined;
     // Host-side URL (the web server probes this); the child reaches the same
     // proxy at host.docker.internal on an isolated network.
+    // internalMode reaches the proxy by its compose service name over the shared
+    // bridge (set JARVIS_CLI_PROXY_URL=http://hub:4000), so no host-gateway swap;
+    // plain isolated swaps 127.0.0.1 for the host-gateway alias; host net → as-is.
     const proxyHealthUrl = process.env.JARVIS_CLI_PROXY_URL || "http://127.0.0.1:4000";
-    const proxyUrl = isolated
-      ? proxyHealthUrl.replace(/\/\/(?:127\.0\.0\.1|localhost)(:|\/|$)/, "//host.docker.internal$1")
-      : proxyHealthUrl;
+    const proxyUrl = internalMode
+      ? proxyHealthUrl
+      : isolated
+        ? proxyHealthUrl.replace(/\/\/(?:127\.0\.0\.1|localhost)(:|\/|$)/, "//host.docker.internal$1")
+        : proxyHealthUrl;
     const probe =
       opts.proxyHealthy ??
       (() =>
@@ -578,6 +678,22 @@ export async function launchContainerSession(
       const provider = meta?.provider ?? "deepseek";
       routingEnv.ANTHROPIC_BASE_URL = proxyUrl;
       routingEnv.ANTHROPIC_API_KEY = "jarvis-proxy"; // proxy holds the real keys
+      // When the proxy enforces auth (JARVIS_PROXY_AUTH_REQUIRED=1 — the
+      // containerized deploy), the CLI must present a signed proxy JWT: the same
+      // credential `jarvis auth login` mints, carried as ANTHROPIC_AUTH_TOKEN
+      // (→ Authorization: Bearer). The headless workbench can't run login, so
+      // mint one here (session-scoped, 24h) with the shared JARVIS_PROXY_JWT_SECRET
+      // the hub verifies against. Read the env secret DIRECTLY (never
+      // getOrCreate — a fresh secret wouldn't match the hub, and writing one is a
+      // side effect); when it's absent (auth-less local proxy) the placeholder
+      // key already suffices, so skip.
+      const proxyJwtSecret = process.env.JARVIS_PROXY_JWT_SECRET?.trim();
+      if (proxyJwtSecret) {
+        routingEnv.ANTHROPIC_AUTH_TOKEN = signProxyToken(
+          { sub: `code-session:${sessionId}`, ttlSeconds: 60 * 60 * 24 },
+          proxyJwtSecret,
+        );
+      }
       routingEnv.JARVIS_PROVIDER = provider;
       routingEnv.JARVIS_MODEL = proxyModel;
       routingEnv.JARVIS_MODEL_REGISTRY_ENABLED = "1";
@@ -601,6 +717,29 @@ export async function launchContainerSession(
       }
     }
 
+    // NO_PROXY: internalMode reaches web + the model proxy directly over the
+    // shared bridge (not via squid), so name their service hosts; else only the
+    // host-gateway alias is a direct hop.
+    const hostOf = (u: string): string => {
+      try {
+        return new URL(u).hostname;
+      } catch {
+        return "";
+      }
+    };
+    const noProxyHosts = internalMode
+      ? Array.from(
+          new Set(
+            [
+              hostOf(internalBaseUrl!),
+              hostOf(proxyHealthUrl),
+              "localhost",
+              "127.0.0.1",
+            ].filter(Boolean),
+          ),
+        ).join(",")
+      : "host.docker.internal,localhost,127.0.0.1";
+
     const childEnv: Record<string, string> = {
       // User-configured env vars first, so the worker-handshake + routing keys
       // below always win over anything the user set with the same name.
@@ -610,6 +749,13 @@ export async function launchContainerSession(
       CLAUDE_CODE_USE_CCR_V2: "1",
       CLAUDE_CODE_WORKER_EPOCH: String(epoch),
       CLAUDE_CODE_ENVIRONMENT_KIND: "bridge",
+      // The workbench CLI is headless — it authenticates via the local model
+      // proxy + the per-session worker token, never an interactive account
+      // login. Skip the `jarvis auth login` gate (which otherwise exits the CLI
+      // immediately: "Authentication required"), the same way the gh-app sandbox
+      // path does. JARVIS_DISABLE_AUTH (routingEnv) is the proxy-side switch; this
+      // is the CLI-startup login gate — a distinct flag.
+      JARVIS_REQUIRE_LOGIN: "0",
       // The browser-facing session URL, so the agent can link PRs back to it.
       JARVIS_SESSION_URL: `${opts.baseUrl.replace(/\/+$/, "")}/code/session_${sessionId}`,
       // Global-scope prompt caching (an experimental firstParty beta) emits
@@ -626,8 +772,8 @@ export async function launchContainerSession(
         HTTPS_PROXY: `http://${proxyName}:3128`,
         http_proxy: `http://${proxyName}:3128`,
         https_proxy: `http://${proxyName}:3128`,
-        NO_PROXY: "host.docker.internal,localhost,127.0.0.1",
-        no_proxy: "host.docker.internal,localhost,127.0.0.1",
+        NO_PROXY: noProxyHosts,
+        no_proxy: noProxyHosts,
       }),
       // NO GH_TOKEN/GITHUB_TOKEN: the real GitHub credential never enters the
       // container. git auths to the host-side proxy via the cap-token credential
@@ -701,8 +847,14 @@ export async function resumeContainerWorker(
   const session = findSession(store, sessionId);
   if (!session?.container_json || session.archived) return false;
   let name: string | undefined;
+  let gitCapToken: string | undefined;
   try {
-    name = (JSON.parse(session.container_json) as { container?: string }).container;
+    const meta = JSON.parse(session.container_json) as {
+      container?: string;
+      gitCapToken?: string;
+    };
+    name = meta.container;
+    gitCapToken = meta.gitCapToken;
   } catch {
     return false;
   }
@@ -713,6 +865,15 @@ export async function resumeContainerWorker(
     .then((r) => r.stdout.trim() === "true")
     .catch(() => false);
   if (!running) return false;
+  // Re-assert the static credential helper on every reopen (best-effort,
+  // idempotent). Heals sessions wedged by the old erasable store-file
+  // credential — a single proxy 401 evicted it and every push after failed
+  // with "could not read Username" — without waiting for a new launch.
+  if (gitCapToken) {
+    await exec([
+      "exec", name, "sh", "-c", gitCredHelperCmd(gitCapToken, spec.workdir),
+    ]).catch(() => {});
+  }
   // Already-alive worker → nothing to do (idempotent; safe to call on every
   // reopen). Match by process name (comm = "bun") and EXCLUDE zombies: a killed
   // worker reparented to the container's `sleep infinity` PID 1 lingers as an
@@ -766,7 +927,55 @@ export type ContainerDiff = {
   stat: string;
   /** Unified diff text (all session changes vs base, incl. new files). */
   diff: string;
+  /** True when this is the last CAPTURED diff, served because the live
+   *  container state is gone (reclaimed/stopped) or empty. */
+  stale?: boolean;
 };
+
+/** Cap a stored diff body so a giant patch can't bloat the sessions row.
+ *  ponytail: flat cap; per-file trimming if a real session ever hits it. */
+const DIFF_SNAPSHOT_MAX = 500_000;
+function capDiff(diff: string): string {
+  return diff.length > DIFF_SNAPSHOT_MAX
+    ? diff.slice(0, DIFF_SNAPSHOT_MAX) + "\n… (diff truncated for storage)"
+    : diff;
+}
+
+/**
+ * Read the CLI's NATIVE session transcript (jsonl) out of the container, for
+ * full-fidelity teleport: the worker runs with --session-id <sessionId> and
+ * CLAUDE_CONFIG_DIR=/jarvis-config, so its own transcript lives at
+ * /jarvis-config/projects/<cwd-slug>/<sessionId>.jsonl. Dropping that file
+ * into the LOCAL project dir lets `jarvis --resume <sessionId>` continue the
+ * exact conversation (claude.ai --teleport behavior), not a summary of it.
+ * Returns null when the container is gone or the file is missing/oversized —
+ * callers fall back to the markdown transcript.
+ */
+const CLI_TRANSCRIPT_MAX_BYTES = 20_000_000;
+export async function readCliTranscript(
+  store: Store,
+  sessionId: string,
+  exec: DockerExec = realDockerExec,
+): Promise<string | null> {
+  // sessionId reaches a `sh -c` string below; ids are server-minted hex, but
+  // this is called with a URL path param — reject anything shell-meaningful.
+  if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) return null;
+  const session = findSession(store, sessionId);
+  const meta = session?.container_json
+    ? (JSON.parse(session.container_json) as { container?: string })
+    : null;
+  if (!meta?.container) return null;
+  try {
+    const { stdout } = await exec([
+      "exec", meta.container, "sh", "-c",
+      `cat /jarvis-config/projects/*/${sessionId}.jsonl 2>/dev/null`,
+    ]);
+    if (!stdout.trim() || stdout.length > CLI_TRANSCRIPT_MAX_BYTES) return null;
+    return stdout;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Read the CLI's NATIVE session transcript (jsonl) out of the container, for
@@ -822,43 +1031,79 @@ export async function getContainerDiff(
   const meta = session?.container_json
     ? (JSON.parse(session.container_json) as { container?: string; repo?: string })
     : null;
-  if (!meta?.container || !meta.repo) return { error: "no container" };
-  const workdir = `/workspace/${repoDirName(meta.repo)}`;
-  // summaryOnly skips the (potentially huge) full diff — just branch/ahead/stat,
-  // for the cheap header +/- indicator that polls frequently.
-  const script = [
-    `cd ${workdir} 2>/dev/null || exit 0`,
-    `base=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)`,
-    `git add -A -N >/dev/null 2>&1`,
-    `printf '@@BRANCH@@%s\\n' "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"`,
-    `printf '@@BASE@@%s\\n' "$base"`,
-    `printf '@@AHEAD@@%s\\n' "$(git rev-list --count "$base"..HEAD 2>/dev/null || echo 0)"`,
-    `printf '@@STAT@@\\n'`,
-    `git --no-pager diff --stat "$base" 2>/dev/null`,
-    `printf '@@DIFF@@\\n'`,
-    ...(summaryOnly ? [] : [`git --no-pager diff "$base" 2>/dev/null`]),
-  ].join("; ");
-  let out: string;
-  try {
-    out = (await exec(["exec", meta.container, "sh", "-c", script])).stdout;
-  } catch (e) {
-    return { error: e instanceof Error ? e.message : String(e) };
-  }
-  const grab = (re: RegExp) => re.exec(out)?.[1]?.trim() ?? "";
-  const statStart = out.indexOf("@@STAT@@");
-  const diffStart = out.indexOf("@@DIFF@@");
-  const stat =
-    statStart >= 0 && diffStart >= 0
-      ? out.slice(statStart + "@@STAT@@".length, diffStart).trim()
-      : "";
-  const diff = diffStart >= 0 ? out.slice(diffStart + "@@DIFF@@".length).replace(/^\n/, "") : "";
-  return {
-    branch: grab(/@@BRANCH@@(.*)/),
-    base: grab(/@@BASE@@(.*)/),
-    ahead: Number(grab(/@@AHEAD@@(.*)/)) || 0,
-    stat,
-    diff,
+  // The last captured diff, served (marked stale) whenever live state is
+  // unavailable or empty — the container is ephemeral (idle reclaim,
+  // redeploys, an agent fetch catching base up), the session's changes
+  // shouldn't be. Without this the "View changes" chip + Diff panel silently
+  // go blank once the container disappears.
+  const snapshot = (): ContainerDiff | null => {
+    const snap = getDiffSnapshot(store, sessionId);
+    if (!snap) return null;
+    const { branch, base, ahead, stat, diff } = snap;
+    return { branch, base, ahead, stat, diff, stale: true };
   };
+  if (!meta?.container || !meta.repo) return snapshot() ?? { error: "no container" };
+  const workdir = `/workspace/${repoDirName(meta.repo)}`;
+  // summary skips the (potentially huge) full diff — just branch/ahead/stat,
+  // for the cheap header +/- indicator that polls frequently.
+  const read = async (summary: boolean): Promise<ContainerDiff | { error: string }> => {
+    const script = [
+      `cd ${workdir} 2>/dev/null || exit 0`,
+      `base=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)`,
+      `git add -A -N >/dev/null 2>&1`,
+      `printf '@@BRANCH@@%s\\n' "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"`,
+      `printf '@@BASE@@%s\\n' "$base"`,
+      `printf '@@AHEAD@@%s\\n' "$(git rev-list --count "$base"..HEAD 2>/dev/null || echo 0)"`,
+      `printf '@@STAT@@\\n'`,
+      `git --no-pager diff --stat "$base" 2>/dev/null`,
+      `printf '@@DIFF@@\\n'`,
+      ...(summary ? [] : [`git --no-pager diff "$base" 2>/dev/null`]),
+    ].join("; ");
+    let out: string;
+    try {
+      out = (await exec(["exec", meta.container!, "sh", "-c", script])).stdout;
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+    const grab = (re: RegExp) => re.exec(out)?.[1]?.trim() ?? "";
+    const statStart = out.indexOf("@@STAT@@");
+    const diffStart = out.indexOf("@@DIFF@@");
+    const stat =
+      statStart >= 0 && diffStart >= 0
+        ? out.slice(statStart + "@@STAT@@".length, diffStart).trim()
+        : "";
+    const diff = diffStart >= 0 ? out.slice(diffStart + "@@DIFF@@".length).replace(/^\n/, "") : "";
+    return {
+      branch: grab(/@@BRANCH@@(.*)/),
+      base: grab(/@@BASE@@(.*)/),
+      ahead: Number(grab(/@@AHEAD@@(.*)/)) || 0,
+      stat,
+      diff,
+    };
+  };
+  const live = await read(summaryOnly);
+  // Container stopped/removed, or worktree no longer differs from base →
+  // fall back to the snapshot so the session's changes stay viewable.
+  if ("error" in live) return snapshot() ?? live;
+  if (!live.stat.trim()) return snapshot() ?? live;
+  // Persist non-empty reads. Summary reads carry no diff body, so when the
+  // stat actually changed take ONE full read for the snapshot (rare: only
+  // when the working tree changed since the last capture).
+  const prev = getDiffSnapshot(store, sessionId);
+  if (summaryOnly) {
+    if (prev?.stat !== live.stat) {
+      const full = await read(false);
+      if (!("error" in full) && full.stat.trim()) {
+        setDiffSnapshot(store, sessionId, { ...full, diff: capDiff(full.diff), at: Date.now() });
+      }
+    }
+  } else {
+    const capped = capDiff(live.diff);
+    if (prev?.stat !== live.stat || prev?.diff !== capped) {
+      setDiffSnapshot(store, sessionId, { ...live, diff: capped, at: Date.now() });
+    }
+  }
+  return live;
 }
 
 /**
@@ -878,12 +1123,27 @@ export async function createContainerPR(
 ): Promise<{ url: string; branch: string } | { error: string }> {
   const session = findSession(store, sessionId);
   const meta = session?.container_json
-    ? (JSON.parse(session.container_json) as { container?: string; repo?: string })
+    ? (JSON.parse(session.container_json) as {
+        container?: string;
+        repo?: string;
+        installationToken?: string;
+      })
     : null;
   if (!meta?.container || !meta.repo) return { error: "This session has no container." };
   const workdir = `/workspace/${repoDirName(meta.repo)}`;
   const branch = `jarvis/session-${sessionId.slice(0, 8)}`;
-  const msg = "Changes from a Jarvis /code session";
+  // External bot jobs (gh-app dispatch) stamp the watchable session URL into
+  // the commit + PR so a reviewer opens the exact run from GitHub (claude.ai/
+  // code parity: transcript link + session trailer). The URL is the one baked
+  // into the worker env at launch (JARVIS_SESSION_URL, from the dispatch's
+  // explicit publicOrigin). Normal sessions have no installationToken →
+  // sessionUrl stays null → message + body are byte-identical to today.
+  const sessionUrl = meta.installationToken
+    ? (getWorkerSpec(store, sessionId)?.env.JARVIS_SESSION_URL ?? null)
+    : null;
+  const msg = sessionUrl
+    ? `Changes from a Jarvis /code session\n\nJarvis-Session: ${sessionUrl}`
+    : "Changes from a Jarvis /code session";
   // In-container: cut a session branch if needed, commit pending work, push
   // (through the git proxy). Report base + branch back; the PR is opened
   // host-side so the container never needs a GitHub token.
@@ -895,7 +1155,10 @@ export async function createContainerPR(
     `if [ "$cur" = "$base" ] || [ -z "$cur" ] || [ "$cur" = "HEAD" ]; then git checkout -b ${shq(branch)} 2>/dev/null || git checkout ${shq(branch)} 2>/dev/null; cur=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); fi`,
     // Commit anything pending so the branch reflects all the work.
     `if [ -n "$(git status --porcelain)" ]; then git add -A && git commit -m ${shq(msg)} >/dev/null 2>&1; fi`,
-    `git push -u origin "$cur" >/dev/null 2>&1`,
+    // Push with the exit code CHECKED — a silent 401 here (e.g. an expired
+    // installation token on an external job) used to yield a compare URL to a
+    // branch that never reached the remote.
+    `if git push -u origin "$cur" >/dev/null 2>&1; then printf '@@PUSH@@ok\\n'; else printf '@@PUSH@@fail\\n'; fi`,
     `printf '@@BASE@@%s\\n' "$base"`,
     `printf '@@BRANCH@@%s\\n' "$cur"`,
   ].join("\n");
@@ -907,20 +1170,38 @@ export async function createContainerPR(
   }
   const base = /@@BASE@@(.*)/.exec(out)?.[1]?.trim() || "main";
   const cur = /@@BRANCH@@(.*)/.exec(out)?.[1]?.trim() || branch;
+  // An explicit push failure is a hard error — never hand back a compare/PR
+  // URL for a branch that was not pushed. (A missing marker stays lenient for
+  // back-compat with pre-marker callers/mocks; the real script always emits it.)
+  if (/@@PUSH@@fail/.test(out)) {
+    return {
+      error:
+        `git push failed for ${cur} — the branch was NOT pushed to ${meta.repo}. ` +
+        (meta.installationToken
+          ? "The App installation token could not be refreshed (is GH_APP_INTERNAL_URL set and the gh-app healthy?) or has expired — as a last resort, re-dispatch the job."
+          : "Check the GitHub connection (Settings) and the git proxy log."),
+    };
+  }
   const compareUrl = `https://github.com/${meta.repo}/compare/${base}...${cur}?expand=1`;
 
   // `compose` just hands back GitHub's new-PR URL (no PR opened).
   if (mode === "compose") return { url: compareUrl, branch: cur };
 
   const { openPullRequest } = await import("../connectors/github");
-  const pr = await openPullRequest(
-    meta.repo,
-    cur,
-    base,
-    "Changes from a Jarvis /code session",
-    "From a Jarvis /code session.",
-    mode === "draft",
-  );
+  const prTitle = "Changes from a Jarvis /code session";
+  // Default body kept as-is; external jobs only APPEND the session link.
+  const prBody = sessionUrl
+    ? `From a Jarvis /code session.\n\nSession: ${sessionUrl}\n\nJarvis-Session: ${sessionUrl}`
+    : "From a Jarvis /code session.";
+  // External bot jobs authenticate the PR with the injected installation
+  // token (refreshed through the gh-app when stale — a late PR open can
+  // outlive the ~1h dispatch token); normal sessions call exactly as before.
+  const prToken = meta.installationToken
+    ? await freshInstallationToken(store, sessionId, session)
+    : null;
+  const pr = prToken
+    ? await openPullRequest(meta.repo, cur, base, prTitle, prBody, mode === "draft", prToken)
+    : await openPullRequest(meta.repo, cur, base, prTitle, prBody, mode === "draft");
   // On any REST failure, fall back to a clickable compare URL.
   if (!pr.ok) return { url: compareUrl, branch: cur };
   return { url: pr.url, branch: cur };
@@ -939,7 +1220,11 @@ export async function mergeContainerPR(
 ): Promise<{ merged: true } | { error: string }> {
   const session = findSession(store, sessionId);
   const meta = session?.container_json
-    ? (JSON.parse(session.container_json) as { container?: string; repo?: string })
+    ? (JSON.parse(session.container_json) as {
+        container?: string;
+        repo?: string;
+        installationToken?: string;
+      })
     : null;
   if (!meta?.container || !meta.repo) return { error: "This session has no container." };
   const workdir = `/workspace/${repoDirName(meta.repo)}`;
@@ -953,9 +1238,19 @@ export async function mergeContainerPR(
   }
   if (!cur || cur === "HEAD") return { error: "No branch to merge." };
   const { githubPrStatus, mergePullRequest } = await import("../connectors/github");
-  const status = await githubPrStatus(meta.repo, cur);
+  // External bot jobs authenticate lookup + merge with the injected
+  // installation token (refreshed through the gh-app when stale); normal
+  // sessions call exactly as before (no extra arg).
+  const mergeToken = meta.installationToken
+    ? await freshInstallationToken(store, sessionId, session)
+    : null;
+  const status = mergeToken
+    ? await githubPrStatus(meta.repo, cur, mergeToken)
+    : await githubPrStatus(meta.repo, cur);
   if (!status.ok || !status.status.pr) return { error: "No open pull request for this branch." };
-  const merged = await mergePullRequest(meta.repo, status.status.pr.number);
+  const merged = mergeToken
+    ? await mergePullRequest(meta.repo, status.status.pr.number, "squash", mergeToken)
+    : await mergePullRequest(meta.repo, status.status.pr.number);
   return merged.ok ? { merged: true } : { error: merged.error };
 }
 

@@ -258,6 +258,26 @@ export function initSchema(db: Database.Database): void {
   } catch {
     /* column already present */
   }
+  // Additive (2026-07-04, diff persistence): the last non-empty container diff
+  // ({branch,base,ahead,stat,diff,at}). The "View changes" chip + Diff panel
+  // read live container state, which evaporates on idle reclaim / redeploy /
+  // an agent fetch that catches base up — this snapshot keeps a completed
+  // session's changes viewable afterward (claude.ai/code parity).
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN last_diff_json TEXT')
+  } catch {
+    /* column already present */
+  }
+  // Additive (2026-07-04, API tokens): a user-assigned name for a bridge token.
+  // NULL = the legacy auto-minted Remote Control token (one per user, kept
+  // stable by getOrCreateBridgeToken); non-NULL = a named "API token" the user
+  // generated in Settings → API Tokens. Both authenticate identically via
+  // resolveBridgeToken, so a named token grants the same API access.
+  try {
+    db.exec('ALTER TABLE bridge_tokens ADD COLUMN name TEXT')
+  } catch {
+    /* column already present */
+  }
   db.exec(`CREATE TABLE IF NOT EXISTS session_groups (
     group_id TEXT PRIMARY KEY,
     user_id TEXT,
@@ -295,10 +315,12 @@ export function initSchema(db: Database.Database): void {
   db.pragma('foreign_keys = ON')
 }
 
-/** Get-or-create the caller's long-lived CLI token (one per user). */
+/** Get-or-create the caller's long-lived Remote Control token — the single
+ *  UNNAMED token per user (name IS NULL). Named API tokens (below) are separate
+ *  rows, so generating those never shadows or rotates this one. */
 export function getOrCreateBridgeToken(store: Store, userId: string): string {
   const existing = store.db
-    .prepare('SELECT token FROM bridge_tokens WHERE user_id = ? LIMIT 1')
+    .prepare('SELECT token FROM bridge_tokens WHERE user_id = ? AND name IS NULL LIMIT 1')
     .get(userId) as { token: string } | undefined
   if (existing) return existing.token
   const token = `jbr_${randomBytes(24).toString('base64url')}`
@@ -308,7 +330,8 @@ export function getOrCreateBridgeToken(store: Store, userId: string): string {
   return token
 }
 
-/** Resolve a CLI token to its owning user id, or null. Touches last_used_at. */
+/** Resolve any bridge token (Remote Control OR named API token) to its owning
+ *  user id, or null. Touches last_used_at. */
 export function resolveBridgeToken(store: Store, token: string): string | null {
   const row = store.db
     .prepare('SELECT user_id FROM bridge_tokens WHERE token = ?')
@@ -318,6 +341,69 @@ export function resolveBridgeToken(store: Store, token: string): string | null {
     .prepare('UPDATE bridge_tokens SET last_used_at = ? WHERE token = ?')
     .run(Date.now(), token)
   return row.user_id
+}
+
+/** One row in the user's Settings → API Tokens list. The token secret itself
+ *  is NEVER returned here — only a masked hint (shown once at creation). */
+export interface ApiTokenRow {
+  name: string
+  created_at: number
+  last_used_at: number | null
+  /** Last 4 chars of the secret, for "which token is this" disambiguation. */
+  hint: string
+}
+
+/** A user's named API tokens, newest first. */
+export function listApiTokens(store: Store, userId: string): ApiTokenRow[] {
+  const rows = store.db
+    .prepare(
+      // rowid DESC as tiebreak: same-ms creations still sort newest-first
+      // deterministically (created_at alone isn't unique at ms resolution).
+      `SELECT token, name, created_at, last_used_at FROM bridge_tokens
+       WHERE user_id = ? AND name IS NOT NULL ORDER BY created_at DESC, rowid DESC`,
+    )
+    .all(userId) as {
+    token: string
+    name: string
+    created_at: number
+    last_used_at: number | null
+  }[]
+  return rows.map((r) => ({
+    name: r.name,
+    created_at: r.created_at,
+    last_used_at: r.last_used_at,
+    hint: r.token.slice(-4),
+  }))
+}
+
+/** Mint a named API token. Returns the FULL secret (the only time it's exposed)
+ *  or null when the name is already taken for this user (names are the revoke
+ *  handle, so they must be unique per user). */
+export function createApiToken(
+  store: Store,
+  userId: string,
+  name: string,
+): string | null {
+  const clean = name.trim()
+  if (!clean) return null
+  const dup = store.db
+    .prepare('SELECT 1 FROM bridge_tokens WHERE user_id = ? AND name = ? LIMIT 1')
+    .get(userId, clean)
+  if (dup) return null
+  const token = `jbr_${randomBytes(24).toString('base64url')}`
+  store.db
+    .prepare('INSERT INTO bridge_tokens (token, user_id, name, created_at) VALUES (?, ?, ?, ?)')
+    .run(token, userId, clean, Date.now())
+  return token
+}
+
+/** Revoke a named API token by name (scoped to the owner). Returns whether a
+ *  row was removed. Never touches the unnamed Remote Control token. */
+export function revokeApiToken(store: Store, userId: string, name: string): boolean {
+  const info = store.db
+    .prepare('DELETE FROM bridge_tokens WHERE user_id = ? AND name = ? AND name IS NOT NULL')
+    .run(userId, name.trim())
+  return info.changes > 0
 }
 
 function genId(): string {
@@ -818,6 +904,16 @@ interface ContainerMeta {
   repo?: string
   extraRepos?: string[]
   gitCapToken?: string
+  /** GitHub App installation token injected by the gh-app dispatch for an
+   *  EXTERNAL bot job (repo-scoped, ~1h). Absent on normal /code sessions —
+   *  those keep the global-PAT path. The git proxy + host-side PR use it. */
+  installationToken?: string
+  /** ISO expiry of installationToken, written by the refresh path
+   *  (gh-app-token.ts). Absent on dispatch-time meta — treated as "unknown,
+   *  refresh before use". */
+  installationTokenExpiresAt?: string
+  /** The App bot's login — committer identity for external bot jobs. */
+  botLogin?: string
 }
 
 function parseContainerMeta(session: SessionRow | null): ContainerMeta {
@@ -829,11 +925,27 @@ function parseContainerMeta(session: SessionRow | null): ContainerMeta {
   }
 }
 
-/** Record the docker container backing a session, plus its git proxy scope. */
+/** Record the docker container backing a session, plus its git proxy scope.
+ *
+ *  TOKEN-STORAGE DECISION (external gh-app jobs): the dispatch stores the RAW
+ *  installation token (repo-scoped, ~1h lifetime) in the session's container
+ *  meta because the web holds no App private key and cannot mint one itself.
+ *  Sessions that outlive it are handled by the v2 refresh path
+ *  (gh-app-token.ts::freshInstallationToken → the gh-app's
+ *  /internal/mint-token) at every use site; with refresh unconfigured
+ *  (GH_APP_INTERNAL_URL unset) behavior degrades to v1: the stale token 401s
+ *  and the failure is surfaced, not swallowed. */
 export function setSessionContainer(
   store: Store,
   sessionId: string,
-  meta: { container: string; repo: string; extraRepos?: string[]; gitCapToken?: string },
+  meta: {
+    container: string
+    repo: string
+    extraRepos?: string[]
+    gitCapToken?: string
+    installationToken?: string
+    botLogin?: string
+  },
 ): void {
   store.db
     .prepare('UPDATE sessions SET container_json = ? WHERE session_id = ?')
@@ -853,6 +965,50 @@ export function getSessionGitScope(session: SessionRow): string[] {
 export function validateGitCapToken(store: Store, sessionId: string, token: string): boolean {
   const m = parseContainerMeta(findSession(store, sessionId))
   return secretEquals(m.gitCapToken, token)
+}
+
+/** The gh-app-injected App installation token for an external bot-job session,
+ *  or null for normal /code sessions (which use the global PAT host-side). */
+export function getSessionInstallationToken(session: SessionRow | null): string | null {
+  const m = parseContainerMeta(session)
+  return m.installationToken || null
+}
+
+/** Everything the token-refresh path needs in one read: the stored token, its
+ *  recorded expiry (null = unknown → refresh before use), and the repo to
+ *  re-mint for. */
+export function getSessionInstallationTokenInfo(session: SessionRow | null): {
+  token: string | null
+  expiresAt: string | null
+  repo: string | null
+} {
+  const m = parseContainerMeta(session)
+  return {
+    token: m.installationToken || null,
+    expiresAt: m.installationTokenExpiresAt || null,
+    repo: m.repo || null,
+  }
+}
+
+/** Refresh-path write: swap ONLY the installation token (+expiry) into the
+ *  session's container meta, preserving the rest of the blob (container id,
+ *  repo scope, cap token, bot login). No-op when the session has no meta. */
+export function updateSessionInstallationToken(
+  store: Store,
+  sessionId: string,
+  token: string,
+  expiresAt?: string,
+): void {
+  const m = parseContainerMeta(findSession(store, sessionId))
+  if (!m.container && !m.repo) return
+  const next: ContainerMeta = {
+    ...m,
+    installationToken: token,
+    ...(expiresAt ? { installationTokenExpiresAt: expiresAt } : {}),
+  }
+  store.db
+    .prepare('UPDATE sessions SET container_json = ? WHERE session_id = ?')
+    .run(JSON.stringify(next), sessionId)
 }
 
 /** The persisted CLI worker launch spec — enough to re-exec the worker into an
@@ -883,6 +1039,40 @@ export function getWorkerSpec(store: Store, sessionId: string): WorkerSpec | nul
   if (!row?.worker_spec_json) return null
   try {
     return JSON.parse(row.worker_spec_json) as WorkerSpec
+  } catch {
+    return null
+  }
+}
+
+/** The last non-empty diff captured from the session container, so "View
+ *  changes" outlives the container (idle reclaim / redeploy / base catch-up). */
+export interface DiffSnapshot {
+  branch: string
+  base: string
+  ahead: number
+  stat: string
+  diff: string
+  /** Unix-ms capture time. */
+  at: number
+}
+
+export function setDiffSnapshot(
+  store: Store,
+  sessionId: string,
+  snap: DiffSnapshot,
+): void {
+  store.db
+    .prepare('UPDATE sessions SET last_diff_json = ? WHERE session_id = ?')
+    .run(JSON.stringify(snap), sessionId)
+}
+
+export function getDiffSnapshot(store: Store, sessionId: string): DiffSnapshot | null {
+  const row = store.db
+    .prepare('SELECT last_diff_json FROM sessions WHERE session_id = ?')
+    .get(sessionId) as { last_diff_json: string | null } | undefined
+  if (!row?.last_diff_json) return null
+  try {
+    return JSON.parse(row.last_diff_json) as DiffSnapshot
   } catch {
     return null
   }
@@ -1071,6 +1261,16 @@ export function appendUserText(store: Store, sessionId: string, text: string): v
     payload: { type: 'user_prompt', prompt: text, uuid },
   })
 }
+
+/**
+ * machine_name marker for the gh-app bot's DEDICATED environment (dispatch
+ * creates it; owned by the box user so its sessions are watchable + list in the
+ * /code sidebar). Hidden from the environment PICKER so it doesn't show as a
+ * selectable "Cloud" env — the sessions stay visible, the env doesn't clutter,
+ * matching claude.ai/code (which keeps its agent env out of the picker). Single
+ * source of truth shared by the dispatch route + the environments picker route.
+ */
+export const BOT_ENV_MACHINE = "gh-app-bot";
 
 /**
  * Registered machines (workers), most-recently-seen first. When `userId` is

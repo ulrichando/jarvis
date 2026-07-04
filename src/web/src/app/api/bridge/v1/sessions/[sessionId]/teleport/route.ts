@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import { getStore } from "@/lib/bridge/db";
 import { findEnvironment, findSession, listSessionEvents, resolveBridgeToken } from "@/lib/bridge/store";
 import { getContainerDiff, readCliTranscript } from "@/lib/bridge/containers";
@@ -10,6 +11,59 @@ import { bridgeError } from "@/lib/bridge/errors";
 // Returns the repo, the branch the work lives on, and a markdown transcript so
 // the local CLI can continue with context. Bearer-authed (the CLI presents its
 // JARVIS_BRIDGE_TOKEN).
+// Rebuild a RESUMABLE native jsonl from persisted session events, for sessions
+// whose container was reclaimed (so readCliTranscript is empty). claude.ai keeps
+// conversations server-side, not container-bound — this gives us the same: an
+// old session still resumes. Each user/assistant event becomes a transcript line
+// with a fresh uuid + parentUuid chain; sessionId/cwd are placeholders the CLI
+// rewrites to the local session on teleport. Best-effort: skips unparseable /
+// content-less events. Returns "" when there's nothing to resume.
+export function reconstructNativeJsonl(
+  events: { type: string; payload_json: string; created_at: number }[],
+  sessionId: string,
+): string {
+  const lines: string[] = [];
+  let parentUuid: string | null = null;
+  for (const e of events) {
+    let p: Record<string, unknown>;
+    try {
+      p = JSON.parse(e.payload_json) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    let type: "user" | "assistant";
+    let message: unknown;
+    if (e.type === "assistant" && p.message) {
+      type = "assistant";
+      message = p.message;
+    } else if (e.type === "user" && p.message) {
+      type = "user";
+      message = p.message;
+    } else if (e.type === "user_prompt" && typeof p.prompt === "string" && p.prompt.trim()) {
+      type = "user";
+      message = { role: "user", content: [{ type: "text", text: p.prompt }] };
+    } else {
+      continue; // status / result / content-less → not part of the conversation
+    }
+    const uuid = randomUUID();
+    lines.push(
+      JSON.stringify({
+        type,
+        uuid,
+        parentUuid,
+        sessionId, // rewritten to a fresh local UUID by the CLI on teleport
+        cwd: "/workspace", // rewritten to the local checkout by the CLI
+        timestamp: new Date(e.created_at).toISOString(),
+        userType: "external",
+        isSidechain: false,
+        message,
+      }),
+    );
+    parentUuid = uuid;
+  }
+  return lines.length ? lines.join("\n") + "\n" : "";
+}
+
 function renderTranscript(events: { type: string; payload_json: string }[]): string {
   const out: string[] = [];
   for (const e of events) {
@@ -71,11 +125,14 @@ export async function GET(
       "error" in diff || !diff.branch || diff.branch === "HEAD"
         ? `jarvis/session-${sessionId.slice(0, 8)}`
         : diff.branch;
-    const transcript = renderTranscript(listSessionEvents(store, sessionId, 0));
-    // Full-fidelity resume: the CLI's own jsonl from the container (worker
-    // runs with --session-id <id>, so the file IS this session). Null when
-    // the container is gone — the markdown transcript remains the fallback.
-    const nativeJsonl = await readCliTranscript(store, sessionId);
+    const events = listSessionEvents(store, sessionId, 0);
+    const transcript = renderTranscript(events);
+    // Full-fidelity resume: the CLI's own jsonl from the container (worker runs
+    // with --session-id <id>, so the file IS this session). When the container
+    // is gone, rebuild a resumable jsonl from the persisted events so the
+    // conversation still teleports (claude.ai keeps sessions server-side).
+    const nativeJsonl =
+      (await readCliTranscript(store, sessionId)) || reconstructNativeJsonl(events, sessionId);
     return NextResponse.json({
       repo: meta.repo,
       branch,

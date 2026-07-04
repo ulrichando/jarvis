@@ -84,6 +84,32 @@ const PUBLIC_PATHS = new Set<string>([
   '/api/mcp/oauth/callback',
 ])
 
+// Self-authenticating per-user API routes — bypass the SHARED-token gate so a
+// per-user bridge token (jarvis auth login / Settings → API Tokens) reaches the
+// handler, which validates it itself via resolveBridgeToken + an ownership
+// check. This is what lets the CLI (keys pull / cloud / teleport) authenticate
+// online with a per-user token instead of the single shared JARVIS_LOCAL_API_TOKEN.
+// STRICT ALLOWLIST — only routes that do their own robust auth. NEVER add a
+// route that leans on the shared-token gate for protection (e.g.
+// v1/admin/enqueue, unauthenticated by design). The Host allowlist (checked
+// earlier) still applies; only the shared-token requirement is waived.
+const SELF_AUTH_PATTERNS: RegExp[] = [
+  /^\/api\/bridge\/v1\/keys$/, //                      jarvis keys pull
+  /^\/api\/bridge\/v1\/cli\/sessions$/, //             jarvis cloud / teleport picker
+  /^\/api\/bridge\/v1\/sessions\/[^/]+\/teleport$/, // jarvis teleport <id>
+]
+
+// GET-only self-auth: the CCR read routes the real teleport machinery
+// (fetchCodeSessionsFromSessionsAPI / fetchSession / pollRemoteSessionEvents)
+// polls. GET-only so the SAME paths' mutations (create / retitle / archive,
+// used by ultraplan) stay behind the shared-token gate. Each GET validates the
+// per-user token + ownership itself (authSessionOwner).
+const SELF_AUTH_GET_PATTERNS: RegExp[] = [
+  /^\/api\/v1\/sessions$/, //                 list your sessions
+  /^\/api\/v1\/sessions\/[^/]+$/, //          fetchSession metadata
+  /^\/api\/v1\/sessions\/[^/]+\/events$/, //  conversation events
+]
+
 // Host header allowlist (DNS-rebinding defense, parallel to the bridge
 // fix in commit f0150fb4). Even with a valid bearer token, requests
 // whose Host header isn't 127.0.0.1 / localhost / [::1] are refused.
@@ -256,6 +282,33 @@ export function proxy(req: NextRequest) {
   }
 
   if (PUBLIC_PATHS.has(path)) {
+    return NextResponse.next()
+  }
+
+  // Per-user self-authenticating routes: waive the shared-token requirement so
+  // the handler can accept a per-user bridge token. Host allowlist already
+  // enforced above; the route validates the token + ownership itself.
+  if (SELF_AUTH_PATTERNS.some((re) => re.test(path))) {
+    return NextResponse.next()
+  }
+  if (req.method === 'GET' && SELF_AUTH_GET_PATTERNS.some((re) => re.test(path))) {
+    return NextResponse.next()
+  }
+
+  // Container-facing /code session routes self-authenticate with per-session
+  // credentials the workbench container carries but the shared LOCAL_TOKEN gate
+  // can't see — so they must bypass the bearer gate and reach their OWN,
+  // finer-grained auth. Two, and only two, route families live under
+  // /code/sessions/{id}/: `git/` (the scoped git proxy — validates the
+  // Basic-auth cap token + repo scope in-handler) and `worker/*` (CCR v2 — every
+  // route calls authorizeSessionToken → validateSessionToken against the `sit_`
+  // session token). On the containerized deploy the container reaches these over
+  // the internal bridge and has no way to also present LOCAL_TOKEN. This does NOT
+  // widen public exposure: the public origin is Cloudflare-fronted, and a bad/
+  // absent per-session credential still 401s in-handler. (Kept a tight regex, not
+  // a prefix `startsWith`, so a future non-self-authing route under
+  // /code/sessions/ is NOT auto-exempted.)
+  if (/^\/api\/bridge\/v1\/code\/sessions\/[^/]+\/(git|worker)(\/|$)/.test(path)) {
     return NextResponse.next()
   }
 

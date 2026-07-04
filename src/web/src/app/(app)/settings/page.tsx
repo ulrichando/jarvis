@@ -8,6 +8,7 @@ import { PrivacySection } from "@/components/settings/privacy";
 import { UsageSection } from "@/components/settings/usage";
 import { CapabilitiesSection } from "@/components/settings/capabilities";
 import { ConnectorsSection } from "@/components/settings/connectors";
+import { ApiTokensSection } from "@/components/settings/api-tokens";
 import { IntegrationsSection } from "@/components/settings/integrations";
 import { ProvidersSection } from "@/components/settings/providers";
 import { DataSection } from "@/components/settings/data";
@@ -32,6 +33,7 @@ type Section =
   | "usage"
   | "capabilities"
   | "connectors"
+  | "api-tokens"
   | "providers"
   | "data"
   | "about"
@@ -45,6 +47,7 @@ const NAV: Array<{ id: Section; label: string }> = [
   { id: "knowledge", label: "Knowledge" },
   { id: "skills", label: "Skills" },
   { id: "connectors", label: "Connectors (MCP)" },
+  { id: "api-tokens", label: "API Tokens" },
   { id: "providers", label: "Providers" },
   { id: "capabilities", label: "Capabilities" },
   { id: "usage", label: "Usage" },
@@ -131,6 +134,7 @@ export default function SettingsPage() {
             {section === "usage" && <UsageSection onOpenSection={setSection} />}
             {section === "capabilities" && <CapabilitiesSection />}
             {section === "connectors" && <ConnectorsSection />}
+            {section === "api-tokens" && <ApiTokensSection />}
             {section === "providers" && <ProvidersSection />}
             {section === "data" && <DataSection />}
             {section === "about" && <AboutSection />}

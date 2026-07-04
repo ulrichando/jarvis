@@ -12,6 +12,7 @@ const fromSeg = (seg: string | undefined) =>
   seg ? seg.replace(new RegExp(`^${SESSION_PREFIX}`), "") : null;
 import { CodeSidebar } from "@/components/code/code-sidebar";
 import { CodeComposer, type Attachment } from "@/components/code/code-composer";
+import { isPickableEnv } from "@/components/code/env-picker";
 import { CodeSession } from "@/components/code/code-session";
 import { CodePanels, type PanelName } from "@/components/code/code-panels";
 import { RoutinesView } from "@/components/code/routines-view";
@@ -184,13 +185,21 @@ export default function CodePage() {
         const j = (await r.json()) as { environments: Machine[] };
         setMachines(j.environments);
         // Default the selection to the cloud "Default" env (claude.ai/code web
-        // behavior — local machines are attach-only from the web), else a lone env.
-        setSelected(
-          (cur) =>
-            cur ??
-            j.environments.find((e) => e.worker_type === "container") ??
-            (j.environments.length === 1 ? j.environments[0] : null),
-        );
+        // behavior — local machines are attach-only from the web), else a lone
+        // env. Only PICKABLE envs are eligible; a stale selection pointing at a
+        // now-hidden per-repo sandbox falls back to Default.
+        setSelected((cur) => {
+          const pickable = j.environments.filter(isPickableEnv);
+          const keep =
+            cur && pickable.some((e) => e.environment_id === cur.environment_id)
+              ? cur
+              : null;
+          return (
+            keep ??
+            pickable.find((e) => e.worker_type === "container") ??
+            (pickable.length === 1 ? pickable[0] : null)
+          );
+        });
         setMachinesLoadFailed(false);
       } else {
         setMachines([]);
@@ -859,7 +868,9 @@ export default function CodePage() {
               onChange={setInput}
               onSubmit={dispatch}
               busy={busy}
-              machines={machines}
+              // Picker shows only selectable envs (Default + named + machines);
+              // per-repo sandboxes stay in `machines` state for restore only.
+              machines={machines === null ? null : machines.filter(isPickableEnv)}
               selected={selected}
               onPickMachine={setSelected}
               onRefreshMachines={loadMachines}

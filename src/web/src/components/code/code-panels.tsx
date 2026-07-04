@@ -106,7 +106,7 @@ export function CodePanels({
   );
 }
 
-type DiffData = { branch: string; base: string; ahead: number; stat: string; diff: string };
+type DiffData = { branch: string; base: string; ahead: number; stat: string; diff: string; stale?: boolean };
 type DiffLine = { t: "add" | "del" | "ctx" | "hunk"; text: string; ln?: number };
 type DiffFile = { path: string; lines: DiffLine[] };
 
@@ -429,7 +429,7 @@ function DiffPanel({
             >
               <GitPullRequest className="size-3" /> View PR
             </a>
-          ) : (
+          ) : data?.stale ? null : ( // PR creation needs the live container — hidden when showing a captured diff
             <div className="relative">
               <div className="inline-flex overflow-hidden rounded-md">
                 <button
@@ -461,6 +461,11 @@ function DiffPanel({
           )}
         </div>
       </div>
+      {data?.stale && (
+        <div className="shrink-0 border-b border-border/40 px-4 py-1 text-[11px] text-amber-500/90">
+          Showing the last captured changes — the session container is no longer running.
+        </div>
+      )}
       {checks && checks.total > 0 && (
         <div className="flex shrink-0 items-center gap-2 border-b border-border/40 px-4 py-1 text-[11px]">
           <span className="text-muted-foreground">CI</span>
