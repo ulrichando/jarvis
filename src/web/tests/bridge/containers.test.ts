@@ -662,6 +662,33 @@ describe('launchContainerSession', () => {
     expect(flat.find((c) => c.includes('cli.tsx'))!).toContain('127.0.0.1:3000')
   })
 
+  test('JARVIS_CODE_INTERNAL_ORIGIN forces a normal (default/full-env) session onto the bridge — reaches web:3000, no --network=host', async () => {
+    process.env.JARVIS_CODE_INTERNAL_ORIGIN = 'http://web:3000'
+    try {
+      const sessionId = makeSession() // default env → networkLevel 'full'
+      const store = getStore()
+      const { calls, exec } = fakeDocker()
+      await launchContainerSession(store, {
+        sessionId,
+        repoFullName: 'owner/demo',
+        baseUrl: 'http://0.0.0.0:3000', // what tasks/route.ts derives from req.url — unreachable
+        proxyHealthy: async () => false,
+        exec,
+      })
+      const flat = calls.map((c) => c.join(' '))
+      // Forced isolated: private net + bridge join, NOT --network=host.
+      expect(flat.some((c) => c.includes('--network=host'))).toBe(false)
+      expect(flat.some((c) => c.startsWith(`network connect jarvis-code-bridge jarvis-code-${sessionId}`))).toBe(true)
+      // git-proxy + callback use web:3000, never the unreachable 0.0.0.0 origin.
+      expect(flat.some((c) => c.includes('http://web:3000/api/bridge/v1/code/sessions/'))).toBe(true)
+      const cli = flat.find((c) => c.includes('cli.tsx'))!
+      expect(cli).toContain('web:3000/api/bridge/v1/code/sessions/')
+      expect(cli).not.toContain('0.0.0.0:3000/api/')
+    } finally {
+      delete process.env.JARVIS_CODE_INTERNAL_ORIGIN
+    }
+  })
+
   test('createContainerPR draft mode opens a draft PR host-side', async () => {
     const sessionId = makeSession()
     const store = getStore()
