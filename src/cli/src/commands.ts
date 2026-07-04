@@ -254,7 +254,6 @@ export const INTERNAL_ONLY_COMMANDS = [
   onboarding,
   share,
   summary,
-  teleport,
   antTrace,
   perfIssue,
   env,
@@ -359,6 +358,11 @@ const COMMANDS = memoize((): Command[] => [
   // claude.ai flow is dead). See commands/login + commands/logout.
   login(),
   logout,
+  // /teleport (+/tp): pull a cloud /code session to this machine. A JARVIS
+  // self-hosted command, so it belongs in the MAIN list — NOT in
+  // INTERNAL_ONLY_COMMANDS (which is stripped for external builds; the stub
+  // used to live there, which is why /teleport never surfaced).
+  teleport,
   passes,
   ...(peersCmd ? [peersCmd] : []),
   tasks,
