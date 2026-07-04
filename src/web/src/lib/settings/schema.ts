@@ -111,6 +111,14 @@ export const settingsSchema = z.object({
       density: z.enum(["compact", "cozy"]).default("cozy"),
     })
     .default({ fontSize: "md", density: "cozy" }),
+  // Settings → Usage: optional monthly spend ceiling (estimates from list
+  // pricing, not billing truth) + whether to surface approach-limit warnings.
+  usage: z
+    .object({
+      monthlyBudgetUsd: z.number().positive().max(1_000_000).optional(),
+      costAlerts: z.boolean().default(false),
+    })
+    .default({ costAlerts: false }),
   // Jarvis in Chrome — browser-extension preferences. Persisted now and read by
   // the extension (over the bridge) once it connects. defaultPolicy governs
   // whether Jarvis may act on a site by default; blockedSites are always denied.

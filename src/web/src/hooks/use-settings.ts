@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Provider } from "@/lib/ai/models-meta";
 import type { Settings } from "@/lib/settings/schema";
+import type { UsageResponse } from "@/lib/usage";
 
 export type RedactedSettings = Omit<Settings, "providers" | "integrations"> & {
   providers: Record<
@@ -77,7 +78,20 @@ export type SettingsPatch = {
       defaultOwner?: string | null;
     };
   };
+  usage?: {
+    monthlyBudgetUsd?: number | null; // null clears the budget
+    costAlerts?: boolean;
+  };
 };
+
+/** Live token/cost aggregates for Settings → Usage. */
+export function useUsage() {
+  return useQuery({
+    queryKey: ["usage"],
+    queryFn: () => fetchJson<UsageResponse>("/api/usage"),
+    staleTime: 15_000,
+  });
+}
 
 export function useUpdateSettings() {
   const qc = useQueryClient();
