@@ -86,7 +86,7 @@ rollback() {
   exit 1
 }
 
-if git -C "$REPO" diff --name-only "$OLD..$NEW" -- src/web src/cli | grep -q .; then
+if git -C "$REPO" diff --name-only "$OLD..$NEW" -- src/web src/cli src/gh-app | grep -q .; then
   cd "$WEB"
   "${COMPOSE[@]}" build >>"$LOG" 2>&1 || rollback
   "${COMPOSE[@]}" up -d >>"$LOG" 2>&1 || rollback
