@@ -111,3 +111,40 @@ describe('proxy() auth gate', () => {
     expect(proxy(r).status).toBe(403)
   })
 })
+
+describe('proxy() /code container-session carve-out (self-authenticating routes)', () => {
+  test('git-proxy path bypasses the bearer gate (the git route validates the cap token)', async () => {
+    const proxy = await loadProxy(ON)
+    // No LOCAL_TOKEN bearer — the container carries only its Basic cap token,
+    // yet the request must reach the route (which does its own auth).
+    expect(proxy(req('/api/bridge/v1/code/sessions/abc123/git/owner/repo.git/info/refs')).status).toBe(200)
+  })
+
+  test('worker routes bypass the bearer gate (authorizeSessionToken validates the sit_ token)', async () => {
+    const proxy = await loadProxy(ON)
+    for (const p of [
+      '/api/bridge/v1/code/sessions/abc123/worker',
+      '/api/bridge/v1/code/sessions/abc123/worker/register',
+      '/api/bridge/v1/code/sessions/abc123/worker/heartbeat',
+      '/api/bridge/v1/code/sessions/abc123/worker/events/stream',
+    ]) {
+      expect(proxy(req(p)).status).toBe(200)
+    }
+  })
+
+  test('carve-out is TIGHT: a non-(git|worker) route under /code/sessions/ still 401s', async () => {
+    const proxy = await loadProxy(ON)
+    expect(proxy(req('/api/bridge/v1/code/sessions/abc123/other')).status).toBe(401)
+    expect(proxy(req('/api/bridge/v1/code/sessions/abc123')).status).toBe(401)
+    // a substring like "worker" must be the actual path segment, not part of a name
+    expect(proxy(req('/api/bridge/v1/code/sessions/abc123/workerX')).status).toBe(401)
+  })
+
+  test('anchored to /code/sessions/{id}/ — git/worker elsewhere are NOT exempted', async () => {
+    const proxy = await loadProxy(ON)
+    // the host-side /v1/sessions/ (PR/diff/status) is a DIFFERENT family — bearer-gated
+    expect(proxy(req('/api/bridge/v1/sessions/abc123/pr')).status).toBe(401)
+    expect(proxy(req('/api/bridge/v1/code/git/foo')).status).toBe(401)
+    expect(proxy(req('/api/evil/api/bridge/v1/code/sessions/x/git/y')).status).toBe(401)
+  })
+})

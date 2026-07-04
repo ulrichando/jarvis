@@ -259,6 +259,23 @@ export function proxy(req: NextRequest) {
     return NextResponse.next()
   }
 
+  // Container-facing /code session routes self-authenticate with per-session
+  // credentials the workbench container carries but the shared LOCAL_TOKEN gate
+  // can't see — so they must bypass the bearer gate and reach their OWN,
+  // finer-grained auth. Two, and only two, route families live under
+  // /code/sessions/{id}/: `git/` (the scoped git proxy — validates the
+  // Basic-auth cap token + repo scope in-handler) and `worker/*` (CCR v2 — every
+  // route calls authorizeSessionToken → validateSessionToken against the `sit_`
+  // session token). On the containerized deploy the container reaches these over
+  // the internal bridge and has no way to also present LOCAL_TOKEN. This does NOT
+  // widen public exposure: the public origin is Cloudflare-fronted, and a bad/
+  // absent per-session credential still 401s in-handler. (Kept a tight regex, not
+  // a prefix `startsWith`, so a future non-self-authing route under
+  // /code/sessions/ is NOT auto-exempted.)
+  if (/^\/api\/bridge\/v1\/code\/sessions\/[^/]+\/(git|worker)(\/|$)/.test(path)) {
+    return NextResponse.next()
+  }
+
   // Password-reset endpoints MUST be reachable without a session — the user is
   // resetting precisely because they can't log in. They're under /api/auth/ so
   // the same-origin carve-out below already exempts them from the cookie
