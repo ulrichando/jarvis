@@ -766,6 +766,42 @@ export type ContainerDiff = {
 };
 
 /**
+ * Read the CLI's NATIVE session transcript (jsonl) out of the container, for
+ * full-fidelity teleport: the worker runs with --session-id <sessionId> and
+ * CLAUDE_CONFIG_DIR=/jarvis-config, so its own transcript lives at
+ * /jarvis-config/projects/<cwd-slug>/<sessionId>.jsonl. Dropping that file
+ * into the LOCAL project dir lets `jarvis --resume <sessionId>` continue the
+ * exact conversation (claude.ai --teleport behavior), not a summary of it.
+ * Returns null when the container is gone or the file is missing/oversized —
+ * callers fall back to the markdown transcript.
+ */
+const CLI_TRANSCRIPT_MAX_BYTES = 20_000_000;
+export async function readCliTranscript(
+  store: Store,
+  sessionId: string,
+  exec: DockerExec = realDockerExec,
+): Promise<string | null> {
+  // sessionId reaches a `sh -c` string below; ids are server-minted hex, but
+  // this is called with a URL path param — reject anything shell-meaningful.
+  if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) return null;
+  const session = findSession(store, sessionId);
+  const meta = session?.container_json
+    ? (JSON.parse(session.container_json) as { container?: string })
+    : null;
+  if (!meta?.container) return null;
+  try {
+    const { stdout } = await exec([
+      "exec", meta.container, "sh", "-c",
+      `cat /jarvis-config/projects/*/${sessionId}.jsonl 2>/dev/null`,
+    ]);
+    if (!stdout.trim() || stdout.length > CLI_TRANSCRIPT_MAX_BYTES) return null;
+    return stdout;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Read what the agent changed in a container session — the claude.ai/code
  * "review the diff" view. Diffs the working tree (committed-on-branch +
  * staged + unstaged, and new files via intent-to-add) against the remote

@@ -5846,18 +5846,37 @@ async function run(): Promise<CommanderCommand> {
       );
   }
 
-  // jarvis teleport <sessionId> — pull a cloud /code session to this machine
-  // (self-hosted equivalent of the stubbed upstream teleport): fetch its branch
-  // + transcript from the JARVIS web app and check the branch out locally.
+  // jarvis teleport [sessionId] — pull a cloud /code session to this machine
+  // (self-hosted equivalent of claude.ai's --teleport): checkout its branch +
+  // restore the conversation for `jarvis --resume`. No sessionId → picker.
   // Uses the bridge token from `jarvis auth login`.
   program
-    .command("teleport <sessionId>")
+    .command("teleport [sessionId]")
     .description(
-      "Pull a cloud /code session to this machine — checkout its branch + load the transcript",
+      "Pull a cloud /code session to this machine — checkout its branch + resume the conversation",
     )
-    .action(async (sessionId: string) => {
+    .action(async (sessionId?: string) => {
       const { jarvisTeleport } = await import("./cli/handlers/jarvisTeleport.js");
       await jarvisTeleport(sessionId);
+    });
+
+  // jarvis cloud [prompt…] — start a /code cloud session on the JARVIS server
+  // from this checkout (self-hosted equivalent of claude.ai's --cloud). With
+  // no prompt it lists recent cloud sessions. Pull results back down with
+  // `jarvis teleport`.
+  program
+    .command("cloud [prompt...]")
+    .description(
+      "Run a task in a cloud /code session on your JARVIS server (no prompt → list sessions)",
+    )
+    .option("--model <model>", "Model for the cloud session")
+    .option(
+      "--mode <mode>",
+      "Permission mode (default | acceptEdits | plan | bypassPermissions | dontAsk)",
+    )
+    .action(async (prompt: string[] = [], opts: { model?: string; mode?: string }) => {
+      const { jarvisCloud } = await import("./cli/handlers/jarvisCloud.js");
+      await jarvisCloud(prompt, opts);
     });
 
   // jarvis auth — JARVIS-account login (self-hosted web app) is the default;
