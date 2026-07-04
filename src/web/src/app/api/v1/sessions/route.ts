@@ -99,15 +99,26 @@ export async function GET(req: Request): Promise<NextResponse> {
   const token = extractBearer(req.headers.get('authorization'))
   const store = getStore()
   const userId = token ? resolveBridgeToken(store, token) : null
-  const data = listSessions(store, userId ?? undefined).map((s) => ({
-    type: 'session' as const,
-    id: s.session_id,
-    title: s.title,
-    session_status: ccrSessionStatus(s),
-    environment_id: s.environment_id,
-    created_at: new Date(s.created_at).toISOString(),
-    updated_at: new Date(s.created_at).toISOString(),
-  }))
+  const data = listSessions(store, userId ?? undefined).map((s) => {
+    // The teleport client reads session_context.sources[].url (a git_repository
+    // source) to derive each session's repo — without it, listRemoteSessions
+    // throws "session.session_context.sources is undefined" and the picker shows
+    // "Error loading sessions". Source the repo URL from the session's env.
+    const env = s.environment_id ? findEnvironment(store, s.environment_id) : null
+    const repoUrl = env?.git_repo_url || null
+    return {
+      type: 'session' as const,
+      id: s.session_id,
+      title: s.title,
+      session_status: ccrSessionStatus(s),
+      environment_id: s.environment_id,
+      created_at: new Date(s.created_at).toISOString(),
+      updated_at: new Date(s.created_at).toISOString(),
+      session_context: {
+        sources: repoUrl ? [{ type: 'git_repository' as const, url: repoUrl }] : [],
+      },
+    }
+  })
   return NextResponse.json({
     data,
     has_more: false,
