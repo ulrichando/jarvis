@@ -166,6 +166,15 @@ function contentToText(content: unknown): string {
       .map((b: any) => {
         if (b.type === 'text') return b.text ?? ''
         if (b.type === 'image') return '[image]'
+        // ToolSearch results are arrays of tool_reference blocks. Anthropic
+        // expands these into schemas server-side; OpenAI-shape providers have
+        // no such protocol, and flattening them to '' told the model its
+        // search found NOTHING — it then concluded the tool doesn't exist.
+        // Render as text so the model knows discovery succeeded (the CLI
+        // includes the real schema in the next request's tool list).
+        if (b.type === 'tool_reference' && b.tool_name) {
+          return `[Loaded tool: ${b.tool_name} — it is now available to call.]`
+        }
         return ''
       })
       .join('')
@@ -384,15 +393,91 @@ export function convertTools(anthropicTools: any[], provider: Provider): OpenAIT
     },
   }))
 
-  // Groq: cap at 20 tools, prioritize the most useful ones
+  // OpenAI-compat providers reject function names longer than 64 chars
+  // (DeepSeek enforces it hard: ONE oversized discovered MCP tool 400s the
+  // WHOLE request every turn). Drop the offender with a warning instead.
+  const oversized = tools.filter(t => (t.function.name?.length ?? 0) > 64)
+  if (oversized.length) {
+    console.warn(
+      `[jarvis-proxy] dropped ${oversized.length} tool(s) with >64-char names (provider limit): ${oversized.map(t => t.function.name).join(', ')}`,
+    )
+    tools = tools.filter(t => (t.function.name?.length ?? 0) <= 64)
+  }
+
   if (provider.maxTools && tools.length > provider.maxTools) {
-    const PRIORITY = new Set(['bash', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'web_search', 'web_fetch', 'think', 'dispatch', 'ask_user', 'todo_write'])
-    const priority = tools.filter(t => PRIORITY.has(t.function.name))
-    const rest = tools.filter(t => !PRIORITY.has(t.function.name))
-    tools = [...priority, ...rest].slice(0, provider.maxTools)
+    tools = truncateToolsToCap(tools, provider.maxTools, t => t.function?.name ?? '')
   }
 
   return tools
+}
+
+// ── Provider tool-cap truncation ──────────────────────────────────────────
+// The REAL Claude-Code tool names (PascalCase). The original priority list
+// used snake_case names ('bash', 'read_file', …) that matched NOTHING, so
+// truncation was pure request-order luck: whether Bash survived Kimi's
+// 16-tool cap depended on where it sat in the request, and ToolSearch /
+// StructuredOutput / discovered MCP tools (appended last) were silently
+// dropped every turn.
+const TOOL_PRIORITY = [
+  'Bash',
+  'Read',
+  'Edit',
+  'Write',
+  'Glob',
+  'Grep',
+  'WebFetch',
+  'WebSearch',
+  'Task',
+  'TaskOutput',
+  'TodoWrite',
+  'AskUserQuestion',
+  'Skill',
+  'ExitPlanMode',
+] as const
+// Kept whenever present, regardless of position: dropping ToolSearch breaks
+// deferred-tool discovery entirely; dropping StructuredOutput breaks every
+// schema-constrained subagent (workflow agents hang retrying).
+const TOOL_ALWAYS_KEEP = new Set(['ToolSearch', 'StructuredOutput'])
+
+export function truncateToolsToCap<T>(
+  tools: T[],
+  cap: number,
+  getName: (t: T) => string,
+): T[] {
+  if (tools.length <= cap) return tools
+  const rank = new Map<string, number>(
+    TOOL_PRIORITY.map((n, i) => [n.toLowerCase(), i]),
+  )
+  const scored = tools.map((t, idx) => {
+    const name = getName(t) ?? ''
+    return {
+      t,
+      idx,
+      name,
+      always: TOOL_ALWAYS_KEEP.has(name),
+      rank: rank.get(name.toLowerCase()) ?? Number.MAX_SAFE_INTEGER,
+    }
+  })
+  const keep = new Set(scored.filter(s => s.always))
+  for (const s of [...scored]
+    .filter(s => !s.always)
+    .sort((a, b) => a.rank - b.rank || a.idx - b.idx)) {
+    if (keep.size >= cap) break
+    keep.add(s)
+  }
+  const dropped = scored.filter(s => !keep.has(s))
+  if (dropped.length) {
+    console.warn(
+      `[jarvis-proxy] provider tool cap ${cap}: dropped ${dropped.length} tool(s): ${dropped.map(s => s.name).join(', ')}`,
+    )
+  }
+  // Survivors keep their ORIGINAL request order — a rank-sorted output would
+  // reshuffle the tool list between turns (as tools come and go), busting
+  // the provider's prompt cache and confusing the model.
+  return scored
+    .filter(s => keep.has(s))
+    .sort((a, b) => a.idx - b.idx)
+    .map(s => s.t)
 }
 
 // gpt-oss `reasoning_effort` (Groq AND local Ollama) accepts only
@@ -571,13 +656,11 @@ export function clampRequestForProvider(openaiReq: any, provider: Provider): any
     out.temperature = 1
   }
 
-  // Tools: truncate to provider.maxTools if present. Re-apply the same
-  // priority ordering as convertTools so the most useful tools survive the cut.
+  // Tools: truncate to provider.maxTools if present — same priority-aware,
+  // order-stable logic as convertTools (single shared helper so the two
+  // sites can't drift again).
   if (out.tools && Array.isArray(out.tools) && provider.maxTools && out.tools.length > provider.maxTools) {
-    const PRIORITY = new Set(['bash', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'web_search', 'web_fetch', 'think', 'dispatch', 'ask_user', 'todo_write'])
-    const priority = out.tools.filter((t: any) => PRIORITY.has(t.function?.name))
-    const rest = out.tools.filter((t: any) => !PRIORITY.has(t.function?.name))
-    out.tools = [...priority, ...rest].slice(0, provider.maxTools)
+    out.tools = truncateToolsToCap(out.tools, provider.maxTools, (t: any) => t.function?.name ?? '')
   }
 
   // tool_choice: drop if the provider doesn't support it; keep otherwise.
@@ -690,6 +773,23 @@ export function convertResponse(openaiResp: any, model: string): any {
         setReasoning(tc.id, msg.reasoning_content)
       }
     }
+  }
+
+  // Kimi K2.6 (and DeepSeek thinking mode) can land the ENTIRE answer in
+  // reasoning_content — msg.content comes back null and the user sees an
+  // empty reply (classic after a Bash tool_result, when the model "thinks
+  // about" the output). Surface the reasoning as visible text rather than
+  // returning zero content blocks.
+  if (content.length === 0 && msg.reasoning_content) {
+    content.push({ type: 'text', text: msg.reasoning_content })
+  }
+  // Truncation with nothing visible (reasoning burned the whole budget):
+  // say so instead of rendering a blank message.
+  if (content.length === 0 && choice.finish_reason === 'length') {
+    content.push({
+      type: 'text',
+      text: '[response truncated: the model hit max_tokens before producing visible output]',
+    })
   }
 
   const stopReason = choice.finish_reason === 'tool_calls' ? 'tool_use'

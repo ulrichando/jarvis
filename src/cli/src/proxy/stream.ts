@@ -13,6 +13,19 @@ export type StreamStats = {
   stopReason: string
 }
 
+type ToolBlockState = {
+  id: string
+  name: string
+  argsAccum: string
+  // content_block_start is deferred until the function NAME is known —
+  // some providers stream the first tool_call fragment with only an index
+  // (id/name arrive in a later delta), and Anthropic's protocol can't
+  // retro-fill a started block. Args seen before the start are buffered
+  // in argsAccum and flushed as one input_json_delta at start time.
+  started: boolean
+  contentIndex: number
+}
+
 type StreamState = {
   messageId: string
   model: string
@@ -23,8 +36,11 @@ type StreamState = {
   // Always 0 for Groq (no cache).
   cacheReadTokens: number
   textBlockIndex: number | null
-  toolBlocks: Map<number, { id: string; name: string; argsAccum: string }>
+  toolBlocks: Map<number, ToolBlockState>
   nextContentIndex: number
+  // True once any visible content (text delta or started tool block) has
+  // been emitted — gates the reasoning/error fallbacks in the finally.
+  emittedVisible: boolean
   // Accumulated reasoning_content for the server-side cache. Saved against
   // each tool_call.id as it's observed; the cache is consulted on the
   // follow-up turn to repopulate the OpenAI request's reasoning_content.
@@ -74,6 +90,7 @@ export async function convertOpenAIStreamToAnthropic(
     textBlockIndex: null,
     toolBlocks: new Map(),
     nextContentIndex: 0,
+    emittedVisible: false,
     reasoningBuffer: '',
   }
 
@@ -104,6 +121,7 @@ export async function convertOpenAIStreamToAnthropic(
   const decoder = new TextDecoder()
   let buffer = ''
   let finalFinishReason: string | null = null
+  let streamError: string | null = null
   let outputTokens = 0
   let stats: StreamStats = {
     inputTokens: 0,
@@ -172,6 +190,7 @@ export async function convertOpenAIStreamToAnthropic(
                 content_block: { type: 'text', text: '' },
               })
             }
+            state.emittedVisible = true
             send('content_block_delta', {
               type: 'content_block_delta',
               index: state.textBlockIndex,
@@ -180,37 +199,20 @@ export async function convertOpenAIStreamToAnthropic(
           }
         }
 
-        // Tool calls
+        // Tool calls. content_block_start is DEFERRED until the function
+        // name is known (see ToolBlockState) — starting a block with an
+        // empty name/id produced tool_use blocks the CLI can't execute.
         if (delta.tool_calls) {
           for (const tc of delta.tool_calls) {
             const tcIndex = tc.index ?? 0
             if (!state.toolBlocks.has(tcIndex)) {
-              // New tool block — need id and name
-              const blockIndex = state.nextContentIndex++
               state.toolBlocks.set(tcIndex, {
-                id: tc.id ?? '',
-                name: tc.function?.name ?? '',
+                id: '',
+                name: '',
                 argsAccum: '',
+                started: false,
+                contentIndex: -1,
               })
-              // Close the text block before opening a tool block
-              if (state.textBlockIndex !== null) {
-                send('content_block_stop', {
-                  type: 'content_block_stop',
-                  index: state.textBlockIndex,
-                })
-                state.textBlockIndex = null
-              }
-              send('content_block_start', {
-                type: 'content_block_start',
-                index: blockIndex,
-                content_block: {
-                  type: 'tool_use',
-                  id: tc.id ?? '',
-                  name: tc.function?.name ?? '',
-                  input: {},
-                },
-              })
-              ;(state.toolBlocks.get(tcIndex) as any)._contentIndex = blockIndex
             }
 
             const tb = state.toolBlocks.get(tcIndex)!
@@ -221,13 +223,43 @@ export async function convertOpenAIStreamToAnthropic(
               }
             }
             if (tc.function?.name) tb.name = tc.function.name
+            if (tc.function?.arguments) tb.argsAccum += tc.function.arguments
 
-            if (tc.function?.arguments) {
-              tb.argsAccum += tc.function.arguments
-              const blockIndex = (tb as any)._contentIndex
+            if (!tb.started && tb.name) {
+              // Close the text block before opening a tool block
+              if (state.textBlockIndex !== null) {
+                send('content_block_stop', {
+                  type: 'content_block_stop',
+                  index: state.textBlockIndex,
+                })
+                state.textBlockIndex = null
+              }
+              tb.contentIndex = state.nextContentIndex++
+              tb.started = true
+              state.emittedVisible = true
+              send('content_block_start', {
+                type: 'content_block_start',
+                index: tb.contentIndex,
+                content_block: {
+                  type: 'tool_use',
+                  // Providers occasionally omit the id entirely; the CLI
+                  // needs SOMETHING stable to pair tool_result to.
+                  id: tb.id || `call_${state.messageId}_${tcIndex}`,
+                  name: tb.name,
+                  input: {},
+                },
+              })
+              if (tb.argsAccum) {
+                send('content_block_delta', {
+                  type: 'content_block_delta',
+                  index: tb.contentIndex,
+                  delta: { type: 'input_json_delta', partial_json: tb.argsAccum },
+                })
+              }
+            } else if (tb.started && tc.function?.arguments) {
               send('content_block_delta', {
                 type: 'content_block_delta',
-                index: blockIndex,
+                index: tb.contentIndex,
                 delta: { type: 'input_json_delta', partial_json: tc.function.arguments },
               })
             }
@@ -239,6 +271,7 @@ export async function convertOpenAIStreamToAnthropic(
     }
   } catch (e) {
     console.error('[jarvis-proxy] stream read error:', e)
+    streamError = e instanceof Error ? e.message : String(e)
   } finally {
     clearInterval(heartbeat)
     try { reader.releaseLock() } catch {}
@@ -269,6 +302,41 @@ export async function convertOpenAIStreamToAnthropic(
       }
     }
 
+    // Fallbacks for streams that produced NOTHING visible — previously these
+    // all closed as a clean end_turn with zero content blocks and the user
+    // saw an empty reply:
+    //  - Kimi K2.6 landing the whole answer in reasoning_content
+    //  - reasoning burning the entire max_tokens budget (finish=length)
+    //  - the upstream connection dying mid-stream
+    const fallbackTexts: string[] = []
+    if (!state.emittedVisible && state.reasoningBuffer) {
+      fallbackTexts.push(state.reasoningBuffer)
+    } else if (!state.emittedVisible && finalFinishReason === 'length') {
+      fallbackTexts.push(
+        '[response truncated: the model hit max_tokens before producing visible output]',
+      )
+    }
+    if (streamError && !state.emittedVisible && fallbackTexts.length === 0) {
+      fallbackTexts.push(
+        `[proxy: upstream stream error before any output — ${streamError}]`,
+      )
+    }
+    for (const text of fallbackTexts) {
+      if (state.textBlockIndex === null) {
+        state.textBlockIndex = state.nextContentIndex++
+        send('content_block_start', {
+          type: 'content_block_start',
+          index: state.textBlockIndex,
+          content_block: { type: 'text', text: '' },
+        })
+      }
+      send('content_block_delta', {
+        type: 'content_block_delta',
+        index: state.textBlockIndex,
+        delta: { type: 'text_delta', text },
+      })
+    }
+
     if (state.textBlockIndex !== null) {
       send('content_block_stop', {
         type: 'content_block_stop',
@@ -276,11 +344,19 @@ export async function convertOpenAIStreamToAnthropic(
       })
     }
 
-    for (const [, tb] of state.toolBlocks) {
-      const blockIndex = (tb as any)._contentIndex
+    for (const [tcIndex, tb] of state.toolBlocks) {
+      if (!tb.started) {
+        // Provider streamed tool-call fragments but the function name never
+        // arrived — nothing was emitted for this block; log rather than emit
+        // an unusable half-block.
+        console.error(
+          `[jarvis-proxy] tool_call index ${tcIndex} ended without a function name (args ${tb.argsAccum.length} bytes) — dropped`,
+        )
+        continue
+      }
       send('content_block_stop', {
         type: 'content_block_stop',
-        index: blockIndex,
+        index: tb.contentIndex,
       })
     }
 
