@@ -37,11 +37,14 @@ describe('proxy: CCR /v1/sessions GET reachable with a per-user token (teleport 
     }
   })
 
-  it('still gates MUTATIONS on the same paths (only the route/shared-token protects those)', async () => {
-    // A non-browser POST/PATCH with a per-user token must NOT bypass — it's not
-    // a browser same-origin write and it isn't the shared token.
-    expect(await authRequired(proxy(req('POST', '/api/v1/sessions')))).toBe(true)
-    expect(await authRequired(proxy(req('PATCH', '/api/v1/sessions/abc123')))).toBe(true)
+  it('gates mutations without in-handler auth; create/retitle/archive are handler-validated', async () => {
+    // 2026-07-06: create (POST /v1/sessions), retitle (PATCH /v1/sessions/{id})
+    // and archive moved onto the SELF_AUTH allowlist for the REPL bridge
+    // (/remote-control) — their handlers validate bridge tokens / session
+    // credentials / the shared infra token themselves. Events POST has no
+    // in-handler auth on this path and must stay gated.
+    expect(await authRequired(proxy(req('POST', '/api/v1/sessions')))).toBe(false)
+    expect(await authRequired(proxy(req('PATCH', '/api/v1/sessions/abc123')))).toBe(false)
     expect(await authRequired(proxy(req('POST', '/api/v1/sessions/abc123/events')))).toBe(true)
   })
 

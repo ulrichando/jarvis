@@ -52,6 +52,23 @@ describe('proxy: remote-control worker routes reach their own auth (jarvis remot
     expect(await authRequired(proxy(req('GET', '/api/bridge/v1/sessions/s1/events')))).toBe(true)
   })
 
+  it('waives the REPL-bridge CCR session lifecycle (create POST, retitle PATCH, archive POST)', async () => {
+    expect(await authRequired(proxy(req('POST', '/api/v1/sessions')))).toBe(false)
+    expect(await authRequired(proxy(req('PATCH', '/api/v1/sessions/s1')))).toBe(false)
+    expect(await authRequired(proxy(req('POST', '/api/v1/sessions/s1/archive')))).toBe(false)
+    // Other mutations on the same paths stay gated.
+    expect(await authRequired(proxy(req('DELETE', '/api/v1/sessions/s1')))).toBe(true)
+    expect(await authRequired(proxy(req('PATCH', '/api/v1/sessions/s1/archive')))).toBe(true)
+    expect(await authRequired(proxy(req('POST', '/api/v1/sessions/s1/events')))).toBe(true)
+  })
+
+  it('waives POST on the bridge-base session create; its GET (web UI list) stays gated', async () => {
+    // initReplBridge posts session create to the BRIDGE base:
+    // /api/bridge/v1/sessions — the path the in-REPL /remote-control uses.
+    expect(await authRequired(proxy(req('POST', '/api/bridge/v1/sessions')))).toBe(false)
+    expect(await authRequired(proxy(req('GET', '/api/bridge/v1/sessions')))).toBe(true)
+  })
+
   it('does not over-match neighboring or deeper paths', async () => {
     for (const [method, path] of [
       ['GET', '/api/bridge/v1/environments'], //          web-UI env list (cookie auth)

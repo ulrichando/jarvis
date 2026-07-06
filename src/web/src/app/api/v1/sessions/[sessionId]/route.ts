@@ -8,7 +8,7 @@ import {
   latestSessionEventAt,
   type Store,
 } from '@/lib/bridge/store'
-import { extractBearer } from '@/lib/bridge/auth'
+import { authorizeSessionCredential, extractBearer } from '@/lib/bridge/auth'
 import { bridgeError } from '@/lib/bridge/errors'
 import { ccrSessionStatus } from '@/lib/bridge/ccrCompat'
 import { getContainerDiff } from '@/lib/bridge/containers'
@@ -81,6 +81,11 @@ export async function PATCH(
   if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
   const body = (await req.json().catch(() => null)) as { title?: string } | null
   const store = getStore()
+  // On the SELF_AUTH allowlist (REPL bridge title sync) — validate the bearer
+  // in-handler instead of leaning on the shared-token gate.
+  if (!authorizeSessionCredential(store, sessionId, token)) {
+    return bridgeError(401, 'unauthorized', 'Invalid session credential')
+  }
   const s = findSession(store, sessionId)
   if (!s) return bridgeError(404, 'not_found', 'Session not found')
   if (typeof body?.title === 'string') setSessionTitle(store, sessionId, body.title)

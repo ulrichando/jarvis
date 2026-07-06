@@ -679,6 +679,60 @@ describe('reconnect + events + archive', () => {
     expect(res.status).toBe(401)
   })
 
+  test('bridge-base session create is fail-closed: junk 401, foreign 403, env-secret + owner OK', async () => {
+    const { environment_id, environment_secret } = await registerEnv()
+    const { POST } = await import('@/app/api/bridge/v1/sessions/route')
+    const make = (auth: string) =>
+      POST(
+        new Request('http://x/', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${auth}`,
+          },
+          body: JSON.stringify({ environment_id }),
+        }),
+      )
+    expect((await make('junk-bearer')).status).toBe(401)
+    expect((await make(environment_secret)).status).toBe(201)
+    const store = getStore()
+    store.db
+      .prepare('UPDATE environments SET user_id = ? WHERE environment_id = ?')
+      .run('user_bs_owner', environment_id)
+    store.db
+      .prepare('INSERT OR REPLACE INTO bridge_tokens (token, user_id, created_at) VALUES (?, ?, ?)')
+      .run('jbr_bs_owner', 'user_bs_owner', 1)
+    store.db
+      .prepare('INSERT OR REPLACE INTO bridge_tokens (token, user_id, created_at) VALUES (?, ?, ?)')
+      .run('jbr_bs_foreign', 'user_bs_foreign', 1)
+    expect((await make('jbr_bs_owner')).status).toBe(201)
+    expect((await make('jbr_bs_foreign')).status).toBe(403)
+  })
+
+  test('deregister accepts the owning user token, not only the env secret', async () => {
+    const { environment_id } = await registerEnv()
+    const store = getStore()
+    store.db
+      .prepare('UPDATE environments SET user_id = ? WHERE environment_id = ?')
+      .run('user_dereg', environment_id)
+    store.db
+      .prepare('INSERT OR REPLACE INTO bridge_tokens (token, user_id, created_at) VALUES (?, ?, ?)')
+      .run('jbr_dereg_owner', 'user_dereg', 1)
+    const { DELETE } = await import(
+      '@/app/api/bridge/v1/environments/bridge/[envId]/route'
+    )
+    const del = (auth: string) =>
+      DELETE(
+        new Request('http://x/', {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${auth}` },
+        }),
+        { params: Promise.resolve({ envId: environment_id }) },
+      )
+    expect((await del('jbr_bs_foreign')).status).toBe(401)
+    expect((await del('jbr_dereg_owner')).status).toBe(204)
+  })
+
   test('events route returns 400 on missing events array', async () => {
     const { environment_secret } = await registerEnvWithSession('sessX')
     const { POST } = await import(
