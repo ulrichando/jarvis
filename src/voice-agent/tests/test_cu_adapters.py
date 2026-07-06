@@ -504,3 +504,15 @@ def test_gemini_schema_has_no_additional_properties():
         {"type": "object", "additionalProperties": False,
          "properties": {"a": {"type": "object", "additionalProperties": False}}}))
     assert "additionalProperties" not in scrubbed
+
+
+def test_apps_hint_env_gated(monkeypatch):
+    # Cloud desktop has no launcher → the agent must be TOLD what apps exist
+    # (live 2026-07-06 "jarvis can't find them"). Env-gated so the local Moon
+    # desktop (env unset) gets no false hint about apps it doesn't have.
+    import computer_use_service as svc
+    monkeypatch.setenv("JARVIS_CU_DESKTOP_APPS", "a terminal (xterm)")
+    h = svc._apps_hint()
+    assert "a terminal (xterm)" in h and "no start menu" in h
+    monkeypatch.delenv("JARVIS_CU_DESKTOP_APPS", raising=False)
+    assert svc._apps_hint() == ""
