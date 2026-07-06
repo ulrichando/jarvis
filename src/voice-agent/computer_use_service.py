@@ -218,6 +218,28 @@ NATIVE_SYSTEM_PROMPT = (
 )
 
 
+def _apps_hint() -> str:
+    """Environment-driven app-availability hint appended to the CU system prompt.
+    This desktop has NO visible launcher (no start menu / dock), so an agent
+    asked to 'open the terminal' can look at the screenshot, see nothing
+    clickable, and wrongly conclude the app doesn't exist (live 2026-07-06 —
+    'jarvis can't find them' on the cloud page). Naming the apps + how to launch
+    them fixes that. Set ONLY in the cloud container (Dockerfile.computer-use)
+    via JARVIS_CU_DESKTOP_APPS — the local Moon desktop has different apps, so
+    the shared prompt must not hardcode any."""
+    apps = os.environ.get("JARVIS_CU_DESKTOP_APPS", "").strip()
+    if not apps:
+        return ""
+    return (
+        "\n\nAVAILABLE APPS ON THIS DESKTOP: " + apps + ". "
+        "This desktop has no start menu or dock — DON'T conclude an app is "
+        "missing just because you see no launcher. To open one, either "
+        "double-click its icon on the desktop, or (fastest, most reliable) run "
+        "it from a shell: use the bash tool if you have it (e.g. `setsid <name> "
+        "&`), otherwise open the terminal first and launch the rest from there."
+    )
+
+
 def _native_max_px(model: str) -> int:
     """Longest-edge cap for frames sent to a NATIVE-CU model (per-model, from
     the vision module's markers): Opus 4.7/4.8 / Sonnet 5 → 2576, other Claude
@@ -391,7 +413,8 @@ async def run_loop(
     native = native_anthropic_cu(model)
     frame_mode = "vision" if native else "som"
     max_px = _native_max_px(model) if native else None
-    adapter = make_adapter(model, NATIVE_SYSTEM_PROMPT if native else SYSTEM_PROMPT)
+    base_prompt = NATIVE_SYSTEM_PROMPT if native else SYSTEM_PROMPT
+    adapter = make_adapter(model, base_prompt + _apps_hint())
     prior = _SESSIONS.get(session_id, {}).get(provider)
     if prior is not None:
         try:

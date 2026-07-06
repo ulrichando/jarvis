@@ -40,18 +40,28 @@ RUN useradd -m -u 10001 cu && chown -R cu:cu /app
 # panel over black read as "unfinished"). Wallpaper generated with imagemagick
 # (already installed); pcmanfm owns the desktop so its own config is the
 # reliable way to set the background — xsetroot needs a package we don't ship.
-RUN mkdir -p /usr/share/backgrounds /home/cu/.config/pcmanfm/default \
+RUN mkdir -p /usr/share/backgrounds /home/cu/.config/pcmanfm/default /home/cu/Desktop \
  && convert -size 1280x800 gradient:'#26374d'-'#0f1620' /usr/share/backgrounds/jarvis-cu.png \
- && printf '[*]\nwallpaper_mode=stretch\nwallpaper=/usr/share/backgrounds/jarvis-cu.png\ndesktop_bg=#0f1620\ndesktop_fg=#e6edf3\nshow_trash=0\nshow_mounts=0\n' \
+ && printf '[*]\nwallpaper_mode=stretch\nwallpaper=/usr/share/backgrounds/jarvis-cu.png\ndesktop_bg=#0f1620\ndesktop_fg=#e6edf3\nshow_documents=1\nshow_trash=0\nshow_mounts=0\n' \
       > /home/cu/.config/pcmanfm/default/desktop-items-0.conf \
- && chown -R cu:cu /home/cu/.config
+ && printf '[Desktop Entry]\nType=Application\nName=Terminal\nExec=xterm\nIcon=utilities-terminal\nTerminal=false\n' > /home/cu/Desktop/terminal.desktop \
+ && printf '[Desktop Entry]\nType=Application\nName=Files\nExec=pcmanfm\nIcon=system-file-manager\nTerminal=false\n' > /home/cu/Desktop/files.desktop \
+ && printf '[Desktop Entry]\nType=Application\nName=Text Editor\nExec=mousepad\nIcon=accessories-text-editor\nTerminal=false\n' > /home/cu/Desktop/editor.desktop \
+ && printf '[Desktop Entry]\nType=Application\nName=Firefox\nExec=firefox\nIcon=firefox-esr\nTerminal=false\n' > /home/cu/Desktop/firefox.desktop \
+ && chmod +x /home/cu/Desktop/*.desktop \
+ && chown -R cu:cu /home/cu/.config /home/cu/Desktop
 
 USER cu
 
+# JARVIS_CU_DESKTOP_APPS: named + appended to the CU system prompt (cloud only)
+# so the agent knows these exist and how to launch them — this desktop has no
+# start menu/dock, and without the hint the agent wrongly reports "no terminal"
+# (live 2026-07-06). The local Moon desktop leaves this unset → no false hint.
 ENV DISPLAY=:99 \
     JARVIS_COMPUTER_USE_WEB_PORT=8771 \
     JARVIS_COMPUTER_USE_WEB_HOST=0.0.0.0 \
     JARVIS_CU_WS_PORT=6080 \
-    JARVIS_CU_BASH=1
+    JARVIS_CU_BASH=1 \
+    JARVIS_CU_DESKTOP_APPS="a terminal (xterm), a file manager (pcmanfm), a text editor (mousepad), and a web browser (firefox)"
 EXPOSE 8771 6080
 ENTRYPOINT ["/app/start.sh"]

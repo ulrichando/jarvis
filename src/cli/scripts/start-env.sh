@@ -141,6 +141,13 @@ JARVIS_SANDBOX_ENABLED="${JARVIS_SANDBOX_ENABLED:-0}"
 # Bash treats unmatched globs as literals, which is what URLs need.
 export SHELL=/bin/bash
 
+# Grep/Glob: prefer the system ripgrep. The packaged build embeds a vendored
+# `rg` binary, but the source-run (bin/jarvis) checkout doesn't ship it, so
+# the builtin path 404s with ENOENT and both tools die. getRipgrepConfig also
+# falls back to system rg when the vendored binary is absent (belt), but
+# setting this makes system rg the primary, explicit path (suspenders).
+export USE_BUILTIN_RIPGREP="${USE_BUILTIN_RIPGREP:-false}"
+
 export ANTHROPIC_BASE_URL=http://localhost:4000
 export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-jarvis-proxy}"
 # JARVIS proxy credential ("OAuth via login"): when `jarvis auth login` has
