@@ -88,18 +88,14 @@ export const COST_HAIKU_45 = {
 const DEFAULT_UNKNOWN_MODEL_COST = COST_TIER_5_25
 
 // ── JARVIS proxy-routed model rates ──────────────────────────────────
-// Verified 2026-04-26 from groq.com/pricing and api-docs.deepseek.com.
-// Update in-file when either provider publishes new rates.
+// Verified 2026-04-26 from api-docs.deepseek.com.
+// Update in-file when the provider publishes new rates.
 //
 // DeepSeek bills cache hits at a much lower rate than cache misses.
 // We map DeepSeek's `prompt_cache_hit_tokens` → Anthropic's
 // `cache_read_input_tokens`; the proxy splits `prompt_tokens` so the
 // remainder lands in `input_tokens`. So `promptCacheReadTokens` here
 // is the DeepSeek cache-hit price.
-//
-// Groq doesn't bill prompt cache separately — set both cache rates
-// equal to the input rate so any stray cache_* tokens are charged
-// at the regular price (no distortion).
 //
 // `deepseek-v4-pro` is currently on a 75% limited-time DeepSeek
 // discount. Restore the non-discounted figures (~$0.014 cache hit /

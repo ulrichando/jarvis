@@ -90,9 +90,6 @@ def test_build_dispatching_tts_constructs_fr_inner(monkeypatch, tmp_path):
     via JARVIS_FR_EDGE_VOICE."""
     from providers.tts import build_dispatching_tts
 
-    # Groq TTS constructor reads GROQ_API_KEY at __init__ time; set a
-    # dummy value so the test doesn't fail before reaching the fr_inner block.
-    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
     d = build_dispatching_tts()
     assert d.fr_inner is not None, (
         "build_dispatching_tts must construct a French EdgeTTS inner"
@@ -110,8 +107,6 @@ def test_build_dispatching_tts_respects_fr_voice_env(monkeypatch):
     """Override the French voice via JARVIS_FR_EDGE_VOICE."""
     from providers.tts import build_dispatching_tts
 
-    # Groq TTS constructor reads GROQ_API_KEY at __init__ time.
-    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
     monkeypatch.setenv("JARVIS_FR_EDGE_VOICE", "fr-FR-DeniseNeural")
     d = build_dispatching_tts()
     assert d.fr_inner is not None

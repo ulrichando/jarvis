@@ -45,7 +45,7 @@ def _mk_session(prior_user_text: str = "hey there") -> SimpleNamespace:
     )
 
 
-def _mk_dispatcher(label: str = "groq:llama-X"):
+def _mk_dispatcher(label: str = "stub:model-X"):
     """A DispatchingLLM/TTS double — supports `pick(route)` returning a
     distinct object per route so the test can assert which inner won."""
     inners = {
@@ -119,7 +119,7 @@ def test_fast_path_skips_classifier_and_swaps_banter():
     assert session._llm is dispatcher._inners["BANTER"]
     # Per-turn model label is stamped on the SESSION (turn-local) so
     # telemetry doesn't read the racy shared dispatcher field.
-    assert session._jarvis_llm_label == "groq:llama-X-banter"
+    assert session._jarvis_llm_label == "stub:model-X-banter"
     # BANTER neutral: route base (0, 0.3) + neutral overlay (0, 0) = (0, 0.3).
     # All routes moved to min_words=0 on 2026-05-18 for VAD-only barge-in.
     assert session.options.interruption == {"min_words": 0, "min_duration": 0.3}
@@ -162,15 +162,15 @@ def test_non_fast_path_runs_classifier_and_picks_its_route():
     assert result.get("classifier_skipped") is False
     classifier.ainvoke.assert_called_once()
     assert session._llm is dispatcher._inners["REASONING"]
-    assert session._jarvis_llm_label == "groq:llama-X-reasoning"
+    assert session._jarvis_llm_label == "stub:model-X-reasoning"
     # REASONING base (0, 0.5) + neutral (0, 0) — see _ROUTE_BASE.
     assert session.options.interruption == {"min_words": 0, "min_duration": 0.5}
 
 
 def test_session_label_is_turn_local_no_stale_banter_leak():
     """Regression for the 2026-05-20 mis-diagnosis: a TASK turn that
-    followed a BANTER turn showed `llm_used=groq:llama-3.1-8b-instant`
-    in telemetry even though TASK routes to a different model. Root
+    followed a BANTER turn showed the BANTER rung's fast-model label as
+    `llm_used` in telemetry even though TASK routes to a different model. Root
     cause: telemetry read `dispatcher.last_llm_label`, a single mutable
     field that carried the prior BANTER turn's label. The fix stamps a
     turn-local `session._jarvis_llm_label` at swap time. Verify a BANTER
@@ -187,7 +187,7 @@ def test_session_label_is_turn_local_no_stale_banter_leak():
         session=session, dispatcher=dispatcher,
         tts_dispatcher=tts_dispatcher, classifier=_mk_classifier("TASK"),
     )
-    assert session._jarvis_llm_label == "groq:llama-X-banter"
+    assert session._jarvis_llm_label == "stub:model-X-banter"
 
     # Turn 2 (same session): non-fast-path, classifier says TASK.
     session.chat_ctx.messages = [SimpleNamespace(role="user", content="open the build log")]
@@ -197,7 +197,7 @@ def test_session_label_is_turn_local_no_stale_banter_leak():
         tts_dispatcher=tts_dispatcher, classifier=_mk_classifier("TASK"),
     )
     # The stamp must reflect THIS turn's model, not the stale banter one.
-    assert session._jarvis_llm_label == "groq:llama-X-task"
+    assert session._jarvis_llm_label == "stub:model-X-task"
 
 
 def test_classifier_garbage_falls_back_to_task():

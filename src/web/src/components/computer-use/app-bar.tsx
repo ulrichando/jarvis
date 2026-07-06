@@ -1,15 +1,24 @@
 "use client";
-import { Monitor, ShieldCheck, Hand, Square, MoreVertical, Plug, Unplug, RotateCcw, RotateCw } from "lucide-react";
+import { Monitor, ShieldCheck, Hand, Square, MoreVertical, Plug, Unplug, RotateCcw, RotateCw, ChevronDown } from "lucide-react";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import type { SessionInfo } from "@/lib/computer-use/timeline";
 
 export type ConnStatus = "connected" | "connecting" | "disconnected" | "offline";
 
+const SESSION_DOT: Record<string, string> = {
+  running: "bg-emerald-500",
+  waiting_approval: "bg-amber-500",
+  error: "bg-destructive",
+};
+
 export function CuAppBar({
   connStatus, sessionId, supervised, takeover, connected, running, hasThread,
+  sessions, onLoadSessions, onPickSession,
   onToggleMode, onToggleTakeover, onToggleConnected, onNewChat, onStop, onRefresh,
 }: {
   connStatus: ConnStatus; sessionId: string; supervised: boolean; takeover: boolean;
   connected: boolean; running: boolean; hasThread: boolean;
+  sessions: SessionInfo[]; onLoadSessions: () => void; onPickSession: (s: SessionInfo) => void;
   onToggleMode: () => void; onToggleTakeover: () => void; onToggleConnected: () => void;
   onNewChat: () => void; onStop: () => void; onRefresh: () => void;
 }) {
@@ -24,7 +33,26 @@ export function CuAppBar({
         className="inline-flex items-center gap-1.5 rounded-full border border-border/40 bg-card px-2.5 py-0.5 text-[11.5px] text-muted-foreground">
         <span className={`size-1.5 rounded-full ${dot}`} />{connStatus[0].toUpperCase() + connStatus.slice(1)}
       </span>
-      {sessionId && <span className="hidden font-mono text-[10.5px] text-muted-foreground/80 sm:inline">session · {sessionId.slice(0, 4)}…{sessionId.slice(-3)}</span>}
+      {sessionId && (
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={<button title="Sessions" aria-label="Sessions" onClick={onLoadSessions}
+              className="hidden items-center gap-1 font-mono text-[10.5px] text-muted-foreground/80 transition-colors hover:text-foreground sm:inline-flex" />}>
+            session · {sessionId.slice(0, 4)}…{sessionId.slice(-3)}<ChevronDown className="size-3" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="max-w-80 min-w-64">
+            {sessions.length === 0 && <DropdownMenuItem disabled>No sessions yet</DropdownMenuItem>}
+            {sessions.map((s) => (
+              <DropdownMenuItem key={s.id} onClick={() => { if (s.id !== sessionId) onPickSession(s); }}>
+                <span className={`size-1.5 shrink-0 rounded-full ${SESSION_DOT[s.status] ?? "bg-muted-foreground/60"}`} />
+                <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground">{s.id.slice(0, 4)}…{s.id.slice(-3)}</span>
+                <span className="truncate text-[12px]">{s.task || "(no task yet)"}</span>
+                {s.id === sessionId && <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">current</span>}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
 
       <div className="flex-1" />
 

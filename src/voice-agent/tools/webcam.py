@@ -2,8 +2,8 @@
 
 Why a self-contained vision call instead of feeding pixels to the supervisor:
 the tool adapter str-coerces every handler result (see tools/_adapter.py), and
-the supervisor's FallbackAdapter cascade includes text-only providers (Groq
-Llama, DeepSeek) that would 400 on image content in chat_ctx — plus injected
+the supervisor's FallbackAdapter cascade includes text-only providers
+(DeepSeek, Kimi) that would 400 on image content in chat_ctx — plus injected
 frames would destabilize the prompt prefix cache. So this tool grabs one JPEG
 frame (:mod:`vision.webcam`), sends it with the supervisor's question to an
 Anthropic vision model out-of-band, and returns the text answer. That gives

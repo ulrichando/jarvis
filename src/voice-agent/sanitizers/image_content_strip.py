@@ -1,6 +1,6 @@
 """Strip image content blocks from OpenAI-format messages (text-only providers).
 
-JARVIS's conversational speech models — DeepSeek / Groq / Kimi / local llama —
+JARVIS's conversational speech models — DeepSeek / Kimi / local llama —
 are TEXT-ONLY. By design vision is handled OUT-OF-BAND (webcam / computer_use
 grab a frame and make a separate Anthropic vision call; tool results are
 str-coerced), so the conversational rungs never need images. But an `image_url`

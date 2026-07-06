@@ -2,7 +2,7 @@
 
 A custom livekit :class:`tts.TTS` that runs Piper (neural TTS on
 onnxruntime) fully locally. The FINAL rung of JARVIS's TTS
-FallbackAdapter chain (Groq Orpheus → Edge-TTS → THIS), activated only
+FallbackAdapter chain (Kokoro → Edge-TTS → THIS), activated only
 when ``JARVIS_LOCAL_TTS_ENABLED=1``. Edge-TTS still needs the network;
 Piper is the truly-offline backstop so JARVIS keeps a voice with no
 internet at all.

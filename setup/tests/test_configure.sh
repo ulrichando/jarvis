@@ -72,20 +72,19 @@ check "_confirm blank honors default Y" '( _JARVIS_TTY="$TTYF" _confirm "p? " Y 
 
 # ── configure_api_keys ───────────────────────────────────────────────
 T2="$(mktemp -d)"; mkdir -p "$T2/src/voice-agent" "$T2/home"
-# answers: anthropic, groq, deepgram, then "n" to extra providers
-printf 'sk-ant-1\nsk-groq-2\ndg-3\nn\n' > "$T2/ans"
+# answers: anthropic, deepgram, then "n" to extra providers
+printf 'sk-ant-1\ndg-3\nn\n' > "$T2/ans"
 # HOME isolated so provider keys land in the test's keys.env, not the real one
 # (provider keys go to keys.env, the single secret store).
 ( export INSTALL_DIR="$T2" HOME="$T2/home"; _JARVIS_TTY="$T2/ans" configure_api_keys ) >/dev/null 2>&1
 check "anthropic -> keys.env"           '[ "$(_env_get "$T2/home/.jarvis/keys.env" ANTHROPIC_API_KEY)" = sk-ant-1 ]'
-check "groq -> keys.env"                '[ "$(_env_get "$T2/home/.jarvis/keys.env" GROQ_API_KEY)" = sk-groq-2 ]'
 check "deepgram -> voice-agent/.env"    '[ "$(_env_get "$T2/src/voice-agent/.env" DEEPGRAM_API_KEY)" = dg-3 ]'
 check "keys.env chmod 600"              '[ "$(stat -c %a "$T2/home/.jarvis/keys.env")" = 600 ]'
 check "untouched provider stays unset"  '[ -z "$(_env_get "$T2/home/.jarvis/keys.env" OPENAI_API_KEY)" ]'
 
 # blank answers skip everything (no key written)
 T2b="$(mktemp -d)"; mkdir -p "$T2b/src/voice-agent" "$T2b/home"
-printf '\n\n\nn\n' > "$T2b/ans"
+printf '\n\nn\n' > "$T2b/ans"
 ( export INSTALL_DIR="$T2b" HOME="$T2b/home"; _JARVIS_TTY="$T2b/ans" configure_api_keys ) >/dev/null 2>&1
 check "blank input sets no anthropic key" '[ -z "$(_env_get "$T2b/home/.jarvis/keys.env" ANTHROPIC_API_KEY)" ]'
 
@@ -131,8 +130,8 @@ check "skip-setup still writes template" '[ -f "$T5b/.env" ]'
 # Interactive end-to-end: keys + soul via fixtures.
 T5c="$(mktemp -d)"; mkdir -p "$T5c/src/voice-agent/prompts"
 printf 'You are JARVIS.\n' > "$T5c/src/voice-agent/prompts/soul.md"
-# anthropic, groq, deepgram, more? n, personalize? Y, name blank, editor n
-printf 'sk-a\nsk-g\ndg\nn\nY\n\nn\n' > "$T5c/ans"
+# anthropic, deepgram, more? n, personalize? Y, name blank, editor n
+printf 'sk-a\ndg\nn\nY\n\nn\n' > "$T5c/ans"
 ( export INSTALL_DIR="$T5c" HOME="$T5c/home" EDITOR=true \
     JARVIS_NONINTERACTIVE=0 JARVIS_DRY_RUN=0 JARVIS_SKIP_SETUP=0; \
   _JARVIS_TTY="$T5c/ans" configure ) >/dev/null 2>&1

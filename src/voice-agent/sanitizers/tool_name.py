@@ -2,15 +2,15 @@
 name out of the provider's error AND re-emitting the tool call as a
 proper FunctionToolCall so the framework dispatches it normally.
 
-The recurring bug: certain LLMs (Groq's qwen3-32b, llama 3.3 70B at
-times) produce tool_calls where the name field contains both the real
-name AND the JSON arguments concatenated:
+The recurring bug: certain LLMs (observed live on qwen3-32b and
+llama 3.3 70B) produce tool_calls where the name field contains both
+the real name AND the JSON arguments concatenated:
 
     name='web_fetch {"url": "https://example.com"}'
     arguments=''
 
-Groq's server validates tool names against `request.tools` and
-rejects with HTTP/SSE error:
+OpenAI-compatible servers validate tool names against `request.tools`
+and reject with HTTP/SSE error:
 
     openai.APIError: tool call validation failed: attempted to call
     tool 'web_fetch {"url": "..."}' which was not in request.tools
@@ -44,7 +44,7 @@ import uuid
 
 logger = logging.getLogger("jarvis.tool_name_sanitizer")
 
-# Provider error message shape (Groq specifically; others may follow).
+# Provider error message shape (as emitted by OpenAI-compatible endpoints).
 _VALIDATION_RE = re.compile(
     r"tool call validation failed: "
     r"attempted to call tool '(.+?)' which was not in request\.tools",
@@ -53,8 +53,8 @@ _VALIDATION_RE = re.compile(
 
 # Tight pattern: identifier + (whitespace OR `=` OR `:`) + JSON object body.
 # Captured forms seen live:
-#   `web_search {"query": "weather"}`                — Groq qwen3 (space)
-#   `web_fetch={"url":"...","timeout":"15"}`         — Groq llama (= sign)
+#   `web_search {"query": "weather"}`                — qwen3 (space)
+#   `web_fetch={"url":"...","timeout":"15"}`         — llama (= sign)
 #   `bash:{"cmd":"ls"}`                              — defensive (colon)
 _NAME_JSON_RE = re.compile(
     r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*[=:]?\s*(\{.*\})\s*$",

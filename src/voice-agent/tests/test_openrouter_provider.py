@@ -120,9 +120,10 @@ class TestOpenRouterWithoutKey:
         or_keys = [k for k in self.llm_mod.SPEECH_MODELS if k.startswith("openrouter/")]
         assert not or_keys, f"OpenRouter keys appeared without a key: {or_keys}"
 
-    def test_default_non_groq_keys_present(self):
-        # Groq SPEECH_MODELS entries were removed 2026-06-29 (full-Groq-
-        # eradication pass); the DeepSeek defaults are the always-present baseline.
+    def test_default_baseline_keys_present(self):
+        # The legacy cloud SPEECH_MODELS entries were removed 2026-06-29
+        # (provider-eradication pass); the DeepSeek defaults are the
+        # always-present baseline.
         assert "deepseek-chat" in self.llm_mod.SPEECH_MODELS
         assert "deepseek-v4-flash" in self.llm_mod.SPEECH_MODELS
         assert "llama-3.3-70b-versatile" not in self.llm_mod.SPEECH_MODELS

@@ -310,8 +310,9 @@ describe('Qwen <think> tag strip — streaming (Fix 7b)', () => {
 })
 
 // The "gpt-oss-120b reasoning-budget floor (Fix 4)" describe block was removed
-// 2026-06-29 (full-Groq-eradication pass) — both tests targeted the Groq
-// openai/gpt-oss-120b + qwen3-32b models, which no longer exist.
+// 2026-06-29 (provider-eradication pass) — both tests targeted the
+// openai/gpt-oss-120b + qwen3-32b models on a since-removed provider,
+// which no longer exist.
 
 // ── Fix 8: clampRequestForProvider — fallback re-shaping ─────────────────────
 //
@@ -319,7 +320,7 @@ describe('Qwen <think> tag strip — streaming (Fix 7b)', () => {
 // the model field (`{ ...openaiReq, model: provider.model }`). The rest of the
 // body stays shaped for the PRIMARY — max_tokens clamped to primary's cap,
 // tool list truncated to primary's maxTools, wrong token field name for the
-// family. A fallback with a lower cap (e.g. groq qwen3-32b at 32K) receives
+// family. A fallback with a lower cap (e.g. kimi at 32K) receives
 // max_tokens=65536 (deepseek primary's cap) and 400s immediately. The 400 is
 // non-transient → fallback is defeated exactly when it fires.
 //
@@ -331,8 +332,8 @@ describe('Qwen <think> tag strip — streaming (Fix 7b)', () => {
 
 describe('clampRequestForProvider — fallback re-shaping (Fix 8)', () => {
   // Scenario: deepseek-v4-pro primary (cap 65536, no maxTools limit) fails;
-  // fallback is a kimi model (cap 32768, maxTools 16) — re-pointed from the
-  // removed Groq qwen3-32b 2026-06-29. Body has max_tokens=65536 + 25 tools.
+  // fallback is a kimi model (cap 32768, maxTools 16) — re-pointed 2026-06-29
+  // from a removed provider's qwen3-32b. Body has max_tokens=65536 + 25 tools.
 
   function makeFatOpenAIBody(maxTokens: number, toolCount: number) {
     const tools = Array.from({ length: toolCount }, (_, i) => ({
@@ -440,7 +441,7 @@ describe('clampRequestForProvider — fallback re-shaping (Fix 8)', () => {
     expect(twice.tools.length).toBe(once.tools.length)
   })
 
-  // Primary behavior equivalence: convertRequest output for a groq provider
+  // Primary behavior equivalence: convertRequest output for a given provider
   // must equal clampRequestForProvider applied to an unclamped body for the
   // same provider. This confirms that executeWithFallback's clamp (applied to
   // the primary at index 0) produces the same result as convertRequest alone.

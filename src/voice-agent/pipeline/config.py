@@ -8,7 +8,7 @@ typed, exposed as module-level constants.
 
 Usage from a caller:
 
-    from pipeline.config import DISPATCH_DISABLED, GROQ_API_KEY
+    from pipeline.config import DISPATCH_DISABLED, DEEPSEEK_API_KEY
     if DISPATCH_DISABLED:
         ...
 
@@ -44,7 +44,7 @@ __all__ = [
     # Service shape
     "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
     # Vendor API keys
-    "GROQ_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY", "KIMI_API_KEY",
+    "DEEPSEEK_API_KEY", "GOOGLE_API_KEY", "KIMI_API_KEY",
     # LLM / dispatcher
     "DISPATCH_DISABLED", "GRAPH_DISABLED", "DS_FALLBACK_MODEL",
     "ROUTER_PROVIDER", "ROUTER_MODEL", "ROUTER_TIMEOUT_MS",
@@ -135,7 +135,6 @@ XAUTHORITY: str = _str("XAUTHORITY")
 
 # ── Vendor API keys (NEVER logged) ───────────────────────────────────
 
-GROQ_API_KEY: str     = _str("GROQ_API_KEY")
 DEEPSEEK_API_KEY: str = _str("DEEPSEEK_API_KEY")
 GOOGLE_API_KEY: str   = _str("GOOGLE_API_KEY")
 KIMI_API_KEY: str     = _str("KIMI_API_KEY")
@@ -154,10 +153,11 @@ GRAPH_DISABLED: bool = _bool("JARVIS_GRAPH_DISABLED", False)
 DS_FALLBACK_MODEL: str = _str("JARVIS_DS_FALLBACK_MODEL", "deepseek-v4-flash")
 
 # Slow-path classifier LLM (BANTER/TASK/REASONING/EMOTIONAL routing).
-# qwen/qwen3.6-27b since 2026-06-17 (was llama-3.1-8b-instant, discontinued
-# by Groq). Fast on Groq; the 800ms timeout below still bounds it.
-ROUTER_PROVIDER: str   = _str("JARVIS_ROUTER_PROVIDER", "groq")
-ROUTER_MODEL: str      = _str("JARVIS_ROUTER_MODEL", "qwen/qwen3.6-27b")
+# Default provider moved to openai 2026-07-06: the previous default pointed
+# at a provider removed in the 2026-06-29 eradication (no key anywhere), so
+# it silently disabled the classifier. The 800ms timeout below still bounds it.
+ROUTER_PROVIDER: str   = _str("JARVIS_ROUTER_PROVIDER", "openai")
+ROUTER_MODEL: str      = _str("JARVIS_ROUTER_MODEL", "gpt-4o-mini")
 ROUTER_TIMEOUT_MS: int = _int("JARVIS_ROUTER_TIMEOUT_MS", 800)
 
 # Token-aware pre-flight + hard-prune when chat_ctx exceeds budget.
@@ -172,8 +172,7 @@ LLM_IDLE_TIMEOUT: float = _float("JARVIS_LLM_IDLE_TIMEOUT", 30.0)
 # Bounded CLI-tool delegation timeout (seconds).
 CLI_TIMEOUT_S: float = _float("JARVIS_CLI_TIMEOUT_S", 60.0)
 
-# Validator subagent inner-LLM model id. qwen/qwen3.6-27b since 2026-06-17
-# (was llama-3.1-8b-instant, discontinued by Groq).
+# Validator subagent inner-LLM model id. qwen/qwen3.6-27b since 2026-06-17.
 VALIDATOR_MODEL: str = _str("JARVIS_VALIDATOR_MODEL", "qwen/qwen3.6-27b")
 
 # Time-to-first-word target for tuning probes (ms).
@@ -191,7 +190,7 @@ CONFAB_DETECTOR: bool = _bool("JARVIS_CONFAB_DETECTOR", True)
 # Single-voice fallback for the non-dispatching TTS path.
 TTS_VOICE: str = _str("JARVIS_TTS_VOICE", "troy")
 
-# Edge TTS safety-net voice (used when Groq Orpheus has an outage).
+# Edge TTS safety-net voice (fallback when Kokoro is unavailable).
 EDGE_VOICE: str = _str("JARVIS_EDGE_VOICE", "en-US-ChristopherNeural")
 
 # Per-route TTS voices when dispatcher is active.
@@ -284,7 +283,7 @@ LOCAL_LLM_TEMP: float     = _float("JARVIS_LOCAL_LLM_TEMP", 0.6)
 LOCAL_LLM_TIMEOUT: float  = _float("JARVIS_LOCAL_LLM_TIMEOUT", 60.0)
 LOCAL_LLM_ROUTES: str     = _str("JARVIS_LOCAL_LLM_ROUTES", "")  # csv; empty = all routes
 
-# STT — faster-whisper (same Whisper family Groq uses), local last rung.
+# STT — faster-whisper (on-device Whisper), local last rung.
 LOCAL_STT_ENABLED: bool   = _bool("JARVIS_LOCAL_STT_ENABLED", False)
 LOCAL_STT_MODEL: str      = _str("JARVIS_LOCAL_STT_MODEL", "large-v3")
 LOCAL_STT_DEVICE: str     = _str("JARVIS_LOCAL_STT_DEVICE", "auto")     # auto|cpu|cuda
@@ -328,6 +327,20 @@ def job_memory_limit_mb() -> float:
     return _float("JARVIS_JOB_MEMORY_LIMIT_MB", default)
 
 
+def job_memory_warn_mb() -> float:
+    """Warn-threshold companion to ``job_memory_limit_mb()``, resolved live.
+
+    The framework default (500 MB) sits far below the ~1.3 GB steady state
+    of a job carrying the in-process faster-whisper model, so with local
+    STT it emitted "process memory usage is high" every ~5 s — 40% of live
+    log volume (2026-07-06 review) — drowning real warnings. 2500 clears
+    the observed 990–1540 MB healthy band while still firing well before
+    the 5000 MB recycle cap. Cloud-STT footprint keeps the framework 500.
+    """
+    default = 2500.0 if _bool("JARVIS_LOCAL_STT_ENABLED", False) else 500.0
+    return _float("JARVIS_JOB_MEMORY_WARN_MB", default)
+
+
 # ── Bundled namespace ────────────────────────────────────────────────
 # Equivalent to the module constants above, just accessible as
 # `config.dispatch_disabled` etc. Same values; pick whichever style
@@ -340,7 +353,6 @@ class _Config:
     livekit_api_secret: str
     display: str
     xauthority: str
-    groq_api_key: str
     deepseek_api_key: str
     google_api_key: str
     kimi_api_key: str
@@ -398,7 +410,6 @@ config = _Config(
     livekit_api_secret=LIVEKIT_API_SECRET,
     display=DISPLAY,
     xauthority=XAUTHORITY,
-    groq_api_key=GROQ_API_KEY,
     deepseek_api_key=DEEPSEEK_API_KEY,
     google_api_key=GOOGLE_API_KEY,
     kimi_api_key=KIMI_API_KEY,

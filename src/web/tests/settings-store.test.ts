@@ -72,10 +72,10 @@ describe('settings store path + migration', () => {
   })
 
   // Regression: a model id that was valid when saved but has since been
-  // removed from MODELS_META (live case: llama-3.3-70b after the Groq
-  // removal) must NOT discard the whole file — before the schema .catch()
-  // fix, loadSettings silently served DEFAULT_SETTINGS, dropping stored
-  // API keys, and the next save destroyed them on disk.
+  // removed from MODELS_META (live case: a stale id left behind by a
+  // provider removal) must NOT discard the whole file — before the schema
+  // .catch() fix, loadSettings silently served DEFAULT_SETTINGS, dropping
+  // stored API keys, and the next save destroyed them on disk.
   test('salvages file with stale model id — keys survive, model coerces', async () => {
     const home = await mktmp()
     const cwd = await mktmp()

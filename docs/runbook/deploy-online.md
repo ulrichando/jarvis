@@ -21,7 +21,7 @@ are clean, but the *values* are still recoverable from history, and per the
 dead — do this before anything is reachable:
 
 Run **`docs/runbook/credential-rotation.md`** — rotate at each provider
-dashboard (Groq, DeepSeek, Google) + the Postgres password (its §6).
+dashboard (DeepSeek, Google, OpenAI, Anthropic) + the Postgres password (its §6).
 Then (optional cleanup, only with a clean tree / no concurrent agent sessions):
 `docs/runbook/git-history-scrub.md`.
 
@@ -36,7 +36,7 @@ JARVIS_WEB_ALLOWED_HOSTS=jarvis.yourdomain.com  # REQUIRED — else every /api/*
 BETTER_AUTH_URL=https://jarvis.yourdomain.com   # login cookies + canonical host
 JARVIS_CANONICAL_HOST=jarvis.yourdomain.com
 DATABASE_URL=postgresql://jarvis:<rotated-pw>@localhost:5432/jarvis
-# + the rotated provider keys (GROQ/DEEPSEEK/OPENAI/GOOGLE/KIMI/ANTHROPIC), from keys.env
+# + the rotated provider keys (DEEPSEEK/OPENAI/GOOGLE/KIMI/ANTHROPIC), from keys.env
 ```
 
 `JARVIS_AUTH_DISABLED` must be **unset** (it bypasses the login gate — dev only).

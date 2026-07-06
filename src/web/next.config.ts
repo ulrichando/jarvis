@@ -15,7 +15,7 @@ if (existsSync(repoRootEnv)) {
 }
 
 // ~/.jarvis/keys.env is the single secret store for LLM provider keys
-// (ANTHROPIC/DEEPSEEK/GROQ/KIMI/OPENAI/…), shared with the voice agent and the
+// (ANTHROPIC/DEEPSEEK/KIMI/OPENAI/…), shared with the voice agent and the
 // CLI/proxy. Loaded AFTER root with override:true so a rotated key here wins —
 // the same last-source-wins order start.sh uses. Provider keys moved out of
 // root .env into here 2026-06-15, so this load is what gives web its keys.

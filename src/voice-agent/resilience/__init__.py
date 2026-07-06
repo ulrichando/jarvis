@@ -19,8 +19,8 @@ Modules:
 
 Stage B reorganization 2026-05-05 (RFC-001).
 
-Breaker singletons (2026-05-10): the three breakers gating Groq STT /
-TTS / LLM endpoints live here at module scope. Pre-2026-05-10 they
+Breaker singletons (2026-05-10): the three breakers gating the STT /
+TTS / LLM upstreams live here at module scope. Pre-2026-05-10 they
 were instantiated in jarvis_agent.py and the TTS / STT / LLM provider
 classes (also in jarvis_agent.py) referenced them via module globals.
 Now that the providers are moving to their own modules (Step 5/6 of
@@ -40,7 +40,7 @@ def _is_expected_provider_error(exc: BaseException) -> bool:
     Recognized signals (matched against the full __cause__ / __context__
     chain since livekit-agents wraps everything as APIConnectionError):
 
-      - Groq rate-limit-exceeded 429 ("Rate limit reached for ... TPM")
+      - Provider rate-limit-exceeded 429 ("Rate limit reached for ... TPM")
       - Validation errors from upstream tool-call malformation
         ("failed to call a function", "tool call validation failed")
 

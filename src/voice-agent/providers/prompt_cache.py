@@ -33,7 +33,7 @@ exact-prefix match against the expected stable prefix or by detecting an
 embedded marker — and place their provider-specific cache breakpoint at
 the boundary.
 
-OpenAI + DeepSeek (and Groq for the legacy fallback rungs) auto-cache on
+OpenAI + DeepSeek auto-cache on
 prefix-match — they don't need a wrapper to split, only that the
 stable bytes come FIRST. The new key order in
 ``_build_initial_prompt_state`` (stable_prefix → volatile_suffix) is
@@ -92,7 +92,7 @@ def assemble_with_marker(stable_prefix: str, volatile_suffix: str) -> str:
 
     The marker line is invisible to the user; the LLM sees it as plain
     text. For the Anthropic + Gemini paths the wrappers strip it before
-    it ever reaches the model. For the OpenAI / DeepSeek / Groq paths
+    it ever reaches the model. For the OpenAI / DeepSeek paths
     no wrapper exists — the LLM sees the marker as part of its system
     prompt. That's the documented trade-off; the marker is short and
     LLMs are extremely unlikely to mention or reproduce it. If this
@@ -195,7 +195,7 @@ def apply_stable_prefix_recursively(root, stable_prefix: str) -> int:
 
     The contract for wrappers: they expose a ``set_stable_prefix(str)``
     method. Today that's `AnthropicCachedLLM` and `GeminiCachedLLM`;
-    other LLMs (Groq, OpenAI plain, DeepSeek) silently skip — they
+    other LLMs (OpenAI plain, DeepSeek) silently skip — they
     either auto-cache on prefix match (no wrapper needed) or aren't
     cache-capable at all.
 

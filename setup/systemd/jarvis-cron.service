@@ -7,7 +7,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=/home/ulrich/Documents/Projects/jarvis/src/voice-agent
-# Same env as the voice agent so prompt jobs get GROQ_API_KEY etc.
+# Same env as the voice agent so prompt jobs get LLM provider keys etc.
 # (centralized LLM keys live in the repo-root .env as of 2026-05-15).
 EnvironmentFile=/home/ulrich/Documents/Projects/jarvis/src/voice-agent/.env
 EnvironmentFile=-/home/ulrich/Documents/Projects/jarvis/.env
@@ -23,7 +23,7 @@ StandardError=append:%h/.local/share/jarvis/logs/cron.log
 
 # Light sandbox — mirrors jarvis-voice-agent.service. Deliberately NOT
 # ProtectHome / ProtectSystem / RestrictAddressFamilies: `script` jobs
-# may write under $HOME and `prompt` jobs need outbound network (Groq).
+# may write under $HOME and `prompt` jobs need outbound network (LLM API).
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

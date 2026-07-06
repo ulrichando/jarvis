@@ -1,5 +1,5 @@
 import "server-only";
-import { promises as fs } from "node:fs";
+import { promises as fs, realpathSync, existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
@@ -489,7 +489,32 @@ export function resolveSafe(id: string, rel: string): string {
   if (resolved !== root && !resolved.startsWith(root + path.sep)) {
     throw new Error(`Path ${rel} escapes workspace`);
   }
+  // Lexical containment isn't enough: the workspace is bind-mounted into the
+  // /code container where the agent has a shell, so it can plant a symlink
+  // inside the workspace that points OUT (e.g. at ~/.jarvis/keys.env). Follow
+  // symlinks and re-assert containment against the REAL root — for a path
+  // being created (doesn't exist yet), check its nearest existing ancestor.
+  assertRealpathInside(root, resolved);
   return resolved;
+}
+
+function assertRealpathInside(root: string, resolved: string): void {
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    return; // root not created yet — the lexical guard above already ran
+  }
+  let probe = resolved;
+  while (!existsSync(probe)) {
+    const parent = path.dirname(probe);
+    if (parent === probe) return; // reached fs root without an existing node
+    probe = parent;
+  }
+  const real = realpathSync(probe);
+  if (real !== realRoot && !real.startsWith(realRoot + path.sep)) {
+    throw new Error("Path escapes workspace (symlink target outside root)");
+  }
 }
 
 export type TreeEntry = {

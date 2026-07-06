@@ -110,9 +110,9 @@ META_SILENCE_RE: re.Pattern[str] = re.compile(
     re.IGNORECASE,
 )
 
-# 2026-05-06 turn 1063 ("Silence." voiced because Groq streamed it as
-# multiple chunks): the chunk-1 regex match misses when Groq breaks
-# "Silence." into e.g. " " + "Sil" + "ence." or "Sile" + "nce." —
+# 2026-05-06 turn 1063 ("Silence." voiced because the provider streamed
+# it as multiple chunks): the chunk-1 regex match misses when the stream
+# breaks "Silence." into e.g. " " + "Sil" + "ence." or "Sile" + "nce." —
 # neither chunk matches the FULL regex on its own. The fix is to
 # buffer the first few chunks and check the assembled prefix at
 # chunk N. META_SILENCE_PHRASES is the canonical list (mirror of

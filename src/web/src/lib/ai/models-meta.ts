@@ -239,9 +239,10 @@ export const MODELS_META: Record<string, ModelMeta> = {
 };
 
 export type ModelId = keyof typeof MODELS_META;
-// Default = DeepSeek chat. Set 2026-06-29 (full-Groq-eradication pass);
-// was llama-3.3-70b on Groq — a model Groq discontinued AND a provider
-// we removed. DeepSeek is cheap, reliable, and the box's de-facto primary.
+// Default = DeepSeek chat. Set 2026-06-29 (provider-eradication pass); was a
+// llama-3.3-70b entry on a since-removed provider — a discontinued model AND
+// a provider we removed. DeepSeek is cheap, reliable, and the box's de-facto
+// primary.
 export const DEFAULT_MODEL: ModelId = "deepseek-chat";
 
 export function modelsByProvider(): Array<{

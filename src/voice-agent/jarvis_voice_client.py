@@ -541,7 +541,7 @@ class ClientState:
     # POST /screen-share. UI uses this to render a "sharing screen"
     # indicator next to the mute pill.
     sharing_screen: bool = False
-    # Active TTS provider spec (e.g., "groq:troy" or "kokoro:af_heart").
+    # Active TTS provider spec (e.g., "kokoro:af_bella" or "kokoro:af_heart").
     # Read from TTS_PROVIDER_FILE on every /status hit, then corrected to the
     # actual on-device engine via active_tts_provider() when a local override
     # is set (so the tray never shows Orpheus while Kokoro is speaking).

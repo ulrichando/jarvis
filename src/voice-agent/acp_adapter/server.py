@@ -200,7 +200,7 @@ class JarvisACPAgent(acp.Agent):
 
         ``llm_builder`` / ``tools_builder`` exist as test seams: tests
         inject lightweight stand-ins instead of standing up the full
-        Anthropic+Groq dispatcher and the 30+ registered tools.
+        Anthropic/DeepSeek dispatcher and the 30+ registered tools.
         """
         super().__init__()
         self.session_manager = session_manager or SessionManager()
@@ -474,7 +474,7 @@ class JarvisACPAgent(acp.Agent):
                 state._tools = []
         tools = state._tools
 
-        # Build the supervisor LLM (Anthropic/Groq dispatcher) unless
+        # Build the supervisor LLM (Anthropic/DeepSeek dispatcher) unless
         # the test wired its own.
         try:
             llm = self._build_or_get_supervisor_llm(state)

@@ -5,7 +5,7 @@ of surfacing a bare "HTTP 400" (or nothing at all).
 Motivation (2026-07-02): a provider failure used to reach the user as silence
 (the session-close watchdog returned quietly) or an opaque status code. This
 maps the error to a category the user actually cares about — "I'm out of
-credits on Claude" — across the Anthropic / OpenAI / DeepSeek / Groq / Gemini
+credits on Claude" — across the Anthropic / OpenAI / DeepSeek / Gemini
 SDK error shapes, whose reprs all carry the provider's billing / rate-limit /
 auth wording.
 
@@ -38,7 +38,6 @@ _PROVIDER_PATS = (
     (re.compile(r"claude|anthropic", re.I), "Claude"),
     (re.compile(r"\bgpt|openai|\bo[134]\b|gpt-image|dall", re.I), "OpenAI"),
     (re.compile(r"deepseek", re.I), "DeepSeek"),
-    (re.compile(r"groq|orpheus|\bllama|whisper", re.I), "Groq"),
     (re.compile(r"gemini|google|imagen", re.I), "Gemini"),
     (re.compile(r"kimi|moonshot", re.I), "Kimi"),
     (re.compile(r"qwen", re.I), "Qwen"),

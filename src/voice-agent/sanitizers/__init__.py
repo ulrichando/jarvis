@@ -11,8 +11,10 @@ Modules:
                          forces `additionalProperties: false` on every
                          object node — required because Anthropic
                          rejects tools without it, and strict_schema_relax
-                         (load-bearing for Groq) emits legacy shapes
-                         that don't set it (live failure 2026-05-11)
+                         (originally added for a since-removed provider,
+                         still installed upstream of this shim) emits
+                         legacy shapes that don't set it (live failure
+                         2026-05-11)
   - deepseek_cache_tokens : backfills DeepSeek's `prompt_cache_hit_tokens`
                          into the OpenAI-spec
                          `prompt_tokens_details.cached_tokens` slot when
@@ -37,8 +39,11 @@ Modules:
                          (was pycall_sanitizer.py)
   - strict_schema_relax: forces every tool through the legacy schema
                          generator (no additionalProperties:false, no
-                         function.strict=True) so Groq/Moonshot accept
-                         mixed defaults+required tools
+                         function.strict=True) so strict-shape providers
+                         (Moonshot today; originally a since-removed
+                         provider) accept mixed defaults+required tools;
+                         anthropic_strict_schema re-adds what Anthropic
+                         needs downstream
   - tool_name          : recovers the real tool name when the LLM emits
                          a malformed/typo'd tool name; soft-recovers if
                          the tool requires runtime context

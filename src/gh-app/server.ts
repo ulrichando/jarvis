@@ -169,7 +169,7 @@ function credsPath(env: Record<string, string | undefined>): string {
 // allowlist — the sandbox runs untrusted-task-driven code, so app creds,
 // webhook secret, and DB DSN must never cross into it.
 const SANDBOX_ENV_KEYS = [
-  'ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY', 'GROQ_API_KEY', 'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY', 'OPENAI_API_KEY',
   'JARVIS_PROVIDER', 'JARVIS_MODEL',
 ] as const
 

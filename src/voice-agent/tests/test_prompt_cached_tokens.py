@@ -13,7 +13,7 @@ Coverage:
   - openai      : `prompt_tokens_details.cached_tokens` extraction
                   (handled in the framework's inference llm.py) — same
                   end-to-end shape verification.
-  - groq        : no cache field at all → 0 (default) recorded.
+  - no-cache-field providers : nothing to extract → 0 (default) recorded.
 
 The framework's `inference.llm.LLMStream._run` reads
 `chunk.usage.prompt_tokens_details.cached_tokens` and builds an
@@ -248,13 +248,13 @@ def test_openai_cached_tokens_extracted(tmp_path):
     assert cached == 4096
 
 
-def test_groq_returns_zero_cached(tmp_path):
-    """Groq does not return any cache field — LLMMetrics.prompt_cached_tokens
+def test_no_cache_field_provider_returns_zero_cached(tmp_path):
+    """A provider that returns no cache field — LLMMetrics.prompt_cached_tokens
     defaults to 0, which lands as 0 in telemetry. Verifies the
     handler's `or 0` fallback path is exercised."""
     cached = _simulate_metrics_capture_and_log(
         tmp_path,
-        label="groq:llama-3.3-70b-versatile",
+        label="legacy:no-cache-model",
         prompt_tokens=2000,
         completion_tokens=50,
         prompt_cached_tokens=0,

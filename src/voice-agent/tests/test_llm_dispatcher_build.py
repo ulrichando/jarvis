@@ -1,8 +1,9 @@
 """Verify `build_dispatching_llm` per-route defaults and overrides.
 
 Refactor 2026-05-23: Anthropic Haiku/Sonnet become rung-1 primaries
-(prompt-cached → ~700 ms TTFW warm) with Groq legacy demoted to rung 2
-and DeepSeek-v4-flash as rung 3.
+(prompt-cached → ~700 ms TTFW warm) with DeepSeek-v4-flash as the
+cross-provider fallback rung (the legacy cloud middle rung was removed
+2026-06-29 in the provider-eradication pass).
 
 These tests pin the contract:
 
@@ -11,9 +12,9 @@ These tests pin the contract:
   Anthropic model id per route at build time;
 * `task_override` parameter still wins over the TASK env (tray pin);
 * without ANTHROPIC_API_KEY the dispatcher still boots, falling back
-  to the Groq legacy primaries (graceful degrade);
-* the FallbackAdapter rungs include Groq legacy + DeepSeek-v4-flash so
-  a single Anthropic outage doesn't strand the route.
+  to the DeepSeek primaries (graceful degrade);
+* the FallbackAdapter rungs include DeepSeek-v4-flash so a single
+  Anthropic outage doesn't strand the route.
 """
 from __future__ import annotations
 
@@ -26,10 +27,8 @@ import pytest
 # Tests run from the voice-agent root.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Groq plugin's constructor reads GROQ_API_KEY at __init__ time even
-# when the request never goes out — same pattern as test_breaker_shims.
-os.environ.setdefault("GROQ_API_KEY", "test-key-for-init")
-# DeepSeek + Anthropic likewise — make sure the rungs construct.
+# DeepSeek + Anthropic plugin constructors read API keys at __init__
+# time even when the request never goes out — make sure the rungs construct.
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-deepseek-key")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
 
@@ -117,7 +116,7 @@ def test_task_override_wins_over_env(monkeypatch):
 def test_no_anthropic_key_falls_back_to_deepseek_primary(monkeypatch):
     """When ANTHROPIC_API_KEY is unset (DEEPSEEK_API_KEY set), every route
     must still build — the shared DeepSeek instance takes the rung-1 slot.
-    (Was the Groq legacy rung before the 2026-06-29 full-Groq removal.)
+    (Was the legacy cloud rung before the 2026-06-29 provider removal.)
     Dispatcher refuses to refuse-to-boot."""
     _wipe_route_env(monkeypatch)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -153,8 +152,8 @@ def test_no_anthropic_key_with_task_override_still_wins(monkeypatch):
 def test_fallback_chain_includes_anthropic_and_deepseek(monkeypatch):
     """A route built with Anthropic primary AND DEEPSEEK_API_KEY set must be
     wrapped in a FallbackAdapter with two rungs: [anthropic-primary,
-    deepseek-v4-flash]. The Groq legacy middle rung was removed 2026-06-29
-    in the full-Groq-eradication pass. Single-provider outage on a rung
+    deepseek-v4-flash]. The legacy cloud middle rung was removed 2026-06-29
+    in the provider-eradication pass. Single-provider outage on a rung
     cascades to the next."""
     _wipe_route_env(monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
@@ -184,12 +183,13 @@ def test_fallback_chain_includes_anthropic_and_deepseek(monkeypatch):
         assert labels and labels[0].startswith("anthropic:"), (
             f"route {route} rung 1 expected anthropic, got {labels[0] if labels else 'none'}"
         )
-        # DeepSeek must be present; Groq must NOT.
+        # DeepSeek must be present, and ONLY the two live providers may
+        # appear (guards against a removed legacy rung creeping back in).
         assert any(lbl.startswith("deepseek:") for lbl in labels), (
             f"route {route} missing DeepSeek rung; labels={labels}"
         )
-        assert not any(lbl.startswith("groq:") for lbl in labels), (
-            f"route {route} should have NO groq rung; labels={labels}"
+        assert all(lbl.startswith(("anthropic:", "deepseek:")) for lbl in labels), (
+            f"route {route} has an unexpected rung; labels={labels}"
         )
 
 

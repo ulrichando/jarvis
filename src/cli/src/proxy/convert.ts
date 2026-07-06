@@ -66,7 +66,7 @@ function extractSystemText(system: unknown): string {
 // ── <think>-tag stripping (qwen3 + other open-source reasoning models) ──
 
 // Strip <think>...</think> blocks (and one trailing newline run) from a
-// finished text response. Some models — primarily Qwen3 on Groq — emit
+// finished text response. Some models — primarily Qwen3 — emit
 // chain-of-thought inside literal <think> tags in the visible content
 // instead of in a separate reasoning_content field. The CLI doesn't
 // render the tags specially, so the user sees "<think>maybe I should…"
@@ -149,8 +149,8 @@ function endsWithPartialOf(text: string, target: string): number {
   return 0
 }
 
-// Gate: which models need the <think> strip applied? Today only Qwen3
-// (Groq). Other open-source / reasoning models use a separate
+// Gate: which models need the <think> strip applied? Today only Qwen3.
+// Other open-source / reasoning models use a separate
 // reasoning_content field and don't leak tags into visible content.
 export function modelLeaksThinkTags(modelId: string): boolean {
   return modelId.includes('qwen')
@@ -480,7 +480,7 @@ export function truncateToolsToCap<T>(
     .map(s => s.t)
 }
 
-// gpt-oss `reasoning_effort` (Groq AND local Ollama) accepts only
+// gpt-oss `reasoning_effort` (local Ollama) accepts only
 // low/medium/high. Anthropic's 'xhigh'/'max' are super-set tiers — map them to
 // the strongest supported tier so cross-provider fallback + the local Ollama
 // path preserve user intent. Returns undefined when no concrete effort was
@@ -608,10 +608,10 @@ function applyProviderSpecificParams(out: any, req: any, provider: Provider): vo
 //     convertTools but applied to already-converted OpenAI-shaped tools)
 //   - tool_choice dropped when provider.supportsToolChoice is false
 //   - temperature pinned for providers that demand it (kimi, gpt-5 family)
-//   - service_tier injected for groq
+//   - stale service_tier stripped (no current provider sets it)
 //
 // Does NOT re-apply thinking/effort params (deepseek.thinking,
-// groq.reasoning_effort) — those are derived from the original Anthropic
+// reasoning_effort) — those are derived from the original Anthropic
 // request which is not available here; they're primary-specific and
 // absent from non-deepseek/non-gpt-oss fallbacks anyway.
 //
@@ -668,8 +668,8 @@ export function clampRequestForProvider(openaiReq: any, provider: Provider): any
     delete out.tool_choice
   }
 
-  // Groq was removed 2026-06-29 (full-Groq-eradication pass) — no provider
-  // sets service_tier now; strip any stale value that slipped through.
+  // No current provider sets service_tier (the provider that used it was
+  // removed 2026-06-29) — strip any stale value that slipped through.
   delete out.service_tier
 
   return out
@@ -810,8 +810,8 @@ export function convertResponse(openaiResp: any, model: string): any {
       // input tokens served from cache (billed at the cheaper rate).
       // Map that → Anthropic `cache_read_input_tokens` and subtract
       // from `input_tokens` so the CLI cost-tracker bills cache hits
-      // at the cache-read rate, not the full input rate. Groq has no
-      // cache field; cacheHit stays 0 and input_tokens equals
+      // at the cache-read rate, not the full input rate. For providers
+      // with no cache field, cacheHit stays 0 and input_tokens equals
       // prompt_tokens.
       const promptTokens = openaiResp.usage?.prompt_tokens ?? 0
       const cacheHit = openaiResp.usage?.prompt_cache_hit_tokens ?? 0

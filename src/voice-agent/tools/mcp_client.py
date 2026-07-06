@@ -170,7 +170,7 @@ def sanitize_mcp_name_component(value: str) -> str:
 
     Replaces every character outside ``[A-Za-z0-9_]`` with ``_`` so the
     generated ``mcp__<server>__<tool>`` name passes provider tool-name
-    validation (OpenAI/Anthropic/Groq all require this character class).
+    validation (OpenAI/Anthropic/others all require this character class).
     """
     return re.sub(r"[^A-Za-z0-9_]", "_", str(value or ""))
 

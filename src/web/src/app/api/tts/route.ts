@@ -5,8 +5,8 @@
  * falls back to browser speechSynthesis (503). Same-origin from the logged-in
  * page (proxy.ts).
  *
- * Groq Orpheus was removed 2026-06-29 (full-Groq-eradication pass) — Kokoro is
- * the only server-side engine now.
+ * The old cloud TTS engine was removed 2026-06-29 — Kokoro is the only
+ * server-side engine now.
  */
 import { KOKORO_ID_RE } from '@/lib/chat/voices'
 

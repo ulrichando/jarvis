@@ -200,7 +200,7 @@ def test_parse_choice_handles_split_dsml_opener():
 def test_parse_choice_no_op_on_normal_text():
     """When NO DSML markers in the stream, every chunk passes through
     unchanged. This is the common-case guard — we must not corrupt
-    Groq / OpenAI output."""
+    Anthropic / OpenAI output."""
     from livekit.agents.inference import llm as inf_llm
     dsml_sanitizer.install()
 
@@ -226,3 +226,46 @@ def test_parse_choice_no_op_on_normal_text():
 
     # Buffer should not have been touched.
     assert response_id not in dsml_sanitizer._DSML_STATE
+
+
+# ── Inline exec: adapter-wrapped registry tools ──────────────────────
+
+
+def test_execute_inline_dispatches_adapter_wrapped_tool():
+    """Registry tools are adapter-wrapped as `_run(raw_arguments: dict)`
+    (tools/_adapter.py). Inline recovery must pass the args dict whole —
+    kwargs-spreading TypeError'd every recovered call (live 2026-06-27:
+    a recovered computer_use envelope never dispatched)."""
+    import asyncio
+
+    seen = {}
+
+    async def _run(raw_arguments: dict) -> str:
+        seen["args"] = raw_arguments
+        return "clicked OK"
+
+    stream = SimpleNamespace(
+        _tool_ctx=SimpleNamespace(function_tools={"computer_use": _run}),
+    )
+    out = asyncio.run(
+        dsml_sanitizer._execute_inline(
+            stream, "computer_use", {"request": "click OK"}
+        )
+    )
+    assert out == "clicked OK"
+    assert seen["args"] == {"request": "click OK"}
+
+
+def test_execute_inline_still_spreads_kwargs_for_plain_callables():
+    import asyncio
+
+    def plain(city: str) -> str:
+        return f"weather in {city}"
+
+    stream = SimpleNamespace(
+        _tool_ctx=SimpleNamespace(function_tools={"weather": plain}),
+    )
+    out = asyncio.run(
+        dsml_sanitizer._execute_inline(stream, "weather", {"city": "Columbus"})
+    )
+    assert out == "weather in Columbus"

@@ -4,7 +4,7 @@
 // request carrying a tool schema of { type: 'web_search_20250305', ... } and
 // expects the stream back to contain `server_tool_use` + `web_search_tool_result`
 // content blocks. That only works against api.anthropic.com. When routed through
-// this proxy to Groq/DeepSeek, no search ever runs and the UI reports
+// this proxy to a non-Anthropic provider, no search ever runs and the UI reports
 // "Did 0 searches".
 //
 // We intercept the request at the proxy, execute a real DDG HTML search

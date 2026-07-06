@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Jarvis Desktop Launcher
 # Starts: proxy (4000) + bridge (8765) + Tauri desktop
-# Switch provider: ./start-desktop.sh groq|deepseek|openai|gemini|ollama
+# Switch provider: ./start-desktop.sh deepseek|openai|gemini|ollama
 
 set -euo pipefail
 
@@ -52,7 +52,7 @@ if [ -f "$HOME/.jarvis/desktop.env" ]; then
 fi
 
 case "${1:-}" in
-  deepseek|groq|openai|gemini|ollama)
+  deepseek|openai|gemini|ollama)
     export JARVIS_PROVIDER="$1"
     shift
     ;;

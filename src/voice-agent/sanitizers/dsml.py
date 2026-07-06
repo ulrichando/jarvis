@@ -27,7 +27,7 @@ This module patches `inference.llm.LLMStream._parse_choice` to:
   3. Buffer the envelope per-stream until the closer arrives
   4. Parse the envelope, look up the tool in `self._tool_ctx`,
      execute it inline (same scaffolding as tool_name_sanitizer's
-     Groq path)
+     recovery path)
   5. Emit a fresh `ChatChunk` with the tool's result so the
      framework voices the answer, not the markup
 
@@ -164,7 +164,19 @@ async def _execute_inline(stream, name: str, args: dict[str, str]) -> str | None
             typed_args[k] = v
 
     try:
-        result = tool(**typed_args)
+        # Registry tools are adapter-wrapped as `_run(raw_arguments: dict)`
+        # (tools/_adapter.py::_build_wrapped_handler) — spreading kwargs into
+        # that shape TypeErrors on every recovered call (live 2026-06-27:
+        # recovered computer_use envelope never dispatched). Pass the dict
+        # whole for that shape; spread kwargs for plain callables.
+        try:
+            params = list(inspect.signature(tool).parameters)
+        except (TypeError, ValueError):
+            params = []
+        if params == ["raw_arguments"]:
+            result = tool(typed_args)
+        else:
+            result = tool(**typed_args)
         if inspect.iscoroutine(result):
             result = await result
     except Exception as e:

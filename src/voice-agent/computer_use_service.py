@@ -24,10 +24,12 @@ Run: ``.venv/bin/python computer_use_service.py``  (DISPLAY must point at :0).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import socket
+import time
 import uuid
 from typing import Any, Awaitable, Callable, Dict, List
 
@@ -136,18 +138,22 @@ def _approval_kind(action: str) -> "str | None":
 
 
 _APPROVED_KINDS: Dict[str, set] = {}          # session_id -> {kinds approved this session}
-_PENDING_APPROVALS: Dict[str, Dict[str, Any]] = {}  # request_id -> {event, decision}
+_PENDING_APPROVALS: Dict[str, Dict[str, Any]] = {}  # request_id -> {event, decision, session_id}
 _APPROVAL_TIMEOUT_S = 300
 
 
 async def _ask_approval(
-    action: str, summary: str, emit: Callable[[Dict[str, Any]], Awaitable[None]]
+    session_id: str, action: str, summary: str,
+    emit: Callable[[Dict[str, Any]], Awaitable[None]],
 ) -> str:
-    """Emit a permission_request and block (with SSE keepalive pings) until the
-    user decides. Returns 'once' | 'session' | 'deny' ('deny' on timeout)."""
+    """Emit a permission_request and block until the user decides (or the
+    timeout auto-denies). Keepalives are per-subscriber (`: ka` comment frames
+    in the stream writers), never buffered events — so a detached run waiting
+    on approval doesn't fill the session buffer with pings. Returns
+    'once' | 'session' | 'deny'."""
     rid = uuid.uuid4().hex
     ev = asyncio.Event()
-    _PENDING_APPROVALS[rid] = {"event": ev, "decision": "deny"}
+    _PENDING_APPROVALS[rid] = {"event": ev, "decision": "deny", "session_id": session_id}
     kind = _approval_kind(action) or "mouse"
     await emit({
         "type": "permission_request",
@@ -157,18 +163,16 @@ async def _ask_approval(
         "label": _APPROVAL_KINDS.get(kind, action),
         "summary": summary,
     })
-    waited = 0.0
     try:
-        while not ev.is_set():
-            try:
-                await asyncio.wait_for(ev.wait(), timeout=10)
-            except asyncio.TimeoutError:
-                waited += 10
-                if waited >= _APPROVAL_TIMEOUT_S:
-                    break
-                await emit({"type": "ping"})  # keep the SSE/proxy alive while waiting
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(ev.wait(), timeout=_APPROVAL_TIMEOUT_S)
     finally:
         info = _PENDING_APPROVALS.pop(rid, None)
+    if info is not None and not ev.is_set():
+        # Timed out — buffer the resolution so a reattaching client doesn't
+        # render a stale, still-actionable approval card.
+        with contextlib.suppress(Exception):
+            await emit({"type": "approval_resolved", "id": rid, "decision": "deny"})
     return (info or {}).get("decision", "deny")
 
 _SAFETY_PROMPT = (
@@ -392,14 +396,106 @@ def _trim_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [head, *messages[suffix_start:]]
 
 
+# ── detached run registry ─────────────────────────────────────────────────────
+# Runs are DECOUPLED from the connection that started them (the /code
+# detached-worker pattern): the loop writes seq-stamped events into a
+# per-session buffer, and any number of subscribers replay + follow. Closing
+# the browser only drops the subscription — the run keeps going, and the page
+# reattaches via GET /sessions + GET /events. Detach is OPT-IN per request
+# (the web route sends detach:true): bare /run callers — the jarvis CLI — keep
+# the legacy run-dies-with-client tie, so Ctrl-C still stops the desktop.
+# Kill-switch: JARVIS_CU_DETACH=0 forces the legacy tie for everyone.
+_MAX_RUNS = 30       # sessions kept in the registry (oldest non-running evicted)
+_MAX_EVENTS = 1000   # buffered events per session (head-dropped; seq stays monotonic)
+_TERMINAL_EVENTS = {"done", "error", "stopped"}
+
+
+def _detach_enabled() -> bool:
+    return os.environ.get("JARVIS_CU_DETACH", "1").strip().lower() not in {"0", "false", "off"}
+
+
+class _Sess:
+    """Per-session run state: the event buffer + the (single) live runner task.
+    Distinct from ``_SESSIONS`` (the image-free conversation history) — this is
+    the observable run: what happened, what's pending, who's watching."""
+
+    def __init__(self, session_id: str) -> None:
+        self.id = session_id
+        self.events: List[Dict[str, Any]] = []   # each carries a monotonic 'seq'
+        self.next_seq = 0
+        self.cond = asyncio.Condition()
+        self.runner: "asyncio.Task | None" = None
+        self.supervised = True
+        self.model = MODEL
+        self.task = ""                            # latest task text (for listings)
+        self.updated = time.time()
+
+    async def emit(self, event: Dict[str, Any]) -> None:
+        async with self.cond:
+            stamped = {**event, "seq": self.next_seq}
+            self.next_seq += 1
+            self.events.append(stamped)
+            if len(self.events) > _MAX_EVENTS:
+                del self.events[: len(self.events) - _MAX_EVENTS]
+            self.updated = time.time()
+            self.cond.notify_all()
+
+    async def notify(self) -> None:
+        """Wake subscribers without adding an event (e.g. runner finished)."""
+        async with self.cond:
+            self.cond.notify_all()
+
+    def running(self) -> bool:
+        return self.runner is not None and not self.runner.done()
+
+    def status(self) -> str:
+        if self.running():
+            waiting = any(
+                info.get("session_id") == self.id for info in _PENDING_APPROVALS.values()
+            )
+            return "waiting_approval" if waiting else "running"
+        for ev in reversed(self.events):
+            if ev.get("type") in _TERMINAL_EVENTS:
+                return "error" if ev["type"] == "error" else "idle"
+        return "idle"
+
+
+_RUNS: Dict[str, _Sess] = {}
+
+
+def _get_sess(session_id: str) -> _Sess:
+    sess = _RUNS.get(session_id)
+    if sess is None:
+        sess = _RUNS[session_id] = _Sess(session_id)
+        _evict_runs()
+    return sess
+
+
+def _evict_runs() -> None:
+    """Cap the registry: drop the oldest non-running sessions — and their
+    conversation history + approved kinds (also fixes those dicts' unbounded
+    growth) — once past _MAX_RUNS. Running sessions are never evicted."""
+    excess = len(_RUNS) - _MAX_RUNS
+    if excess <= 0:
+        return
+    victims = sorted(
+        (s for s in _RUNS.values() if not s.running()), key=lambda s: s.updated
+    )
+    for sess in victims[:excess]:
+        _RUNS.pop(sess.id, None)
+        _SESSIONS.pop(sess.id, None)
+        _APPROVED_KINDS.pop(sess.id, None)
+
+
 async def run_loop(
-    task: str, session_id: str, supervised: bool, model: str,
+    task: str, sess: _Sess,
     emit: Callable[[Dict[str, Any]], Awaitable[None]],
 ) -> None:
-    """Run one user turn of the agent loop with ``model``, continuing the named
-    session's conversation. When ``supervised`` is set, prompt for approval
-    before the first mouse/type/key/app action of each kind this session. Calls
-    ``emit`` for each SSE event."""
+    """Run one user turn of the agent loop with ``sess.model``, continuing the
+    session's conversation. Supervision is read from ``sess.supervised`` at
+    EACH action (not snapshotted at start), so flipping to Auto mid-run stops
+    the prompting immediately. Calls ``emit`` for each SSE event."""
+    session_id, model = sess.id, sess.model
     if not x11_backend_available():
         await emit({"type": "error", "error": "No X11 display — computer use needs a desktop (DISPLAY=:0)."})
         return
@@ -470,9 +566,11 @@ async def run_loop(
                 )
                 # Per-action-type approval (supervised mode): ask before the
                 # first mouse/type/key/app/bash action of each kind this session.
+                # sess.supervised is read HERE (live), so a mid-run mode flip
+                # takes effect on the very next action.
                 kind = _approval_kind(call.action)
-                if supervised and kind and kind not in _APPROVED_KINDS.get(session_id, set()):
-                    decision = await _ask_approval(call.action, summary, emit)
+                if sess.supervised and kind and kind not in _APPROVED_KINDS.get(session_id, set()):
+                    decision = await _ask_approval(session_id, call.action, summary, emit)
                     if decision == "deny":
                         await emit({"type": "denied", "summary": summary})
                         results.append(ToolResult(call.id, json.dumps({
@@ -535,48 +633,190 @@ async def _health(_req: web.Request) -> web.Response:
     )
 
 
+_SSE_HEADERS = {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+
+
+async def _runner(sess: _Sess, task: str) -> None:
+    """One detached turn: wraps run_loop so crashes / cancels land in the
+    session buffer as terminal events (every turn ends with done|error|stopped)."""
+    try:
+        await sess.emit({"type": "start", "task": task})
+        await run_loop(task, sess, sess.emit)
+    except asyncio.CancelledError:
+        with contextlib.suppress(Exception):
+            await sess.emit({"type": "stopped"})
+    except Exception:  # noqa: BLE001
+        logger.exception("run loop crashed")
+        with contextlib.suppress(Exception):
+            # Generic message to the client; the full exception (+traceback)
+            # is in logger.exception above, not the response (py/stack-trace-exposure).
+            await sess.emit({"type": "error", "error": "the task failed — see the voice-agent log"})
+
+
+async def _follow(
+    resp: web.StreamResponse, sess: _Sess, after: int,
+    runner: "asyncio.Task | None" = None,
+) -> None:
+    """Write buffered events with seq > ``after``, then follow live. Closes when
+    the watched runner (the given one, else whatever the session is currently
+    running) is finished AND the buffer is drained. Emits `: ka` SSE comment
+    frames every 10s of silence so proxies don't cut an idle stream. A client
+    disconnect only ends this subscription — never the run."""
+    sent = after
+    while True:
+        async with sess.cond:
+            pending = [e for e in sess.events if e["seq"] > sent]
+            if not pending:
+                watched = runner if runner is not None else sess.runner
+                if watched is None or watched.done():
+                    return
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(sess.cond.wait(), timeout=10)
+                pending = [e for e in sess.events if e["seq"] > sent]
+        if pending:
+            for ev in pending:
+                await resp.write(f"data: {json.dumps(ev)}\n\n".encode())
+                sent = ev["seq"]
+        else:
+            await resp.write(b": ka\n\n")  # keepalive comment — data:-only parsers skip it
+
+
 async def _run(req: web.Request) -> web.StreamResponse:
+    """Start one turn for a session and stream ITS events (replay-from-turn-start
+    + follow). The turn runs as a background task — this response is just a
+    subscription to it. With detach:true in the body (the web page), a dropped
+    client never kills the run; without it (the CLI), disconnect cancels it."""
     body = await req.json() if req.can_read_body else {}
     task = str((body or {}).get("task") or "").strip()
     session_id = str((body or {}).get("session_id") or "default")
     supervised = bool((body or {}).get("supervised", True))
+    detach = _detach_enabled() and bool((body or {}).get("detach", False))
     model = _resolve_model((body or {}).get("model"))
     if not task:
         return web.json_response({"error": "task required"}, status=400)
 
-    resp = web.StreamResponse(
-        status=200,
-        headers={
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    resp = web.StreamResponse(status=200, headers=dict(_SSE_HEADERS))
     await resp.prepare(req)
 
-    async def emit(event: Dict[str, Any]) -> None:
-        await resp.write(f"data: {json.dumps(event)}\n\n".encode())
+    sess = _get_sess(session_id)
+    if sess.running():
+        # SSE-shaped error (status already sent): both the web page and the CLI
+        # surface it through their normal event loops.
+        with contextlib.suppress(Exception):
+            await resp.write(
+                b'data: {"type": "error", "error": "a run is already in progress '
+                b'for this session \\u2014 stop it or wait for it to finish."}\n\n'
+            )
+            await resp.write_eof()
+        return resp
+
+    sess.supervised = supervised
+    sess.model = model
+    sess.task = task
+    start_after = sess.next_seq - 1  # subscribe from this turn's first event
+    runner = asyncio.get_running_loop().create_task(_runner(sess, task))
+    sess.runner = runner
+    # Wake subscribers when the turn ends so streams close promptly (the last
+    # buffered event can land before .done() flips).
+    runner.add_done_callback(
+        lambda _t: asyncio.get_running_loop().create_task(sess.notify())
+    )
 
     try:
-        await emit({"type": "start", "task": task})
-        await run_loop(task, session_id, supervised, model, emit)
-    except ConnectionResetError:
-        pass  # client navigated away
-    except Exception as e:  # noqa: BLE001
-        logger.exception("run loop crashed")
-        try:
-            # Generic message to the SSE client; the full exception (+traceback)
-            # is in logger.exception above, not the response (py/stack-trace-exposure).
-            await emit({"type": "error", "error": "the task failed — see the voice-agent log"})
-        except Exception:  # noqa: BLE001
-            pass
+        await _follow(resp, sess, start_after, runner)
+    except (ConnectionResetError, asyncio.CancelledError):
+        # Client dropped mid-stream. Detached (web page): the run continues and
+        # the page reattaches via /sessions + /events. Tied (CLI / bare /run,
+        # or JARVIS_CU_DETACH=0): cancel the run — Ctrl-C must stop the desktop.
+        if not detach and not runner.done():
+            runner.cancel()
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await resp.write_eof()
-        except Exception:  # noqa: BLE001
-            pass
     return resp
+
+
+async def _events(req: web.Request) -> web.StreamResponse:
+    """Reattach to a session: replay buffered events with seq > ``after``
+    (default -1 = everything) as SSE, then follow live while a run is going.
+    Closes once the session is idle and the buffer is drained."""
+    session_id = req.query.get("session_id", "")
+    try:
+        after = int(req.query.get("after", "-1"))
+    except ValueError:
+        after = -1
+    sess = _RUNS.get(session_id)
+    if sess is None:
+        return web.json_response({"error": "unknown session"}, status=404)
+    resp = web.StreamResponse(status=200, headers=dict(_SSE_HEADERS))
+    await resp.prepare(req)
+    with contextlib.suppress(ConnectionResetError, asyncio.CancelledError):
+        await _follow(resp, sess, after)
+    with contextlib.suppress(Exception):
+        await resp.write_eof()
+    return resp
+
+
+async def _sessions_list(_req: web.Request) -> web.Response:
+    """The run sessions this sidecar knows (in-memory — resets on restart),
+    newest first. The web page uses this to reattach + to show what's running."""
+    sessions = [
+        {
+            "id": s.id,
+            "status": s.status(),
+            "task": s.task[:200],
+            "supervised": s.supervised,
+            "model": s.model,
+            "updated": s.updated,
+            "last_seq": s.next_seq - 1,
+        }
+        for s in sorted(_RUNS.values(), key=lambda s: s.updated, reverse=True)
+    ]
+    return web.json_response({"sessions": sessions})
+
+
+async def _mode(req: web.Request) -> web.Response:
+    """Set a session's supervision mode LIVE. Body: {session_id, supervised}.
+    Flipping to auto (supervised=false) also releases any approval the run is
+    currently blocked on — that's what the user means by clicking Auto."""
+    body = await req.json() if req.can_read_body else {}
+    session_id = str((body or {}).get("session_id") or "")
+    supervised = (body or {}).get("supervised")
+    if not session_id or not isinstance(supervised, bool):
+        return web.json_response(
+            {"error": "session_id and supervised (bool) required"}, status=400
+        )
+    sess = _RUNS.get(session_id)
+    if sess is None:
+        # Not started yet — nothing to update; the next /run carries the mode.
+        return web.json_response({"ok": True, "note": "no such session yet"})
+    sess.supervised = supervised
+    resolved: List[str] = []
+    if not supervised:
+        for rid, info in list(_PENDING_APPROVALS.items()):
+            if info.get("session_id") == session_id:
+                info["decision"] = "once"
+                info["event"].set()
+                resolved.append(rid)
+                await sess.emit({"type": "approval_resolved", "id": rid, "decision": "once"})
+    return web.json_response({"ok": True, "resolved": resolved})
+
+
+async def _stop(req: web.Request) -> web.Response:
+    """Explicitly stop a session's in-flight run. With detached runs, closing
+    the page no longer stops anything — this is the intentional kill."""
+    body = await req.json() if req.can_read_body else {}
+    session_id = str((body or {}).get("session_id") or "")
+    sess = _RUNS.get(session_id)
+    if sess is None or not sess.running():
+        return web.json_response({"ok": False, "error": "no run in progress"}, status=404)
+    sess.runner.cancel()
+    return web.json_response({"ok": True})
 
 
 async def _approve(req: web.Request) -> web.Response:
@@ -592,6 +832,10 @@ async def _approve(req: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "unknown or expired request"}, status=404)
     info["decision"] = decision
     info["event"].set()
+    # Buffer the resolution so reattaching clients see the card as answered.
+    sess = _RUNS.get(str(info.get("session_id") or ""))
+    if sess is not None:
+        await sess.emit({"type": "approval_resolved", "id": rid, "decision": decision})
     return web.json_response({"ok": True})
 
 
@@ -600,6 +844,10 @@ def build_app() -> web.Application:
     app.router.add_get("/health", _health)
     app.router.add_post("/run", _run)
     app.router.add_post("/approve", _approve)
+    app.router.add_get("/sessions", _sessions_list)
+    app.router.add_get("/events", _events)
+    app.router.add_post("/mode", _mode)
+    app.router.add_post("/stop", _stop)
     return app
 
 

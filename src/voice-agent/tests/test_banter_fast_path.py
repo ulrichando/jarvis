@@ -1,5 +1,5 @@
 """Tests for `_BANTER_FAST_PATH_RE` — the synchronous regex pre-classifier
-that lets high-confidence chitchat skip the 500ms Groq router and swap
+that lets high-confidence chitchat skip the ~500ms LLM router and swap
 to the fast inner LLM before the framework's reply pipeline reads
 session._llm.
 

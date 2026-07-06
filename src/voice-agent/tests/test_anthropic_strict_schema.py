@@ -9,8 +9,8 @@ supervisor turn that reached Anthropic returned HTTP 400
 explicitly set to false`, leaving the agent silent.
 
 Root cause: `strict_schema_relax` patches `build_strict_openai_schema`
-to always return a legacy schema, which is fine for Groq (legacy
-doesn't add `additionalProperties` anywhere — Groq accepts) but a
+to always return a legacy schema, which is fine for OpenAI-compatible
+endpoints (legacy doesn't add `additionalProperties` anywhere) but a
 hard reject for Anthropic, which validates that every object node
 explicitly sets the flag to `false`. Anthropic's loose mode
 (`_strict_tool_schema=False`) also fails for the same reason; the
@@ -227,8 +227,8 @@ def test_install_is_idempotent():
 def test_install_does_not_affect_openai_format():
     """The patch only fixes the anthropic format. Calling
     parse_function_tools('openai', ...) must NOT add
-    additionalProperties=false (Groq doesn't want it on every object —
-    strict_schema_relax keeps it off for Groq)."""
+    additionalProperties=false (OpenAI-compat legacy consumers don't want
+    it on every object — strict_schema_relax keeps it off for them)."""
     from livekit.agents import llm
     import sanitizers.strict_schema_relax as ssr
     import sanitizers.anthropic_strict_schema as anth_ss

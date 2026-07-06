@@ -678,7 +678,7 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
   // - Workspace turns (design + workbench) WANT 32K so multi-file
   //   builds don't hit `finish: length` mid-artifact. But several
   //   providers reject high caps with hard errors instead of silently
-  //   clamping (Groq Llama 4 Scout: 8K max, GPT-5: 16K, etc.).
+  //   clamping (e.g. GPT-5: 16K max).
   //   We clamp here per known provider so the request succeeds even
   //   when our preferred ceiling exceeds the provider's actual max.
   //

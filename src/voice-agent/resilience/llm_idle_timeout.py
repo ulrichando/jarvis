@@ -1,9 +1,9 @@
-"""Wrap each LLM stream in `asyncio.wait_for` so a stalled Groq
+"""Wrap each LLM stream in `asyncio.wait_for` so a stalled provider
 connection raises TimeoutError instead of hanging forever.
 
 Live failure 2026-05-02 22:01: supervisor handed off to browser
 subagent, subagent's `on_enter` fired, then dead air for 3+
-minutes — Groq HTTP stream stalled mid-token. Our `LLM_KWARGS={
+minutes — the upstream HTTP stream stalled mid-token. Our `LLM_KWARGS={
 "timeout": 5.0, "max_retries": 0}` looks like a fix but is connect-
 only (see livekit-agents `types.py` `APIConnectOptions`); once one
 chunk arrives, the timer never re-fires.

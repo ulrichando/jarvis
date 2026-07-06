@@ -118,8 +118,11 @@ export async function POST(req: Request): Promise<Response> {
     upstream = await fetch(`${SIDECAR}/run`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ task, session_id: sessionId, supervised, model }),
-      signal: req.signal, // client navigates away → abort the loop
+      // detach: the run survives the browser leaving (this fetch aborting via
+      // req.signal only drops the subscription); the page reattaches via
+      // /sessions + /events. The CLI omits the flag and keeps Ctrl-C-kills-run.
+      body: JSON.stringify({ task, session_id: sessionId, supervised, model, detach: true }),
+      signal: req.signal,
     })
   } catch {
     return sseError(

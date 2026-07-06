@@ -77,8 +77,7 @@ function buildProvider(
     maxTools: config.maxTools,
     // Per-model maxOutputTokens overrides the provider default. Used for
     // models with a stricter API cap than their provider family (e.g.
-    // gpt-4o = 16K under the OpenAI provider's 32K default; llama-4-scout
-    // = 8K under the Groq provider's 32K default).
+    // gpt-4o = 16K under the OpenAI provider's 32K default).
     maxOutputTokens: modelMaxOutputTokens ?? config.maxOutputTokens,
     requiresReasoning,
     supportsVision,

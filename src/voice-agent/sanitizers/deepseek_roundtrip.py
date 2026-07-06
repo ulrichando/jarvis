@@ -24,7 +24,7 @@ Scope:
   - We only round-trip on assistant messages with tool_calls. Live probing
     (deepseek_probe.py) confirmed text-only assistant messages don't trip
     the API check, even on v4-pro / v4-flash.
-  - The patches are no-ops for non-DeepSeek providers (Groq, OpenAI proper
+  - The patches are no-ops for non-DeepSeek providers (OpenAI proper, Kimi
     etc.) — `getattr(..., 'reasoning_content', None)` returns None and the
     capture path is dead.
 
@@ -54,9 +54,9 @@ _PLACEHOLDER_REASONING = "(prior turn — reasoning not captured)"
 # Per-request flag — set by the patched LLMStream._run when the target
 # endpoint is api.deepseek.com. The patched `to_chat_ctx` reads this
 # and only injects reasoning_content when True. Without this gate,
-# Groq rejects requests with `'property reasoning_content is
-# unsupported'` (live failure 2026-05-01 13:19) — Groq tightened
-# their schema validation and the field is now an outright reject.
+# strict OpenAI-compatible endpoints reject requests with `'property
+# reasoning_content is unsupported'` (live failure 2026-05-01 13:19 —
+# schema validation there treats the unknown field as an outright reject).
 _DEEPSEEK_REQUEST: ContextVar[bool] = ContextVar(
     "jarvis_deepseek_request", default=False
 )
@@ -121,11 +121,12 @@ def _patch_to_chat_ctx() -> None:
         messages, extra = orig_to_chat_ctx(
             chat_ctx, inject_dummy_user_message=inject_dummy_user_message
         )
-        # Only inject when this request is bound for DeepSeek. Groq
-        # rejects the field outright ('property reasoning_content is
-        # unsupported' — live 2026-05-01); OpenAI proper ignores it
-        # but the request is wasted bytes. The flag is set in the
-        # patched LLMStream._run via _DEEPSEEK_REQUEST.set(True).
+        # Only inject when this request is bound for DeepSeek. Strict
+        # OpenAI-compatible endpoints reject the field outright
+        # ('property reasoning_content is unsupported' — live
+        # 2026-05-01); OpenAI proper ignores it but the request is
+        # wasted bytes. The flag is set in the patched
+        # LLMStream._run via _DEEPSEEK_REQUEST.set(True).
         if not _DEEPSEEK_REQUEST.get():
             return messages, extra
 

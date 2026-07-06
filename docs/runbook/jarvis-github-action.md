@@ -25,7 +25,7 @@ ever reacts to the other's (or its own) posts.
      scope on `ulrichando/jarvis`, used only to clone the CLI onto the
      runner. Nothing else.
    - `ANTHROPIC_API_KEY` — primary model provider.
-   - `GROQ_API_KEY` — optional fallback provider. Add any other
+   - `DEEPSEEK_API_KEY` — optional fallback provider. Add any other
      provider keys the same way (they flow to `bin/jarvis` via the
      workflow's `env:` block; the CLI auto-starts its proxy from them —
      self-contained, no callback to your box).

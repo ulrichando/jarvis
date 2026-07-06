@@ -11,20 +11,21 @@ livekit-agents builds tool schemas in two modes:
     property, per OpenAI's structured-outputs spec; requires the LLM
     to emit `null` for optionals if it wants to omit them
 
-`to_fnc_ctx(..., strict=True)` is the default. Groq, Moonshot, and
-some OpenAI endpoints honor strict mode server-side, validating the
-LLM's tool_call args against the schema's `required` list — and
-rejecting calls where an optional was omitted instead of sent as
-`null`.
+`to_fnc_ctx(..., strict=True)` is the default. Moonshot (Kimi) and
+some OpenAI-compatible endpoints honor strict mode server-side,
+validating the LLM's tool_call args against the schema's `required`
+list — and rejecting calls where an optional was omitted instead of
+sent as `null`. (The legacy shape this patch emits is also what
+sanitizers/anthropic_strict_schema.py post-processes for Anthropic.)
 
 Symptom captured live 2026-05-05 17:13–17:14 UTC, post-Stage-B:
 six `tool call validation failed: parameters for tool ext_new_tab
 did not match schema: errors: [missing properties: 'url']` events
-on a single user session — Groq generated `ext_new_tab()` with no
-args (the natural way to call an optional-only tool), strict-mode
-validation rejected, and the FallbackAdapter retried via DeepSeek.
-The user got an answer but paid Groq→DeepSeek latency on every
-browser-tool turn.
+on a single user session — the fast-route LLM generated
+`ext_new_tab()` with no args (the natural way to call an
+optional-only tool), strict-mode validation rejected, and the
+FallbackAdapter retried via DeepSeek. The user got an answer but
+paid cross-provider fallback latency on every browser-tool turn.
 
 The 2026-05-02 attempted fix (changing `url: str = ""` to
 `url: Optional[str] = None`) didn't help — strict mode adds the
@@ -46,12 +47,12 @@ attribute). Compatible with the deepseek_roundtrip + tool_name +
 pycall + dsml patches stack — install order doesn't
 matter since none of them touch the same call site.
 
-Alternative considered (rejected): swap every `groq.LLM(...)` to
-`lk_openai.LLM(model=..., base_url='https://api.groq.com/openai/v1',
-_strict_tool_schema=False)`. That works, but loses any Groq-plugin-
-specific behavior (parallel_tool_calls handling, headers, future
-features) and only fixes Groq — not Kimi or any other strict-mode
-endpoint. The schema patch is provider-agnostic.
+Alternative considered (rejected): per-provider constructor overrides
+(`_strict_tool_schema=False` on each LLM instance). That works, but
+loses provider-plugin-specific behavior (parallel_tool_calls
+handling, headers, future features) and has to be repeated for every
+strict-mode endpoint — Kimi and any future OpenAI-compatible
+provider. The schema patch is provider-agnostic.
 """
 from __future__ import annotations
 
@@ -84,18 +85,20 @@ def install() -> None:
           - Tools with defaults: LLM omits the optional field; strict
             mode requires all fields → reject. Tried adjusting the
             schema (drop required, drop additionalProperties:false) —
-            Groq rejects every variant short of the full strict shape.
+            strict-mode endpoints reject every variant short of the
+            full strict shape.
 
           - Tools with no defaults: per-tool legacy/strict schema is
-            fine, BUT Groq's chat-completions endpoint refuses a mix
-            (live-observed: a strict-shape `bash` schema in the same
-            request as a legacy-shape `ext_new_tab` rejects bash with
-            `'additionalProperties:false' must be set on every object`).
+            fine, BUT strict-validating chat-completions endpoints
+            refuse a mix (live-observed: a strict-shape `bash` schema
+            in the same request as a legacy-shape `ext_new_tab`
+            rejects bash with `'additionalProperties:false' must be
+            set on every object`).
 
         The cleanest exit: force EVERY tool to legacy schema. No
         per-tool strict flag is sent, no `additionalProperties: false`
-        appears anywhere, and Groq accepts the request as a non-strict
-        tool-call request. We lose strict-mode safety guarantees
+        appears anywhere, and the endpoint accepts the request as a
+        non-strict tool-call request. We lose strict-mode safety guarantees
         (LLM may produce unknown args, may type-mismatch). The
         downstream pydantic validation that runs when livekit dispatches
         the tool catches those — strict-mode at the LLM layer was

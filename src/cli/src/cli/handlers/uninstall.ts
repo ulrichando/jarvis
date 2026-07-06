@@ -68,7 +68,7 @@ export async function jarvisUninstall(
     try {
       const env = readFileSync(join(home, ".jarvis", "keys.env"), "utf8");
       sharedProviderKeys =
-        /^(export\s+)?(ANTHROPIC|OPENAI|DEEPSEEK|GROQ|GOOGLE|KIMI)_API_KEY=/m.test(
+        /^(export\s+)?(ANTHROPIC|OPENAI|DEEPSEEK|GOOGLE|KIMI)_API_KEY=/m.test(
           env,
         );
     } catch {

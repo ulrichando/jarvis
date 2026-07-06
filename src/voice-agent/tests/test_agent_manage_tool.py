@@ -20,7 +20,6 @@ _VOICE_AGENT_ROOT = Path(__file__).resolve().parent.parent
 if str(_VOICE_AGENT_ROOT) not in sys.path:
     sys.path.insert(0, str(_VOICE_AGENT_ROOT))
 
-os.environ.setdefault("GROQ_API_KEY", "test-key-for-init")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
 
 

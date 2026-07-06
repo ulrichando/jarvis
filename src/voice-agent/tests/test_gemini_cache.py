@@ -20,7 +20,7 @@ And the dispatcher-side contract:
     (CI does NOT install it, so we monkeypatch the import to make
     construction succeed against a stub);
   * without `GOOGLE_API_KEY`, the same route silently falls back to
-    its Groq legacy.
+    its legacy fallback rung.
 """
 from __future__ import annotations
 
@@ -35,7 +35,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Match the keys-for-init pattern used by test_llm_dispatcher_build.
-os.environ.setdefault("GROQ_API_KEY", "test-key-for-init")
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-deepseek-key")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
 
@@ -394,7 +393,7 @@ def test_dispatcher_without_google_key_degrades(monkeypatch):
     """When `JARVIS_REASONING_MODEL=gemini-2.5-flash` is set but
     GOOGLE_API_KEY is MISSING, the dispatcher must still boot, and
     the REASONING route must fall back to the shared DeepSeek instance
-    (the Groq legacy rung it used was removed 2026-06-29). NO Gemini
+    (the cloud legacy rung it used was removed 2026-06-29). NO Gemini
     construction is attempted in this path."""
     _wipe_route_env(monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
@@ -432,7 +431,7 @@ def test_dispatcher_without_google_key_degrades(monkeypatch):
 def test_dispatcher_with_gemini_plugin_missing_degrades(monkeypatch):
     """When `GOOGLE_API_KEY` is set but the Gemini wrapper can't import
     (missing `livekit-plugins-google`), the dispatcher catches the
-    ImportError and falls back to the shared DeepSeek instance (the Groq
+    ImportError and falls back to the shared DeepSeek instance (the cloud
     legacy rung it used was removed 2026-06-29). The plugin now ships in
     requirements, so simulate the failure: `None` in sys.modules makes
     `import providers.gemini_llm` raise ImportError deterministically."""

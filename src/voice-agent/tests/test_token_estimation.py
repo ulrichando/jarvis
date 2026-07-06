@@ -1,7 +1,7 @@
 """Tests for tools/token_estimation.py — ported from claude-code's
 services/tokenEstimation.ts. Covers chars/4 approximation, message
 list estimation, tool-schema estimation, pressure thresholds, and
-Groq-pricing cost calculation.
+per-provider pricing cost calculation.
 """
 from __future__ import annotations
 
@@ -127,14 +127,14 @@ def test_pressure_hard_at_threshold():
 # ── cost_usd ─────────────────────────────────────────────────────────
 
 
-def test_cost_known_model_llama_70b():
-    # llama-3.3-70b-versatile: $0.59/M input, $0.79/M output
-    cost = cost_usd("llama-3.3-70b-versatile", 1_000_000, 1_000_000)
-    assert abs(cost - (0.59 + 0.79)) < 1e-9
+def test_cost_known_model_deepseek_v4_flash():
+    # deepseek-v4-flash: $0.14/M input, $0.28/M output
+    cost = cost_usd("deepseek-v4-flash", 1_000_000, 1_000_000)
+    assert abs(cost - (0.14 + 0.28)) < 1e-9
 
 
 def test_cost_zero_for_zero_tokens():
-    assert cost_usd("llama-3.3-70b-versatile", 0, 0) == 0.0
+    assert cost_usd("deepseek-v4-flash", 0, 0) == 0.0
 
 
 def test_cost_unknown_model_returns_zero():
@@ -142,23 +142,25 @@ def test_cost_unknown_model_returns_zero():
     assert cost_usd("imaginary-model-x", 100, 100) == 0.0
 
 
-def test_cost_strips_groq_prefix():
-    """Some labels include 'groq:' — pricing table uses bare model id."""
-    bare = cost_usd("llama-3.3-70b-versatile", 1_000, 500)
-    prefixed = cost_usd("groq:llama-3.3-70b-versatile", 1_000, 500)
+def test_cost_vendor_prefixed_alias_matches_bare_id():
+    """Some labels carry the plugin's vendor prefix ('anthropic:…') —
+    the pricing table lists those aliases with the SAME rates as the
+    bare model id so telemetry never records a NULL cost either way."""
+    bare = cost_usd("claude-haiku-4-5", 1_000, 500)
+    prefixed = cost_usd("anthropic:claude-haiku-4-5", 1_000, 500)
     assert bare > 0
     assert abs(bare - prefixed) < 1e-12
 
 
 def test_cost_realistic_voice_turn():
     """Sanity check: a typical voice turn (60K input, 200 output) on
-    llama-3.3-70b lands at ~$0.035 — the 98 KB system prompt is the
-    dominant cost driver. Documented here so it's visible in CI:
-    a 100-turn dogfood session burns about $3.50 on llama-3.3-70b
-    (which is the main reason cost-tracking + auto-compact matter)."""
-    cost = cost_usd("llama-3.3-70b-versatile", 60_000, 200)
-    # 60_000 * 0.59/M = 0.0354; 200 * 0.79/M = 0.000158; total ~0.0356
-    assert 0.03 < cost < 0.04
+    claude-haiku-4-5 lands at ~$0.06 uncached — the 98 KB system prompt
+    is the dominant cost driver. Documented here so it's visible in CI:
+    a 100-turn dogfood session burns about $6 uncached on Haiku
+    (which is the main reason cost-tracking + prompt caching matter)."""
+    cost = cost_usd("claude-haiku-4-5", 60_000, 200)
+    # 60_000 * 1.00/M = 0.06; 200 * 5.00/M = 0.001; total ~0.061
+    assert 0.05 < cost < 0.07
 
 
 # ── preflight ────────────────────────────────────────────────────────
@@ -218,12 +220,18 @@ def test_preflight_no_warn_when_ok(caplog):
 
 
 @pytest.mark.parametrize("model", [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "qwen3-32b",
-    "qwen/qwen3-32b",
-    "llama-4-scout",
-    "openai/gpt-oss-120b",
+    # Anthropic primaries (BANTER/TASK/EMOTIONAL = Haiku, REASONING = Sonnet).
+    "claude-haiku-4-5",
+    "claude-sonnet-4-6",
+    "anthropic:claude-haiku-4-5",
+    "anthropic:claude-sonnet-4-6",
+    # DeepSeek fallback rung + pinnable ids.
+    "deepseek-v4-flash",
+    "deepseek-chat",
+    # OpenAI alternates + the turn classifier's default model.
+    "gpt-5-mini",
+    "gpt-4o-mini",
+    # Retired but kept for re-costing archival telemetry.
     "deepseek-v4-pro",
 ])
 def test_pricing_table_has_every_dispatcher_model(model):

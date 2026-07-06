@@ -21,10 +21,10 @@ import pytest
 def cloud_keys(monkeypatch):
     """Dummy DeepSeek key so cloud primaries construct (no network call at
     construction); no Anthropic so the resolved rung-1 primary is
-    deterministically DeepSeek. (Was Groq before the 2026-06-29 full-Groq
-    removal — Groq is no longer a constructible rung.)"""
+    deterministically DeepSeek (the legacy cloud rung was removed in the
+    2026-06-29 provider-eradication pass and is no longer constructible)."""
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-dummy")
-    for k in ("ANTHROPIC_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY"):
+    for k in ("ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.delenv("JARVIS_LOCAL_LLM_ASSUME_AVAILABLE", raising=False)
 
@@ -66,7 +66,7 @@ def test_llm_local_rung_route_filter(cloud_keys, monkeypatch):
 def test_llm_local_only_when_no_cloud_keys(monkeypatch):
     """The plan's headline: stay alive when ALL cloud is unavailable.
     With zero cloud keys + local enabled, local becomes the primary."""
-    for k in ("GROQ_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY"):
+    for k in ("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("JARVIS_LOCAL_LLM_ENABLED", "1")
     monkeypatch.setenv("JARVIS_LOCAL_LLM_ASSUME_AVAILABLE", "1")
@@ -129,7 +129,7 @@ def test_stt_chain_appends_local_when_enabled(monkeypatch):
         pytest.skip("Silero VAD unavailable for chain test")
     from providers.stt import build_stt_chain
 
-    # Deepgram absent + local off → no STT rung at all → raises (the Groq
+    # Deepgram absent + local off → no STT rung at all → raises (the cloud
     # Whisper universal fallback was removed 2026-06-29).
     monkeypatch.setenv("JARVIS_LOCAL_STT_ENABLED", "0")
     with pytest.raises(RuntimeError):

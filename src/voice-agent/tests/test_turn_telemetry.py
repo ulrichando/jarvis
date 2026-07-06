@@ -46,7 +46,7 @@ def test_log_turn_writes_row(tmp_path):
         jarvis_text="nine forty-five PM",
         emotion="neutral",
         route="TASK",
-        llm_used="groq:llama-3.3-70b-versatile",
+        llm_used="anthropic:claude-haiku-4-5",
         voice_used="bm_george",
         ttfw_ms=850,
         total_audio_ms=1500,
@@ -54,7 +54,7 @@ def test_log_turn_writes_row(tmp_path):
         route_fallback=False,
     )
     rows = sqlite3.connect(db_path).execute("SELECT route, llm_used, ttfw_ms FROM turns").fetchall()
-    assert rows == [("TASK", "groq:llama-3.3-70b-versatile", 850)]
+    assert rows == [("TASK", "anthropic:claude-haiku-4-5", 850)]
 
 
 def test_log_turn_silently_swallows_disk_error(monkeypatch, tmp_path):
@@ -212,7 +212,7 @@ def test_log_turn_writes_subagent_column(tmp_path):
         jarvis_text="On it, sir.",
         emotion="neutral",
         route="TASK",
-        llm_used="groq:llama-3.3-70b",
+        llm_used="anthropic:claude-haiku-4-5",
         voice_used="bm_george",
         ttfw_ms=600,
         total_audio_ms=1200,
@@ -458,7 +458,7 @@ def test_log_turn_accepts_memory_auto_extracted_flag(tmp_path):
         user_text="we charge $600/6mo",
         jarvis_text="Got it, sir.",
         emotion="neutral", route="TASK",
-        llm_used="groq:llama-3.3-70b", voice_used="troy",
+        llm_used="anthropic:claude-haiku-4-5", voice_used="troy",
         ttfw_ms=200, total_audio_ms=1500,
         user_followup_30s=False, route_fallback=False,
         memory_auto_extracted=True,
@@ -481,7 +481,7 @@ def test_log_turn_default_memory_auto_extracted_is_zero(tmp_path):
         user_text="hello",
         jarvis_text="Yes?",
         emotion="neutral", route="BANTER",
-        llm_used="groq:llama-3.1-8b", voice_used="troy",
+        llm_used="anthropic:claude-haiku-4-5", voice_used="troy",
         ttfw_ms=100, total_audio_ms=500,
         user_followup_30s=False, route_fallback=False,
         db_path=str(db),

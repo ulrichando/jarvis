@@ -7,8 +7,8 @@ The chain must:
   - Return Deepgram alone when no local rung / no VAD.
   - Return the on-device faster-whisper alone when Deepgram is
     unavailable but the local rung is built.
-  - RAISE when neither Deepgram nor a local rung is available — the Groq
-    Whisper universal fallback was removed 2026-06-29 (full-Groq-
+  - RAISE when neither Deepgram nor a local rung is available — the
+    cloud Whisper universal fallback was removed 2026-06-29 (provider-
     eradication pass), so "no STT" is now a loud config error.
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 def test_no_deepgram_no_local_raises(monkeypatch):
     """Without DEEPGRAM_API_KEY and with no local STT rung, there is no
-    STT at all (the Groq Whisper fallback was removed) — build_stt_chain
+    STT at all (the cloud Whisper fallback was removed) — build_stt_chain
     raises rather than returning a non-STT."""
     monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
     monkeypatch.delenv("JARVIS_LOCAL_STT_ENABLED", raising=False)
@@ -75,7 +75,7 @@ def test_deepgram_none_no_local_raises(monkeypatch):
 def test_deepgram_disabled_falls_to_local(monkeypatch):
     """JARVIS_DEEPGRAM_DISABLED=1 skips Deepgram even with a key; with the
     local rung enabled the chain runs on on-device faster-whisper alone
-    (Groq Whisper was removed 2026-06-29). Reversible by unsetting the flag."""
+    (the cloud Whisper rung was removed 2026-06-29). Reversible by unsetting the flag."""
     monkeypatch.setenv("DEEPGRAM_API_KEY", "test-deepgram")
     monkeypatch.setenv("JARVIS_DEEPGRAM_DISABLED", "1")
     monkeypatch.setenv("JARVIS_LOCAL_STT_ENABLED", "1")
@@ -112,7 +112,7 @@ def test_local_only_strips_all_cloud_fallback(monkeypatch):
 
 def test_local_only_no_local_rung_raises(monkeypatch):
     """JARVIS_STT_LOCAL_ONLY=1 with no local rung built AND no Deepgram
-    leaves no STT — build_stt_chain raises (the Groq Whisper fallback that
+    leaves no STT — build_stt_chain raises (the cloud Whisper fallback that
     used to cover this was removed 2026-06-29)."""
     monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
     monkeypatch.delenv("JARVIS_LOCAL_STT_ENABLED", raising=False)

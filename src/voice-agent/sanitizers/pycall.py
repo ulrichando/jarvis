@@ -1,8 +1,8 @@
 """Suppress tool-call-as-text leaks AND inject a fallback acknowledgment
 when the leak was the ENTIRE response.
 
-Captured live 2026-05-02 12:26: Groq llama-3.3-70b emitted an entire
-tool sequence as plain content text:
+Captured live 2026-05-02 12:26: a llama-3.3 fallback rung emitted an
+entire tool sequence as plain content text:
 
     browser_task_v2("go to weather.com and report the current weather for Cleveland, Ohio")  task_done(summary)
 
@@ -34,8 +34,8 @@ the guard skipped suppression. Both leak forms are now caught:
     angle-bracket envelope is unambiguously a tool-call leak.
 
 Distinct from:
-  - tool_name_sanitizer.py — recovers from Groq's `tool call validation
-    failed` API error (the cramming-into-name shape)
+  - tool_name_sanitizer.py — recovers from the provider-side `tool call
+    validation failed` API error (the cramming-into-name shape)
   - dsml_sanitizer.py — recovers from DeepSeek's `<｜｜DSML｜｜...>`
     envelope leakage
 

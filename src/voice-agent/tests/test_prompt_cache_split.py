@@ -32,7 +32,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
-os.environ.setdefault("GROQ_API_KEY", "test-key-for-init")
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-deepseek-key")
 
 
@@ -223,7 +222,7 @@ def test_apply_walks_fallback_adapter():
 
 
 def test_apply_skips_llms_without_setter():
-    """LLMs that don't expose ``set_stable_prefix`` (e.g. plain Groq /
+    """LLMs that don't expose ``set_stable_prefix`` (e.g. plain
     OpenAI / DeepSeek instances) are silently skipped — they rely on
     auto-prefix-cache instead of explicit cache_control."""
     from providers.prompt_cache import apply_stable_prefix_recursively
@@ -338,7 +337,7 @@ def test_initial_instructions_uses_marker_assembly(monkeypatch):
 
 def test_initial_instructions_stable_comes_first(monkeypatch):
     """The whole point of the refactor is stable-first ordering for
-    auto-prefix-cache providers (OpenAI / DeepSeek / Groq). The stable
+    auto-prefix-cache providers (OpenAI / DeepSeek). The stable
     prefix must appear before any volatile content in the assembled
     string."""
     import jarvis_agent as ja

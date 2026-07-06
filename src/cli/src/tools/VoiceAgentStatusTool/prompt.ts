@@ -4,9 +4,9 @@ export const DESCRIPTION =
 export const PROMPT = `Use this tool to check whether the JARVIS voice agent is running and healthy.
 
 The voice agent (\`jarvis-voice-agent.service\`) is a LiveKit Python worker that handles:
-- Real-time speech-to-text (STT) via Groq Whisper
-- LLM conversation via Groq Llama
-- Text-to-speech (TTS) via Groq Orpheus + Edge-TTS fallback
+- Real-time speech-to-text (STT) via on-device faster-whisper
+- LLM conversation via the multi-provider cascade (Anthropic/DeepSeek/Kimi/OpenAI/Gemini)
+- Text-to-speech (TTS) via local Kokoro + Edge-TTS fallback
 - Specialist handoffs (desktop, browser, browser_v2)
 
 ## What this tool returns

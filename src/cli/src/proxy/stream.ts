@@ -33,7 +33,7 @@ type StreamState = {
   // Subset of inputTokens that hit DeepSeek's prompt cache. Surfaces
   // in the final message_delta as Anthropic's cache_read_input_tokens
   // so the CLI cost-tracker bills them at the cheap cache rate.
-  // Always 0 for Groq (no cache).
+  // Always 0 for providers without prompt caching.
   cacheReadTokens: number
   textBlockIndex: number | null
   toolBlocks: Map<number, ToolBlockState>
@@ -365,7 +365,7 @@ export async function convertOpenAIStreamToAnthropic(
     // Usage breakdown sent here so the CLI cost-tracker sees the
     // final input/output/cache split. Anthropic's spec puts
     // input_tokens in message_start, but proxy doesn't know prompt
-    // size at that point — DeepSeek/Groq report it in the LAST chunk.
+    // size at that point — DeepSeek reports it in the LAST chunk.
     // The CLI's parser tolerates input_tokens arriving in
     // message_delta.
     send('message_delta', {

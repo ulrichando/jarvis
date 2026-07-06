@@ -4,7 +4,7 @@ import type { Command } from '../../commands.js'
 // Surface the command whenever BRIDGE_MODE is built-in. The original
 // upstream check also called isBridgeEnabled() (claude.ai OAuth +
 // `tengu_ccr_bridge` GrowthBook flag) — but the JARVIS fork uses
-// Groq/DeepSeek without OAuth, so that gate always returned false and
+// non-Anthropic providers without OAuth, so that gate always returned false and
 // the command stayed permanently hidden. We let it surface here; the
 // underlying bridge connection still validates entitlement at invocation
 // time and returns a typed error if CCR auth is missing.

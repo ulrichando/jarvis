@@ -2,11 +2,12 @@
 
 A custom livekit :class:`stt.STT` that runs OpenAI Whisper locally via
 faster-whisper (ctranslate2). It is the FINAL rung of JARVIS's STT
-FallbackAdapter chain (Deepgram → Groq Whisper → THIS), activated only
+FallbackAdapter chain (Deepgram → THIS) — and the sole/primary rung
+under the live ``JARVIS_STT_LOCAL_ONLY=1`` config — activated only
 when ``JARVIS_LOCAL_STT_ENABLED=1``.
 
 Non-streaming (finals only) — the chain's ``StreamAdapter`` + Silero VAD
-wraps it for streaming compatibility, exactly like Groq Whisper Turbo.
+wraps it for streaming compatibility, as with any finals-only Whisper STT.
 Runs CPU/int8 by default so it never contends with the local LLM for the
 6 GB GPU and needs no cuDNN; override via ``JARVIS_LOCAL_STT_DEVICE`` /
 ``JARVIS_LOCAL_STT_COMPUTE`` on a bigger box.

@@ -1,9 +1,9 @@
 """Truthful STT/TTS provider labels + strict-local TTS (2026-06-22).
 
 Covers the "stt/tts not local?" label bug: the legacy tray switcher reports a
-cloud pick (``groq:troy``) while the AgentSession pipeline forces on-device
-Kokoro via env flags, so ``/status`` lied (tray showed Orpheus while Kokoro
-spoke, and had no STT label at all). These pin:
+stale cloud pick (``legacy:troy``) while the AgentSession pipeline forces
+on-device Kokoro via env flags, so ``/status`` lied (tray showed the removed
+cloud TTS while Kokoro spoke, and had no STT label at all). These pin:
 
   - ``active_tts_provider`` / ``active_stt_engine`` label resolution, and
   - the new ``JARVIS_LOCAL_TTS_ONLY`` strict-local behaviour in
@@ -33,7 +33,7 @@ _TTS_ENVS = (
 def test_tts_label_passthrough_without_local_override(monkeypatch):
     _clear(monkeypatch, _TTS_ENVS)
     # No local flag → report whatever the legacy tray file holds, unchanged.
-    assert active_tts_provider("groq:troy") == "groq:troy"
+    assert active_tts_provider("legacy:troy") == "legacy:troy"
 
 
 def test_tts_label_kokoro_when_primary_default(monkeypatch):
@@ -53,14 +53,14 @@ def test_tts_label_honors_explicit_online_pick(monkeypatch):
     _clear(monkeypatch, _TTS_ENVS)
     monkeypatch.setenv("JARVIS_LOCAL_TTS_PRIMARY", "1")
     monkeypatch.setenv("JARVIS_LOCAL_TTS_ENGINE", "kokoro")
-    assert active_tts_provider("groq:troy") == "groq:troy"
+    assert active_tts_provider("legacy:troy") == "legacy:troy"
     assert active_tts_provider("edge:en-US-AriaNeural") == "edge:en-US-AriaNeural"
 
 
 def test_tts_label_kokoro_defaults_when_only(monkeypatch):
     _clear(monkeypatch, _TTS_ENVS)
     monkeypatch.setenv("JARVIS_LOCAL_TTS_ONLY", "1")  # engine/voice default
-    assert active_tts_provider("groq:austin") == "kokoro:af_heart"
+    assert active_tts_provider("legacy:austin") == "kokoro:af_heart"
 
 
 def test_tts_label_piper_engine_default(monkeypatch):
@@ -76,7 +76,7 @@ def test_tts_label_only_forces_local_over_pick(monkeypatch):
     _clear(monkeypatch, _TTS_ENVS)
     monkeypatch.setenv("JARVIS_LOCAL_TTS_ONLY", "1")
     monkeypatch.setenv("JARVIS_LOCAL_TTS_ENGINE", "piper")
-    assert active_tts_provider("groq:troy") == "piper:local"
+    assert active_tts_provider("legacy:troy") == "piper:local"
 
 
 # ── STT engine label (distinct from the reply-LLM speech_model) ─────────
@@ -91,7 +91,7 @@ def test_stt_label_local_when_primary(monkeypatch):
     _clear(monkeypatch, _STT_ENVS)
     monkeypatch.setenv("JARVIS_LOCAL_STT_PRIMARY", "1")
     monkeypatch.setenv("JARVIS_LOCAL_STT_MODEL", "large-v3-turbo")
-    # Local label uses the familiar "whisper-…" spelling matching the Groq id.
+    # Local label uses the familiar "whisper-…" spelling of the cloud Whisper ids.
     assert active_stt_engine() == "whisper-large-v3-turbo (local)"
 
 
@@ -112,8 +112,8 @@ def test_stt_label_does_not_double_prefix(monkeypatch):
 
 
 def test_stt_label_local_when_deepgram_disabled(monkeypatch):
-    # Groq Whisper was removed 2026-06-29; the no-Deepgram fallback label
-    # is now the on-device faster-whisper.
+    # The cloud Whisper rung was removed 2026-06-29; the no-Deepgram
+    # fallback label is now the on-device faster-whisper.
     _clear(monkeypatch, _STT_ENVS)
     monkeypatch.setenv("JARVIS_DEEPGRAM_DISABLED", "1")
     assert active_stt_engine() == "whisper-large-v3-turbo (local)"
@@ -137,7 +137,6 @@ def fake_piper_model(tmp_path, monkeypatch):
 
 
 def _set_local_tts(monkeypatch):
-    monkeypatch.setenv("GROQ_API_KEY", "test-dummy")  # Orpheus constructs, then dropped
     monkeypatch.setenv("JARVIS_LOCAL_TTS_ENABLED", "1")
     monkeypatch.setenv("JARVIS_LOCAL_TTS_ENGINE", "piper")  # in-process, no server
     monkeypatch.delenv("JARVIS_LOCAL_TTS_PRIMARY", raising=False)

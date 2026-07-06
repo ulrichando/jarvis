@@ -4,16 +4,17 @@ for fully-required tools.
 
 Live regression timeline (POSTMORTEM-001):
 
-  - 2026-05-05 17:13 UTC: Groq rejects ext_new_tab calls with
+  - 2026-05-05 17:13 UTC: the (since-removed) strict-validating
+    OpenAI-compatible endpoint rejects ext_new_tab calls with
     `tool call validation failed: missing properties: 'url'` —
     strict-mode `required: [all]` + LLM omits optional → reject.
 
   - 2026-05-05 17:22 UTC (W-009 first iteration): drop defaulted
-    params from `required`. Groq rejects with `invalid JSON schema:
+    params from `required`. The endpoint rejects with `invalid JSON schema:
     /required must include every key`.
 
   - 2026-05-05 17:33 UTC (W-009 second iteration): also drop
-    `additionalProperties: false`. Groq rejects with
+    `additionalProperties: false`. The endpoint rejects with
     `additionalProperties:false must be set on every object`.
 
   - 2026-05-05 21:16 UTC: user reports JARVIS silent. Reading the
@@ -59,7 +60,7 @@ def test_tool_with_optional_param_uses_legacy_schema(reinstall_relax):
     """Optional[str] = None is a Python default; the patch must route
     the WHOLE tool through the legacy generator (no
     additionalProperties:false, partial required) — not a hybrid that
-    Groq rejects.
+    strict-validating endpoints reject.
     """
     from livekit.agents.llm import utils as _lk_utils
 
@@ -104,8 +105,8 @@ def test_tool_with_default_int_uses_legacy_schema(reinstall_relax):
 
 def test_tool_all_required_uses_legacy_schema(reinstall_relax):
     """Even when every param is required, we still route through legacy.
-    Mixing strict + legacy in the same request rejects (Groq enforces
-    strict invariants on EVERY tool when ANY tool is strict).
+    Mixing strict + legacy in the same request rejects (strict-validating
+    endpoints enforce strict invariants on EVERY tool when ANY tool is strict).
     Forcing legacy for everything keeps the request shape consistent.
     """
     from livekit.agents.llm import utils as _lk_utils
@@ -126,7 +127,7 @@ def test_tool_all_required_uses_legacy_schema(reinstall_relax):
     # Legacy schema must NOT include the function.strict flag.
     assert "strict" not in schema["function"], (
         "legacy schema must not include strict:True at the function "
-        "level — Groq rejects mixed strict/legacy requests"
+        "level — strict-validating endpoints reject mixed strict/legacy requests"
     )
 
 
@@ -136,7 +137,7 @@ def test_every_tool_uses_legacy_shape_no_invalid_hybrid(reinstall_relax):
     `strict: True` flag, `required` only lists params without defaults.
 
     This is the test that would have caught the W-009 first three
-    iterations, all of which produced shapes Groq rejects.
+    iterations, all of which produced shapes the endpoint rejected.
     """
     from livekit.agents.llm import utils as _lk_utils
 

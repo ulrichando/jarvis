@@ -25,11 +25,11 @@ paths, STT/LLM chain, snapshot + escalation targets)
 │  status :8767   │                                              └──────────────────┘
 └─────────────────┘                                                       │
                                                                           ▼
-                                                          STT (Deepgram Nova-3 streaming
-                                                               → Groq Whisper fallback)
-                                                          LLM (router → Anthropic primary;
-                                                               Groq / DeepSeek fallback)
-                                                          TTS (Groq Orpheus → edge_tts)
+                                                          STT (on-device faster-whisper,
+                                                               large-v3-turbo on GPU)
+                                                          LLM (pinned deepseek-v4-flash
+                                                               → kimi-k2.6-instant fallback)
+                                                          TTS (local Kokoro → edge_tts)
 ```
 
 ## Quick health check
@@ -67,9 +67,9 @@ Healthy reading: bridge `{"status":"ok"}`, voice-client `connected:true, agent_p
 | Silent after ~18h of uptime, RSS high | Per-session job memory bloat | The nightly `jarvis-voice-recycle.timer` (~04:00) prevents this; for an immediate fix restart the agent. Watch `rss_mb` in turn_telemetry. |
 | `[stt-gate] dropped` in agent log | STT noise filter ate the turn | Expected — turn was below confidence threshold. Speak louder/clearer. |
 | Agent restart loops every 10s | systemd watchdog firing | Check why listener loop is wedged. `journalctl --user -u jarvis-voice-agent.service --since "5 minutes ago" \| tail -50` |
-| All Groq calls fail simultaneously | DNS blip or Groq outage | Circuit breakers fire OPEN within ~8s and the cascade falls through to the next provider; if every provider is down the agent stays silent until a breaker recovers. Check `[breaker:STT/TTS/LLM]` log lines. |
+| All cloud LLM calls fail simultaneously | DNS blip or provider outage | Circuit breakers fire OPEN within ~8s and the cascade falls through to the next provider; if every provider is down the agent stays silent until a breaker recovers. Check `[breaker:STT/TTS/LLM]` log lines. |
 | Supervisor turn dies on the DeepSeek fallback rung | DeepSeek `reasoning_content` round-trip fail | Check `[deepseek_roundtrip]` log lines. If absent, the patch didn't load — restart agent. |
-| Tool name validation error in logs | Groq malformed tool call | `tool_name_sanitizer` should auto-recover. Look for `[sanitizer] recovered` log line. If absent, the turn was lost; ask user to repeat. |
+| Tool name validation error in logs | Provider emitted a malformed tool call | `tool_name_sanitizer` should auto-recover. Look for `[sanitizer] recovered` log line. If absent, the turn was lost; ask user to repeat. |
 
 ### "Voice sounds choppy / cuts off mid-sentence"
 

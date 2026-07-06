@@ -6,7 +6,7 @@ even when no voice session is connected (truly unattended). The LiveKit
 `entrypoint` is per-session, so it cannot host an always-on tick; this
 systemd-timer worker is the always-on ticker instead.
 
-Env (GROQ_API_KEY etc., needed for prompt jobs) is provided by the
+Env (LLM provider keys etc., needed for prompt jobs) is provided by the
 jarvis-cron.service EnvironmentFile directives; the working directory is
 src/voice-agent so `pipeline.*` imports resolve. Delivery from this process
 is notify-send + the pending queue (there is no live session here) — the

@@ -1,8 +1,8 @@
 """Token-aware chat_ctx pruning (fix B in the 2026-05-08 audit).
 
 Live-captured failure: pre-flight at 2026-05-08T17:51:52 reported
-`est_tokens=293321 max=128000` (2.3× the model's window). Groq silently
-truncated the head, removing JARVIS_INSTRUCTIONS, and the supervisor
+`est_tokens=293321 max=128000` (2.3× the model's window). The provider
+silently truncated the head, removing JARVIS_INSTRUCTIONS, and the supervisor
 LLM degenerated into hallucinating `delegate(role='summarize', ...)`
 for every utterance.
 
@@ -20,7 +20,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-os.environ.setdefault("GROQ_API_KEY", "test-key-for-init")
 
 
 def test_empty_ctx_returned_unchanged():

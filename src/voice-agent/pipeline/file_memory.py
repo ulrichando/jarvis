@@ -63,7 +63,11 @@ ENTRY_DELIMITER = "\n§\n"
 # consolidator was removed and the old `add` hard-rejected once full). ~+200
 # cached prompt tokens — trivial.
 MEMORY_CHAR_LIMIT = 3000
-USER_CHAR_LIMIT = 1375
+# USER hard-rejects on overflow (identity facts must never be silently
+# evicted). Bumped 1375→2000 on 2026-07-06: the store had filled to 99.4%
+# (8 chars headroom) so new identity facts were about to be refused — the
+# same wedge MEMORY hit before its 2026-06-21 bump. ~+150 prompt tokens.
+USER_CHAR_LIMIT = 2000
 PROCEDURE_CHAR_LIMIT = 8000
 
 # Canonical store targets the tool accepts.

@@ -38,9 +38,9 @@ CASES = [
     ("forbidden",
      _Err("403 Forbidden: access denied", 403), "gpt-4o", "auth_invalid", False),
     # Pure quota wording (not billing) → quota_exceeded, non-recoverable.
-    ("groq_quota",
+    ("monthly_quota",
      _Err("Rate limit reached: you have exceeded your monthly limit / usage limit for this model.", 429),
-     "openai/gpt-oss-120b", "quota_exceeded", False),
+     "gpt-4o-mini", "quota_exceeded", False),
     # Transient 429 rate limit (no quota/billing wording) → recoverable.
     ("rate_limit_transient",
      _Err("429 Too Many Requests: rate_limit_exceeded, please slow down", 429),
@@ -108,8 +108,11 @@ def test_timeout_type_name_fallback():
 
 
 def test_tts_component_shapes_notify_body():
-    c = classify_provider_error(_Err("429 rate limit", 429), model="orpheus", component="tts")
-    assert c.provider == "Groq"
+    # Local Kokoro isn't in _PROVIDER_PATS (no cloud billing to name), so an
+    # unmatched TTS model falls through to the generic provider string. The
+    # tts component shaping is what this test guards.
+    c = classify_provider_error(_Err("429 rate limit", 429), model="kokoro", component="tts")
+    assert c.provider == "the model provider"
     assert "speech synthesis" in c.notify_body
     # spoken is still populated but TTS callers ignore it (can't speak if TTS broke).
     assert c.spoken
