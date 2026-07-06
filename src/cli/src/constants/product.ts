@@ -34,7 +34,38 @@ export function isRemoteSessionLocal(
 }
 
 /**
- * Get the base URL for Claude AI based on environment.
+ * The self-hosted JARVIS web origin, when this machine is linked to one
+ * (jarvis auth login writes JARVIS_BRIDGE_BASE_URL as `https://host/api/bridge`).
+ * Returns the bare origin (e.g. https://0wlan.com) or null when not linked.
+ */
+export function getJarvisWebBaseUrl(): string | null {
+  let base = process.env.JARVIS_BRIDGE_BASE_URL || process.env.JARVIS_SERVER_URL
+  if (!base) {
+    try {
+      // Lazy require: keys.env fallback (fs-only helper, no import cycle).
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { readKeysEnvValue } =
+        require('../utils/jarvisKeysEnv.js') as typeof import('../utils/jarvisKeysEnv.js')
+      base =
+        readKeysEnvValue('JARVIS_BRIDGE_BASE_URL') ||
+        readKeysEnvValue('JARVIS_SERVER_URL') ||
+        undefined
+    } catch {
+      return null
+    }
+  }
+  if (!base) return null
+  return base
+    .replace(/\/+$/, '')
+    .replace(/\/api\/bridge$/, '')
+    .replace(/\/api$/, '')
+}
+
+/**
+ * Get the base URL for the remote-session web app: the self-hosted JARVIS
+ * server when this machine is linked to one (following the claude.ai
+ * constant from a self-hosted bridge lands on Anthropic's claude.ai where
+ * the ?bridge= id means nothing), claude.ai environments otherwise.
  */
 export function getClaudeAiBaseUrl(
   sessionId?: string,
@@ -46,7 +77,7 @@ export function getClaudeAiBaseUrl(
   if (isRemoteSessionStaging(sessionId, ingressUrl)) {
     return CLAUDE_AI_STAGING_BASE_URL
   }
-  return CLAUDE_AI_BASE_URL
+  return getJarvisWebBaseUrl() ?? CLAUDE_AI_BASE_URL
 }
 
 /**
