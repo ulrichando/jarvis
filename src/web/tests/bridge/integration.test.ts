@@ -538,7 +538,32 @@ describe('reconnect + events + archive', () => {
     expect(res.status).toBe(204)
   })
 
+  // Bind a session to an environment the way the v1 worker flow does — by
+  // enqueueing work for it — so the environment_secret is a valid session
+  // credential (authorizeSessionCredential; the old "any non-empty bearer"
+  // contract is gone).
+  async function registerEnvWithSession(
+    sessionId: string,
+  ): Promise<{ environment_id: string; environment_secret: string }> {
+    const reg = await registerEnv()
+    const enq = await import('@/app/api/bridge/v1/admin/enqueue/route')
+    const res = await enq.POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          environment_id: reg.environment_id,
+          session_id: sessionId,
+          data: {},
+        }),
+      }),
+    )
+    expect(res.status).toBe(200)
+    return reg
+  }
+
   test('events route accepts events and returns 204', async () => {
+    const { environment_secret } = await registerEnvWithSession('sessEv')
     const { POST } = await import(
       '@/app/api/bridge/v1/sessions/[sessionId]/events/route'
     )
@@ -547,19 +572,39 @@ describe('reconnect + events + archive', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          // v1: any non-empty bearer accepted (sub-project 3 will tighten)
+          Authorization: `Bearer ${environment_secret}`,
+        },
+        body: JSON.stringify({
+          events: [{ type: 'permission_response', granted: true }],
+        }),
+      }),
+      { params: Promise.resolve({ sessionId: 'sessEv' }) },
+    )
+    expect(res.status).toBe(204)
+  })
+
+  test('events route rejects an unbound bearer with 401', async () => {
+    const { POST } = await import(
+      '@/app/api/bridge/v1/sessions/[sessionId]/events/route'
+    )
+    const res = await POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
           Authorization: 'Bearer any-token',
         },
         body: JSON.stringify({
           events: [{ type: 'permission_response', granted: true }],
         }),
       }),
-      { params: Promise.resolve({ sessionId: 'sess1' }) },
+      { params: Promise.resolve({ sessionId: 'sessUnbound' }) },
     )
-    expect(res.status).toBe(204)
+    expect(res.status).toBe(401)
   })
 
   test('events route returns 400 on missing events array', async () => {
+    const { environment_secret } = await registerEnvWithSession('sessX')
     const { POST } = await import(
       '@/app/api/bridge/v1/sessions/[sessionId]/events/route'
     )
@@ -568,7 +613,7 @@ describe('reconnect + events + archive', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: 'Bearer any',
+          Authorization: `Bearer ${environment_secret}`,
         },
         body: JSON.stringify({}),
       }),
@@ -593,7 +638,8 @@ describe('reconnect + events + archive', () => {
   })
 
   test('archive 204 first time, 409 second time', async () => {
-    const { environment_id, environment_secret } = await registerEnv()
+    const { environment_id, environment_secret } =
+      await registerEnvWithSession('sessA')
     const { POST } = await import(
       '@/app/api/bridge/v1/sessions/[sessionId]/archive/route'
     )

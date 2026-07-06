@@ -97,6 +97,28 @@ const SELF_AUTH_PATTERNS: RegExp[] = [
   /^\/api\/bridge\/v1\/keys$/, //                      jarvis keys pull
   /^\/api\/bridge\/v1\/cli\/sessions$/, //             jarvis cloud / teleport picker
   /^\/api\/bridge\/v1\/sessions\/[^/]+\/teleport$/, // jarvis teleport <id>
+  // Remote-control worker routes (jarvis remote-control / /remote-control).
+  // Register validates the per-user bridge token in-handler (and refuses
+  // tokenless registers when JARVIS_REQUIRE_LOCAL_AUTH=1); every other route
+  // validates the environment_secret minted at register time (work routes
+  // also accept the work row's session_ingress_token). Without these the
+  // shared-token gate 401s the worker before its own auth ever runs — this
+  // is exactly what broke remote control when the gate went strict (the
+  // 2026-07-04 allowlist covered keys/teleport but not the worker).
+  /^\/api\/bridge\/v1\/environments\/bridge$/, //                register
+  /^\/api\/bridge\/v1\/environments\/bridge\/[^/]+$/, //         deregister
+  /^\/api\/bridge\/v1\/environments\/[^/]+\/bridge\/reconnect$/,
+  /^\/api\/bridge\/v1\/environments\/[^/]+\/work\/poll$/,
+  /^\/api\/bridge\/v1\/environments\/[^/]+\/work\/[^/]+\/(ack|heartbeat|stop)$/,
+]
+
+// POST-only self-auth: worker session lifecycle (event append + shutdown
+// archive). The handlers validate the session ingress token / owning user
+// token themselves (authorizeSessionCredential). POST-only because the same
+// events path's GET (transcript read for the web UI) has no in-handler
+// bearer auth and must stay behind the gate.
+const SELF_AUTH_POST_PATTERNS: RegExp[] = [
+  /^\/api\/bridge\/v1\/sessions\/[^/]+\/(archive|events)$/,
 ]
 
 // GET-only self-auth: the CCR read routes the real teleport machinery
@@ -292,6 +314,12 @@ export function proxy(req: NextRequest) {
     return NextResponse.next()
   }
   if (req.method === 'GET' && SELF_AUTH_GET_PATTERNS.some((re) => re.test(path))) {
+    return NextResponse.next()
+  }
+  if (
+    req.method === 'POST' &&
+    SELF_AUTH_POST_PATTERNS.some((re) => re.test(path))
+  ) {
     return NextResponse.next()
   }
 

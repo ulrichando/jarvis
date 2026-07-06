@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { extractBearer } from '@/lib/bridge/auth'
+import { authorizeSessionCredential, extractBearer } from '@/lib/bridge/auth'
 import { getLiveText } from '@/lib/bridge/events'
 import { getStore } from '@/lib/bridge/db'
 import {
@@ -16,10 +16,15 @@ export async function POST(
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params
   const token = extractBearer(req.headers.get('authorization'))
-  // v1: accept any non-empty bearer for session events. Sub-project 3 will
-  // tighten this to validate against the work row's secret_b64url
-  // (session_ingress_token).
   if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
+  // Validate the bearer as the session's ingress token (worker) or an
+  // owning per-user bridge token — this route is on the proxy's SELF_AUTH
+  // allowlist so the remote-control worker can reach it online, which means
+  // it must reject junk bearers itself (the old v1 "any non-empty bearer"
+  // rule predates that exposure).
+  if (!authorizeSessionCredential(getStore(), sessionId, token)) {
+    return bridgeError(401, 'unauthorized', 'Invalid session credential')
+  }
   const body = (await req.json().catch(() => null)) as {
     events?: Array<{ type: string; [k: string]: unknown }>
   } | null

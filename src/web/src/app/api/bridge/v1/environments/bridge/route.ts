@@ -29,7 +29,21 @@ export async function POST(req: Request): Promise<NextResponse> {
     // register bearer. Resolve it to the owning user; tokenless/anonymous
     // registers (auth-disabled, thin worker) default to the local user.
     const token = extractBearer(req.headers.get('authorization'))
-    const userId = (token && resolveBridgeToken(store, token)) || LOCAL_USER_ID
+    const resolvedUserId = token ? resolveBridgeToken(store, token) : null
+    // Hardened deploys (JARVIS_REQUIRE_LOCAL_AUTH=1, e.g. the public VPS):
+    // this route sits on the proxy's SELF_AUTH allowlist so the remote-control
+    // worker's per-user token can reach it — which also means the shared-token
+    // gate no longer screens callers. Require a resolvable token here so an
+    // anonymous caller can't register phantom environments under the local
+    // user. Auth-off local/dev keeps the tokenless LOCAL_USER_ID fallback.
+    if (process.env.JARVIS_REQUIRE_LOCAL_AUTH === '1' && !resolvedUserId) {
+      return bridgeError(
+        401,
+        'unauthorized',
+        'A valid bridge token is required to register — run `jarvis auth login`',
+      )
+    }
+    const userId = resolvedUserId || LOCAL_USER_ID
     const result = createEnvironment(store, {
       machine_name: body.machine_name,
       directory: body.directory,
