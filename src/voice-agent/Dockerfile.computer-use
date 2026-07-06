@@ -9,7 +9,7 @@ FROM python:3.13-slim
 # the trixie slim base; it broke the 2026-07-06 build.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
       xvfb x11-utils openbox tint2 firefox-esr \
-      pcmanfm xterm mousepad jgmenu \
+      pcmanfm xterm mousepad \
       x11vnc websockify \
       xdotool wmctrl imagemagick scrot \
       fonts-dejavu-core ca-certificates \
@@ -40,30 +40,30 @@ RUN useradd -m -u 10001 cu && chown -R cu:cu /app
 # panel over black read as "unfinished"). Wallpaper generated with imagemagick
 # (already installed); pcmanfm owns the desktop so its own config is the
 # reliable way to set the background — xsetroot needs a package we don't ship.
-RUN mkdir -p /usr/share/backgrounds /home/cu/.config/pcmanfm/default /home/cu/Desktop \
+COPY scripts/computer-use-tint2rc /home/cu/.config/tint2/tint2rc
+
+# Desktop = wallpaper + app launcher icons in the panel + matching desktop
+# icons. The panel launcher (tint2 panel_items=LTSC, config shipped above) is
+# the "menu button" answer (2026-07-06 "why is there no menu button"): tint2's
+# button item rendered unreliably, so we use its native launcher with app icons
+# GENERATED here (imagemagick) — no icon theme dependency (blank otherwise).
+# The same .desktop files back both the panel launcher and the desktop icons.
+# Verified end-to-end by rendering tint2 under Xvfb before shipping.
+RUN mkdir -p /usr/share/backgrounds /usr/share/jarvis-icons \
+      /home/cu/.config/pcmanfm/default /home/cu/Desktop \
  && convert -size 1280x800 gradient:'#26374d'-'#0f1620' /usr/share/backgrounds/jarvis-cu.png \
+ && convert -size 48x48 xc:'#1f6feb' -gravity center -pointsize 26 -fill white -annotate 0 '>_' /usr/share/jarvis-icons/terminal.png \
+ && convert -size 48x48 xc:'#d29922' -gravity center -pointsize 30 -fill white -annotate 0 'F' /usr/share/jarvis-icons/files.png \
+ && convert -size 48x48 xc:'#3fb950' -gravity center -pointsize 30 -fill white -annotate 0 'E' /usr/share/jarvis-icons/editor.png \
+ && convert -size 48x48 xc:'#e0562d' -gravity center -pointsize 26 -fill white -annotate 0 'W' /usr/share/jarvis-icons/firefox.png \
  && printf '[*]\nwallpaper_mode=stretch\nwallpaper=/usr/share/backgrounds/jarvis-cu.png\ndesktop_bg=#0f1620\ndesktop_fg=#e6edf3\nshow_documents=1\nshow_trash=0\nshow_mounts=0\n' \
       > /home/cu/.config/pcmanfm/default/desktop-items-0.conf \
- && printf '[Desktop Entry]\nType=Application\nName=Terminal\nExec=xterm\nIcon=utilities-terminal\nTerminal=false\n' > /home/cu/Desktop/terminal.desktop \
- && printf '[Desktop Entry]\nType=Application\nName=Files\nExec=pcmanfm\nIcon=system-file-manager\nTerminal=false\n' > /home/cu/Desktop/files.desktop \
- && printf '[Desktop Entry]\nType=Application\nName=Text Editor\nExec=mousepad\nIcon=accessories-text-editor\nTerminal=false\n' > /home/cu/Desktop/editor.desktop \
- && printf '[Desktop Entry]\nType=Application\nName=Firefox\nExec=firefox\nIcon=firefox-esr\nTerminal=false\n' > /home/cu/Desktop/firefox.desktop \
+ && printf '[Desktop Entry]\nType=Application\nName=Terminal\nExec=xterm\nIcon=/usr/share/jarvis-icons/terminal.png\nTerminal=false\n' > /home/cu/Desktop/terminal.desktop \
+ && printf '[Desktop Entry]\nType=Application\nName=Files\nExec=pcmanfm\nIcon=/usr/share/jarvis-icons/files.png\nTerminal=false\n' > /home/cu/Desktop/files.desktop \
+ && printf '[Desktop Entry]\nType=Application\nName=Text Editor\nExec=mousepad\nIcon=/usr/share/jarvis-icons/editor.png\nTerminal=false\n' > /home/cu/Desktop/editor.desktop \
+ && printf '[Desktop Entry]\nType=Application\nName=Firefox\nExec=firefox\nIcon=/usr/share/jarvis-icons/firefox.png\nTerminal=false\n' > /home/cu/Desktop/firefox.desktop \
  && chmod +x /home/cu/Desktop/*.desktop \
  && chown -R cu:cu /home/cu/.config /home/cu/Desktop
-
-# Start-menu button in the panel (2026-07-06 "why is there no menu button"):
-# tint2 is a minimal panel (taskbar+clock only by default) and openbox's app
-# menu is stolen by pcmanfm's desktop right-click, so nothing gave a launcher
-# button. Add a labelled tint2 button that pops a jgmenu list of the apps.
-# jarvis-menu feeds a static CSV to `jgmenu --simple` (text entries render
-# without an icon theme, which we don't ship). panel_items=BTSC → Button,
-# Taskbar, Systray, Clock.
-RUN printf '#!/bin/sh\nprintf "Terminal,xterm\\nFiles,pcmanfm\\nText Editor,mousepad\\nFirefox,firefox\\n" | jgmenu --simple\n' > /usr/local/bin/jarvis-menu \
- && chmod +x /usr/local/bin/jarvis-menu \
- && mkdir -p /home/cu/.config/tint2 \
- && printf 'panel_items = BTSC\npanel_size = 100%% 32\npanel_background_id = 1\nbackground_id = 1\nrounded = 0\nbackground_color = #0f1620 100\nbutton = new\nbutton_text = Menu\nbutton_lclick_command = jarvis-menu\nbutton_font_color = #e6edf3 100\nbutton_padding = 12 2\ntime1_format = %%H:%%M\n' \
-      > /home/cu/.config/tint2/tint2rc \
- && chown -R cu:cu /home/cu/.config/tint2
 
 USER cu
 
