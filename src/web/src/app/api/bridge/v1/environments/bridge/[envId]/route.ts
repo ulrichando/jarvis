@@ -29,7 +29,10 @@ export async function DELETE(
     // environment rows on the server).
     const tokenUser = resolveBridgeToken(store, token)
     const okSecret = !!env && env.environment_secret === token
-    const okOwner = !!env && !!tokenUser && (!env.user_id || tokenUser === env.user_id)
+    // Explicit owner match only — ownerless envs are deletable solely via
+    // their environment_secret (IDOR guard, mirrors the create route).
+    const okOwner =
+      !!env && !!tokenUser && !!env.user_id && tokenUser === env.user_id
     if (!okSecret && !okOwner) {
       return bridgeError(401, 'unauthorized', 'Invalid environment_secret')
     }

@@ -138,8 +138,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     // the bearer must be the env owner's bridge token, the environment's own
     // secret, or the shared infra token — the old resolve-then-compare let
     // any unresolvable bearer through.
+    // Explicit owner match only — an ownerless env row must NOT be claimable
+    // by an arbitrary user's bridge token (IDOR); it stays reachable via its
+    // own environment_secret (or the shared infra token).
     const tokenUser = resolveBridgeToken(store, token)
-    const okOwner = !!tokenUser && (!env.user_id || tokenUser === env.user_id)
+    const okOwner = !!tokenUser && !!env.user_id && tokenUser === env.user_id
     if (
       !okOwner &&
       !validateEnvSecret(store, body.environment_id, token) &&
