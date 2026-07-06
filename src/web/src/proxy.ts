@@ -119,6 +119,25 @@ const SELF_AUTH_PATTERNS: RegExp[] = [
 // bearer auth and must stay behind the gate.
 const SELF_AUTH_POST_PATTERNS: RegExp[] = [
   /^\/api\/bridge\/v1\/sessions\/[^/]+\/(archive|events)$/,
+  // REPL bridge (/remote-control) CCR session lifecycle: create + archive.
+  // Handlers validate per-user bridge tokens / session credentials / the
+  // shared infra token themselves (authorizeSessionCredential +
+  // isSharedLocalToken). Without these the in-REPL /remote-control dies with
+  // "Session creation failed" — registration passes but POST /v1/sessions
+  // 401s at the gate.
+  /^\/api\/v1\/sessions$/,
+  /^\/api\/v1\/sessions\/[^/]+\/archive$/,
+  // The REPL bridge's v1 path posts its session create to the BRIDGE base
+  // (initReplBridge baseUrl = JARVIS_BRIDGE_BASE_URL → /api/bridge/v1/sessions),
+  // not the CCR base. POST-only: the same path's GET is the web UI's session
+  // list (cookie-authed via getUserId) and must stay behind the gate.
+  /^\/api\/bridge\/v1\/sessions$/,
+]
+
+// PATCH-only: the REPL bridge's session title sync. Same in-handler
+// credential validation as the POST list.
+const SELF_AUTH_PATCH_PATTERNS: RegExp[] = [
+  /^\/api\/v1\/sessions\/[^/]+$/,
 ]
 
 // GET-only self-auth: the CCR read routes the real teleport machinery
@@ -319,6 +338,12 @@ export function proxy(req: NextRequest) {
   if (
     req.method === 'POST' &&
     SELF_AUTH_POST_PATTERNS.some((re) => re.test(path))
+  ) {
+    return NextResponse.next()
+  }
+  if (
+    req.method === 'PATCH' &&
+    SELF_AUTH_PATCH_PATTERNS.some((re) => re.test(path))
   ) {
     return NextResponse.next()
   }
