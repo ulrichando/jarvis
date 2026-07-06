@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto'
 import {
   findEnvironment,
   findSession,
@@ -6,6 +7,21 @@ import {
   validateSessionToken,
   type Store,
 } from './store'
+
+/**
+ * True when `token` is the shared infra token (JARVIS_LOCAL_API_TOKEN — the
+ * same credential the proxy's bearer gate checks). Routes exempted from the
+ * gate must keep accepting it so legacy shared-token callers (ultraplan,
+ * scripts) don't break when a route moves onto the SELF_AUTH allowlist.
+ */
+export function isSharedLocalToken(token: string): boolean {
+  const shared = process.env.JARVIS_LOCAL_API_TOKEN ?? ''
+  if (!shared) return false
+  const a = Buffer.from(token)
+  const b = Buffer.from(shared)
+  if (a.length !== b.length) return false
+  return timingSafeEqual(a, b)
+}
 
 /**
  * Parse `Authorization: Bearer <token>`. Returns the token or null if the
@@ -37,6 +53,7 @@ export function authorizeSessionCredential(
   sessionId: string,
   token: string,
 ): boolean {
+  if (isSharedLocalToken(token)) return true
   if (validateSessionToken(store, sessionId, token)) return true
   if (validateSessionEnvSecret(store, sessionId, token)) return true
   const userId = resolveBridgeToken(store, token)
