@@ -106,6 +106,22 @@ if git -C "$REPO" diff --name-only "$OLD..$NEW" -- src/web src/cli src/gh-app | 
   done
   [ "$ok" = 1 ] || rollback
   docker image prune -f >/dev/null 2>&1 || true
+elif git -C "$REPO" diff --name-only "$OLD..$NEW" -- src/voice-agent | grep -q .; then
+  # computer-use's build context is ../voice-agent (blind spot found 2026-07-06:
+  # PR #116 changed only voice-agent → deploy said OK without rebuilding the
+  # sidecar). Rebuild JUST that service — a voice-agent-only change must not
+  # pay the full web/hub build. When src/web|cli|gh-app also changed, the full
+  # branch above already rebuilds every service, computer-use included.
+  cd "$WEB"
+  "${COMPOSE[@]}" build computer-use >>"$LOG" 2>&1 || rollback
+  "${COMPOSE[@]}" up -d computer-use >>"$LOG" 2>&1 || rollback
+  ok=0
+  for _ in 1 2 3; do
+    sleep 15
+    if healthy; then ok=1; break; fi
+  done
+  [ "$ok" = 1 ] || rollback
+  docker image prune -f >/dev/null 2>&1 || true
 fi
 
 rm -f "$STATE_DIR/failed-sha"
