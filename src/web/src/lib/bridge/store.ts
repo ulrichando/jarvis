@@ -1335,6 +1335,32 @@ export function setSessionToken(
     .run(token, sessionId)
 }
 
+/**
+ * True when `secret` is the environment_secret of an environment bound to
+ * this session — via the sessions row or any work row targeting it. The v1
+ * worker flow authenticates session events/archive with the register-time
+ * environment secret, and enqueueWork creates only a work row (the sessions
+ * row may not exist yet), so both bindings must count.
+ */
+export function validateSessionEnvSecret(
+  store: Store,
+  sessionId: string,
+  secret: string,
+): boolean {
+  const rows = store.db
+    .prepare(
+      `SELECT DISTINCT e.environment_secret AS s
+         FROM environments e
+        WHERE e.environment_id IN (
+          SELECT environment_id FROM sessions WHERE session_id = ?
+          UNION
+          SELECT environment_id FROM work WHERE session_id = ?
+        )`,
+    )
+    .all(sessionId, sessionId) as Array<{ s: string | null }>
+  return rows.some((r) => secretEquals(r.s, secret))
+}
+
 /** True when `token` is the session's ingress token. */
 export function validateSessionToken(
   store: Store,
