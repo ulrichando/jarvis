@@ -54,6 +54,20 @@ if (!process.env.DATABASE_URL) {
     "postgresql://test:test@localhost:5432/test_jarvis";
 }
 
+// Vitest reuses worker threads across test files, and process.env survives the
+// per-file module-registry reset — so module-level assignments like
+// `process.env.JARVIS_REQUIRE_LOCAL_AUTH = '1'` in proxy-*.test.ts leak into
+// whichever file the worker runs next. Routes read these gates at REQUEST time
+// (e.g. environments/bridge registration 401s under REQUIRE_LOCAL_AUTH), which
+// made tests/bridge/integration.test.ts fail only in full-suite runs. This
+// setup file runs per test file BEFORE the file's own module code, so deleting
+// the hazards here cleans inherited state while each file's own assignments
+// still apply.
+delete process.env.JARVIS_REQUIRE_LOCAL_AUTH;
+delete process.env.JARVIS_LOCAL_API_TOKEN;
+delete process.env.JARVIS_WEB_ALLOWED_HOSTS;
+delete process.env.JARVIS_AUTH_DISABLED;
+
 afterEach(() => cleanup());
 
 // Tests that need MSW import { server } from "./tests/_msw/server" and
