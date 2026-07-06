@@ -113,7 +113,7 @@ function addMsg(text, who, imageDataUrl) {
   $("emptyState")?.remove();
   const el = document.createElement("div");
   el.className = `msg ${who}`;
-  if (imageDataUrl && /^data:image\//.test(imageDataUrl)) {
+  if (imageDataUrl && imageDataUrl.startsWith("data:image/")) {
     // Scheme-pinned: only data:image/* may render (never javascript:/http:).
     const img = document.createElement("img"); img.src = imageDataUrl; img.className = "msg-img";
     el.appendChild(img);
@@ -261,10 +261,13 @@ $("micBtn").addEventListener("click", toggleMic);
 function updateSendState() { $("sendBtn").disabled = input.value.trim() === "" && !pendingImage; }
 function clearAttachment() { pendingImage = null; const a = $("attach"); a.hidden = true; a.replaceChildren(); updateSendState(); }
 function attachImage(dataUrl, mediaType) {
-  const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl || "");
+  // Components are allowlisted/validated here so every later re-assembly
+  // (`data:${media_type};base64,${data}`) is scheme- and payload-pinned.
+  const m = /^data:(image\/(?:png|jpeg|jpg|gif|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl || "");
   const data = m ? m[2] : null;
   if (!data) { note("Couldn't read that image."); return; }
-  pendingImage = { data, media_type: (m && m[1]) || mediaType || "image/png" };
+  const mt = /^image\/(png|jpeg|jpg|gif|webp)$/.test(mediaType || "") ? mediaType : null;
+  pendingImage = { data, media_type: m[1] || mt || "image/png" };
   const a = $("attach"); a.replaceChildren();
   const img = document.createElement("img"); img.src = dataUrl; // data: URL, panel CSP allows img
   const x = document.createElement("button"); x.className = "x"; x.title = "Remove"; x.textContent = "✕";
