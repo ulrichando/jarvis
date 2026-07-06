@@ -405,6 +405,28 @@ def test_native_max_px_tiers():
     assert _native_max_px("claude-sonnet-4-6") == 1568
 
 
+def test_orphan_tool_tail_dropped_on_persist():
+    # Disconnect mid-run persists a history ending on an unanswered tool_use →
+    # replaying the session 400s on Anthropic (live 2026-07-06, messages.38).
+    from computer_use_service import _drop_orphan_tool_tail
+    msgs = _anthropic_history(2)
+    msgs.append({"role": "assistant", "content": [
+        {"type": "tool_use", "id": "orphan", "name": "computer_use",
+         "input": {"action": "click"}}]})
+    cleaned = _drop_orphan_tool_tail(msgs)
+    assert cleaned[-1]["role"] == "user"          # dangling call gone
+    assert len(cleaned) == len(msgs) - 1
+    # A history that ends on a text-only assistant turn is untouched.
+    msgs2 = _anthropic_history(1)
+    msgs2.append({"role": "assistant", "content": [{"type": "text", "text": "done"}]})
+    assert _drop_orphan_tool_tail(msgs2) == msgs2
+    # OpenAI shape: assistant with tool_calls and no tool message after.
+    msgs3 = [{"role": "system", "content": "s"},
+             {"role": "user", "content": "hi"},
+             {"role": "assistant", "tool_calls": [{"id": "c1"}]}]
+    assert _drop_orphan_tool_tail(msgs3)[-1]["role"] == "user"
+
+
 def test_gemini_schema_has_no_additional_properties():
     # Gemini's Schema proto 400s on additionalProperties (live 2026-07-04);
     # the adapter must strip what strictify adds for Anthropic.

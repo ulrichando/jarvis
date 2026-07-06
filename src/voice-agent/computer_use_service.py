@@ -275,6 +275,32 @@ _SESSIONS: Dict[str, Dict[str, Any]] = {}
 _MAX_HISTORY = 40  # cap stored messages per session (trimmed at user boundaries)
 
 
+def _drop_orphan_tool_tail(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop trailing assistant turn(s) whose tool calls never got results.
+
+    A client disconnect mid-run (page refresh/navigation) can kill the loop
+    between ``next_step`` (assistant tool_use appended) and ``add_results`` —
+    the ``finally`` then persists a history ENDING on an unanswered tool call.
+    Replaying that session 400s on Anthropic ('tool_use ids were found without
+    tool_result blocks immediately after', live 2026-07-06) and errors on
+    OpenAI ('tool_calls must be followed by tool messages'). Anthropic shape:
+    assistant content carries tool_use blocks; OpenAI shape: assistant message
+    carries a tool_calls list."""
+    out = list(messages)
+    while out:
+        last = out[-1]
+        if last.get("role") != "assistant":
+            break
+        content = last.get("content")
+        has_tool_use = isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "tool_use" for b in content
+        )
+        if not (has_tool_use or last.get("tool_calls")):
+            break
+        out.pop()
+    return out
+
+
 def _trim_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Bound stored history to ~_MAX_HISTORY messages without producing an
     invalid conversation prefix.
@@ -412,7 +438,9 @@ async def run_loop(
             hist = adapter.export_history()
             if hist is not None:
                 _SESSIONS.setdefault(session_id, {})[provider] = (
-                    _trim_history(hist) if isinstance(hist, list) else hist
+                    _trim_history(_drop_orphan_tool_tail(hist))
+                    if isinstance(hist, list)
+                    else hist
                 )
         except Exception:  # noqa: BLE001
             logger.exception("session persist failed")

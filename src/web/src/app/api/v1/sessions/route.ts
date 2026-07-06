@@ -11,7 +11,7 @@ import {
   findSession,
   resolveBridgeToken,
 } from '@/lib/bridge/store'
-import { extractBearer } from '@/lib/bridge/auth'
+import { extractBearer, isSharedLocalToken } from '@/lib/bridge/auth'
 import { apiBaseFromRequest, dispatchSessionWork } from '@/lib/bridge/dispatch'
 import { bridgeError } from '@/lib/bridge/errors'
 import { ccrSessionStatus } from '@/lib/bridge/ccrCompat'
@@ -39,6 +39,15 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     const store = getStore()
     const userId = resolveBridgeToken(store, token)
+    // This route is on the proxy's SELF_AUTH allowlist (the REPL bridge's
+    // /remote-control session-create), so the proxy gate never screens callers
+    // — this check is the ONLY gate. UNCONDITIONAL (2026-07-06 security
+    // review): the old JARVIS_REQUIRE_LOCAL_AUTH condition failed OPEN — any
+    // junk bearer could create sessions + dispatch work on the first
+    // registered environment whenever the env var was lost or unset.
+    if (!userId && !isSharedLocalToken(token)) {
+      return bridgeError(401, 'unauthorized', 'A valid bridge token is required')
+    }
     // Resolve the target environment: explicit id, else the caller's first
     // registered (online-preferred) bridge environment. Ultraplan needs a
     // polling bridge worker, so we target a registered machine rather than
@@ -96,10 +105,19 @@ export async function POST(req: Request): Promise<NextResponse> {
 }
 
 // GET /api/v1/sessions — CCR-compat list (the client's listRemoteSessions).
+// SELF_AUTH-allowlisted + excluded from CF Access, so this check is the only
+// gate. It previously had NO auth — live-verified 2026-07-06: an
+// unauthenticated internet curl listed every session (titles, ids, envs).
+// A per-user bridge token lists that user's sessions; the shared infra token
+// (single-operator deploy) lists all; anything else is 401.
 export async function GET(req: Request): Promise<NextResponse> {
   const token = extractBearer(req.headers.get('authorization'))
+  if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
   const store = getStore()
-  const userId = token ? resolveBridgeToken(store, token) : null
+  const userId = resolveBridgeToken(store, token)
+  if (!userId && !isSharedLocalToken(token)) {
+    return bridgeError(401, 'unauthorized', 'A valid bridge token is required')
+  }
   const data = listSessions(store, userId ?? undefined).map((s) => {
     // The teleport client reads session_context.sources[].url (a git_repository
     // source) to derive each session's repo — without it, listRemoteSessions

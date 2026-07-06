@@ -33,6 +33,43 @@ function withEnvSession() {
   return token
 }
 
+describe('CCR /api/v1/sessions auth (fail-closed — 2026-07-06 live leak)', () => {
+  // This route is SELF_AUTH-allowlisted + outside CF Access: its own check is
+  // the ONLY gate. An unauthenticated internet curl listed every session
+  // (2026-07-06) — these pin the 401s UNCONDITIONALLY, no env flag involved.
+  test('list GET without a bearer is 401 (was the live leak)', async () => {
+    withEnvSession()
+    const res = await listGET(new Request('https://web.test/api/v1/sessions'))
+    expect(res.status).toBe(401)
+  })
+
+  test('list GET with a junk bearer is 401', async () => {
+    withEnvSession()
+    const res = await listGET(
+      new Request('https://web.test/api/v1/sessions', {
+        headers: { authorization: 'Bearer junk-token' },
+      }),
+    )
+    expect(res.status).toBe(401)
+  })
+
+  test('create POST with a junk bearer is 401 without any env flag', async () => {
+    withEnvSession()
+    const { POST } = await import('@/app/api/v1/sessions/route')
+    const res = await POST(
+      new Request('https://web.test/api/v1/sessions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          authorization: 'Bearer junk-token',
+        },
+        body: JSON.stringify({ title: 'nope' }),
+      }),
+    )
+    expect(res.status).toBe(401)
+  })
+})
+
 describe('CCR /api/v1/sessions session_context (teleport client contract)', () => {
   test('list GET returns session_context.sources[] with a git_repository url', async () => {
     const token = withEnvSession()
