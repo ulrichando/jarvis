@@ -1,8 +1,14 @@
 # Cloud computer-use desktop: virtual X11 + WM + browser + noVNC + the JARVIS sidecar.
 FROM python:3.13-slim
 
+# A genuine desktop, not just a browser: pcmanfm draws the desktop surface
+# (wallpaper + icons + right-click menu) AND is the file manager; xterm is a
+# terminal; mousepad a text editor; xcalc/eog round out "an actual computer".
+# The model drives all of them (mouse/keyboard + the sandbox bash tool) — the
+# image just has to SHIP the apps and paint a desktop behind the windows.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       xvfb x11-utils openbox tint2 firefox-esr \
+      pcmanfm xterm mousepad xcalc \
       x11vnc websockify \
       xdotool wmctrl imagemagick scrot \
       fonts-dejavu-core ca-certificates \

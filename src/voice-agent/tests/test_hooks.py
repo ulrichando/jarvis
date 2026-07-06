@@ -34,10 +34,15 @@ def _install_script(event_dir, name: str, body: str) -> "Path":
     return script
 
 
-async def _wait_for_file(path, timeout: float = 3.0) -> bool:
+async def _wait_for_file(path, timeout: float = 3.0, min_bytes: int = 0) -> bool:
+    # min_bytes>0: wait for CONTENT, not mere existence. A script that does
+    # `cmd > file` creates the file EMPTY (the shell truncates on redirect)
+    # before writing — so an existence-only wait races an empty read
+    # (JSONDecodeError at char 0, flaky under full-suite CPU load). Content
+    # readers pass min_bytes=1; flag/`touch` callers keep the default.
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if path.exists():
+        if path.exists() and path.stat().st_size >= min_bytes:
             return True
         await asyncio.sleep(0.02)
     return False
@@ -97,7 +102,7 @@ async def test_fire_runs_script_with_payload_on_stdin(hooks_module, tmp_path):
         event="task_created", payload={"task_id": "42", "content": "do thing"}
     )
     assert n == 1
-    assert await _wait_for_file(out_file), "script never wrote stdin to disk"
+    assert await _wait_for_file(out_file, min_bytes=1), "script never wrote stdin to disk"
     captured = json.loads(out_file.read_text())
     assert captured["event"] == "task_created"
     assert captured["payload"]["task_id"] == "42"
@@ -116,7 +121,7 @@ async def test_fire_sets_event_env_var(hooks_module, tmp_path):
         f'echo "$JARVIS_HOOK_EVENT" > {out_file}',
     )
     await hooks_module.fire_hook(event="worktree_created", payload={"name": "x"})
-    assert await _wait_for_file(out_file)
+    assert await _wait_for_file(out_file, min_bytes=1)
     assert out_file.read_text().strip() == "worktree_created"
 
 
@@ -134,7 +139,7 @@ async def test_fire_sets_payload_env_var(hooks_module, tmp_path):
         event="evolution_tier_transition",
         payload={"rule_id": "R-99", "from_tier": "staged", "to_tier": "accepted"},
     )
-    assert await _wait_for_file(out_file)
+    assert await _wait_for_file(out_file, min_bytes=1)
     parsed = json.loads(out_file.read_text())
     assert parsed["payload"]["rule_id"] == "R-99"
 
