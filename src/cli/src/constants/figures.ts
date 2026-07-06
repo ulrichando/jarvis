@@ -12,6 +12,7 @@ export const EFFORT_MEDIUM = '◐' // left-half-filled circle - effort level: me
 export const EFFORT_HIGH = '●' // filled circle - effort level: high
 export const EFFORT_XHIGH = '◍' // circle with vertical fill - effort level: xhigh (between high and max)
 export const EFFORT_MAX = '◉' // fisheye - effort level: max
+export const EFFORT_ULTRACODE = '◎' // bullseye - session mode: ultracode (xhigh + workflows)
 
 // Media/trigger status indicators
 export const PLAY_ICON = '▶' // play

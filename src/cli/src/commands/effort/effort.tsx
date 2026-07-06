@@ -4,7 +4,7 @@ import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
-import { type EffortValue, getDisplayedEffortLevel, getEffortEnvOverride, getEffortValueDescription, isEffortLevel, modelSupportsEffort, toPersistableEffort } from '../../utils/effort.js';
+import { type EffortValue, getDisplayedEffortLevel, getEffortEnvOverride, getEffortValueDescription, isEffortLevel, modelSupportsEffort, toPersistableEffort, ULTRACODE } from '../../utils/effort.js';
 import { modelDisplayString } from '../../utils/model/model.js';
 import { formatJarvisModelLabels, getJarvisModelsWithCapability, isJarvisModelRegistryEnabled } from '../../utils/model/jarvisModelRegistry.js';
 import { updateSettingsForSource } from '../../utils/settings/settings.js';
@@ -142,9 +142,13 @@ export function executeEffort(args: string): EffortCommandResult {
   if (normalized === 'auto' || normalized === 'unset') {
     return unsetEffortLevel();
   }
+  if (normalized === ULTRACODE) {
+    // Session-only pseudo-level: xhigh + standing Workflow orchestration.
+    return setEffortValue(ULTRACODE);
+  }
   if (!isEffortLevel(normalized)) {
     return {
-      message: `Invalid argument: ${args}. Valid options are: low, medium, high, xhigh, max, auto`
+      message: `Invalid argument: ${args}. Valid options are: low, medium, high, xhigh, max, ultracode, auto`
     };
   }
   return setEffortValue(normalized);
@@ -207,7 +211,7 @@ function ApplyEffortAndClose(t0) {
 export async function call(onDone: LocalJSXCommandOnDone, _context: unknown, args?: string): Promise<React.ReactNode> {
   args = args?.trim() || '';
   if (COMMON_HELP_ARGS.includes(args)) {
-    onDone('Usage: /effort [low|medium|high|xhigh|max|auto]\n\nRun /effort with no argument to open the slider (←/→ to adjust, Enter to confirm).\n\nEffort levels:\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- xhigh: Extra-high effort — extended reasoning on complex multi-step problems\n- max: Maximum capability with deepest reasoning (Opus 4.6+, Sonnet 4.6, Fable 5)\n- auto: Use the default effort level for your model');
+    onDone('Usage: /effort [low|medium|high|xhigh|max|ultracode|auto]\n\nRun /effort with no argument to open the slider (←/→ to adjust, Enter to confirm).\n\nEffort levels:\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- xhigh: Extra-high effort — extended reasoning on complex multi-step problems\n- max: Maximum capability with deepest reasoning (Opus 4.6+, Sonnet 4.6, Fable 5)\n- ultracode: xhigh + dynamic workflow orchestration (session only)\n- auto: Use the default effort level for your model');
     return;
   }
   if (args === 'current' || args === 'status') {

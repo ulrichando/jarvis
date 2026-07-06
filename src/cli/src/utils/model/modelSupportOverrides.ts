@@ -7,6 +7,7 @@ import {
 
 export type ModelCapabilityOverride =
   | 'effort'
+  | 'xhigh_effort'
   | 'max_effort'
   | 'thinking'
   | 'adaptive_thinking'

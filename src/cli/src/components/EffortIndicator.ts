@@ -3,12 +3,14 @@ import {
   EFFORT_LOW,
   EFFORT_MAX,
   EFFORT_MEDIUM,
+  EFFORT_ULTRACODE,
   EFFORT_XHIGH,
 } from '../constants/figures.js'
 import {
   type EffortLevel,
   type EffortValue,
   getDisplayedEffortLevel,
+  ULTRACODE,
 } from '../utils/effort.js'
 
 /**
@@ -26,7 +28,12 @@ export function getEffortNotificationText(
   return `${effortLevelToSymbol(level)} ${level} · /effort`
 }
 
-export function effortLevelToSymbol(level: EffortLevel): string {
+export function effortLevelToSymbol(
+  level: EffortLevel | typeof ULTRACODE,
+): string {
+  if (level === ULTRACODE) {
+    return EFFORT_ULTRACODE
+  }
   switch (level) {
     case 'low':
       return EFFORT_LOW

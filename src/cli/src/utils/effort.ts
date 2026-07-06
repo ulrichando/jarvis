@@ -26,7 +26,21 @@ export const EFFORT_LEVELS = [
   'max',
 ] as const satisfies readonly EffortLevel[]
 
-export type EffortValue = EffortLevel | number
+/**
+ * Session-only pseudo-level: sends `xhigh` to the API and switches on
+ * standing Workflow orchestration (the "Ultracode" opt-in the WorkflowTool
+ * prompt describes). Never persisted and never sent to the API as-is —
+ * resolveAppliedEffort maps it to a real EffortLevel per model.
+ */
+export const ULTRACODE = 'ultracode' as const
+
+export type EffortValue = EffortLevel | number | typeof ULTRACODE
+
+export function isUltracodeActive(
+  value: EffortValue | undefined,
+): value is typeof ULTRACODE {
+  return value === ULTRACODE
+}
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports the effort parameter.
 export function modelSupportsEffort(model: string): boolean {
@@ -80,6 +94,41 @@ export function modelSupportsMaxEffort(model: string): boolean {
     return true
   }
   return false
+}
+
+// Which models accept the `xhigh` tier. max-capable models all accept xhigh;
+// below that it's per-model: the jarvis registry declares `xhigh_effort`
+// (e.g. DeepSeek v4 accepts xhigh but NOT max), while OpenAI GPT-5 /
+// Ollama gpt-oss expose only minimal..high. Anthropic 1P effort-capable
+// models accept xhigh even when not in the registry (see EFFORT_LEVELS note).
+export function modelSupportsXhighEffort(model: string): boolean {
+  if (modelSupportsMaxEffort(model)) {
+    return true
+  }
+  const supported3P = get3PModelCapabilityOverride(model, 'xhigh_effort')
+  if (supported3P !== undefined) {
+    return supported3P
+  }
+  return modelSupportsEffort(model) && getAPIProvider() === 'firstParty'
+}
+
+/**
+ * Clamp a requested effort level down to the highest tier the model's API
+ * actually accepts (max → xhigh → high). Keeps /effort max, ultrathink, and
+ * ultracode compatible with every provider in the jarvis registry instead
+ * of 400ing or silently degrading to 'high' on models that do have xhigh.
+ */
+export function clampEffortToModel(
+  level: EffortLevel,
+  model: string,
+): EffortLevel {
+  if (level === 'max' && !modelSupportsMaxEffort(model)) {
+    level = 'xhigh'
+  }
+  if (level === 'xhigh' && !modelSupportsXhighEffort(model)) {
+    level = 'high'
+  }
+  return level
 }
 
 export function isEffortLevel(value: string): value is EffortLevel {
@@ -175,11 +224,16 @@ export function resolveAppliedEffort(
   if (envOverride === null) {
     return undefined
   }
-  const resolved =
+  let resolved =
     envOverride ?? appStateEffortValue ?? getDefaultEffortForModel(model)
-  // API rejects 'max' on non-Opus-4.6 models — downgrade to 'high'.
-  if (resolved === 'max' && !modelSupportsMaxEffort(model)) {
-    return 'high'
+  // ultracode is a session mode, not an API tier — it rides on xhigh.
+  if (resolved === ULTRACODE) {
+    resolved = 'xhigh'
+  }
+  // Clamp to the model's supported ladder (max → xhigh → high) so every
+  // provider gets the strongest tier its API accepts.
+  if (typeof resolved === 'string' && isEffortLevel(resolved)) {
+    return clampEffortToModel(resolved, model)
   }
   return resolved
 }
@@ -218,6 +272,9 @@ export function isValidNumericEffort(value: number): boolean {
 }
 
 export function convertEffortValueToLevel(value: EffortValue): EffortLevel {
+  if (value === ULTRACODE) {
+    return 'xhigh'
+  }
   if (typeof value === 'string') {
     // Runtime guard: value may come from remote config (GrowthBook) where
     // TypeScript types can't help us. Coerce unknown strings to 'high'
@@ -271,6 +328,9 @@ export function getEffortLevelDescription(level: EffortLevel): string {
  * @returns Human-readable description
  */
 export function getEffortValueDescription(value: EffortValue): string {
+  if (value === ULTRACODE) {
+    return 'xhigh + dynamic workflow orchestration'
+  }
   if (process.env.USER_TYPE === 'ant' && typeof value === 'number') {
     return `[ANT-ONLY] Numeric effort value of ${value}`
   }

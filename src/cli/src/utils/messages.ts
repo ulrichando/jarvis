@@ -4175,6 +4175,22 @@ You have exited auto mode. The user may now want to interact more directly. You 
         }),
       ])
     }
+    case 'ultracode_mode': {
+      const parts: string[] = []
+      if (attachment.keyword) {
+        parts.push(
+          'The user included the keyword "ultracode", opting this turn into multi-agent orchestration — use the Workflow tool to fulfill the request.',
+        )
+      }
+      if (attachment.session) {
+        parts.push(
+          "Ultracode is on for the session: author and run a workflow for every substantive task by default — optimize for the most exhaustive, correct answer, not the fastest or cheapest; token cost is not a constraint. See the Workflow tool's **Ultracode** section and quality patterns. Work solo only on conversational or trivial turns.",
+        )
+      }
+      return wrapMessagesInSystemReminder([
+        createUserMessage({ content: parts.join('\n\n'), isMeta: true }),
+      ])
+    }
     case 'deferred_tools_delta': {
       const parts: string[] = []
       if (attachment.addedLines.length > 0) {

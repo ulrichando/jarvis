@@ -16,6 +16,9 @@ export type JarvisModelTier =
 
 export type JarvisModelCapability =
   | 'effort'
+  // Accepts the `xhigh` tier but NOT `max` (max_effort implies xhigh, so
+  // max-capable models don't need this). DeepSeek v4 is the canonical case.
+  | 'xhigh_effort'
   | 'max_effort'
   | 'thinking'
   | 'adaptive_thinking'
@@ -180,7 +183,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     provider: 'deepseek',
     upstreamModel: 'deepseek-v4-flash',
     tiers: ['default', 'balanced'],
-    capabilities: ['effort'],
+    capabilities: ['effort', 'xhigh_effort'],
     visibleInPicker: false,
   },
   {
@@ -190,7 +193,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     provider: 'deepseek',
     upstreamModel: 'deepseek-v4-pro',
     tiers: ['reasoning'],
-    capabilities: ['effort'],
+    capabilities: ['effort', 'xhigh_effort'],
     visibleInPicker: false,
   },
   {
@@ -210,7 +213,9 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     provider: 'deepseek',
     upstreamModel: 'deepseek-v4-pro',
     tiers: ['default', 'reasoning', 'long_context', 'orchestration'],
-    capabilities: ['effort', 'thinking'],
+    // DeepSeek v4 accepts effort up to `xhigh` — `max` is Anthropic-only
+    // (utils/effort.ts clamps max → xhigh here instead of → high).
+    capabilities: ['effort', 'xhigh_effort', 'thinking'],
     visibleInPicker: true,
     fallback: ['deepseek-v4-flash'],
   },
