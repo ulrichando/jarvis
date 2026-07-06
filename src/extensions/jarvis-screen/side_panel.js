@@ -258,6 +258,7 @@ function toggleMic() {
 $("micBtn").addEventListener("click", toggleMic);
 
 // ── Image context (+ menu: Take a screenshot / Add an image) ─────────────
+const IMG_MIMES = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"];
 function updateSendState() { $("sendBtn").disabled = input.value.trim() === "" && !pendingImage; }
 function clearAttachment() { pendingImage = null; const a = $("attach"); a.hidden = true; a.replaceChildren(); updateSendState(); }
 function attachImage(dataUrl, mediaType) {
@@ -266,8 +267,11 @@ function attachImage(dataUrl, mediaType) {
   const m = /^data:(image\/(?:png|jpeg|jpg|gif|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl || "");
   const data = m ? m[2] : null;
   if (!data) { note("Couldn't read that image."); return; }
-  const mt = /^image\/(png|jpeg|jpg|gif|webp)$/.test(mediaType || "") ? mediaType : null;
-  pendingImage = { data, media_type: m[1] || mt || "image/png" };
+  // media_type is re-read out of the constant allowlist (never the input
+  // string), so the stored value is a literal — input MIME strings (e.g. the
+  // file picker's f.type) can't reach the data-URL reassembly in send().
+  const mi = IMG_MIMES.indexOf(m[1] || mediaType || "");
+  pendingImage = { data, media_type: mi >= 0 ? IMG_MIMES[mi] : "image/png" };
   const a = $("attach"); a.replaceChildren();
   const img = document.createElement("img"); img.src = dataUrl; // data: URL, panel CSP allows img
   const x = document.createElement("button"); x.className = "x"; x.title = "Remove"; x.textContent = "✕";
