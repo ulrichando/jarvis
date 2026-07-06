@@ -1,5 +1,6 @@
 import type { ChildProcess, ExecFileException } from 'child_process'
 import { execFile, spawn } from 'child_process'
+import { existsSync } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import * as path from 'path'
@@ -60,6 +61,21 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     process.platform === 'win32'
       ? path.resolve(rgRoot, `${process.arch}-win32`, 'rg.exe')
       : path.resolve(rgRoot, `${process.arch}-${process.platform}`, 'rg')
+
+  // Source-run (bin/jarvis) doesn't ship the vendored rg binaries that the
+  // packaged build embeds — Grep AND Glob both route through here, so a
+  // missing binary broke both with a bare ENOENT. Fall back to system rg
+  // (resolved by name for the same PATH-hijack safety as the branch above)
+  // when the vendored path is absent, instead of returning a dead command.
+  if (!existsSync(command)) {
+    const { cmd: systemPath } = findExecutable('rg', [])
+    if (systemPath !== 'rg') {
+      return { mode: 'system', command: 'rg', args: [] }
+    }
+    logForDebugging(
+      `[ripgrep] vendored binary missing (${command}) and no system rg on PATH — Grep/Glob will error`,
+    )
+  }
 
   return { mode: 'builtin', command, args: [] }
 })
