@@ -251,10 +251,10 @@ export async function initReplBridge(
   // the count-1 re-derivation but not count-3). The onUserMessage callback
   // (wired to both v1 and v2 below) derives from the 1st prompt and again
   // from the 3rd so mobile/web show a title that reflects more context.
-  // The slug fallback (e.g. "remote-control-graceful-unicorn") makes
-  // auto-started sessions distinguishable in the claude.ai list before the
-  // first prompt.
-  let title = `remote-control-${generateShortWordSlug()}`
+  // The slug fallback (e.g. "graceful-unicorn") makes auto-started sessions
+  // distinguishable in the web /code list before the first prompt. The slug
+  // alone is the placeholder title — no "remote-control-" prefix.
+  let title = generateShortWordSlug()
   let hasTitle = false
   let hasExplicitTitle = false
   if (initialName) {
