@@ -63,5 +63,11 @@ export function authorizeSessionCredential(
   const env = session.environment_id
     ? findEnvironment(store, session.environment_id)
     : null
-  return !(env?.user_id && env.user_id !== userId)
+  // Explicit owner match when the session is bound to an environment — a
+  // session on an ownerless env must NOT be reachable via arbitrary user
+  // tokens (IDOR guard; worker callers use the ingress/env-secret paths
+  // above). Unbound (orphan) sessions keep accepting any resolved user,
+  // matching archive's historical orphan semantics.
+  if (!env) return true
+  return !!env.user_id && env.user_id === userId
 }

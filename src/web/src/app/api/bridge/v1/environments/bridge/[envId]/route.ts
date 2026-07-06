@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server'
 import { getStore } from '@/lib/bridge/db'
-import { deleteEnvironment, findEnvironment } from '@/lib/bridge/store'
+import {
+  deleteEnvironment,
+  findEnvironment,
+  resolveBridgeToken,
+} from '@/lib/bridge/store'
 import { extractBearer } from '@/lib/bridge/auth'
 import { bridgeError } from '@/lib/bridge/errors'
 
@@ -17,9 +21,19 @@ export async function DELETE(
     const store = getStore()
     const env = findEnvironment(store, envId)
     // Single lookup; check auth before revealing existence to defend
-    // against envId enumeration. Both "no env" and "wrong secret" return
-    // the same 401 — the owner with a valid secret gets the real 204.
-    if (!env || env.environment_secret !== token) {
+    // against envId enumeration. Both "no env" and "wrong credential" return
+    // the same 401. Accepted credentials: the environment's secret, OR the
+    // owning user's bridge token — the CLI's deregister path (bridgeApi
+    // resolveAuth) sends the per-user token, not the env secret, so
+    // secret-only auth made every worker deregister 401 (leaking dead
+    // environment rows on the server).
+    const tokenUser = resolveBridgeToken(store, token)
+    const okSecret = !!env && env.environment_secret === token
+    // Explicit owner match only — ownerless envs are deletable solely via
+    // their environment_secret (IDOR guard, mirrors the create route).
+    const okOwner =
+      !!env && !!tokenUser && !!env.user_id && tokenUser === env.user_id
+    if (!okSecret && !okOwner) {
       return bridgeError(401, 'unauthorized', 'Invalid environment_secret')
     }
     deleteEnvironment(store, envId)

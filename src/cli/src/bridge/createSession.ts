@@ -52,7 +52,10 @@ export async function createBridgeSession({
   getAccessToken?: () => string | undefined
   permissionMode?: string
 }): Promise<string | null> {
-  const { getClaudeAIOAuthTokens } = await import('../utils/auth.js')
+  // JARVIS mode (JARVIS_CCR_BASE_URL set): the CCR bearer is the per-user
+  // bridge token (JARVIS_CCR_TOKEN), not the claude.ai OAuth keychain —
+  // getTeleportAccessToken() handles both (falls through to OAuth otherwise).
+  const { getTeleportAccessToken } = await import('../utils/teleport/api.js')
   const { getBridgeOrgUUID } = await import('./bridgeConfig.js')
   const { getOauthConfig } = await import('../constants/oauth.js')
   const { getOAuthHeaders } = await import('../utils/teleport/api.js')
@@ -62,7 +65,7 @@ export async function createBridgeSession({
   const { default: axios } = await import('axios')
 
   const accessToken =
-    getAccessToken?.() ?? getClaudeAIOAuthTokens()?.accessToken
+    getAccessToken?.() ?? getTeleportAccessToken()
   if (!accessToken) {
     logForDebugging('[bridge] No access token for session creation')
     return null
@@ -142,6 +145,7 @@ export async function createBridgeSession({
   }
 
   const url = `${baseUrlOverride ?? getOauthConfig().BASE_API_URL}/v1/sessions`
+  logForDebugging(`[bridge] POST ${url} (session create)`)
   let response
   try {
     response = await axios.post(url, requestBody, {
@@ -160,7 +164,7 @@ export async function createBridgeSession({
   if (!isSuccess) {
     const detail = extractErrorDetail(response.data)
     logForDebugging(
-      `[bridge] Session creation failed with status ${response.status}${detail ? `: ${detail}` : ''}`,
+      `[bridge] Session creation failed with status ${response.status}${detail ? `: ${detail}` : ''} body=${JSON.stringify(response.data)?.slice(0, 200)}`,
     )
     return null
   }
@@ -191,14 +195,17 @@ export async function getBridgeSession(
   sessionId: string,
   opts?: { baseUrl?: string; getAccessToken?: () => string | undefined },
 ): Promise<{ environment_id?: string; title?: string } | null> {
-  const { getClaudeAIOAuthTokens } = await import('../utils/auth.js')
+  // JARVIS mode (JARVIS_CCR_BASE_URL set): the CCR bearer is the per-user
+  // bridge token (JARVIS_CCR_TOKEN), not the claude.ai OAuth keychain —
+  // getTeleportAccessToken() handles both (falls through to OAuth otherwise).
+  const { getTeleportAccessToken } = await import('../utils/teleport/api.js')
   const { getBridgeOrgUUID } = await import('./bridgeConfig.js')
   const { getOauthConfig } = await import('../constants/oauth.js')
   const { getOAuthHeaders } = await import('../utils/teleport/api.js')
   const { default: axios } = await import('axios')
 
   const accessToken =
-    opts?.getAccessToken?.() ?? getClaudeAIOAuthTokens()?.accessToken
+    opts?.getAccessToken?.() ?? getTeleportAccessToken()
   if (!accessToken) {
     logForDebugging('[bridge] No access token for session fetch')
     return null
@@ -268,14 +275,17 @@ export async function archiveBridgeSession(
     timeoutMs?: number
   },
 ): Promise<void> {
-  const { getClaudeAIOAuthTokens } = await import('../utils/auth.js')
+  // JARVIS mode (JARVIS_CCR_BASE_URL set): the CCR bearer is the per-user
+  // bridge token (JARVIS_CCR_TOKEN), not the claude.ai OAuth keychain —
+  // getTeleportAccessToken() handles both (falls through to OAuth otherwise).
+  const { getTeleportAccessToken } = await import('../utils/teleport/api.js')
   const { getBridgeOrgUUID } = await import('./bridgeConfig.js')
   const { getOauthConfig } = await import('../constants/oauth.js')
   const { getOAuthHeaders } = await import('../utils/teleport/api.js')
   const { default: axios } = await import('axios')
 
   const accessToken =
-    opts?.getAccessToken?.() ?? getClaudeAIOAuthTokens()?.accessToken
+    opts?.getAccessToken?.() ?? getTeleportAccessToken()
   if (!accessToken) {
     logForDebugging('[bridge] No access token for session archive')
     return
@@ -329,14 +339,17 @@ export async function updateBridgeSessionTitle(
   title: string,
   opts?: { baseUrl?: string; getAccessToken?: () => string | undefined },
 ): Promise<void> {
-  const { getClaudeAIOAuthTokens } = await import('../utils/auth.js')
+  // JARVIS mode (JARVIS_CCR_BASE_URL set): the CCR bearer is the per-user
+  // bridge token (JARVIS_CCR_TOKEN), not the claude.ai OAuth keychain —
+  // getTeleportAccessToken() handles both (falls through to OAuth otherwise).
+  const { getTeleportAccessToken } = await import('../utils/teleport/api.js')
   const { getBridgeOrgUUID } = await import('./bridgeConfig.js')
   const { getOauthConfig } = await import('../constants/oauth.js')
   const { getOAuthHeaders } = await import('../utils/teleport/api.js')
   const { default: axios } = await import('axios')
 
   const accessToken =
-    opts?.getAccessToken?.() ?? getClaudeAIOAuthTokens()?.accessToken
+    opts?.getAccessToken?.() ?? getTeleportAccessToken()
   if (!accessToken) {
     logForDebugging('[bridge] No access token for session title update')
     return

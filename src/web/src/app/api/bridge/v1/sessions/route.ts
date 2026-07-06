@@ -12,7 +12,8 @@ import {
   type EnvironmentRow,
 } from '@/lib/bridge/store'
 import { getUserId } from '@/lib/auth-helpers'
-import { extractBearer } from '@/lib/bridge/auth'
+import { extractBearer, isSharedLocalToken } from '@/lib/bridge/auth'
+import { validateEnvSecret } from '@/lib/bridge/store'
 import { apiBaseFromRequest, dispatchSessionWork } from '@/lib/bridge/dispatch'
 import { bridgeError } from '@/lib/bridge/errors'
 
@@ -132,9 +133,25 @@ export async function POST(req: Request): Promise<NextResponse> {
     const store = getStore()
     const env = findEnvironment(store, body.environment_id)
     if (!env) return bridgeError(404, 'not_found', 'Environment not found')
+    // On the proxy's SELF_AUTH allowlist (the REPL bridge's /remote-control
+    // creates its session here), so this check is the only gate. Fail CLOSED:
+    // the bearer must be the env owner's bridge token, the environment's own
+    // secret, or the shared infra token — the old resolve-then-compare let
+    // any unresolvable bearer through.
+    // Explicit owner match only — an ownerless env row must NOT be claimable
+    // by an arbitrary user's bridge token (IDOR); it stays reachable via its
+    // own environment_secret (or the shared infra token).
     const tokenUser = resolveBridgeToken(store, token)
-    if (tokenUser && env.user_id && tokenUser !== env.user_id) {
-      return bridgeError(403, 'forbidden', 'Not your machine')
+    const okOwner = !!tokenUser && !!env.user_id && tokenUser === env.user_id
+    if (
+      !okOwner &&
+      !validateEnvSecret(store, body.environment_id, token) &&
+      !isSharedLocalToken(token)
+    ) {
+      if (tokenUser) {
+        return bridgeError(403, 'forbidden', 'Not your machine')
+      }
+      return bridgeError(401, 'unauthorized', 'A valid bridge token is required')
     }
     const sessionId = randomBytes(8).toString('hex')
     const title =
