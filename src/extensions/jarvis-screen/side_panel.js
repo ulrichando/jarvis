@@ -113,7 +113,8 @@ function addMsg(text, who, imageDataUrl) {
   $("emptyState")?.remove();
   const el = document.createElement("div");
   el.className = `msg ${who}`;
-  if (imageDataUrl) {
+  if (imageDataUrl && /^data:image\//.test(imageDataUrl)) {
+    // Scheme-pinned: only data:image/* may render (never javascript:/http:).
     const img = document.createElement("img"); img.src = imageDataUrl; img.className = "msg-img";
     el.appendChild(img);
     if (text) { const span = document.createElement("span"); span.textContent = text; el.appendChild(span); }

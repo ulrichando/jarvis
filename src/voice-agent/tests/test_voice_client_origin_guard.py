@@ -34,7 +34,9 @@ def _app() -> web.Application:
 def test_tauri_webview_origin_is_allowlisted():
     # The desktop CSP serves the webview from https://tauri.localhost; if this
     # drops out of the allowlist the desktop UI breaks (mute/chat/screen-share).
-    assert "https://tauri.localhost" in _ALLOWED_ORIGINS
+    # Equality (not `in`) so CodeQL doesn't read set membership as URL
+    # substring sanitization (py/incomplete-url-substring-sanitization FP).
+    assert any(o == "https://tauri.localhost" for o in _ALLOWED_ORIGINS)
 
 
 @pytest.mark.asyncio
