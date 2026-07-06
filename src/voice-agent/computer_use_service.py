@@ -47,6 +47,10 @@ from pipeline.cu_adapters.base import ToolResult
 logger = logging.getLogger("computer_use_service")
 
 PORT = int(os.environ.get("JARVIS_COMPUTER_USE_WEB_PORT", "8771"))
+# Bind host: loopback for the co-located local setup; the cloud container sets
+# 0.0.0.0 (Dockerfile.computer-use) so web/caddy reach it across cu-net — the
+# container is expose-only on that network, never published to the host.
+HOST = os.environ.get("JARVIS_COMPUTER_USE_WEB_HOST", "127.0.0.1")
 MODEL = os.environ.get("JARVIS_COMPUTER_USE_WEB_MODEL", "claude-sonnet-4-6")
 MAX_STEPS = int(os.environ.get("JARVIS_COMPUTER_USE_WEB_MAX_STEPS", "30"))
 
@@ -538,8 +542,8 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     _load_env_files()
     app = build_app()
-    logger.info("computer_use_service on 127.0.0.1:%d (model=%s)", PORT, MODEL)
-    web.run_app(app, host="127.0.0.1", port=PORT, print=None)
+    logger.info("computer_use_service on %s:%d (model=%s)", HOST, PORT, MODEL)
+    web.run_app(app, host=HOST, port=PORT, print=None)
 
 
 if __name__ == "__main__":
