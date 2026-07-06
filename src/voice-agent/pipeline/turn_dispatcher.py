@@ -30,7 +30,7 @@ Pipeline (each FINAL transcript runs through):
  10. LangGraph slow-path: kick the compiled graph as a background
      task (it handles classifier → swap → prefix → tune internally).
  11. Inline async classifier (fallback when graph is disabled):
-     Groq llama-3.1-8b classifies, swap session._llm / ._tts, inject
+     a small OpenAI model classifies, swap session._llm / ._tts, inject
      prefix, tune interrupt thresholds per route.
 
 State management:
@@ -559,18 +559,25 @@ def make_dispatch_handler(
 
         # ── Inline async classifier fallback ──────────────────────
         async def _classify_and_swap():
-            async def _groq_call(prompt: str) -> str:
+            async def _classifier_call(prompt: str) -> str:
                 # Reuse the top-level aiohttp so a missing dep surfaces
-                # at startup, not per-turn.
-                api_key = os.environ.get("GROQ_API_KEY", "")
+                # at startup, not per-turn. OpenAI gpt-4o-mini to stay
+                # coherent with turn_graph.make_classifier's default
+                # (ported off the eradicated provider 2026-07-06 — the
+                # old hardcoded endpoint had no key anywhere, so this
+                # path silently returned TASK_OTHER for every turn).
+                # NOT a gpt-5 reasoning model: those reject max_tokens
+                # AND burn the completion budget on reasoning tokens,
+                # returning empty content (live-probed 2026-07-06).
+                api_key = os.environ.get("OPENAI_API_KEY", "")
                 if not api_key:
                     return "TASK_OTHER"
                 async with _aiohttp.ClientSession() as s:
                     async with s.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
+                        "https://api.openai.com/v1/chat/completions",
                         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                         json={
-                            "model": os.environ.get("JARVIS_ROUTER_MODEL", "llama-3.1-8b-instant"),
+                            "model": os.environ.get("JARVIS_ROUTER_MODEL", "gpt-4o-mini"),
                             "messages": [{"role": "user", "content": prompt}],
                             "temperature": 0.0,
                             "max_tokens": 6,
@@ -595,7 +602,7 @@ def make_dispatch_handler(
             route = await classify_turn(
                 history=history,
                 emotion=emotion,
-                groq_call=_groq_call,
+                classifier_call=_classifier_call,
                 timeout_ms=timeout_ms,
             )
 

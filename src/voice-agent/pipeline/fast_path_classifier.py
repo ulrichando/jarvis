@@ -1,6 +1,6 @@
 """Fast-path turn classifiers — high-confidence BANTER + REASONING patterns.
 
-The Maya-class slow-path classifier (Groq llama-3.1-8b via LangChain)
+The Maya-class slow-path classifier (a small cloud LLM via LangChain)
 adds ~500 ms to the first-token latency on every turn. These two
 regexes short-circuit the obvious chitchat / reasoning patterns so
 the dispatcher can swap to the per-route inner LLM synchronously,
@@ -9,8 +9,8 @@ before the framework's LLM dispatch reads `session._llm`.
 Why this exists: live capture (Iteration-2 of /loop voice-intelligence)
 showed the async classifier landing AFTER the framework had already
 started the LLM call on the previous turn's `_llm` — so BANTER turns
-ran on the 70b inner instead of the 8b-instant inner, median TTFW
-4.8 s.
+ran on the heavier default inner instead of the fast BANTER inner,
+median TTFW 4.8 s.
 
 Hoisted from `jarvis_agent.py` 2026-05-10 (Step 9 of the audit —
 test_banter_fast_path / test_reasoning_fast_path were reaching into
@@ -25,7 +25,7 @@ __all__ = ["BANTER_FAST_PATH_RE", "REASONING_FAST_PATH_RE"]
 
 
 # High-confidence BANTER patterns. When the user's turn matches one of
-# these, we skip the 500ms Groq router round-trip and swap to the fast
+# these, we skip the 500ms router round-trip and swap to the fast
 # BANTER inner LLM synchronously.
 #
 # Match criteria:

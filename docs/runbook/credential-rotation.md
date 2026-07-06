@@ -4,25 +4,19 @@ This runs you through rotating every credential that has appeared in this repo's
 
 ## Prerequisites
 
-- Browser with active sessions for: Groq Cloud, DeepSeek, LangSmith, Google AI Studio
+- Browser with active sessions for: DeepSeek, LangSmith, Google AI Studio (plus the console of any provider whose leaked key still needs revoking)
 - Terminal in `/home/ulrich/Documents/Projects/jarvis`
 
 ## 1. LiveKit — DONE
 
 Already rotated automatically (2026-05-04). New keys live in `~/.jarvis/livekit-keys.yaml` (chmod 600). No action needed.
 
-## 2. Groq
+## 2. Groq — REVOKE ONLY (provider removed 2026-06-29; purged repo-wide 2026-07-06)
 
 1. Open <https://console.groq.com/keys>
-2. Find the key whose prefix matches `GROQ_API_KEY` in your `.env`
-   (`grep -o 'gsk_.\{8\}' .env`). Click **Revoke**.
-3. Click **Create API Key**, name it `jarvis-<host>-<date>`, copy the new value.
-4. Paste into `.env`:
-   ```
-   GROQ_API_KEY=gsk_<new value>
-   ```
-5. Restart: `systemctl --user restart jarvis-voice-agent.service` and
-   relaunch the desktop app (the bridge + proxy read `.env` at launch).
+2. Revoke every `jarvis-*` key. Do NOT create a replacement — nothing in the
+   stack reads a Groq key anymore, and the leaked-tier key in git history
+   still needs to be dead.
 
 ## 3. DeepSeek
 

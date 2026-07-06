@@ -185,7 +185,7 @@ fi
 
 # Capture installed versions for key top-level packages.
 # from_entries needs {key, value} objects; pip list emits {name, version}.
-installed_json=$(_pip_list_json | jq -c '[.[] | select(.name | test("^(livekit|groq|openai|anthropic|deepgram|edge-tts|langchain|langgraph|playwright|redis|mcp|sdnotify|insightface|onnxruntime|honcho|psutil|google-genai)")) | {key: .name, value: .version}] | from_entries' 2>/dev/null || echo "{}")
+installed_json=$(_pip_list_json | jq -c '[.[] | select(.name | test("^(livekit|openai|anthropic|deepgram|edge-tts|langchain|langgraph|playwright|redis|mcp|sdnotify|insightface|onnxruntime|honcho|psutil|google-genai)")) | {key: .name, value: .version}] | from_entries' 2>/dev/null || echo "{}")
 
 # ── write result ─────────────────────────────────────────────────────
 

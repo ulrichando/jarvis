@@ -92,7 +92,7 @@ Comment on any issue or PR of an installed repo:
 | `GH_APP_CREDS_PATH` | `/data/creds.json` | captured-creds fallback path |
 | `DATABASE_URL` | — (required) | Postgres (`gh_app_jobs` table auto-created) |
 | `DOCKER_HOST` | `tcp://docker-proxy:2375` | restricted Docker API for sandbox spawns |
-| `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` / `GROQ_API_KEY` / `OPENAI_API_KEY` / `JARVIS_PROVIDER` / `JARVIS_MODEL` | — | passed INTO the sandbox so `jarvis -p` can reach an LLM (strict allowlist — app creds/DB never cross) |
+| `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `JARVIS_PROVIDER` / `JARVIS_MODEL` | — | passed INTO the sandbox so `jarvis -p` can reach an LLM (strict allowlist — app creds/DB never cross) |
 
 ## Security model
 

@@ -23,7 +23,7 @@ export function isVoiceGrowthBookEnabled(): boolean {
  * Backend availability check for voice mode. Returns true when a supported
  * transcription backend is configured and reachable from the current session.
  * This may be Anthropic OAuth voice_stream, or a Jarvis provider fallback
- * such as Groq/OpenAI transcription in no-auth mode.
+ * such as OpenAI transcription in no-auth mode.
  */
 export function hasVoiceAuth(): boolean {
   return isVoiceStreamAvailable()

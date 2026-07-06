@@ -120,7 +120,7 @@ const MODE_OPTIONS: { label: string; value: string; n: string }[] = [
 ];
 
 // Real model catalog grouped by provider (from the browser-safe MODELS_META —
-// Anthropic / DeepSeek / Google / Groq / Kimi / OpenAI), in this display order.
+// Anthropic / DeepSeek / Google / Kimi / OpenAI), in this display order.
 const MODEL_PROVIDER_ORDER: Provider[] = [
   "anthropic",
   "deepseek",

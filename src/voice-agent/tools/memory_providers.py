@@ -94,9 +94,13 @@ _RECALL_SCHEMA = {
     },
 }
 
-from tools.registry import registry as _registry  # noqa: E402 — module-level registration
+# NOTE: must be literally `registry.register(...)` — the AST discovery in
+# tools/registry.py::_is_registry_register_call only matches that exact shape,
+# and an aliased name left this module invisible to discover_builtin_tools
+# (recall then only existed via the honcho plugin's import side-effect).
+from tools.registry import registry  # noqa: E402 — module-level registration
 
-_registry.register(
+registry.register(
     name="recall",
     schema=_RECALL_SCHEMA,
     handler=_handle_recall,

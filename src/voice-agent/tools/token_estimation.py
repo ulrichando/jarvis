@@ -12,7 +12,7 @@ Voice-side use:
     + tool-schema tokens. If the estimate exceeds the warn threshold,
     log a `[token-estimation] pressure=warn` line so the operator
     can see context filling up before the worker actually trips
-    Groq's 128K context limit.
+    the primary model's 128K context limit.
   - At the end of each turn, the LLM returns exact input/output
     token counts in `usage`. Convert to USD via the pricing table
     and write to turn_telemetry.db's cost_usd column.
@@ -36,8 +36,8 @@ logger = logging.getLogger("jarvis.token_estimation")
 # warn triggers — the tradeoff is fine for headroom checks.
 _CHARS_PER_TOKEN = 4
 
-# llama-3.3-70b-versatile context window per Groq's specs.
-# Other Groq models on the dispatcher have similar or larger windows.
+# deepseek-v4-flash (current primary) context window per DeepSeek's specs.
+# Other models on the dispatcher have similar or larger windows.
 MAX_CONTEXT_TOKENS = 128_000
 
 # Warn at ~78% of context (28K headroom for output + safety margin).
@@ -50,35 +50,22 @@ HARD_TOKENS = 115_000
 # calls. USD; format: model_id -> (input $/1M, output $/1M). Rates as of
 # 2026-05-17 public list prices. Verify against provider pricing pages
 # before any major spend audit:
-#   Groq:      https://console.groq.com/docs/models
 #   Anthropic: https://www.anthropic.com/pricing
 #   OpenAI:    https://openai.com/api/pricing/
 #   DeepSeek:  https://api-docs.deepseek.com/quick_start/pricing
 #   Google:    https://ai.google.dev/gemini-api/docs/pricing
 #
-# Pre-2026-05-17: only Groq + DeepSeek + Kimi entries existed. Result:
-# 173 of 196 recent turns had cost_usd=NULL because Anthropic + OpenAI
-# + Google models had no rates to multiply tokens against (global
-# review §P0-17 / 2026-05-17 plan §P0-OBS-1).
+# Pre-2026-05-17: only the then-fast-route + DeepSeek + Kimi entries
+# existed. Result: 173 of 196 recent turns had cost_usd=NULL because
+# Anthropic + OpenAI + Google models had no rates to multiply tokens
+# against (global review §P0-17 / 2026-05-17 plan §P0-OBS-1).
 #
 # Rates that include prompt-caching: the dict captures NON-cached rates;
 # log_turn() multiplies (input_tokens - prompt_cached_tokens) at the
 # full rate and prompt_cached_tokens at a separate cache rate via
 # _CACHE_READ_DISCOUNT below.
 _PRICING_USD_PER_1M: dict[str, tuple[float, float]] = {
-    # ── Groq ────────────────────────────────────────────────────────
-    # TASK-tier supervisor model.
-    "llama-3.3-70b-versatile":  (0.59, 0.79),
-    # BANTER-tier (chitchat / fast).
-    "llama-3.1-8b-instant":     (0.05, 0.08),
-    # REASONING-tier.
-    "qwen3-32b":                (0.29, 0.59),
-    "qwen/qwen3-32b":           (0.29, 0.59),
-    # EMOTIONAL-tier.
-    "llama-4-scout":            (0.11, 0.34),
-    "meta-llama/llama-4-scout-17b-16e-instruct": (0.11, 0.34),
-    # Subagent code reviewer / experimental.
-    "openai/gpt-oss-120b":      (0.15, 0.60),
+    # ── Moonshot / Kimi ─────────────────────────────────────────────
     # Kimi modes (gated behind JARVIS_KIMI_VOICE_EXPERIMENTAL).
     "kimi-k2.6":                (0.30, 1.50),
     # ── DeepSeek ────────────────────────────────────────────────────
@@ -123,7 +110,7 @@ _PRICING_USD_PER_1M: dict[str, tuple[float, float]] = {
 # Cache-read discount multiplier per provider. Cached input tokens are
 # billed at <input rate> * <discount>. Hardcoded by family because the
 # pricing-page math differs per provider (Anthropic 10%, OpenAI 10%,
-# DeepSeek ~2%, Groq ~50% but only on some models). Lookup by id prefix.
+# DeepSeek ~2%). Lookup by id prefix.
 _CACHE_READ_DISCOUNT: dict[str, float] = {
     "claude-":         0.10,  # Anthropic ephemeral cache: 10% of input
     "anthropic:":      0.10,
@@ -132,8 +119,6 @@ _CACHE_READ_DISCOUNT: dict[str, float] = {
     "deepseek-":       0.02,  # DeepSeek context cache: 2% of input
     "gemini-2.5-":     0.10,  # Gemini implicit cache: 10%
     "google:gemini-":  0.10,
-    "llama-":          0.50,  # Groq KV cache: 50% (only on some models)
-    "qwen":            0.50,
     "kimi-":           0.50,
 }
 
@@ -238,15 +223,11 @@ def cost_usd(
     cost-tracker writes from blocking on a model rename.
 
     Args:
-        model: provider:model string (e.g. "llama-3.3-70b-versatile").
+        model: provider:model string (e.g. "deepseek-v4-flash").
         input_tokens: prompt tokens (system + chat_ctx + tools).
         output_tokens: completion tokens (the supervisor's reply).
     """
     rates = _PRICING_USD_PER_1M.get(model)
-    if rates is None:
-        # Try stripping a "groq:" prefix that some labels include.
-        if model.startswith("groq:"):
-            rates = _PRICING_USD_PER_1M.get(model[5:])
     if rates is None:
         logger.debug(
             f"[cost] unknown model '{model}' — pricing returns 0; "
@@ -272,7 +253,8 @@ def preflight(
       - breakdown {system: int, chat_ctx: int, tools: int}
 
     Logs a `[token-estimation]` line at WARN/HARD pressure so the
-    operator can see context fill before Groq returns 413.
+    operator can see context fill before the provider rejects the
+    request for context length.
     """
     sys_tokens = estimate_tokens(system_prompt)
     ctx_tokens = estimate_messages(chat_ctx_messages or [])

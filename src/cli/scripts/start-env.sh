@@ -61,14 +61,14 @@ fi
 
 # ── Internal wiring (users never set these) ───────────────────────────────
 # Resolve the active CLI model. Precedence:
-#   1) explicit argv[1] (e.g. `jarvis groq`)
+#   1) explicit argv[1] (e.g. `jarvis deepseek`)
 #   2) JARVIS_PROVIDER from .env.local
 #   3) ~/.jarvis/cli-model — written by the desktop tray's "CLI Model"
 #      submenu (see jarvis_voice_client.py /cli-model). Stores a model
 #      ID like "deepseek-chat" or "qwen/qwen3-32b"; we map it to the
 #      provider name start.sh expects.
 case "${1:-}" in
-  deepseek|groq|openai|gemini|ollama)
+  deepseek|openai|gemini|ollama)
     SELECTED_PROVIDER="$1"
     SELECTED_MODEL=""
     shift
@@ -94,10 +94,6 @@ case "${1:-}" in
           SELECTED_PROVIDER="kimi"
           SELECTED_MODEL="$JARVIS_AUTOMOD_BUILD_MODEL"
           ;;
-        qwen/qwen3-32b|llama-3.3-70b-versatile|meta-llama/llama-4-scout-17b-16e-instruct|openai/gpt-oss-120b)
-          SELECTED_PROVIDER="groq"
-          SELECTED_MODEL="$JARVIS_AUTOMOD_BUILD_MODEL"
-          ;;
       esac
     fi
     # Tray pick wins over .env.local's JARVIS_PROVIDER so the desktop
@@ -115,10 +111,6 @@ case "${1:-}" in
           ;;
         kimi-k2.7-code|kimi-k2.7-code-highspeed|kimi-k2.6|kimi-k2.6-instant|kimi-k2.6-thinking|kimi-k2.6-agent|kimi-k2.6-swarm)
           SELECTED_PROVIDER="kimi"
-          SELECTED_MODEL="$_cli_model"
-          ;;
-        qwen/qwen3-32b|llama-3.3-70b-versatile|meta-llama/llama-4-scout-17b-16e-instruct|openai/gpt-oss-120b)
-          SELECTED_PROVIDER="groq"
           SELECTED_MODEL="$_cli_model"
           ;;
       esac
@@ -164,7 +156,7 @@ fi
 export JARVIS_PROVIDER="$SELECTED_PROVIDER"   # proxy default — /model overrides per-request
 # When the cli-model file pinned a specific upstream model, surface
 # it so the proxy uses that exact model rather than the provider's
-# default. JARVIS_MODEL is empty when the user passed `jarvis groq`
+# default. JARVIS_MODEL is empty when the user passed `jarvis deepseek`
 # without a cli-model preference, in which case the registry default
 # applies.
 [ -n "$SELECTED_MODEL" ] && export JARVIS_MODEL="$SELECTED_MODEL"
@@ -172,7 +164,7 @@ export JARVIS_MODEL_REGISTRY_ENABLED=1
 export JARVIS_DISABLE_AUTH="${JARVIS_DISABLE_AUTH:-1}"
 export CLAUDE_CODE_MAX_OUTPUT_TOKENS=8000
 export ENABLE_TOOL_SEARCH=true
-# Non-Claude backends (Groq, DeepSeek) don't know the ToolSearch protocol
+# Non-Claude backends (e.g. DeepSeek) don't know the ToolSearch protocol
 # and fail to call deferred tools (WebFetch, etc.) — ship every schema up front.
 export JARVIS_DISABLE_TOOL_DEFERRAL="${JARVIS_DISABLE_TOOL_DEFERRAL:-1}"
 # IS_DEMO=1 (added f9ccc58d to skip onboarding) SILENTLY HANGS the

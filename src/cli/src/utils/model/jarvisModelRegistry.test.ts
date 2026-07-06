@@ -36,15 +36,7 @@ const VISION_CAPABLE_MODELS = [
 // upstream claims to but real testing shows it doesn't actually
 // process pixels).
 // gpt-5-nano: OpenAI lists it as text-only.
-// llama-4-scout: VERIFIED FAILING 2026-05-27. Groq's vision endpoint
-//   accepts the image_url shape (no error), but the model returns
-//   hallucinated content unrelated to the actual image (called a
-//   solid pink PNG "a black-and-white Copy to clipboard icon"; said
-//   "black" for both pink AND green test images). Either Groq's
-//   deployment doesn't have functional vision wired up, or Scout's
-//   vision is too weak to ship. Flipping would silently degrade UX.
 // All deepseek-*: text-only models; deepseek-VL not in registry.
-// All other groq models: text-only (qwen, llama-3.x, gpt-oss-120b).
 // ollama: depends on the local model — punt for now.
 // claude-*: anthropic-passthrough, vision handled natively (not via
 //   the OpenAI-shape converter); the flag here is moot for them.
@@ -54,11 +46,6 @@ const NON_VISION_MODELS = [
   'deepseek-reasoner',
   'deepseek-v4-flash',
   'deepseek-v4-pro',
-  'qwen/qwen3-32b',
-  'llama-3.3-70b-versatile',
-  'llama-3.1-8b-instant',
-  'openai/gpt-oss-120b',
-  'meta-llama/llama-4-scout-17b-16e-instruct',
 ] as const
 
 describe('jarvisModelRegistry — supportsVision', () => {

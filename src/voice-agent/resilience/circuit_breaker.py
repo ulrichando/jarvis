@@ -1,8 +1,8 @@
-"""Per-upstream circuit breaker for the voice agent's Groq calls.
+"""Per-upstream circuit breaker for the voice agent's provider calls.
 
 Pattern: closed (normal) → open (failing fast) → half-open (probe).
 Three instances live at module scope in jarvis_agent.py — STT, TTS,
-LLM — so a Groq endpoint outage on one upstream doesn't stall the
+LLM — so a provider endpoint outage on one upstream doesn't stall the
 others. When OPEN, call() raises CircuitOpenError immediately (or
 returns a fallback) instead of waiting on the underlying API.
 

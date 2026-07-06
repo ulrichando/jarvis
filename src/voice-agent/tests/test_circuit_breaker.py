@@ -1,7 +1,7 @@
 """CircuitBreaker — closed/open/half-open state machine.
 
 Pattern from Portkey + Maxim's LLM-app guides + AWS REL05-BP01.
-Three independent breakers (STT/TTS/LLM) gate Groq calls; when open,
+Three independent breakers (STT/TTS/LLM) gate provider calls; when open,
 the wrapped call fails fast with CircuitOpenError so FallbackAdapter
 picks up a fallback path within ms instead of waiting for a 30s
 upstream timeout.
@@ -189,12 +189,12 @@ def test_breaker_classifier_crash_falls_back_to_counting():
     assert cb.state == STATE_OPEN
 
 
-def test_resilience_classifier_recognizes_groq_signals():
+def test_resilience_classifier_recognizes_provider_signals():
     """The shipped classifier in resilience/__init__.py recognizes the
     error fragments we've observed in live telemetry."""
     from resilience import _is_expected_provider_error
 
-    # Groq 429 (live capture)
+    # 429 rate limit (live capture, 2026-05 cloud rung)
     e = RuntimeError(
         "Error code: 429 - Rate limit reached for model "
         "llama-3.3-70b-versatile tokens per min (TPM) rate_limit_exceeded"
@@ -215,7 +215,7 @@ def test_resilience_classifier_walks_chained_exceptions():
     classifier must walk __cause__ to find the real signal."""
     from resilience import _is_expected_provider_error
 
-    inner = RuntimeError("rate_limit_exceeded on Groq")
+    inner = RuntimeError("rate_limit_exceeded on the provider")
     try:
         try:
             raise inner

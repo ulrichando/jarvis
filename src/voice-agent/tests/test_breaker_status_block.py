@@ -1,11 +1,11 @@
 # src/voice-agent/tests/test_breaker_status_block.py
 """Tests for the breaker-status injection into JARVIS_INSTRUCTIONS.
 
-Audit recommendation F (2026-05-09): when an upstream Groq circuit
+Audit recommendation F (2026-05-09): when an upstream provider circuit
 breaker opens (STT / TTS / LLM), the supervisor goes silent or
 slow with no acknowledgment. Inject a system-status block into the
-prompt so the LLM knows to say "Groq is slow tonight, switching to
-DeepSeek" instead of leaving the user wondering.
+prompt so the LLM knows to say "the primary provider is slow tonight,
+switching to DeepSeek" instead of leaving the user wondering.
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ def test_block_empty_when_all_breakers_closed(breakers):
 
 def test_block_names_open_breakers(breakers):
     """When a single breaker is OPEN, the block names it explicitly so
-    the LLM can give a specific acknowledgment ('Groq STT is slow')
+    the LLM can give a specific acknowledgment ('STT is slow')
     instead of a generic 'something's wrong'."""
     from jarvis_agent import _build_breaker_status_block
     breakers[2].state = STATE_OPEN  # llm

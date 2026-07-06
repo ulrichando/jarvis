@@ -356,8 +356,8 @@ class VoiceClientHttpApi:
             self.state.tts_provider = "kokoro:" + (_kv or "af_heart")
         # AgentSession pipeline path: the JARVIS_LOCAL_TTS_PRIMARY/ONLY env flags
         # force on-device Kokoro regardless of the cloud tray pick, so report the
-        # REAL engine — otherwise /status keeps showing groq:troy while Kokoro is
-        # actually speaking (the 2026-06-22 "tts not local?" label bug). No-op
+        # REAL engine — otherwise /status keeps showing a stale cloud spec while
+        # Kokoro is actually speaking (the 2026-06-22 "tts not local?" label bug). No-op
         # when no local override is set (returns the file pick unchanged).
         self.state.tts_provider = active_tts_provider(self.state.tts_provider)
         # STT engine actually transcribing (distinct from the reply-LLM
@@ -853,7 +853,7 @@ class VoiceClientHttpApi:
 
     async def tts_provider(self, req: web.Request) -> web.Response:
         """GET  /tts-provider                              → current provider + available list
-        POST /tts-provider {"provider": "groq:troy"}    → write choice + restart agent"""
+        POST /tts-provider {"provider": "kokoro:af_bella"}    → write choice + restart agent"""
         cors = {"Access-Control-Allow-Origin": "*"}
         if req.method == "GET":
             try:

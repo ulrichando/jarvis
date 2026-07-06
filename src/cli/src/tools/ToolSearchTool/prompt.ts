@@ -70,7 +70,7 @@ export function isDeferredTool(tool: Tool): boolean {
   // function-name cap, which rejects the whole request.
   if (tool.isMcp === true) return true
 
-  // Jarvis override for non-MCP deferred tools: non-Claude backends (Groq,
+  // Jarvis override for non-MCP deferred tools: non-Claude backends (e.g.
   // DeepSeek) don't know the ToolSearch protocol and try to call deferred
   // tools directly, which fails validation. Setting JARVIS_DISABLE_TOOL_DEFERRAL=1
   // ships built-in tool schemas (WebFetch, WebSearch, Task*, Team*, etc.) up

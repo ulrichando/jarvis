@@ -107,9 +107,9 @@ def test_to_chat_ctx_injects_placeholder_when_uncached():
 
 def test_to_chat_ctx_no_inject_when_deepseek_flag_off():
     """Provider-scoped injection — when the contextvar is False (e.g.
-    request bound for Groq / OpenAI / etc.), reasoning_content must
-    NOT be added to any message. Live failure 2026-05-01: Groq
-    rejects requests with reasoning_content as 'unsupported'."""
+    request bound for OpenAI / Anthropic / etc.), reasoning_content must
+    NOT be added to any message. Live failure 2026-05-01: the then-primary
+    cloud provider rejected requests with reasoning_content as 'unsupported'."""
     deepseek_roundtrip.install()
     deepseek_roundtrip._REASONING_BY_CALL_ID["call_real"] = "would-be-injected"
 
@@ -238,7 +238,7 @@ def test_parse_choice_captures_reasoning_keyed_by_tool_call_id():
 
 
 def test_parse_choice_skips_when_no_reasoning_emitted():
-    """A non-DeepSeek provider (Groq, OpenAI proper) doesn't emit
+    """A non-DeepSeek provider (OpenAI proper, Anthropic) doesn't emit
     delta.reasoning_content. The patch must not add anything to the
     sidecar in that case."""
     from livekit.agents.inference import llm as inf_llm

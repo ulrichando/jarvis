@@ -27,8 +27,8 @@ Why a graph here, given the logic already worked imperatively:
 3. **Cross-domain reuse** — the LangChain ChatModel used by `run_classifier`
    is the same primitive used by future RAG / document QA / tool agents.
 4. **Provider-pluggable** — `JARVIS_ROUTER_PROVIDER` + `JARVIS_ROUTER_MODEL`
-   resolves via `langchain.chat_models.init_chat_model`, so swapping Groq for
-   DeepSeek for the classifier is a config change, not a code change.
+   resolves via `langchain.chat_models.init_chat_model`, so swapping OpenAI
+   for DeepSeek for the classifier is a config change, not a code change.
 
 Things that explicitly stayed in jarvis_agent.py / LiveKit:
 - The voice-loop LLM (`session._llm`) — that has to be a `livekit.agents.llm.LLM`
@@ -182,7 +182,7 @@ async def _node_run_classifier(state: TurnState, config: Optional[RunnableConfig
     timeout_ms = int(os.environ.get("JARVIS_ROUTER_TIMEOUT_MS", "500"))
 
     if classifier is None:
-        # No classifier configured (e.g. no GROQ_API_KEY); default to TASK_OTHER
+        # No classifier configured (e.g. missing provider key); default to TASK_OTHER
         return {"route": "TASK_OTHER", "classifier_skipped": False}
 
     history = list(history) + [("user", state["transcript"])]
@@ -195,7 +195,7 @@ async def _node_run_classifier(state: TurnState, config: Optional[RunnableConfig
     route = await classify_turn(
         history=history,
         emotion=state.get("emotion", "neutral"),
-        groq_call=_call,
+        classifier_call=_call,
         timeout_ms=timeout_ms,
     )
     return {"route": route, "classifier_skipped": False}
@@ -351,22 +351,29 @@ def build_turn_graph():
 
 def make_classifier():
     """Provider-pluggable classifier built via LangChain's unified
-    init_chat_model. Defaults to Groq llama-3.1-8b-instant for speed.
+    init_chat_model. Defaults to OpenAI gpt-4o-mini — cheap, fast at
+    6-token labels, and langchain-openai is the one provider package
+    actually installed. (The previous default pointed at the provider
+    removed in the 2026-06-29 eradication, so with no key present it
+    silently disabled classification — every turn fell back to TASK the
+    moment the all-routes pin was lifted. langchain-deepseek isn't in
+    the venv, so deepseek can't be the default. gpt-5 reasoning models
+    are unusable here: they spend the whole max_tokens=6 budget on
+    reasoning tokens and return empty content — live-probed 2026-07-06.)
 
     Override:
-      JARVIS_ROUTER_PROVIDER   one of {groq, deepseek, openai, anthropic}
-      JARVIS_ROUTER_MODEL      e.g. llama-3.1-8b-instant, deepseek-chat
+      JARVIS_ROUTER_PROVIDER   one of {openai, deepseek, anthropic}
+      JARVIS_ROUTER_MODEL      e.g. gpt-4o-mini, deepseek-chat
     """
-    provider = os.environ.get("JARVIS_ROUTER_PROVIDER", "groq").lower()
+    provider = os.environ.get("JARVIS_ROUTER_PROVIDER", "openai").lower()
     model = os.environ.get(
         "JARVIS_ROUTER_MODEL",
-        "llama-3.1-8b-instant" if provider == "groq" else "deepseek-chat",
+        "gpt-4o-mini" if provider == "openai" else "deepseek-chat",
     )
 
     # Need a key to talk to the provider. If absent, return None and the
     # classifier node defaults to TASK.
     key_envs = {
-        "groq":      "GROQ_API_KEY",
         "deepseek":  "DEEPSEEK_API_KEY",
         "openai":    "OPENAI_API_KEY",
         "anthropic": "ANTHROPIC_API_KEY",

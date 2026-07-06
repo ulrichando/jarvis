@@ -61,7 +61,7 @@ async function executeWithFallback(
     // truncate tools to its maxTools, and use the correct token-field name
     // for its family. Without this, a primary-shaped body (e.g. deepseek
     // max_tokens=65536, 25+ tools) sent verbatim to a fallback with a lower
-    // cap (e.g. groq max_tokens=32768, maxTools=20) would 400 immediately,
+    // cap (e.g. kimi max_tokens=32768, maxTools=16) would 400 immediately,
     // defeating the fallback chain exactly when it needs to fire.
     const reqForThisProvider = clampRequestForProvider(
       { ...openaiReq, model: provider.model },

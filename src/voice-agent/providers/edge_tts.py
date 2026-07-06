@@ -1,14 +1,15 @@
 """
 Microsoft Edge-TTS adapter for livekit-agents.
 
-Why this exists: Groq Orpheus TTS (our previous primary) has had
+Why this exists: our previous cloud-TTS primary (Orpheus) had
 intermittent service-side outages. Microsoft's Edge browser uses a
 neural-TTS endpoint reachable via the open-source `edge-tts` PyPI
 package — same voices Azure Cognitive Services serves, no auth, no
 quota in practice. Better availability than any single paid provider.
 
 Wraps `edge_tts.Communicate` in livekit's `tts.TTS` / `ChunkedStream`
-interface so it drops into AgentSession the same way `groq.TTS()` does.
+interface so it drops into AgentSession the same way any stock
+livekit-plugins TTS does.
 
 Output format: edge-tts streams MP3 (audio/mpeg). The agent's
 AudioEmitter decodes it transparently — same path the openai TTS

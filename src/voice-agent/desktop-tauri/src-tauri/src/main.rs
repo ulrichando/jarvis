@@ -498,8 +498,8 @@ mod tests {
         assert_eq!(tts_provider_pretty("kokoro:af_heart").as_deref(), Some("Kokoro · Heart"));
         // A voice outside the curated subset → fall back to the raw id.
         assert_eq!(tts_provider_pretty("kokoro:zz_unknown").as_deref(), Some("Kokoro · zz_unknown"));
-        // Cloud Orpheus voices still resolve to their label.
-        assert!(tts_provider_pretty("groq:troy").is_some());
+        // Online (Edge) voices still resolve to their label.
+        assert_eq!(tts_provider_pretty("edge:en-US-JennyNeural").as_deref(), Some("Edge · Jenny"));
         // Unrecognized spec → None (caller shows the raw name).
         assert_eq!(tts_provider_pretty("bogus:xyz"), None);
     }
@@ -745,7 +745,6 @@ fn keys_read() -> Result<Vec<serde_json::Value>, String> {
     // Catalogue of providers the UI shows. Adding a new provider here
     // is the only change needed to surface a new row.
     const PROVIDERS: &[(&str, &str)] = &[
-        ("GROQ_API_KEY",      "Groq"),
         ("DEEPSEEK_API_KEY",  "DeepSeek"),
         ("OPENAI_API_KEY",    "OpenAI"),
         ("ANTHROPIC_API_KEY", "Anthropic"),
@@ -755,7 +754,7 @@ fn keys_read() -> Result<Vec<serde_json::Value>, String> {
         ("XAI_API_KEY",       "xAI (Grok)"),
         // STT / voice provider keys (not LLMs) — surfaced here so the panel
         // can manage them too. Deepgram is the primary streaming-STT path
-        // (fast barge-in); blank = degrade to Groq Whisper / local whisper.
+        // (fast barge-in); blank = degrade to local whisper.
         ("DEEPGRAM_API_KEY",  "Deepgram (streaming STT)"),
     ];
     let user_keys = _keys_read_map();
@@ -1167,11 +1166,9 @@ fn set_tray_state(state: &str, sharing: bool, tray: State<TrayHandle>) -> Result
 /// Map a CLI model ID to a short pretty label for the tray.
 /// Pretty label for the active CLI/tool model id.
 /// 2026-05-18: pruned to the 6 curated entries that match
-/// voice_client_tray_config.py CLI_MODELS_AVAILABLE. Dropped IDs
-/// (deepseek-*, llama-3.3-70b, llama-4-scout, gpt-oss-120b,
-/// gpt-5-nano, gpt-5, gpt-5.1-chat-latest, gpt-4o) fall through to
-/// None — the indicator caller renders the raw id in that case,
-/// which only fires if state.db has a legacy value.
+/// voice_client_tray_config.py CLI_MODELS_AVAILABLE. Dropped/legacy
+/// IDs fall through to None — the indicator caller renders the raw
+/// id in that case, which only fires if state.db has a legacy value.
 fn cli_model_pretty(id: &str) -> Option<&'static str> {
     match id {
         "claude-sonnet-4-6"                              => Some("Claude · Sonnet 4.6"),
@@ -1179,7 +1176,6 @@ fn cli_model_pretty(id: &str) -> Option<&'static str> {
         "claude-haiku-4-5"                               => Some("Claude · Haiku 4.5"),
         "gpt-5.1"                                        => Some("OpenAI · GPT-5.1"),
         "gpt-5-mini"                                     => Some("OpenAI · GPT-5 mini"),
-        "qwen/qwen3-32b"                                 => Some("Groq · qwen3-32b"),
         "deepseek-v4-pro"                                => Some("DeepSeek · V4 Pro"),
         _ => None,
     }
@@ -1187,10 +1183,8 @@ fn cli_model_pretty(id: &str) -> Option<&'static str> {
 
 /// Pretty label for the active speech model id.
 /// 2026-05-18: pruned to the 6 curated entries that match
-/// voice_client_tray_config.py SPEECH_MODELS_AVAILABLE. Dropped IDs
-/// (llama-3.1-8b-instant, llama-3.3-70b-versatile, llama-4-scout,
-/// gpt-oss-120b, deepseek-*, gpt-5-nano, gpt-5, gpt-5.1-chat-latest,
-/// gpt-4o) fall through to None — the indicator caller renders the
+/// voice_client_tray_config.py SPEECH_MODELS_AVAILABLE. Dropped/legacy
+/// IDs fall through to None — the indicator caller renders the
 /// raw id in that case.
 fn speech_model_pretty(id: &str) -> Option<&'static str> {
     match id {
@@ -1199,7 +1193,6 @@ fn speech_model_pretty(id: &str) -> Option<&'static str> {
         "claude-opus-4-7"                                => Some("Claude · Opus 4.7"),
         "gpt-5-mini"                                     => Some("OpenAI · GPT-5 mini"),
         "gpt-5.1"                                        => Some("OpenAI · GPT-5.1"),
-        "qwen/qwen3-32b"                                 => Some("Groq · qwen3-32b"),
         "ollama/qwen3:30b-a3b"                           => Some("Local · Qwen3 30B-A3B"),
         "ollama/gpt-oss:120b"                            => Some("Local · gpt-oss 120B"),
         "deepseek-v4-flash"                              => Some("DeepSeek · V4 Flash"),
@@ -1315,19 +1308,13 @@ fn switch_cli_model(app: &tauri::AppHandle, id: &'static str) {
 /// Must match the order items are pushed into TtsVoiceItems.
 /// ElevenLabs entries removed 2026-05-01 — see jarvis_agent.py
 /// _build_dispatching_tts comment.
-/// ONLINE TTS voices — (spec, label, family). `family` ∈ {"orpheus","edge"}
-/// drives the menu's grouping headers. Every entry writes its full spec to
+/// ONLINE TTS voices — (spec, label, family). `family` drives the menu's
+/// grouping headers (only "edge" remains — the cloud Orpheus voices were
+/// removed 2026-06-29 with their provider). Every entry writes its full spec to
 /// ~/.jarvis/tts-provider; the agent's build_tts_chain selects the engine from
-/// the spec prefix. Groq Orpheus voice list verified against Groq's docs
-/// (autumn/diana/hannah female; austin/daniel/troy male). On-device Kokoro
+/// the spec prefix. On-device Kokoro
 /// voices live in KOKORO_VOICE_CHOICES, listed separately under their own header.
 const ONLINE_TTS_VOICES: &[(&str, &str, &str)] = &[
-    ("groq:troy",   "Troy  (US male)",     "orpheus"),
-    ("groq:austin", "Austin  (US male)",   "orpheus"),
-    ("groq:daniel", "Daniel  (US male)",   "orpheus"),
-    ("groq:autumn", "Autumn  (US female)", "orpheus"),
-    ("groq:diana",  "Diana  (US female)",  "orpheus"),
-    ("groq:hannah", "Hannah  (US female)", "orpheus"),
     ("edge:en-US-GuyNeural",         "Guy  (US male)",         "edge"),
     ("edge:en-US-ChristopherNeural", "Christopher  (US male)", "edge"),
     ("edge:en-US-JennyNeural",       "Jenny  (US female)",     "edge"),
@@ -1350,11 +1337,10 @@ fn tts_provider_pretty(spec: &str) -> Option<String> {
             .unwrap_or(voice);
         return Some(format!("Kokoro · {pretty}"));
     }
-    // Online (Orpheus / Edge): curated label prefixed with the engine name.
-    ONLINE_TTS_VOICES.iter().find(|(s, _, _)| *s == spec).map(|(_, l, fam)| {
+    // Online (Edge): curated label prefixed with the engine name.
+    ONLINE_TTS_VOICES.iter().find(|(s, _, _)| *s == spec).map(|(_, l, _fam)| {
         let short = l.split('(').next().unwrap_or(l).trim();
-        let engine = if *fam == "edge" { "Edge" } else { "Orpheus" };
-        format!("{engine} · {short}")
+        format!("Edge · {short}")
     })
 }
 
@@ -1550,7 +1536,7 @@ fn set_tts_label(
     // Sync ✓ across BOTH voice families from the live /status spec, so the
     // checkmark tracks the ACTUAL engine — Kokoro when JARVIS_LOCAL_TTS_PRIMARY
     // is on, even though voice-mode still reads "cloud". A "kokoro:<voice>" spec
-    // ✓s that Kokoro voice and clears the cloud Orpheus voices; a cloud spec
+    // ✓s that Kokoro voice and clears the online voices; an online spec
     // does the reverse.
     if !name.is_empty() {
         let kokoro_voice = name.strip_prefix("kokoro:");
@@ -1904,7 +1890,7 @@ fn audio_device_pick(app: &tauri::AppHandle, id: &str) {
 //
 // ~/.jarvis/voice-mode selects the JARVIS-Claude pipeline flavour, read by the
 // agent at startup (_apply_voice_mode): local = faster-whisper + qwen3 + Kokoro
-// (on-device); cloud = Deepgram + Claude + Orpheus. It's written by the
+// (on-device); cloud = the cloud-provider chain (Claude + cloud TTS). It's written by the
 // Conversation-mode "JARVIS" / "Local" items and read here for the active-mode ✓.
 
 fn read_voice_mode() -> &'static str {
@@ -2929,8 +2915,7 @@ fn main() {
             // Two layers of models, surfaced clearly in the menu:
             //
             //   1) SPEECH model (the voice LLM that composes spoken
-            //      replies). Switchable below — 6 curated entries
-            //      (Anthropic×3, OpenAI×2, Groq×1) matching
+            //      replies). Switchable below — curated entries matching
             //      SPEECH_MODELS_AVAILABLE in voice_client_tray_config.py;
             //      a pick writes ~/.jarvis/voice-model and restarts the
             //      agent (~5 s amber).
@@ -2961,7 +2946,6 @@ fn main() {
             // freshly pulled Ollama model.
             let have_anthropic = provider_key_present("ANTHROPIC_API_KEY");
             let have_openai    = provider_key_present("OPENAI_API_KEY");
-            let have_groq      = provider_key_present("GROQ_API_KEY");
             let have_deepseek  = provider_key_present("DEEPSEEK_API_KEY");
             let ollama_models  = ollama_installed_models();
 
@@ -2973,7 +2957,6 @@ fn main() {
             // ~0.7s vs gpt-5-mini ~1.34s). Sonnet for tool-heavy work,
             // Opus for extended reasoning. gpt-5-mini / 5.1 are the
             // OpenAI alternatives when Anthropic credit is a concern.
-            // qwen3-32b is the strongest Groq option (no API quota).
             // Speech model picker — (model-id, menu label, available). Order = display
             // order. The active model (read from ~/.jarvis/voice-model) is pre-marked
             // with ✓; items are stashed in SpeechItems so switch_speech_model repaints
@@ -2990,7 +2973,6 @@ fn main() {
                 ("claude-opus-4-7",      "Use Anthropic · Claude Opus 4.7  (most capable, slowest)", have_anthropic),
                 ("gpt-5-mini",           "Use OpenAI · GPT-5 mini (alternative)",                    have_openai),
                 ("gpt-5.1",              "Use OpenAI · GPT-5.1 (best OpenAI tools)",                 have_openai),
-                ("qwen/qwen3-32b",       "Use Groq · qwen3-32b (no-API-quota option)",               have_groq),
                 ("deepseek-v4-flash",    "Use DeepSeek · V4 Flash (fast)",                           have_deepseek),
                 ("deepseek-chat-v3",     "Use DeepSeek · V3 Chat (best DeepSeek conversation)",      have_deepseek),
                 ("ollama/qwen3:30b-a3b", "Use Local · Qwen3 30B-A3B (Ollama, on-device, fast)",      local_qwen3_ok),
@@ -3026,9 +3008,9 @@ fn main() {
             // ── TTS VOICE submenu (nested under Models) ──
             // Switches the synthesis voice without restarting the agent.
             // Voice-client writes ~/.jarvis/tts-provider; agent's
-            // _build_tts_chain reads it on next utterance. Groq Orpheus
-            // only as of 2026-05-01 (ElevenLabs removed after live key
-            // 401 + fallback chain failure left JARVIS silent mid-turn).
+            // _build_tts_chain reads it on next utterance. ElevenLabs
+            // removed 2026-05-01 after a live key 401 + fallback chain
+            // failure left JARVIS silent mid-turn.
 
             // Read the current selection from disk so we can pre-mark
             // it with ✓ immediately — no wait for a /status poll.
@@ -3046,7 +3028,7 @@ fn main() {
                 .enabled(false)
                 .build(app)?;
 
-            // ── ONLINE voices (Groq Orpheus + Microsoft Edge) ──
+            // ── ONLINE voices (Microsoft Edge) ──
             // Built from ONLINE_TTS_VOICES, grouped by family under disabled
             // headers so the menu visibly separates online from on-device. Each
             // item id is "ttsv::<spec>" and writes its full spec to
@@ -3061,11 +3043,7 @@ fn main() {
                     if !tts_last_family.is_empty() {
                         tts_builder = tts_builder.item(&PredefinedMenuItem::separator(app)?);
                     }
-                    let hdr_text = if family == "edge" {
-                        "Online · Edge (Microsoft):"
-                    } else {
-                        "Online · Groq Orpheus:"
-                    };
+                    let hdr_text = "Online · Edge (Microsoft):";
                     let hdr = MenuItemBuilder::with_id(format!("tts_hdr_{family}"), hdr_text)
                         .enabled(false).build(app)?;
                     tts_builder = tts_builder.item(&hdr);
@@ -3100,8 +3078,7 @@ fn main() {
             // Sonnet 4.6 is the default (τ-bench leader 87.5% for
             // multi-turn tool use). Opus for hardest multi-step work.
             // Haiku for fast single-shot calls. gpt-5.1 / 5-mini are
-            // OpenAI alternatives. qwen3-32b is the no-API-quota
-            // option. DeepSeek V4 Pro re-added 2026-06-23 per user
+            // OpenAI alternatives. DeepSeek V4 Pro re-added 2026-06-23 per user
             // request — it's their daily-driver CLI model — despite the
             // documented hallucination rate (94% per Artificial Analysis).
             // Tool model picker — (model-id, menu label, available). Order = display
@@ -3114,7 +3091,6 @@ fn main() {
                 ("claude-haiku-4-5",  "Use Claude · Haiku 4.5  (fastest)",                     have_anthropic),
                 ("gpt-5.1",           "Use OpenAI · GPT-5.1 (best OpenAI tools)",              have_openai),
                 ("gpt-5-mini",        "Use OpenAI · GPT-5 mini (alternative)",                 have_openai),
-                ("qwen/qwen3-32b",    "Use Groq · qwen3-32b (no-API-quota option)",            have_groq),
                 ("deepseek-v4-pro",   "Use DeepSeek · V4 Pro (strong reasoning)",              have_deepseek),
             ];
             let mut tool_sb = SubmenuBuilder::new(app, "Tool model ▸");
@@ -3537,7 +3513,6 @@ fn main() {
                         "model_claude-haiku-4-5"                           => switch_cli_model(app, "claude-haiku-4-5"),
                         "model_gpt-5.1"                                    => switch_cli_model(app, "gpt-5.1"),
                         "model_gpt-5-mini"                                 => switch_cli_model(app, "gpt-5-mini"),
-                        "model_qwen/qwen3-32b"                             => switch_cli_model(app, "qwen/qwen3-32b"),
                         "model_deepseek-v4-pro"                            => switch_cli_model(app, "deepseek-v4-pro"),
                         // Speech-model picks (these trigger an agent restart)
                         // 2026-05-18: curated to 6 entries matching
@@ -3547,7 +3522,6 @@ fn main() {
                         "speech_claude-opus-4-7"                           => switch_speech_model(app, "claude-opus-4-7"),
                         "speech_gpt-5-mini"                                => switch_speech_model(app, "gpt-5-mini"),
                         "speech_gpt-5.1"                                   => switch_speech_model(app, "gpt-5.1"),
-                        "speech_qwen/qwen3-32b"                            => switch_speech_model(app, "qwen/qwen3-32b"),
                         "speech_deepseek-v4-flash"                         => switch_speech_model(app, "deepseek-v4-flash"),
                         "speech_deepseek-chat-v3"                          => switch_speech_model(app, "deepseek-chat-v3"),
                         "speech_ollama/qwen3:30b-a3b"                      => switch_speech_model(app, "ollama/qwen3:30b-a3b"),
@@ -3566,7 +3540,7 @@ fn main() {
                             }
                             refresh_mode_menu(app);
                         }
-                        // Online TTS-voice picks ("ttsv::<spec>") — Orpheus + Edge.
+                        // Online TTS-voice picks ("ttsv::<spec>") — Edge.
                         // switch_tts_provider writes the spec + restarts the agent
                         // so the engine change (build_tts_chain) takes effect.
                         id if id.starts_with("ttsv::") => {

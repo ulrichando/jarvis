@@ -27,7 +27,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # anthropic plugin reads ANTHROPIC_API_KEY at __init__ time.
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
-os.environ.setdefault("GROQ_API_KEY", "test-key-for-init")
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-deepseek-key")
 
 
@@ -498,7 +497,7 @@ def test_apply_stable_prefix_recursively_walks_dispatcher(monkeypatch):
     # Anthropic primaries: BANTER + TASK (legacy) + REASONING + EMOTIONAL
     # + TASK_DESKTOP + TASK_BROWSER + TASK_FILES + TASK_OTHER = 8.
     # TASK_CODE's primary is DeepSeek (no AnthropicCachedLLM wrapper).
-    # (Groq + DeepSeek rungs don't expose set_stable_prefix, so they
+    # (DeepSeek rungs don't expose set_stable_prefix, so they
     # silently skip — they auto-cache on prefix-match anyway.)
     assert n == 8, f"expected 8 wrappers updated, got {n}"
 

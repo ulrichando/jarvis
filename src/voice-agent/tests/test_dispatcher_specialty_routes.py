@@ -15,10 +15,9 @@ import pytest
 # Tests run from the voice-agent root.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Groq + Anthropic + DeepSeek plugins read API keys at construction
+# Anthropic + DeepSeek plugins read API keys at construction
 # time even when the request never goes out — set placeholders so the
 # rungs build cleanly. Same pattern as test_llm_dispatcher_build.
-os.environ.setdefault("GROQ_API_KEY", "test-key-for-init")
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-deepseek-key")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
 

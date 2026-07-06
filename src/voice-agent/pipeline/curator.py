@@ -30,9 +30,8 @@ LLM consolidation review
 Upstream drove consolidation by forking a full agent that mutated the skill
 library via ``skill_manage`` tool calls. JARVIS's voice agent has no
 equivalent forked-agent runtime, so that mutate-via-tool-calls path is
-DEFERRED. In its place, ``run_consolidation_review()`` calls the same
-small-model aux-LLM that ``pipeline.memory_consolidator`` uses (Groq
-llama-3.1-8b-instant via httpx) to cluster near-duplicate skills and returns
+DEFERRED. In its place, ``run_consolidation_review()`` calls a
+small aux-LLM (deepseek-chat via httpx) to cluster near-duplicate skills and returns
 those clusters as SUGGESTIONS only — it never archives or rewrites a skill on
 its own. It is gated OFF by default (``JARVIS_CURATOR_CONSOLIDATION=1`` to
 enable) and degrades to an empty suggestion list when no API key is present
@@ -734,17 +733,18 @@ def parse_consolidation_output(
 
 
 def _call_consolidation_llm(candidates: List[Dict[str, str]]) -> str:
-    """Call Groq llama-3.1-8b-instant with the consolidation-review prompt.
+    """Call DeepSeek (deepseek-chat) with the consolidation-review prompt.
 
-    Mirrors ``pipeline.memory_consolidator._call_consolidator_llm`` exactly so
-    failure modes (missing key, timeout, non-2xx) are identical. Returns a JSON
-    string; on any failure returns ``{"clusters": []}``.
+    Ported off the eradicated provider 2026-07-06 — the old endpoint's key
+    no longer exists anywhere, so consolidation had been silently skipped
+    since 2026-06-29. Returns a JSON string; on any failure (missing key,
+    timeout, non-2xx) returns ``{"clusters": []}``.
     """
     import httpx
 
-    api_key = os.environ.get("GROQ_API_KEY")
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
-        logger.debug("[curator] GROQ_API_KEY missing — skipping consolidation LLM")
+        logger.debug("[curator] DEEPSEEK_API_KEY missing — skipping consolidation LLM")
         return '{"clusters": []}'
 
     candidates_block = "\n".join(
@@ -759,10 +759,10 @@ def _call_consolidation_llm(candidates: List[Dict[str, str]]) -> str:
     try:
         with httpx.Client(timeout=8.0) as client:
             resp = client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
+                "https://api.deepseek.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
                 json={
-                    "model": "llama-3.1-8b-instant",
+                    "model": "deepseek-chat",
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 1200,
                     "temperature": 0.0,

@@ -191,7 +191,7 @@ describe('gh-app sandboxEnvPassthrough', () => {
     const env = {
       ANTHROPIC_API_KEY: 'a', DEEPSEEK_API_KEY: 'd', JARVIS_PROVIDER: 'deepseek',
       GH_APP_PRIVATE_KEY: 'PEM-NO', GH_APP_WEBHOOK_SECRET: 'no', DATABASE_URL: 'no', POSTGRES_PASSWORD: 'no',
-      GROQ_API_KEY: undefined,
+      OPENAI_API_KEY: undefined,
     }
     const out = sandboxEnvPassthrough(env)
     expect(out).toEqual({ ANTHROPIC_API_KEY: 'a', DEEPSEEK_API_KEY: 'd', JARVIS_PROVIDER: 'deepseek' })

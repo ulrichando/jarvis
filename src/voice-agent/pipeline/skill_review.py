@@ -16,7 +16,7 @@ LiveKit voice worker has NO equivalent forked-agent runtime — there is
 no ``run_agent.AIAgent`` to fork. So we rebuild on the voice substrate
 using the SAME off-band aux-LLM pattern the rest of the voice pipeline
 already uses (``pipeline.memory_extractor`` / ``pipeline.memory_consolidator``
-/ ``pipeline.curator``): a small model (Groq llama-3.1-8b-instant) called
+/ ``pipeline.curator``): a small model (DeepSeek deepseek-chat) called
 via httpx, with a pure-function parse seam so unit tests cover parsing
 without an LLM. Identical rationale to the curator's
 "LLM consolidation review" note.
@@ -476,8 +476,8 @@ def _validate_payload(kind: str, payload: dict) -> dict | None:
 
 
 # ── Reviewer prompt + aux-LLM call ───────────────────────────────────
-# Mirrors the extractor/consolidator call shape EXACTLY (Groq
-# llama-3.1-8b-instant via httpx, temp 0, short timeout, graceful
+# Mirrors the extractor/consolidator call shape EXACTLY (DeepSeek
+# deepseek-chat via httpx, temp 0, short timeout, graceful
 # degrade to "no proposal" on any failure or missing key).
 _REVIEW_PROMPT = """You are JARVIS's self-improvement reviewer. You read \
 ONE completed conversation turn (what the user said, what JARVIS replied, \
@@ -589,7 +589,8 @@ LLMFn = Callable[["TurnSnapshot"], Awaitable[str]]
 
 async def _call_review_llm(snapshot: TurnSnapshot) -> str:
     """Call deepseek-chat via DeepSeek with the review prompt (repointed from
-    Groq llama-3.1-8b-instant 2026-06-29 in the full-Groq-eradication pass).
+    the previous provider's llama-3.1-8b-instant 2026-06-29 when that
+    provider was eradicated from the stack).
     Isolated so tests monkeypatch it without an API key. Degrades to an
     empty-proposal payload on missing key / timeout / non-2xx — identical
     failure handling to memory_extractor / memory_consolidator."""
@@ -921,7 +922,7 @@ async def run_review(limit: int = 10, apply: bool = False, llm_fn: LLMFn | None 
     ``_apply_enabled(apply)`` is true (apply=True AND
     JARVIS_SKILL_REVIEW_APPLY=1).
 
-    `llm_fn` is the test seam (defaults to the live Groq aux-LLM)."""
+    `llm_fn` is the test seam (defaults to the live DeepSeek aux-LLM)."""
     started_at = datetime.now(timezone.utc)
     apply_on = _apply_enabled(apply)
 

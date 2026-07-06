@@ -641,7 +641,7 @@ export async function launchContainerSession(
     }
 
     // ── Model routing ──────────────────────────────────────────────────
-    // The jarvis CLI reaches every provider (DeepSeek/Groq/OpenAI/Gemini AND
+    // The jarvis CLI reaches every provider (DeepSeek/OpenAI/Gemini AND
     // Claude) through a local LiteLLM proxy on :4000 — the same one bin/jarvis
     // uses (src/cli/scripts/start.sh). The container runs --network=host, so it
     // can hit the host's 127.0.0.1:4000. When the proxy is up we mirror

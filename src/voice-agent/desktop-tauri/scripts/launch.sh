@@ -3,7 +3,7 @@
 # Ensures the backend services are running, then starts the desktop.
 # Voice lives in a native LiveKit-peer process (jarvis-voice-client) —
 # not in this launcher. Services:
-#   • Proxy    :4000  — LLM router (Anthropic-compat → Groq/DeepSeek/…)
+#   • Proxy    :4000  — LLM router (Anthropic-compat → Anthropic/DeepSeek/…)
 #   • Bridge   :8765  — WS + REST API for the Tauri UI
 #   • Web      :3001  — Next.js dev server (the JARVIS web UI)
 # Each is only started if not already listening. Idempotent. Matches

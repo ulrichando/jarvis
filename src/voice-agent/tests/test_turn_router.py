@@ -347,18 +347,18 @@ def test_route_from_classifier_output(raw, expected):
     assert route_from_classifier_output(raw) == expected
 
 
-def test_classify_turn_uses_groq_response():
-    fake_groq = AsyncMock(return_value="REASONING")
+def test_classify_turn_uses_classifier_response():
+    fake_classifier = AsyncMock(return_value="REASONING")
     out = asyncio.run(
         classify_turn(
             history=[("user", "walk me through how http2 multiplexing works")],
             emotion="curious",
-            groq_call=fake_groq,
+            classifier_call=fake_classifier,
             timeout_ms=500,
         )
     )
     assert out == "REASONING"
-    assert fake_groq.await_count == 1
+    assert fake_classifier.await_count == 1
 
 
 def test_classify_turn_falls_back_on_timeout():
@@ -370,7 +370,7 @@ def test_classify_turn_falls_back_on_timeout():
         classify_turn(
             history=[("user", "hey")],
             emotion="neutral",
-            groq_call=slow,
+            classifier_call=slow,
             timeout_ms=100,
         )
     )

@@ -14,7 +14,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Required envs for module imports (registry depends on them).
-os.environ.setdefault("GROQ_API_KEY", "test-key-for-init")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
 
 

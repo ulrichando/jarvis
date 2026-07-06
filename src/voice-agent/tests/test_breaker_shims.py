@@ -11,7 +11,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-os.environ.setdefault("GROQ_API_KEY", "test-key-for-init")
 
 
 def _run(coro):
@@ -25,11 +24,10 @@ def _run(coro):
         loop.close()
 
 
-# The STT (BreakeredGroqSTT) + TTS (LoggingGroqChunkedStream) breaker
-# shims were removed 2026-06-29 in the full-Groq-eradication pass — their
-# breaker tests went with them. STT is now Deepgram→local faster-whisper;
-# TTS is Kokoro→Edge. The LLM breaker (BreakeredLLMStream) below is
-# provider-agnostic and stays.
+# The cloud-provider STT + TTS breaker shims were removed 2026-06-29 in
+# the provider-eradication pass — their breaker tests went with them.
+# STT is now Deepgram→local faster-whisper; TTS is Kokoro→Edge. The LLM
+# breaker (BreakeredLLMStream) below is provider-agnostic and stays.
 def test_breaker_llm_open_raises_apiconnection_error():
     """When _LLM_BREAKER is open, _BreakeredLLMStream must raise
     APIConnectionError on first __anext__ — exercised through the

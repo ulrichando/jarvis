@@ -13,7 +13,7 @@ Three layered detectors keep the voice-client process resilient:
      `AGENT_DISPATCH_TIMEOUT_SEC`, the agent worker missed its
      dispatch — restart ourselves to force a fresh dispatch.
 
-  3. **Stale-STT watchdog** — detects a dead Groq STT connection
+  3. **Stale-STT watchdog** — detects a dead cloud-STT connection
      (TCP CLOSE-WAIT): voice activity was recent, but
      `turn_telemetry.db` hasn't been updated since the voice ended.
      Restarts the agent unit to drop the dead socket.
@@ -70,7 +70,7 @@ WATCHDOG_STALE_SEC: float     = 60.0
 AGENT_DISPATCH_TIMEOUT_SEC: float = 10.0
 
 # How long after voice activity with no DB update before we declare
-# the Groq STT connection dead and restart both services. 4 minutes
+# the STT connection dead and restart both services. 4 minutes
 # is long enough to cover a legitimate long tool call (those update
 # the DB mid-run) but short enough that the user doesn't wait half
 # an hour before JARVIS self-heals.
@@ -137,7 +137,7 @@ class LoopWatchdog:
     def mark_voice_active(self) -> None:
         """Called when the local participant becomes an active speaker.
         Sets the timestamp the stale-STT watchdog reads to detect a
-        dead Groq STT connection."""
+        dead cloud-STT connection."""
         self._last_voice_active_ts = time.time()
 
     # ── Asyncio loop heartbeat ──────────────────────────────────────
@@ -194,10 +194,10 @@ class LoopWatchdog:
     # ── Stale-STT watchdog ──────────────────────────────────────────
 
     async def stale_stt_watchdog(self, shutdown: asyncio.Event) -> None:
-        """Detect and self-heal a dead Groq STT connection.
+        """Detect and self-heal a dead cloud-STT connection.
 
-        Failure mode: after several hours the HTTPS socket to Groq
-        enters CLOSE-WAIT — the agent appears healthy (connected,
+        Failure mode: after several hours the HTTPS socket to the cloud
+        STT provider enters CLOSE-WAIT — the agent appears healthy (connected,
         agent_present) but audio frames go into a dead socket and STT
         transcripts never arrive. Symptom: user speaks, VAD fires
         (listening=True), but no turn lands in turn_telemetry.db and
@@ -229,12 +229,12 @@ class LoopWatchdog:
                 pass
 
     def _check_stale_stt(self, db_path: Path) -> None:
-        """Detect a possibly-dead Groq STT connection. Logs a warning;
+        """Detect a possibly-dead cloud-STT connection. Logs a warning;
         optionally restarts the agent (opt-in via env, default OFF as
         of 2026-05-17).
 
         Background: this watchdog was originally an auto-restart in
-        response to repeated dead-Groq-socket failures. In practice it
+        response to repeated dead-STT-socket failures. In practice it
         fires false-positives whenever the user makes a non-STT-producing
         utterance (cough, throat-clear, sub-VAD-threshold speech,
         garbage-gated transcript) — voice was detected (RMS > listening
@@ -278,7 +278,7 @@ class LoopWatchdog:
         self.log.warning(
             f"[turn-watchdog] voice active {voice_age:.0f}s ago, "
             f"DB last updated {now - db_mtime:.0f}s ago — "
-            f"could be dead Groq STT OR garbage-gated turn; {action}"
+            f"could be dead/stale STT OR garbage-gated turn; {action}"
         )
         # Clear the timestamp so the check doesn't re-fire repeatedly
         # on the same stuck condition.

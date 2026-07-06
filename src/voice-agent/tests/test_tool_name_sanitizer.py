@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from sanitizers.tool_name import _try_recover
 
 
-# Captured live (Groq qwen3-32b, 2026-04-29) — name + JSON body
+# Captured live (a hosted qwen3-32b rung, 2026-04-29) — name + JSON body
 # concatenated into the `name` field instead of being properly split:
 _REAL_ERROR = (
     "tool call validation failed: attempted to call tool "
@@ -66,7 +66,7 @@ def test_returns_none_when_malformed_name_has_no_json_body():
 
 
 def test_handles_name_eq_json_form():
-    """Captured live 2026-05-01: Groq llama emitted
+    """Captured live 2026-05-01: a hosted llama rung emitted
     `web_fetch={"url":"...","timeout":"15"}` — no space, `=` sep."""
     err = (
         "tool call validation failed: attempted to call tool "

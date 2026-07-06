@@ -3,17 +3,17 @@
 **Status:** implemented + live-verified on Kali 2026-06-17. Default OFF.
 **Design:** `~/.claude/plans/we-need-to-find-polymorphic-allen.md` (2026-06-15).
 
-JARVIS normally runs on cloud providers (Anthropic / Groq / DeepSeek for
-LLM, Deepgram + Groq Whisper for STT, Groq Orpheus + Edge for TTS,
+JARVIS normally runs on cloud providers (Anthropic / DeepSeek / Kimi for
+LLM, Deepgram for cloud STT, Edge for cloud TTS,
 Anthropic for vision). This stack adds a **last-resort LOCAL rung** to
 each component so JARVIS keeps working with no internet at all. Every
 rung is independently gated and **OFF by default** — cloud stays primary.
 
 ```
                 CLOUD (primary)                      LOCAL (this stack, last rung)
-LLM    Anthropic → Groq → DeepSeek          →  Ollama (any model)        [rung-0 PRIMARY when on]
-STT    Deepgram Nova-3 → Groq Whisper        →  faster-whisper (ctranslate2)
-TTS    Groq Orpheus → Edge-TTS               →  Piper (onnxruntime)
+LLM    Anthropic → DeepSeek → Kimi           →  Ollama (any model)        [rung-0 PRIMARY when on]
+STT    Deepgram Nova-3 (optional)            →  faster-whisper (ctranslate2)  [local IS primary since 2026-06-21]
+TTS    Kokoro (local) → Edge-TTS             →  Piper (onnxruntime)
 Vision Anthropic vision (webcam tool)        →  Ollama vision (moondream / llava / qwen2.5-vl)
 ```
 

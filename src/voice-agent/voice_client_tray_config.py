@@ -12,8 +12,8 @@ manipulates via the HTTP control plane:
                                      switch (LLM built once per
                                      session).
   - `~/.jarvis/tts-provider`       — "<provider>:<voice>" string.
-                                     Only `groq:<voice>` accepted
-                                     post-2026-05-01.
+                                     `kokoro:<voice>` or
+                                     `edge:<voice>` (2026-06-29+).
   - `~/.jarvis/.tool-running`      — agent flag, presence = a tool
                                      is currently executing.
   - `~/.jarvis/.silent-mode`       — agent flag, presence = silent
@@ -99,8 +99,6 @@ CLI_MODELS_AVAILABLE: tuple[str, ...] = (
     # best OpenAI-tier tool-call accuracy; mini is the speed-balance.
     "gpt-5.1",
     "gpt-5-mini",
-    # Groq — strongest open-weights tool-caller in the stack.
-    "qwen/qwen3-32b",
     # DeepSeek — re-added 2026-06-23 per user request (their daily-driver
     # CLI model) despite the documented 94% hallucination rate.
     "deepseek-v4-pro",
@@ -114,9 +112,8 @@ CLI_MODELS_AVAILABLE: tuple[str, ...] = (
     #   - deepseek-reasoner        (deprecated, replaced by V4)
     #   - deepseek-v4-flash        (96% hallucination, Artificial Analysis)
     #   - deepseek-v4-pro          (94% hallucination; was the prior default)
-    #   - llama-3.3-70b-versatile  (generalist, no tool-call edge)
-    #   - llama-4-scout            (weaker tool calling)
-    #   - openai/gpt-oss-120b      (qwen3-32b covers the Groq slot)
+    # (the Groq-hosted entries — qwen3-32b/llama/gpt-oss — were removed
+    #  2026-07-06 with the provider.)
     #   - gpt-5-nano               (in-code: weakest tool calling)
     #   - gpt-5, gpt-4o            (no edge over mini/5.1)
     #   - gpt-5.1-chat-latest      (redundant with gpt-5.1)
@@ -157,10 +154,6 @@ SPEECH_MODELS_AVAILABLE: tuple[str, ...] = (
     # accuracy in OpenAI's tier (~500ms slower TTFT than mini).
     "gpt-5-mini",
     "gpt-5.1",
-    # Groq — only the strongest tool-caller in the Groq tier
-    # (qwen3-32b: BFCL v3 #2 open-weights, <400ms TTFT). For no-
-    # OpenAI-quota / no-Anthropic-credit days.
-    "qwen/qwen3-32b",
     # DeepSeek — v4-flash re-added 2026-06-23 per user request (daily-driver
     # voice model). It's in the tray menu + providers/llm.py SPEECH_MODELS but
     # was missing here, so read_speech_model() rejected the pinned id and
@@ -189,10 +182,8 @@ SPEECH_MODELS_AVAILABLE: tuple[str, ...] = (
     #   - gpt-5-nano               (in-code: weakest tool calling)
     #   - gpt-5, gpt-4o            (no edge over mini/5.1)
     #   - gpt-5.1-chat-latest      (redundant with gpt-5.1)
-    #   - llama-3.3-70b-versatile  (kept as dispatcher TASK fallback)
-    #   - llama-3.1-8b-instant     (kept as BANTER specialist)
-    #   - llama-4-scout            (was EMOTIONAL — upgraded to Haiku)
-    #   - openai/gpt-oss-120b      (qwen3-32b covers the Groq slot)
+    # (the Groq-hosted entries — qwen3-32b/llama/gpt-oss — were removed
+    #  2026-07-06 with the provider.)
     #   - deepseek-chat (V3)       (non-thinking baseline)
     #   - deepseek-v4-pro          (retired 2026-05-16; 94% hallucination)
     # (deepseek-v4-flash was here too until 2026-06-23 — re-added above.)
@@ -206,8 +197,8 @@ SPEECH_MODELS_AVAILABLE: tuple[str, ...] = (
 # ── TTS provider switching ──────────────────────────────────────────
 # Format: "<provider>:<voice_id_or_name>". Engines: `kokoro:<voice>`
 # (on-device, the default) and `edge:<voice>` (Microsoft Edge-TTS,
-# auth-free). Groq Orpheus was removed 2026-06-29 (full-Groq-eradication
-# pass); ElevenLabs was removed 2026-05-01.
+# auth-free). The cloud Orpheus TTS was removed 2026-06-29 (provider
+# eradication); ElevenLabs was removed 2026-05-01.
 TTS_PROVIDER_FILE: Path = Path.home() / ".jarvis" / "tts-provider"
 
 TTS_PROVIDERS_AVAILABLE: dict[str, str] = {
@@ -279,7 +270,7 @@ def active_stt_engine() -> str:
         return f"{model} (local)"
     if os.environ.get("JARVIS_DEEPGRAM_DISABLED") == "1" or not os.environ.get("DEEPGRAM_API_KEY"):
         # No Deepgram + local STT flags unset → the chain falls to the
-        # on-device faster-whisper rung (Groq Whisper was removed 2026-06-29).
+        # on-device faster-whisper rung (cloud Whisper removed 2026-06-29).
         return "whisper-large-v3-turbo (local)"
     return "deepgram:nova-3"
 

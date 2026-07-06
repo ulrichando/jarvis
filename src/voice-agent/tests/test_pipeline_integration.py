@@ -1,6 +1,6 @@
 """Happy-path integration of emotion → router → LLM dispatcher → TTS dispatcher.
 
-Uses mocked Groq router responses; constructs DispatchingLLM/TTS with
+Uses mocked classifier responses; constructs DispatchingLLM/TTS with
 stubbed inners. Verifies routing distribution + telemetry for 30
 fixture turns covering 4 routes × emotional spread.
 """
@@ -53,12 +53,12 @@ def test_pipeline_routes_30_fixtures_correctly():
     correct = 0
     for transcript, audio, mocked_out, expected in FIXTURES:
         emo = detect_emotion(transcript, audio)
-        async def fake_groq(_p, out=mocked_out):
+        async def fake_classifier(_p, out=mocked_out):
             return out
         route = asyncio.run(classify_turn(
             history=[("user", transcript)],
             emotion=emo,
-            groq_call=fake_groq,
+            classifier_call=fake_classifier,
             timeout_ms=500,
         ))
         d_llm.pick(route)

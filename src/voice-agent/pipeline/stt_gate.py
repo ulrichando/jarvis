@@ -45,9 +45,9 @@ FILLER_TOKENS: frozenset[str] = frozenset({
 # that VAD opened on too early) it doesn't return empty — it emits
 # phrases that dominate its training data. Those are then routed as
 # real transcripts: 2026-05-04 the canonical " Thank you." landed in
-# the BANTER fast-path → llama-3.1-8b-instant attempted a malformed
-# tool call → Groq returned "Failed to call a function" → breaker
-# opened → 30 s recovery cascade → user assumed JARVIS missed them
+# the BANTER fast-path → the fast-route model attempted a malformed
+# tool call → the provider returned "Failed to call a function" →
+# breaker opened → 30 s recovery cascade → user assumed JARVIS missed them
 # and repeated, second attempt transcribed cleanly. Filtering these
 # at the upstream gate is both cheaper and unambiguous: a user
 # volunteering only "thanks for watching" to a voice assistant is

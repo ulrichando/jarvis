@@ -17,7 +17,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-os.environ.setdefault("GROQ_API_KEY", "test-key-for-init")
 
 
 def _run(coro):
@@ -145,7 +144,7 @@ def test_sanitizer_re_emits_transfer_to_X_as_tool_call():
     loop runs the handoff with a real RunContext.
 
     Drives the install()-patched _run by invoking it on a mock stream
-    where orig_run raises a realistic Groq validation error matching
+    where orig_run raises a realistic provider validation error matching
     a transfer_to_browser call.
     """
     import sanitizers.tool_name as tool_name_sanitizer
@@ -154,7 +153,7 @@ def test_sanitizer_re_emits_transfer_to_X_as_tool_call():
 
     tool_name_sanitizer.install()
 
-    # Simulate the recovery flow: the original _run raises a Groq
+    # Simulate the recovery flow: the original _run raises a provider
     # validation error whose message includes a transfer_to_browser
     # call shape that _try_recover can parse.
     captured_chunks = []
@@ -238,7 +237,7 @@ def test_sanitizer_re_emits_transfer_to_X_as_tool_call():
     "Please adjust your prompt to match the schema",
 ])
 def test_breaker_uncounts_validation_errors(err_msg):
-    """Validation errors are LLM-output problems, not Groq-down. The
+    """Validation errors are LLM-output problems, not provider-down. The
     breaker must NOT count them. With fail_threshold=2, two malformed
     tool calls in one turn would trip the breaker for 30 s otherwise —
     every subsequent turn during cooldown would route through the
@@ -292,7 +291,7 @@ def test_breaker_uncounts_validation_errors(err_msg):
 def test_breaker_still_trips_on_real_transport_errors():
     """Mirror test: transport-level errors (TimeoutError, connection
     refused) MUST still trip the breaker. Otherwise we can never
-    fail-fast cascade to DeepSeek when Groq is genuinely unreachable.
+    fail-fast cascade to DeepSeek when the primary is genuinely unreachable.
     """
     from resilience.circuit_breaker import STATE_CLOSED, STATE_OPEN
     import jarvis_agent
@@ -304,7 +303,7 @@ def test_breaker_still_trips_on_real_transport_errors():
     class _ConnRefusedInner:
         def __aiter__(self): return self
         async def __anext__(self):
-            raise ConnectionRefusedError("api.groq.com:443 unreachable")
+            raise ConnectionRefusedError("api.anthropic.com:443 unreachable")
         async def aclose(self): pass
         async def __aenter__(self): return self
         async def __aexit__(self, *a): pass

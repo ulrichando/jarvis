@@ -6,9 +6,9 @@ JARVIS_LOCAL_TTS_ONLY — the default config); Microsoft Edge-TTS
 ordered engine list for a FallbackAdapter; `build_dispatching_tts`
 returns the per-route DispatchingTTS the AgentSession uses.
 
-History: Groq Orpheus (the `LoggingGroqTTS` / `LoggingGroqChunkedStream`
-shims) was removed 2026-06-29 in the full-Groq-eradication pass;
-ElevenLabs was removed 2026-05-01. NOTE: the Orpheus stream was the only
+History: the previous cloud Orpheus TTS (with its logging/chunked-stream
+shims) was removed 2026-06-29 when its provider was eradicated from the
+stack; ElevenLabs was removed 2026-05-01. NOTE: the Orpheus stream was the only
 caller of `record_synthesis` (barge-in position table) and
 `speaking_tracker.note_speaking` (echo-aware barge-in) — both have been
 dormant since TTS went Kokoro-primary (2026-06-22) and are NOT re-homed
@@ -49,9 +49,9 @@ def build_tts_chain(tts_provider_file) -> list:
     Edge-TTS (no auth, always available) + the local engine are appended
     as fallback rungs.
 
-    Groq Orpheus was removed 2026-06-29 (full-Groq-eradication pass); a
-    stale "groq:" spec now falls through to the default. ElevenLabs was
-    removed 2026-05-01.
+    Cloud Orpheus was removed 2026-06-29 (provider eradication pass); a
+    stale spec naming the removed engine now falls through to the
+    default. ElevenLabs was removed 2026-05-01.
 
     `tts_provider_file` is the Path to the legacy flat file written by the
     tray, passed in so this module doesn't reach back into jarvis_agent.
@@ -114,8 +114,8 @@ def build_dispatching_tts() -> DispatchingTTS:
     config); Edge-TTS (auth-free) is the network fallback. Every route
     shares the same local→Edge chain shape.
 
-    Groq Orpheus + its per-route voices were removed 2026-06-29
-    (full-Groq-eradication pass); ElevenLabs was removed 2026-05-01. The
+    Cloud Orpheus + its per-route voices were removed 2026-06-29
+    (provider eradication pass); ElevenLabs was removed 2026-05-01. The
     Orpheus stream was the only caller of record_synthesis (barge-in
     position table) and speaking_tracker.note_speaking (echo-aware
     barge-in) — both dormant since TTS went Kokoro-primary 2026-06-22 and

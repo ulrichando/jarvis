@@ -16,7 +16,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-os.environ.setdefault("GROQ_API_KEY", "test-key-for-init")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
 
 

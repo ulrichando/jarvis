@@ -27,12 +27,11 @@ TERMINAL_SETUP_AUTH_METHOD_ID = "jarvis-setup"
 def _has_any_supervisor_key() -> bool:
     """Return True when at least one supervisor LLM provider has credentials.
 
-    Mirrors the gates in ``providers/llm.py`` — Anthropic / Groq /
-    DeepSeek / OpenAI / OpenRouter / Google all populate the dispatcher.
+    Mirrors the gates in ``providers/llm.py`` — Anthropic / DeepSeek /
+    OpenAI / OpenRouter / Google all populate the dispatcher.
     """
     for env_var in (
         "ANTHROPIC_API_KEY",
-        "GROQ_API_KEY",
         "DEEPSEEK_API_KEY",
         "OPENAI_API_KEY",
         "OPENROUTER_API_KEY",
@@ -65,7 +64,7 @@ def build_auth_methods() -> list[Any]:
             description=(
                 "Use the API keys configured in JARVIS's .env "
                 "(no per-session login). The adapter reads ANTHROPIC_API_KEY, "
-                "GROQ_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, "
+                "OPENAI_API_KEY, DEEPSEEK_API_KEY, "
                 "OPENROUTER_API_KEY, and GOOGLE_API_KEY at startup."
             ),
         ),
@@ -79,7 +78,7 @@ def build_auth_methods() -> list[Any]:
                 description=(
                     "JARVIS has no LLM provider keys configured. Edit "
                     "src/voice-agent/.env (or export ANTHROPIC_API_KEY / "
-                    "GROQ_API_KEY etc.) and reconnect."
+                    "DEEPSEEK_API_KEY etc.) and reconnect."
                 ),
                 type="terminal",
                 args=["--setup"],

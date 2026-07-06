@@ -25,7 +25,7 @@ ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=%h/.jarvis/skills %h/.jarvis/logs
 # AF_INET(6) allowed ONLY for the optional LLM consolidation review
-# (JARVIS_CURATOR_CONSOLIDATION=1 → Groq httpx); the default deterministic
+# (JARVIS_CURATOR_CONSOLIDATION=1 → DeepSeek httpx); the default deterministic
 # pass needs no network.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 LockPersonality=yes

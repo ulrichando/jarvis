@@ -1,5 +1,5 @@
 [Unit]
-Description=JARVIS voice agent (LiveKit worker: STT → LLM → TTS via Groq)
+Description=JARVIS voice agent (LiveKit worker: STT → LLM → TTS)
 # Needs the SFU to be listening before we try to connect.
 After=network-online.target livekit-server.service
 Wants=network-online.target
@@ -14,19 +14,20 @@ NotifyAccess=main
 WatchdogSec=120s
 WorkingDirectory=%h/Documents/Projects/jarvis/src/voice-agent
 # Load LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET from the
-# voice-agent's own .env, AND load GROQ_API_KEY from the shared
-# cli/.env.local. Two EnvironmentFile directives; later-loaded wins
-# on collision, which is fine — they don't overlap in practice.
+# voice-agent's own .env. Multiple EnvironmentFile directives;
+# later-loaded wins on collision, which is fine — the files below
+# don't overlap in practice.
 EnvironmentFile=%h/Documents/Projects/jarvis/src/voice-agent/.env
-# Repo-root .env is the centralized LLM key store (GROQ_API_KEY,
-# OPENAI_API_KEY, ANTHROPIC_API_KEY, DEEPSEEK_API_KEY — centralized
-# 2026-05-15). Without this line every Groq/OpenAI/Anthropic call
-# 401s, the LLM cascade falls through to whatever still has creds,
-# and Orpheus TTS — which lives behind GROQ_API_KEY — silently swaps
-# to EdgeTTS via the FallbackAdapter, so the user hears robotic voice
-# instead of Troy. Optional (`-` prefix) so a key-less install starts.
+# Repo-root .env is config-only. LLM provider keys live in
+# ~/.jarvis/keys.env, which the agent itself loads at startup —
+# nothing here gates the LLM cascade, and TTS is on-device Kokoro,
+# so no cloud key affects speech. Optional (`-` prefix) so a
+# config-less install starts.
 EnvironmentFile=-%h/Documents/Projects/jarvis/.env
-EnvironmentFile=%h/Documents/Projects/jarvis/src/cli/.env.local
+# cli/.env.local only carries CLI flags (JARVIS_MODEL_REGISTRY_ENABLED /
+# JARVIS_PROVIDER / JARVIS_DISABLE_AUTH) — nothing load-bearing for the
+# voice agent, so optional (`-` prefix).
+EnvironmentFile=-%h/Documents/Projects/jarvis/src/cli/.env.local
 # Local bridge bearer token (KEY=VALUE format, chmod 600). Sent on
 # every voice-agent → bridge HTTP call. Optional file (`-` prefix)
 # so the unit doesn't fail to start before P0c is run.
@@ -73,7 +74,7 @@ Environment=JARVIS_SKILL_REVIEW_APPLY=1
 # Uses the venv's interpreter directly so we don't need `source
 # .venv/bin/activate` in the ExecStart.
 ExecStart=%h/Documents/Projects/jarvis/src/voice-agent/.venv/bin/python %h/Documents/Projects/jarvis/src/voice-agent/jarvis_agent.py start
-# Auto-recover from crashes / Groq API hiccups / SFU restart.
+# Auto-recover from crashes / provider API hiccups / SFU restart.
 Restart=always
 RestartSec=5
 # Must outlast the worker's bounded drain (JARVIS_DRAIN_TIMEOUT_S, default

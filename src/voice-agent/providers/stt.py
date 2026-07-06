@@ -16,8 +16,8 @@ barge-in-interrupt-fix-design.md):
   runs out of credit, or errors, the FallbackAdapter cascades to the
   on-device model and the conversation continues (slower barge-in via
   the VAD-direct path, but alive). JARVIS_STT_LOCAL_ONLY=1 strips every
-  cloud rung so STT is 100% on-device. (The Groq Whisper rung was
-  removed 2026-06-29 in the full-Groq-eradication pass.)
+  cloud rung so STT is 100% on-device. (The cloud Whisper fallback rung
+  was removed 2026-06-29 in the provider eradication pass.)
 """
 from __future__ import annotations
 
@@ -217,8 +217,8 @@ def build_stt_chain(vad=None):
     local_stt = build_local_stt()
 
     # Ordered rungs: Deepgram (primary, streaming) → local faster-whisper
-    # (offline last resort). Drop any unavailable. (The Groq Whisper rung
-    # was removed 2026-06-29 in the full-Groq-eradication pass.)
+    # (offline last resort). Drop any unavailable. (The cloud Whisper rung
+    # was removed 2026-06-29 in the provider eradication pass.)
     rungs = [s for s in (deepgram_stt, local_stt) if s is not None]
     # Local-first override: JARVIS_LOCAL_STT_PRIMARY=1 promotes the local
     # faster-whisper rung to PRIMARY so the voice path runs on-device, with the
@@ -229,8 +229,8 @@ def build_stt_chain(vad=None):
     if os.environ.get("JARVIS_LOCAL_STT_PRIMARY", "0") == "1" and local_stt is not None:
         rungs = [local_stt] + [s for s in rungs if s is not local_stt]
         logger.info("[stt] JARVIS_LOCAL_STT_PRIMARY=1 — local faster-whisper promoted to primary")
-    # Local-only: strip EVERY cloud fallback rung (Deepgram is already gone via
-    # JARVIS_DEEPGRAM_DISABLED; this also drops the Groq Whisper rung) so STT is
+    # Local-only: strip EVERY cloud fallback rung (Deepgram, when it built —
+    # or already gone via JARVIS_DEEPGRAM_DISABLED) so STT is
     # 100% on-device. Pure $0/private. Trade-off: if the local rung fails (e.g. a
     # CUDA wedge after suspend) there is NO cloud safety net — recovery leans on
     # bin/jarvis-cuda-recover (reloads nvidia_uvm on resume). No-op unless the
@@ -241,8 +241,8 @@ def build_stt_chain(vad=None):
     if not rungs:
         # No STT available at all — neither Deepgram (key/plugin) nor the
         # on-device faster-whisper rung built. Fatal config error now that
-        # the Groq Whisper universal fallback is gone: surface it loudly
-        # rather than returning a non-STT.
+        # the old cloud-Whisper universal fallback is gone (removed
+        # 2026-06-29): surface it loudly rather than returning a non-STT.
         raise RuntimeError(
             "build_stt_chain: no STT available — set DEEPGRAM_API_KEY or "
             "JARVIS_LOCAL_STT_ENABLED=1"

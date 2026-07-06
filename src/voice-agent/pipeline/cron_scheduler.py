@@ -52,20 +52,22 @@ def _record_run(job_id: str, jtype: str, ok: bool, dur_ms: int, delivered: bool)
 
 
 async def _call_job_llm(prompt: str) -> str:
-    """Text-only Groq call for prompt jobs. Mirrors
-    pipeline/memory_extractor.py::_call_extractor_llm. Monkeypatched in tests."""
+    """Text-only DeepSeek call for prompt jobs (ported off the eradicated
+    provider 2026-07-06 — the old endpoint's key no longer exists anywhere,
+    so every prompt job had been silently returning [SILENT]).
+    Monkeypatched in tests."""
     import httpx
-    api_key = os.environ.get("GROQ_API_KEY")
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
         return "[SILENT]"
-    model = os.environ.get("JARVIS_CRON_PROMPT_MODEL", "llama-3.3-70b-versatile")
+    model = os.environ.get("JARVIS_CRON_PROMPT_MODEL", "deepseek-chat")
     sys = ("You are JARVIS running a scheduled background task with no tools. "
            "Produce a concise spoken-style result. If there is nothing useful "
            "to report, reply exactly [SILENT].")
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             r = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
+                "https://api.deepseek.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
                 json={"model": model, "temperature": 0.3, "max_tokens": 400,
                       "messages": [{"role": "system", "content": sys},

@@ -25,22 +25,31 @@ async function ensureDir() {
 
 export async function loadSettings(): Promise<Settings> {
   if (cache) return cache;
-  for (const file of [SETTINGS_FILE, LEGACY_SETTINGS_FILE]) {
+  // Try the live file, then the last-known-good backup, then legacy. A single
+  // broken/torn file must NOT short-circuit to defaults — that would then get
+  // persisted on the next save and permanently wipe every provider key.
+  for (const file of [SETTINGS_FILE, `${SETTINGS_FILE}.bak`, LEGACY_SETTINGS_FILE]) {
+    let raw: string;
     try {
-      const raw = await fs.readFile(file, "utf-8");
-      const parsed = settingsSchema.safeParse(JSON.parse(raw));
-      if (!parsed.success) {
-        // Field-level salvage lives in the schema (.catch on model ids);
-        // reaching here means the file is structurally broken. Say so —
-        // silently serving defaults looks like "my settings vanished".
-        console.warn(`[settings] ${file} failed validation — using defaults:`, parsed.error.message);
-      }
-      cache = parsed.success ? parsed.data : DEFAULT_SETTINGS;
-      return cache;
+      raw = await fs.readFile(file, "utf-8");
     } catch {
-      // not at this location — try the next
+      continue; // not at this location — try the next
+    }
+    try {
+      const parsed = settingsSchema.safeParse(JSON.parse(raw));
+      if (parsed.success) {
+        cache = parsed.data;
+        return cache;
+      }
+      // Structurally valid JSON but fails the schema (field-level salvage in
+      // the schema already ran) — try the .bak/legacy before defaulting.
+      console.warn(`[settings] ${file} failed validation — trying fallback:`, parsed.error.message);
+    } catch {
+      // Torn / invalid JSON (e.g. crash mid-write) — try the next candidate.
+      console.warn(`[settings] ${file} is not valid JSON — trying fallback`);
     }
   }
+  console.warn("[settings] no valid settings file found — using defaults");
   cache = DEFAULT_SETTINGS;
   return cache;
 }
@@ -48,7 +57,15 @@ export async function loadSettings(): Promise<Settings> {
 export async function saveSettings(next: Settings): Promise<Settings> {
   const validated = settingsSchema.parse(next);
   await ensureDir();
-  await fs.writeFile(SETTINGS_FILE, JSON.stringify(validated, null, 2), "utf-8");
+  const body = JSON.stringify(validated, null, 2);
+  // Atomic write: temp file + rename (atomic on POSIX) so a crash mid-write
+  // can't leave a torn settings.json. Back up the current good file first so
+  // loadSettings has a recovery source. Both guard against the key-wipe chain
+  // (torn file → defaults loaded → defaults saved over real keys).
+  const tmp = `${SETTINGS_FILE}.tmp`;
+  await fs.writeFile(tmp, body, "utf-8");
+  await fs.copyFile(SETTINGS_FILE, `${SETTINGS_FILE}.bak`).catch(() => {}); // best-effort; absent on first save
+  await fs.rename(tmp, SETTINGS_FILE);
   cache = validated;
   return validated;
 }

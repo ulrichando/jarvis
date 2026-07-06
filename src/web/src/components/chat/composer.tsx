@@ -56,7 +56,7 @@ type ComposerProps = {
   // Force a model-agnostic composer: same shell, no provider pre-block, no
   // provider inline toggles, regardless of which model is selected. Used in
   // surfaces like /design where the composer is a means to an end and should
-  // not flicker between Anthropic / Groq / DeepSeek visual variants.
+  // not flicker between Anthropic / DeepSeek visual variants.
   unifiedUX?: boolean;
   // Whether an image-generation model is configured. Passed by the chat page's
   // image-gen feature to gate the Image toggle; accepted here so the prop

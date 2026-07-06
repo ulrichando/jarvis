@@ -8,9 +8,11 @@ desyncs (asks the user about content they were never told).
 
 The mechanism:
 
-  1. `LoggingGroqChunkedStream._run` calls `record_synthesis()` after
-     each completed synthesize() call, appending (cumulative_ms,
+  1. The TTS stream wrapper calls `record_synthesis()` after each
+     completed synthesize() call, appending (cumulative_ms,
      cumulative_chars) to the session's `_jarvis_tts_position_table`.
+     (The removed cloud TTS's stream shim was the only caller — dormant
+     since TTS went local Kokoro-primary; see providers/tts.py.)
 
   2. The agent_state_changed handler accumulates "speaking"-segment
      durations into `_jarvis_agent_audio_ms_acc`.
@@ -31,16 +33,16 @@ from __future__ import annotations
 
 
 __all__ = [
-    "GROQ_ORPHEUS_BYTES_PER_MS",
+    "PCM_48K_MONO_BYTES_PER_MS",
     "flatten_chat_content",
     "record_synthesis",
     "truncate_to_heard_portion",
 ]
 
 
-# Groq Orpheus output is 48 kHz mono 16-bit WAV → 48000 × 1 × 2 = 96 bytes/ms.
-# The 44-byte WAV header rounds to <1 ms — ignored.
-GROQ_ORPHEUS_BYTES_PER_MS: int = 96
+# The removed cloud TTS emitted 48 kHz mono 16-bit WAV → 48000 × 1 × 2
+# = 96 bytes/ms. The 44-byte WAV header rounds to <1 ms — ignored.
+PCM_48K_MONO_BYTES_PER_MS: int = 96
 
 
 def flatten_chat_content(content: object) -> str:
@@ -74,7 +76,7 @@ def record_synthesis(session, input_chars: int, audio_bytes: int) -> None:
     if table is None:
         table = []
         session._jarvis_tts_position_table = table
-    audio_ms = audio_bytes // GROQ_ORPHEUS_BYTES_PER_MS
+    audio_ms = audio_bytes // PCM_48K_MONO_BYTES_PER_MS
     if table:
         prev_ms, prev_chars = table[-1]
     else:

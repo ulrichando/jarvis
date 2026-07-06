@@ -50,7 +50,7 @@ export const settingsSchema = z.object({
     .object({
       // .catch(): these two fields validate against MUTABLE registries — a
       // model id that was valid when saved can vanish in a later build (live
-      // failure: llama-3.3-70b survived the Groq removal in settings.json and
+      // failure: a stale id survived a provider removal in settings.json and
       // the whole file was silently discarded on load). Degrade the single
       // field to its default instead of rejecting the entire settings file.
       model: z

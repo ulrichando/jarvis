@@ -6,8 +6,8 @@ import). Two blocks are appended fresh on every turn:
 
   - memory block — handled by `_build_memory_block()` in jarvis_agent
     (still inline because of its sanitization-regex dependencies).
-  - breaker-status block — naming open/half-open Groq breakers so the
-    LLM can voice "Groq's slow tonight, on the fallback" instead of
+  - breaker-status block — naming open/half-open provider breakers so the
+    LLM can voice "Claude's slow tonight, on the fallback" instead of
     going silent during a fallback (audit-rec F, 2026-05-09).
 
 This module exists so jarvis_agent.py doesn't have to. It contains
@@ -177,9 +177,9 @@ def build_breaker_status_block(breakers) -> str:
     visibility into JARVIS_INSTRUCTIONS so the supervisor LLM
     acknowledges latency / fallback paths rather than going silent.
 
-    Pre-fix behaviour: when Groq STT/TTS/LLM breaker opened, the user
-    waited on the FallbackAdapter (DeepSeek, ~10-30 s slower) without
-    any voiced acknowledgment.
+    Pre-fix behaviour: when an STT/TTS/LLM provider breaker opened, the
+    user waited on the FallbackAdapter (the slower fallback rung,
+    ~10-30 s) without any voiced acknowledgment.
 
     `breakers` is a list of `resilience.circuit_breaker.CircuitBreaker`
     instances. The caller (jarvis_agent.entrypoint) wraps with the
@@ -196,7 +196,7 @@ def build_breaker_status_block(breakers) -> str:
         f"Provider breaker(s) currently open or probing: {names}. "
         f"The fallback path is in use; replies may be slower than usual. "
         f"If the user notices the latency, acknowledge briefly without "
-        f"theater — e.g. \"Groq's slow tonight, on the fallback.\" / "
+        f"theater — e.g. \"Claude's slow tonight, on the fallback.\" / "
         f"\"Bear with me, the primary's degraded.\" Don't apologize "
         f"unless asked. Don't preface every reply with the status; "
         f"only mention it when latency is noticed or asked about."

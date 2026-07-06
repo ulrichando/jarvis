@@ -1,13 +1,10 @@
-"""Groq LLM resilience adapters + per-route dispatcher build.
+"""LLM resilience adapters + per-route dispatcher build.
 
 Hoisted from `jarvis_agent.py` over 2026-05-10 (Steps 5b/5c/5d/5e
 of the 10/10 refactor):
 
   - `BreakeredLLMStream` (5b) — first-chunk breaker gate + validation-
     error OPEN→CLOSED revert.
-  - `BreakeredGroqLLM` (5c) — groq.LLM subclass that gates `chat()`
-    through `LLM_BREAKER`, runs pre-flight token estimation, and
-    hard-prunes the chat_ctx when the estimate is HARD-pressure.
   - `LAST_PREFLIGHT` (5c) — singleton dict the start-of-turn pre-flight
     writes and the end-of-turn telemetry write reads. Module-level
     so jarvis_agent can `from providers.llm import LAST_PREFLIGHT`
@@ -16,8 +13,9 @@ of the 10/10 refactor):
     pruning helpers used by the pre-flight branch and by the
     test_token_prune_2026_05_08 test suite.
   - `build_dispatching_llm` (5d) — assembles the per-route Maya-class
-    DispatchingLLM (BANTER/TASK/REASONING/EMOTIONAL → distinct Groq
-    variants, each wrapped in a FallbackAdapter(groq, deepseek-v4)).
+    DispatchingLLM (BANTER/TASK/REASONING/EMOTIONAL → distinct
+    per-route primaries, each wrapped in a cross-provider
+    FallbackAdapter).
   - `SPEECH_MODELS` registry + `read_speech_model` + `make_speech_llm`
     (5e) — tray-driven model picker for the user-selected supervisor
     LLM, reading the active id via `pipeline.settings.read_unified_setting`.
@@ -37,7 +35,7 @@ from livekit.agents import APIConnectionError, APITimeoutError
 from livekit.plugins import openai as lk_openai
 
 # Anthropic — Claude Haiku 4.5 as a tray-selectable speech model and
-# as the third fallback rung after Groq + DeepSeek. Optional dep: if
+# the per-route dispatcher primary. Optional dep: if
 # the plugin isn't installed we skip the Anthropic surface entirely
 # rather than crash boot.
 try:
@@ -92,12 +90,13 @@ SPEECH_MODEL_FILE: Path = Path.home() / ".jarvis" / "voice-model"
 # `user_pinned_llm = active_speech_id != DEFAULT_SPEECH_MODEL`. If the
 # user picks the same model that is the default, the pin logic treats
 # that as "no pin" and per-route dispatcher defaults take over (BANTER
-# = qwen3.6-27b, TASK = gpt-oss-120b, etc.). For the user to get
+# = claude-haiku-4-5, REASONING = claude-sonnet-4-6, etc.). For the
+# user to get
 # OpenAI gpt-5-mini on the TASK route, the default must be SOMETHING
 # OTHER THAN gpt-5-mini.
 #
-# Set to deepseek-chat on 2026-06-29 — was openai/gpt-oss-120b (Groq),
-# removed in the full-Groq-eradication pass. Picked because it's an
+# Set to deepseek-chat on 2026-06-29 (the previous default was removed
+# along with its cloud provider). Picked because it's an
 # UNCONDITIONAL registry entry (always present) and is NOT a model the
 # user is likely to pin, so the pin-detection baseline still works:
 # - Picking any other model in the tray → user_pinned_llm=True →
@@ -301,7 +300,8 @@ if _ANTHROPIC_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY", ""):
         # schema tree and sets additionalProperties=false. Keeping
         # strict=False here removes Anthropic-side strict validation
         # of the model's tool args, matching the lenient stance the
-        # strict_schema_relax patch already takes for Groq.
+        # strict_schema_relax patch already takes for the
+        # OpenAI-compatible providers.
         #
         # max_tokens=200 caps response length at ~150 words / ~10s
         # of audio. Claude Haiku 4.5 over-elaborates philosophical
@@ -369,8 +369,7 @@ if os.environ.get("OPENROUTER_API_KEY", ""):
         ),
     }
     SPEECH_MODELS["openrouter/meta-llama/llama-3.3-70b-instruct"] = {
-        # Llama 3.3 70B Instruct routed through OpenRouter. Mirrors the
-        # Groq native entry but uses OpenRouter's edge for diversity.
+        # Llama 3.3 70B Instruct routed through OpenRouter.
         # Streaming + function calling confirmed on this model.
         "label": "OpenRouter · Llama 3.3 70B",
         "build": lambda: lk_openai.LLM(
@@ -416,7 +415,7 @@ if os.environ.get("OPENROUTER_API_KEY", ""):
 # importable. The `build` lambda's import-from clause raises ImportError
 # if the plugin is missing; `read_speech_model() / make_speech_llm` and
 # `build_dispatching_llm` already handle this by falling back to the
-# default speech model / route's Groq legacy primary.
+# default speech model / the route's legacy fallback rung.
 #
 # NOT pinned to any active route by this commit — operator opts in via
 # JARVIS_{BANTER,TASK,REASONING,EMOTIONAL}_MODEL=gemini-2.5-flash (etc.)
@@ -714,8 +713,7 @@ _PREFLIGHT_CACHE: dict = {
 
 def ctx_items_token_estimate(items) -> int:
     """Cheap estimate of tokens consumed by a list of chat_ctx items.
-    Mirrors the stringification used in `BreakeredGroqLLM.chat`'s
-    pre-flight so the two stay in sync."""
+    Mirrors the pre-flight stringification so the two stay in sync."""
     from tools.token_estimation import estimate_tokens
     s = ""
     for it in items:
@@ -830,7 +828,7 @@ class BreakeredLLMStream:
             except Exception as e:
                 # Schema-validation errors are NOT a "provider is down"
                 # signal — they're "the LLM emitted a malformed tool
-                # call." Live-observed 2026-05-04 (Groq llama-3.3,
+                # call." Live-observed 2026-05-04 (llama-3.3,
                 # `Failed to call a function`) and again 2026-05-05
                 # (Kimi K2.6, `tool call validation failed: attempted
                 # to call tool 'web_search'`). Each pair of failures
@@ -900,10 +898,10 @@ class BreakeredLLMStream:
 
 # Anthropic primary defaults — overridable per route via env. Chosen
 # 2026-05-23 because Anthropic + caching="ephemeral" delivers ~700 ms
-# TTFW on warm cache vs ~2 s on Groq (no caching).
+# TTFW on warm cache vs ~2 s on the uncached cloud providers.
 #
 # Haiku 4.5 for the three high-frequency routes; Sonnet 4.6 only for
-# REASONING (rare, multi-step). Temperature mirrors the Groq legacy
+# REASONING (rare, multi-step). Temperature mirrors the legacy
 # per-route value (EMOTIONAL keeps 0.7 for warmth).
 #
 # 2026-05-24: TASK_* sub-route defaults source from
@@ -1031,8 +1029,8 @@ def _local_probe_timeout_s() -> float:
 
 def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM:
     """Construct route → inner-LLM mapping with Anthropic primaries
-    (prompt-cached, ~700 ms TTFW warm) and Groq + DeepSeek as
-    fast-fallback rungs.
+    (prompt-cached, ~700 ms TTFW warm) and DeepSeek as the
+    fast-fallback rung.
 
     Per-route default chain (each entry is a FallbackAdapter):
 
@@ -1044,8 +1042,6 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
     Anthropic is rung 1 because prompt caching gives ~700 ms TTFW on a
     warm cache. DeepSeek is rung 2 (cross-provider safety net): a single
     Anthropic 5xx / timeout cascades within 5 s (per-LLM `timeout=5.0`).
-    The Groq legacy rung (rung 2 before) was removed 2026-06-29 in the
-    full-Groq-eradication pass; DeepSeek took its slot.
 
     Per-route env overrides (operator tuning without code edits):
       JARVIS_BANTER_MODEL          (default claude-haiku-4-5)
@@ -1085,11 +1081,11 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
     # of silence on a 4xx-but-classified-retryable error (e.g. tool-call
     # validation failure). 2026-05-02 13:20 incident: a desktop
     # subagent hung for ~2 minutes because its LLM cycled through
-    # Groq → retry → DeepSeek → retry → Groq with the prior 8 s/req
+    # rung → retry → next rung → retry → rung with the prior 8 s/req
     # timeout. Tightened to 5 s/req and 0 retries — single fail-over
     # is enough; the FallbackAdapter handles the cross-provider hop.
-    # Worst case now: 5 s Anthropic + 5 s Groq + 5 s DeepSeek = 15 s
-    # ceiling for a triple-blip, vs the ~120 s observed previously.
+    # Worst case now: 5 s Anthropic + 5 s DeepSeek = 10 s
+    # ceiling for a double-blip, vs the ~120 s observed previously.
     LLM_KWARGS = {"max_retries": 0, "timeout": 5.0}
 
     anth_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -1102,7 +1098,7 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
 
     # Build a single shared DeepSeek instance; the FallbackAdapter chain
     # passes it as the LAST-tier provider on each route. Cross-provider
-    # safety net (different network edge than Anthropic + Groq).
+    # safety net (different network edge than Anthropic).
     ds_fallback = None
     ds_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if ds_key:
@@ -1133,7 +1129,7 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
     # When JARVIS_LOCAL_LLM_ENABLED=1 and the endpoint/model probe passes,
     # a local model (Ollama / vLLM / llama.cpp) is PREPENDED to every
     # in-scope route's FallbackAdapter as the first-tried rung — local
-    # becomes primary while the existing Anthropic → Groq → DeepSeek chain
+    # becomes primary while the existing Anthropic → DeepSeek chain
     # becomes the cloud fallback. `_strict_tool_schema=False` is MANDATORY
     # — every local server rejects/ignores OpenAI strict schema, which
     # silently breaks JARVIS's 20+ tools (livekit-plugins-openai defaults
@@ -1230,7 +1226,7 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
         per-route env var resolves to ``gemini-*`` instead of an
         Anthropic model id. Returns None when the Google plugin isn't
         importable, the API key is unset, or construction raises
-        (route then falls back to its Groq legacy)."""
+        (route then falls back to its legacy fallback rung)."""
         if not os.environ.get("GOOGLE_API_KEY", "").strip():
             logger.info(
                 f"[dispatch] {route} requested Gemini {model_id!r} but "
@@ -1289,7 +1285,7 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
         env override AND the legacy JARVIS_TASK_MODEL propagation for
         TASK_* sub-routes. Returns None when the resolved provider isn't
         armed (no API key / plugin missing) or construction raises
-        (route falls back to its Groq legacy).
+        (route falls back to its legacy fallback rung).
 
         Picks a builder by model-id prefix:
           - ``gemini-*``    → Gemini builder
@@ -1381,8 +1377,8 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
     def _wrap_chain(route: str, primary):
         """Wrap a route's primary LLM in a FallbackAdapter chain. When
         JARVIS_LOCAL_LLM_ENABLED=1 and the startup probe passes, a local
-        LLM is prepended as rung 0 (tried first); the route's Groq legacy
-        is rung 2 and DeepSeek rung 3 (when each is available). Labels the
+        LLM is prepended as rung 0 (tried first); the shared DeepSeek
+        fallback is rung 2 (when available). Labels the
         chain by its FIRST rung for telemetry. Returns the primary
         unwrapped when no other rungs are available."""
         rungs: list[Any] = [primary]
@@ -1424,15 +1420,14 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
 
     def _build_route(route: str):
         """Build the full FallbackAdapter chain for `route`. Tries
-        Anthropic primary first; falls back to the route's Groq legacy
-        as the rung-1 primary if Anthropic is unavailable. Logs which
-        primary actually landed at rung 1 for operator visibility."""
+        Anthropic primary first; falls back to the shared DeepSeek
+        instance as the rung-1 primary if Anthropic is unavailable. Logs
+        which primary actually landed at rung 1 for operator visibility."""
         primary = _build_anthropic_primary(route)
         if primary is None:
             # No Anthropic primary (missing key / plugin / construction
             # error) → degrade to the shared DeepSeek instance as the
-            # rung-1 primary so the dispatcher still boots. (Was the Groq
-            # legacy rung before the 2026-06-29 full-Groq removal.)
+            # rung-1 primary so the dispatcher still boots.
             primary = ds_fallback
         if primary is None:
             # No cloud primary built (missing keys / construction error).
@@ -1474,7 +1469,7 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
 
     # Any route that failed primary construction entirely inherits the
     # TASK chain. If TASK itself failed (rare — both Anthropic AND
-    # Groq construction blew up), we still need *something*; pick the
+    # DeepSeek construction blew up), we still need *something*; pick the
     # first non-None route or, as a last resort, the bare DeepSeek
     # fallback. Refusing to boot is worse than booting with a single
     # provider — the user can't even hear an error otherwise.

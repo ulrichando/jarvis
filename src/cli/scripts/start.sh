@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Jarvis launcher (source run) — run as `bash scripts/start.sh groq`
+# Jarvis launcher (source run) — run as `bash scripts/start.sh deepseek`
 # Switch models inside the session with /model
 # For compiled binary, use bin/jarvis instead.
 

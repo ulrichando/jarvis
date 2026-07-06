@@ -14,7 +14,7 @@ import { getProviderForModel } from './providers.js'
 // All values verified against vendor docs on 2026-05-27 by a researcher
 // agent. Sources: docs.anthropic.com, api-docs.deepseek.com,
 // developers.openai.com/api/docs/models, ai.google.dev/gemini-api,
-// console.groq.com/docs/models, platform.moonshot.ai. See PR #33.
+// platform.moonshot.ai. See PR #33.
 describe('maxOutputTokens — provider defaults (post-2026-05-27 bumps)', () => {
   test.each([
     // Anthropic: METADATA only — passthrough doesn't use this. Per

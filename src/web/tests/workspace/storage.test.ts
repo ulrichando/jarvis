@@ -49,6 +49,26 @@ describe("workspace env-var round-trip", () => {
   });
 });
 
+describe("resolveSafe symlink containment", () => {
+  it("allows a normal in-workspace path", async () => {
+    const ws = await storage.createWorkspace("safe-ok", "workbench");
+    expect(() => storage.resolveSafe(ws.id, "src/index.ts")).not.toThrow();
+  });
+
+  it("rejects a symlink inside the workspace that points OUT of it", async () => {
+    const ws = await storage.createWorkspace("safe-link", "workbench");
+    const wsRoot = storage.workspaceRoot(ws.id);
+    // Plant a symlink inside the workspace pointing at an out-of-tree secret —
+    // this is what the container agent can do; the lexical check alone lets it
+    // through, the realpath guard must catch it.
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "jarvis-outside-"));
+    await fs.writeFile(path.join(outside, "secret.txt"), "TOP SECRET");
+    await fs.symlink(outside, path.join(wsRoot, "escape"));
+    expect(() => storage.resolveSafe(ws.id, "escape/secret.txt")).toThrow(/escapes workspace/);
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+});
+
 describe("workspace share tokens", () => {
   it("mints, resolves, and revokes a share token", async () => {
     const ws = await storage.createWorkspace("sharetest", "workbench");

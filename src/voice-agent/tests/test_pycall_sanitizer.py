@@ -1,5 +1,5 @@
 """Tests for pycall_sanitizer — suppresses tool-call-as-Python-text
-leaks. Captured live 2026-05-02: Groq llama-3.3-70b emitted
+leaks. Captured live 2026-05-02: a llama-3.3-70b fallback rung emitted
 `browser_task_v2(...) task_done(summary)` as content."""
 import sys
 from pathlib import Path
@@ -586,7 +586,7 @@ def test_suppresses_zero_bytes_stage_direction_leak():
 
 
 def test_suppresses_meta_silence_split_across_chunks():
-    """2026-05-06 turn 1063: Groq streamed 'Silence.' as multiple
+    """2026-05-06 turn 1063: the provider streamed 'Silence.' as multiple
     chunks, so the chunk-1 _META_SILENCE_RE check missed (partial
     'Sil' didn't match the full regex). Fix: meta-silence-watch
     envelope buffers early-stream chunks and rechecks the assembled

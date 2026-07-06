@@ -26,18 +26,17 @@ At least one LLM provider key is required:
 
 | Variable | Provider |
 |---|---|
-| `ANTHROPIC_API_KEY` | Anthropic (recommended — lowest latency via prompt caching) |
-| `GROQ_API_KEY` | Groq (first fallback; also used for Whisper STT and Orpheus TTS) |
-| `OPENAI_API_KEY` | OpenAI (optional third rung) |
+| `DEEPSEEK_API_KEY` | DeepSeek (live primary — tray-pinned deepseek-v4-flash; also the cron/curator aux-LLM) |
+| `ANTHROPIC_API_KEY` | Anthropic (routed-mode primary — lowest latency via prompt caching) |
+| `OPENAI_API_KEY` | OpenAI (fallback rung; also the turn-classifier default, gpt-4o-mini) |
 | `GOOGLE_API_KEY` or `GEMINI_API_KEY` | Google / Gemini |
-| `DEEPSEEK_API_KEY` | DeepSeek (second fallback) |
-| `MOONSHOT_API_KEY` | Kimi / Moonshot (experimental; gated behind `JARVIS_KIMI_VOICE_EXPERIMENTAL=1`) |
+| `KIMI_API_KEY` / `MOONSHOT_API_KEY` | Kimi / Moonshot (kimi-k2.6-instant is the live pin's fallback rung; thinking variants stay gated behind `JARVIS_KIMI_VOICE_EXPERIMENTAL=1`) |
 
 Strongly recommended:
 
 | Variable | Description |
 |---|---|
-| `DEEPGRAM_API_KEY` | Deepgram Nova-3 streaming STT. Without it the system falls back to Groq Whisper (non-streaming, no STT-confirmed barge-in). |
+| `DEEPGRAM_API_KEY` | Deepgram Nova-3 streaming STT — OPTIONAL and absent on the live box: STT is 100% on-device faster-whisper (`JARVIS_STT_LOCAL_ONLY=1`) since 2026-06-21. |
 
 ---
 

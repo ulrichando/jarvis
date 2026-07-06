@@ -1,7 +1,7 @@
 /**
  * Anthropic-native passthrough for the jarvis-proxy.
  *
- * Every other provider in the proxy (DeepSeek, Groq, Kimi, etc.) speaks
+ * Every other provider in the proxy (DeepSeek, Kimi, etc.) speaks
  * an OpenAI-compatible /chat/completions surface, so the proxy converts
  * the CLI's Anthropic-shape request → OpenAI shape on the way out and
  * back again on the way in. For Anthropic itself that round-trip is

@@ -44,7 +44,7 @@ function Import-DotEnvFile {
 
 Import-DotEnvFile -Path (Join-Path $root '.env.local')
 
-$providers = @('deepseek', 'groq', 'openai', 'gemini', 'ollama')
+$providers = @('deepseek', 'openai', 'gemini', 'ollama')
 $selectedProvider = $env:JARVIS_PROVIDER
 if ([string]::IsNullOrWhiteSpace($selectedProvider)) {
   $selectedProvider = 'deepseek'

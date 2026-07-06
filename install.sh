@@ -813,7 +813,6 @@ configure_api_keys() {
   sub "API keys — press Enter to skip any provider."
 
   _maybe_set_key "Anthropic"      ANTHROPIC_API_KEY "$keys_env"
-  _maybe_set_key "Groq"           GROQ_API_KEY      "$keys_env"
   _maybe_set_key "Deepgram (STT)" DEEPGRAM_API_KEY  "$va_env"
 
   if _confirm "  Configure more providers (OpenAI/DeepSeek/Google/Kimi)? [y/N] " N; then
@@ -824,7 +823,7 @@ configure_api_keys() {
   fi
 
   local v has_llm=""
-  for v in ANTHROPIC_API_KEY GROQ_API_KEY OPENAI_API_KEY DEEPSEEK_API_KEY GOOGLE_API_KEY KIMI_API_KEY; do
+  for v in ANTHROPIC_API_KEY OPENAI_API_KEY DEEPSEEK_API_KEY GOOGLE_API_KEY KIMI_API_KEY; do
     [ -n "$(_env_get "$keys_env" "$v")" ] && has_llm=1
   done
   [ -z "$has_llm" ] && warn "No LLM key set — add one to $keys_env before starting the voice agent."
@@ -917,7 +916,6 @@ setup_env_template() {
 
 # LLM providers (fill these in with real keys)
 ANTHROPIC_API_KEY=
-GROQ_API_KEY=
 DEEPSEEK_API_KEY=
 OPENAI_API_KEY=
 GOOGLE_API_KEY=

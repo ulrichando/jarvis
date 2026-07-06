@@ -1,16 +1,16 @@
 "use client";
 
 // Voice mode — the /chat live-conversation loop (#53).
-//   STT: REMOVED 2026-06-29 (full-Groq-eradication pass). Web speech-to-text
-//        was Groq-only (/api/stt → Groq Whisper); that route is gone and there
-//        is no non-Groq web STT, so voice INPUT is unavailable — `transcribe`
-//        warns once and feeds nothing. The mic-capture + energy-endpointer
-//        machinery below is kept intact (dormant) so wiring a replacement
-//        /api/stt back in is a small change, not a rebuild.
+//   STT: REMOVED 2026-06-29. Web speech-to-text ran only on the eradicated
+//        cloud provider (/api/stt → its Whisper endpoint); that route is gone
+//        and there is no replacement web STT, so voice INPUT is unavailable —
+//        `transcribe` warns once and feeds nothing. The mic-capture +
+//        energy-endpointer machinery below is kept intact (dormant) so wiring
+//        a replacement /api/stt back in is a small change, not a rebuild.
 //   TTS: Kokoro via /api/tts (local, natural voice — same engine the voice
 //        agent uses), with a browser speechSynthesis fallback. The gray→white
 //        highlight rides the real audio.currentTime (exact) or a time estimate
-//        for the fallback. (Was Groq Orpheus before 2026-06-29.)
+//        for the fallback.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useVoiceRead } from "@/stores/voice-read";
@@ -70,7 +70,8 @@ export function useVoiceMode(opts: {
   const lastTickTsRef = useRef(0);
   const endpointingRef = useRef(false);
   // Warn once (not per-utterance) when STT is unavailable — /api/stt was
-  // Groq-only and removed 2026-06-29, so it 404s.
+  // removed 2026-06-29 (its only backend was the eradicated cloud provider),
+  // so it 404s.
   const sttWarnedRef = useRef(false);
 
   // TTS machinery: read the reply aloud + drive the gray→white highlight.
@@ -100,8 +101,9 @@ export function useVoiceMode(opts: {
       return; // network hiccup — the next utterance will try again
     }
     if (!res.ok) {
-      // /api/stt was Groq-only and removed 2026-06-29 (full-Groq-eradication
-      // pass); it now 404s. Warn once so the mic toggle isn't a silent dead end.
+      // /api/stt was removed 2026-06-29 (its only backend was the eradicated
+      // cloud provider); it now 404s. Warn once so the mic toggle isn't a
+      // silent dead end.
       if (!sttWarnedRef.current) {
         sttWarnedRef.current = true;
         toast.error("Voice input isn't available on the web (speech-to-text was removed).");
