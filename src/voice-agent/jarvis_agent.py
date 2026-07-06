@@ -241,16 +241,6 @@ dsml_sanitizer.install()
 import sanitizers.pycall as pycall_sanitizer
 pycall_sanitizer.install()
 
-# Drop anticipatory text alongside transfer_to_*/delegate calls. The
-# supervisor LLM sometimes emits a fake confirmation ("A new tab is
-# open.") in the same turn as a handoff tool call — TTS plays
-# the lie before the subagent runs. confab_detector blocks the DB
-# save but TTS already streamed; this patches _parse_choice to blank
-# delta.content from the moment a handoff is detected. Stacks on top
-# of dsml_sanitizer + pycall_sanitizer.
-import sanitizers.handoff_text
-sanitizers.handoff_text.install()
-
 # Phase 4 of memory-layer fix — output-rail denial detector. Watches
 # supervisor text for memory-capability denials and blanks them
 # before TTS. JARVIS-original sanitizer (no published precedent).
@@ -373,6 +363,14 @@ from pipeline.dispatching_llm import DispatchingLLM
 from pipeline.dispatching_tts import DispatchingTTS
 from pipeline.provider_errors import classify_provider_error
 from pipeline.lang_context import LangContext
+from pipeline.thinking_heartbeat import (
+    _TOOL_BUSY_FILE, _AGENT_THINKING_FILE,
+    _mark_tool_start, _mark_tool_end,
+    _mark_thinking_start, _mark_thinking_end,
+    _start_thinking_heartbeat, _cancel_thinking_heartbeat,
+    _bump_turn_activity, _schedule_idle_heartbeat_cancel,
+    _cancel_pending_idle_heartbeat_cancel,
+)
 from pipeline.turn_telemetry import init_db, log_turn, log_launch_attempt, DEFAULT_DB_PATH
 # Pre-TTS confab gate — inspects supervisor reply text BEFORE TTS streams
 # and runs the per-route retry chain when a "no-tool but claimed action"
@@ -1244,230 +1242,6 @@ JARVIS_CLI_SCRIPT = os.environ.get(
 # env when you want a different cap.
 JARVIS_CLI_TIMEOUT_S = int(os.environ.get("JARVIS_CLI_TIMEOUT_S", "120"))
 
-# Tool-busy flag file. Tools write a small token file at start and
-# remove it at end; the voice-client polls its mtime + presence on
-# /status so the desktop tray can show "thinking" amber for the
-# full duration of a long-running tool call (run_jarvis_cli can
-# take 10-15 s; without this signal the inferred-thinking TTL gives
-# up after 12 s and the tray flickers back to green even though
-# JARVIS is still working).
-_TOOL_BUSY_FILE = Path.home() / ".jarvis" / ".tool-running"
-
-
-def _mark_tool_start(name: str) -> None:
-    try:
-        _TOOL_BUSY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _TOOL_BUSY_FILE.write_text(f"{name}\n{int(time.time())}\n", encoding="utf-8")
-    except Exception as _e:
-        # Tray-busy indicator file write — non-fatal; tray will fall
-        # back to inferred-thinking detection. Log at DEBUG so a real
-        # FS / permission bug is still observable when needed.
-        logger.debug(f"[tool-busy] write failed: {_e}")
-
-
-def _mark_tool_end() -> None:
-    try:
-        _TOOL_BUSY_FILE.unlink(missing_ok=True)
-    except Exception as _e:
-        logger.debug(f"[tool-busy] unlink failed: {_e}")
-
-
-# Definitive "agent is thinking" signal. Touched the moment STT
-# finalizes a user turn (= LLM is about to start generating), removed
-# when the assistant turn is committed (= TTS already played, agent's
-# done). Replaces the desktop's prior heuristic of inferring thinking
-# from listening→quiet transitions, which had a false-positive on
-# every ambient mic trigger that VAD picked up.
-_AGENT_THINKING_FILE = Path.home() / ".jarvis" / ".agent-thinking"
-
-
-def _mark_thinking_start() -> None:
-    try:
-        _AGENT_THINKING_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _AGENT_THINKING_FILE.write_text(
-            str(int(time.time())), encoding="utf-8",
-        )
-    except Exception as _e:
-        logger.debug(f"[agent-thinking] write failed: {_e}")
-
-
-def _mark_thinking_end() -> None:
-    try:
-        _AGENT_THINKING_FILE.unlink(missing_ok=True)
-    except Exception:
-        pass
-
-
-# Heartbeat-driven thinking-indicator (2026-05-27). Replaces the
-# agent_state_changed-driven file management which broke during long
-# turns: the framework transitioned through "listening" or "speaking"
-# between tool calls, the file got unlinked, indicator went green
-# while JARVIS was actively reviewing/researching for the user.
-#
-# The heartbeat task starts on user_input_transcribed(is_final=True)
-# and runs until the assistant emits a FINAL reply (text content, no
-# tool_use) or until the turn is interrupted/cancelled. While running,
-# it re-touches _AGENT_THINKING_FILE every `interval_s` seconds — the
-# desktop's 60s TTL becomes a generous floor instead of the operative
-# expiry.
-async def _thinking_heartbeat(interval_s: float = 3.0, *, session=None) -> None:
-    """Touch _AGENT_THINKING_FILE every `interval_s` seconds.
-
-    On cancellation, unlinks the file so the desktop indicator goes
-    green immediately. Idempotent: external unlinks are repaired on
-    the next tick.
-
-    Orphan watchdog (2026-05-30): when `session` is given, the heartbeat
-    ALSO self-cancels if no genuine turn progress (`_bump_turn_activity`:
-    user input / tool batch / assistant reply) has landed for
-    `_thinking_max_idle_s()` AND no tool is running. This is the
-    agent_state-INDEPENDENT backstop: the idle/listening cancel
-    (`_schedule_idle_heartbeat_cancel`) only fires when the framework
-    cleanly transitions to idle, but a turn can wedge agent_state at
-    "speaking"/"thinking" (live 2026-05-30: a non-interruptible TTS whose
-    playout never completed left the heartbeat orphaned for minutes). The
-    tool-busy guard keeps a long `run_jarvis_cli` from clearing early."""
-    max_idle = _thinking_max_idle_s()
-    try:
-        while True:
-            if session is not None:
-                last = getattr(session, "_jarvis_last_turn_activity", None)
-                if (last is not None
-                        and (time.monotonic() - last) > max_idle
-                        and not _TOOL_BUSY_FILE.exists()):
-                    logger.info(
-                        f"[heartbeat] self-cancelled: no turn progress for "
-                        f"{max_idle:.0f}s, no tool running (orphan guard)"
-                    )
-                    _mark_thinking_end()
-                    return
-            _mark_thinking_start()
-            await asyncio.sleep(interval_s)
-    except asyncio.CancelledError:
-        _mark_thinking_end()
-        raise
-
-
-def _start_thinking_heartbeat(session, interval_s: float = 3.0) -> None:
-    """Start (or restart) the heartbeat task on this session. Any prior
-    task is cancelled defensively — handles back-to-back user inputs
-    that arrive faster than the previous turn-end."""
-    prior = getattr(session, "_jarvis_thinking_heartbeat", None)
-    if prior is not None and not prior.done():
-        prior.cancel()
-    _bump_turn_activity(session)  # fresh progress clock for the new turn
-    try:
-        session._jarvis_thinking_heartbeat = asyncio.create_task(
-            _thinking_heartbeat(interval_s=interval_s, session=session)
-        )
-    except Exception as _e:
-        logger.debug(f"[heartbeat] start failed: {_e}")
-        session._jarvis_thinking_heartbeat = None
-
-
-def _cancel_thinking_heartbeat(session) -> None:
-    """Cancel the heartbeat task on this session if running. Idempotent."""
-    task = getattr(session, "_jarvis_thinking_heartbeat", None)
-    if task is None:
-        return
-    if not task.done():
-        task.cancel()
-    session._jarvis_thinking_heartbeat = None
-
-
-# Grace before the agent_state-idle backstop cancels the thinking
-# heartbeat (see _on_agent_state). The normal cancel lives in _on_item
-# (final-reply detection), but a turn can end with NO final assistant
-# item — e.g. the framework logs "skipping reply to user input, current
-# speech generation cannot be interrupted" (live 2026-05-30) — and then
-# _on_item never fires, so the heartbeat keeps re-touching the flag every
-# 3s and the tray's amber "thinking" sticks forever. If the agent settles
-# into idle/listening and STAYS there this long, the turn is truly over.
-# Generous enough to ignore the framework's transient sub-second
-# "listening" between tool calls; short enough that a leak self-heals.
-def _thinking_idle_grace_s() -> float:
-    try:
-        v = float(os.environ.get("JARVIS_THINKING_IDLE_GRACE_S", "5.0"))
-        return v if v > 0 else 5.0
-    except (TypeError, ValueError):
-        return 5.0
-
-
-# Hard ceiling for the heartbeat's orphan watchdog (see _thinking_heartbeat):
-# if a turn produces NO progress (_bump_turn_activity) for this long and no
-# tool is running, the heartbeat self-cancels even if agent_state never went
-# idle. Generous so it rarely clears during a long legit turn; the fast path
-# for normal turns is the 5s idle backstop. Bounds a wedged-state leak to this
-# instead of forever.
-#   CAVEAT: the tool-busy guard (~/.jarvis/.tool-running) only covers
-#   `run_jarvis_cli` — that's the only tool calling `_mark_tool_start`. A
-#   `computer_use` / `dispatch_agent` call that runs past this ceiling emits no
-#   interim agent-side event and sets no tool-busy flag, so the watchdog WILL
-#   fire mid-turn and flip the indicator green while JARVIS is still working
-#   (cosmetic; self-heals on the next real event). FOLLOW-UP: have those two
-#   tools call `_mark_tool_start`/`_mark_tool_end` to close this gap.
-def _thinking_max_idle_s() -> float:
-    try:
-        v = float(os.environ.get("JARVIS_THINKING_MAX_IDLE_S", "120.0"))
-        return v if v > 0 else 120.0
-    except (TypeError, ValueError):
-        return 120.0
-
-
-def _bump_turn_activity(session) -> None:
-    """Record genuine turn progress for the heartbeat's orphan watchdog.
-    Called on user input, tool-batch execution, and assistant replies —
-    NOT on raw agent_state changes (which can flap during a wedge and keep
-    a dead turn's heartbeat alive). Idempotent / failure-silent."""
-    try:
-        session._jarvis_last_turn_activity = time.monotonic()
-    except Exception:
-        pass
-
-
-def _schedule_idle_heartbeat_cancel(session) -> None:
-    """Backstop cancel for the thinking heartbeat. If the agent settles
-    into idle/listening and STAYS there past `_thinking_idle_grace_s()`,
-    the turn is over — cancel the heartbeat so the tray stops showing
-    amber. A return to thinking/speaking aborts the pending task via
-    `_cancel_pending_idle_heartbeat_cancel`. Covers turns that end with no
-    final assistant item (the framework skips the reply when the current
-    speech can't be interrupted), which `_on_item` never sees. Idempotent:
-    no-op if the heartbeat isn't running or a cancel is already pending."""
-    hb = getattr(session, "_jarvis_thinking_heartbeat", None)
-    if hb is None or hb.done():
-        return
-    prior = getattr(session, "_jarvis_thinking_idle_cancel_task", None)
-    if prior is not None and not prior.done():
-        return
-
-    async def _idle_cancel(_sess=session):
-        try:
-            await asyncio.sleep(_thinking_idle_grace_s())
-            if getattr(_sess, "agent_state", "") in ("idle", "listening"):
-                _cancel_thinking_heartbeat(_sess)
-                logger.info(
-                    "[heartbeat] cancelled after sustained idle "
-                    "(turn ended with no final assistant reply)"
-                )
-        except asyncio.CancelledError:
-            pass
-
-    try:
-        session._jarvis_thinking_idle_cancel_task = asyncio.create_task(_idle_cancel())
-    except Exception as _e:
-        logger.debug(f"[heartbeat] idle-cancel schedule skipped: {_e}")
-
-
-def _cancel_pending_idle_heartbeat_cancel(session) -> None:
-    """Abort a pending idle backstop-cancel — the turn resumed
-    (thinking/speaking), so the heartbeat must keep running. Idempotent."""
-    t = getattr(session, "_jarvis_thinking_idle_cancel_task", None)
-    if t is not None and not t.done():
-        t.cancel()
-    session._jarvis_thinking_idle_cancel_task = None
-
-
 # Per-turn tool-call governor. Without this, the LLM can chain
 # run_jarvis_cli calls indefinitely — observed: misinterpreted user
 # question → CLI #1 ran for 24 s → LLM chained CLI #2 ("fix the
@@ -1613,7 +1387,11 @@ MEMORY_SYNC_DIRECTED_ONLY = (
 MEMORY_SYNC_WINDOW_SEC = float(
     os.environ.get("JARVIS_MEMORY_SYNC_WINDOW_SEC", "120")
 )
-_last_addressed_interaction = 0.0
+# -inf, not 0.0: time.monotonic() is seconds-since-boot, so a 0.0 init reads
+# as "addressed moments ago" for the first WINDOW seconds of machine uptime
+# (jarvis-voice-agent is a boot service → ambient chatter would sync right
+# after boot; same bug made the gate tests fail on fresh CI VMs).
+_last_addressed_interaction = float("-inf")
 
 
 def _touch_addressed() -> None:
@@ -6600,26 +6378,6 @@ async def maybe_publish_assistant_says(
         logger.debug(f"[chat-panel] assistant_says publish failed: {_e!r}")
 
 
-async def _automod_tick() -> None:
-    """One evolution pass: always scan (queue intents for review); BUILD only in
-    AUTO mode. Extracted module-level so it's unit-testable. Phase 1, 2026-06-23
-    cognitive-loop (docs/superpowers/plans/2026-06-23-cognitive-evolution-loop-phase1.md)."""
-    from pipeline.automod import patterns as _automod_patterns
-    from pipeline.automod import spawner as _automod_spawner
-    from pipeline.automod._state import is_auto_mode
-    # Stamp the heartbeat first — proves the in-process loop is alive and records
-    # WHY it will/won't build this tick (idle/cooldown/budget/mode), so the
-    # /evolution page can show "auto · waiting: cooldown 34m" instead of silence.
-    try:
-        from pipeline.automod import heartbeat as _automod_heartbeat
-        _automod_heartbeat.beat()
-    except Exception:  # noqa: BLE001 — liveness must never break the tick
-        pass
-    _automod_patterns.scan_and_emit()
-    if is_auto_mode():
-        await _automod_spawner.drain_queue()
-
-
 async def entrypoint(ctx: JobContext) -> None:
     """
     Runs once per client that joins a room. This is the actual
@@ -6663,17 +6421,6 @@ async def entrypoint(ctx: JobContext) -> None:
         conversation_store.init_db()
     except Exception as e:
         logger.warning(f"[conversation] init_db failed: {e}")
-
-    # Install the auto-mod error telemetry handler. Captures recurring
-    # exceptions from this process for the auto-mod error-driven scanner
-    # to detect. Idempotent — re-install is a no-op. The handler reads
-    # the same telemetry DB that init_db() just initialized.
-    # Spec: docs/superpowers/specs/2026-05-27-automod-error-driven-branch-design.md
-    try:
-        from pipeline.automod.error_logger import install_error_handler
-        install_error_handler()
-    except Exception as _e:
-        logger.warning(f"[automod] error handler install failed: {_e}")
 
     # Clear any stale thinking/tool flags from a prior crashed agent.
     # If we leave them, the new fresh agent reports "thinking" forever
@@ -7965,39 +7712,6 @@ async def entrypoint(ctx: JobContext) -> None:
             await asyncio.sleep(_bgtasks.poll_s())
 
     asyncio.create_task(_background_task_watcher(), name="bg-task-watcher")
-
-    # Spec B (Plane 3) — pattern detector + spawner background loop.
-    # Reads turn_telemetry.db every N seconds (default 30 min), emits
-    # intents to ~/.jarvis/auto-mods/queue.jsonl on threshold crossings,
-    # then optionally spawns the wrapper subprocess if JARVIS_AUTOMOD_SPAWN_LIVE=1.
-    # Both no-op when their respective env gates aren't set.
-    if os.environ.get("JARVIS_AUTOMOD_ENABLED", "0") == "1":
-        try:
-            async def _automod_loop():
-                from pipeline.automod import experience_signal as _signal
-                # Backstop: even with no signal, sweep at most this often so a
-                # missed bump can't stall evolution forever. Default 2h.
-                backstop = float(os.environ.get("JARVIS_AUTOMOD_BACKSTOP_S", "7200"))
-                cooldown = float(os.environ.get("JARVIS_AUTOMOD_COOLDOWN_S", "30"))
-                while True:
-                    await _signal.wait(backstop)   # wakes on a real signal OR backstop
-                    _signal.clear()
-                    try:
-                        await _automod_tick()
-                    except Exception as _e:  # noqa: BLE001
-                        logger.warning("[automod] tick failed: %s", _e)
-                    # Debounce a burst of signals into one pass.
-                    await asyncio.sleep(cooldown)
-
-            asyncio.create_task(_automod_loop(), name="automod-pattern-loop")
-            logger.info(
-                "[automod] event-driven pattern detector + spawner scheduled "
-                "(backstop=%ss; spawn_live=%s; mode-gated build)",
-                os.environ.get("JARVIS_AUTOMOD_BACKSTOP_S", "7200"),
-                os.environ.get("JARVIS_AUTOMOD_SPAWN_LIVE", "0"),
-            )
-        except Exception as _e:  # noqa: BLE001
-            logger.warning("[automod] scheduler wiring failed: %s", _e)
 
     # Spawn the background watchers — each is a fire-and-forget task
     # whose lifetime is bound to the job. Extracted 2026-05-10 (Step

@@ -11,9 +11,6 @@ web:
 cli:
   - changed-files:
       - any-glob-to-any-file: 'src/cli/**'
-android:
-  - changed-files:
-      - any-glob-to-any-file: 'src/android/**'
 ci:
   - changed-files:
       - any-glob-to-any-file: '.github/**'

@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { feature } from 'bun:bundle'
 import { useMainLoopModel } from '../../hooks/useMainLoopModel.js'
 import { Box, Text, useInput } from '../../ink.js'
 import { useAppState, useSetAppState } from '../../state/AppState.js'
@@ -6,9 +7,11 @@ import type { LocalJSXCommandOnDone } from '../../types/command.js'
 import {
   EFFORT_LEVELS,
   getDisplayedEffortLevel,
-  getEffortLevelDescription,
+  getEffortValueDescription,
+  isUltracodeActive,
   modelSupportsEffort,
   modelSupportsMaxEffort,
+  ULTRACODE,
 } from '../../utils/effort.js'
 import { effortLevelToSymbol } from '../../components/EffortIndicator.js'
 import { executeEffort, showCurrentEffort } from './effort.js'
@@ -19,9 +22,15 @@ import { executeEffort, showCurrentEffort } from './effort.js'
 // `/effort <level>`; this makes them discoverable and adjustable visually.
 // Research: code.claude.com/docs/en/model-config + the effort-slider write-ups.
 
-// Column width per level (fits the longest label "medium"/"xhigh" + padding);
+// Column width per level (fits the longest label "ultracode" + padding);
 // the rail marker and the labels share this grid so they stay aligned.
-const CELL = 9
+const CELL = 11
+
+// The slider extends the API effort ladder with the session-only ultracode
+// stop (xhigh + workflow orchestration) when the Workflow tool is compiled in.
+const SLIDER_LEVELS = feature('WORKFLOW_SCRIPTS')
+  ? ([...EFFORT_LEVELS, ULTRACODE] as const)
+  : EFFORT_LEVELS
 
 function center(s: string, width: number): string {
   if (s.length >= width) return s.slice(0, width)
@@ -42,7 +51,11 @@ export function EffortSlider({
   const maxSupported = modelSupportsMaxEffort(model)
   const startLevel = getDisplayedEffortLevel(model, effortValue)
   const [index, setIndex] = React.useState(() =>
-    Math.max(0, EFFORT_LEVELS.indexOf(startLevel)),
+    // ultracode displays as xhigh (its API level) but the slider should
+    // start on the ultracode stop when the session mode is active.
+    isUltracodeActive(effortValue)
+      ? SLIDER_LEVELS.indexOf(ULTRACODE)
+      : Math.max(0, (SLIDER_LEVELS as readonly string[]).indexOf(startLevel)),
   )
   // Enter (below) reads the selected level from useInput's handler closure,
   // which useEventCallback only refreshes via a useLayoutEffect — i.e. after
@@ -65,9 +78,9 @@ export function EffortSlider({
     if (key.leftArrow) {
       setIndex((i: number) => Math.max(0, i - 1))
     } else if (key.rightArrow) {
-      setIndex((i: number) => Math.min(EFFORT_LEVELS.length - 1, i + 1))
+      setIndex((i: number) => Math.min(SLIDER_LEVELS.length - 1, i + 1))
     } else if (key.return) {
-      const result = executeEffort(EFFORT_LEVELS[indexRef.current])
+      const result = executeEffort(SLIDER_LEVELS[indexRef.current])
       if (result.effortUpdate) {
         const value = result.effortUpdate.value
         setAppState((prev) => ({ ...prev, effortValue: value }))
@@ -80,8 +93,8 @@ export function EffortSlider({
 
   if (!supported) return null
 
-  const selected = EFFORT_LEVELS[index]
-  const width = CELL * EFFORT_LEVELS.length
+  const selected = SLIDER_LEVELS[index]
+  const width = CELL * SLIDER_LEVELS.length
   const markerCol = index * CELL + Math.floor(CELL / 2)
   const rail = '─'.repeat(width)
 
@@ -107,7 +120,7 @@ export function EffortSlider({
         <Text dimColor>{rail.slice(markerCol + 1)}</Text>
       </Box>
       <Box>
-        {EFFORT_LEVELS.map((lvl, i) => {
+        {SLIDER_LEVELS.map((lvl, i) => {
           const isMaxUnavailable = lvl === 'max' && !maxSupported
           return (
             <Text
@@ -127,7 +140,7 @@ export function EffortSlider({
           {selected === 'max' && !maxSupported
             ? ' (not supported by this model — applies after you switch)'
             : ''}{' '}
-          — {getEffortLevelDescription(selected)}
+          — {getEffortValueDescription(selected)}
         </Text>
       </Box>
       <Box>

@@ -538,7 +538,32 @@ describe('reconnect + events + archive', () => {
     expect(res.status).toBe(204)
   })
 
+  // Bind a session to an environment the way the v1 worker flow does — by
+  // enqueueing work for it — so the environment_secret is a valid session
+  // credential (authorizeSessionCredential; the old "any non-empty bearer"
+  // contract is gone).
+  async function registerEnvWithSession(
+    sessionId: string,
+  ): Promise<{ environment_id: string; environment_secret: string }> {
+    const reg = await registerEnv()
+    const enq = await import('@/app/api/bridge/v1/admin/enqueue/route')
+    const res = await enq.POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          environment_id: reg.environment_id,
+          session_id: sessionId,
+          data: {},
+        }),
+      }),
+    )
+    expect(res.status).toBe(200)
+    return reg
+  }
+
   test('events route accepts events and returns 204', async () => {
+    const { environment_secret } = await registerEnvWithSession('sessEv')
     const { POST } = await import(
       '@/app/api/bridge/v1/sessions/[sessionId]/events/route'
     )
@@ -547,19 +572,96 @@ describe('reconnect + events + archive', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          // v1: any non-empty bearer accepted (sub-project 3 will tighten)
+          Authorization: `Bearer ${environment_secret}`,
+        },
+        body: JSON.stringify({
+          events: [{ type: 'permission_response', granted: true }],
+        }),
+      }),
+      { params: Promise.resolve({ sessionId: 'sessEv' }) },
+    )
+    expect(res.status).toBe(204)
+  })
+
+  test('events route rejects an unbound bearer with 401', async () => {
+    const { POST } = await import(
+      '@/app/api/bridge/v1/sessions/[sessionId]/events/route'
+    )
+    const res = await POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
           Authorization: 'Bearer any-token',
         },
         body: JSON.stringify({
           events: [{ type: 'permission_response', granted: true }],
         }),
       }),
-      { params: Promise.resolve({ sessionId: 'sess1' }) },
+      { params: Promise.resolve({ sessionId: 'sessUnbound' }) },
     )
-    expect(res.status).toBe(204)
+    expect(res.status).toBe(401)
   })
 
-  test('events route returns 400 on missing events array', async () => {
+  test('register rejects tokenless/unresolvable bearers when JARVIS_REQUIRE_LOCAL_AUTH=1', async () => {
+    process.env.JARVIS_REQUIRE_LOCAL_AUTH = '1'
+    try {
+      const { POST } = await import('@/app/api/bridge/v1/environments/bridge/route')
+      const make = (auth?: string) =>
+        POST(
+          new Request('http://127.0.0.1:3000/api/bridge/v1/environments/bridge', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(auth ? { Authorization: auth } : {}),
+            },
+            body: JSON.stringify({
+              machine_name: 'kali',
+              directory: '/tmp',
+              max_sessions: 4,
+              metadata: { worker_type: 'jarvis' },
+            }),
+          }),
+        )
+      expect((await make()).status).toBe(401) //                    tokenless
+      expect((await make('Bearer not-a-real-token')).status).toBe(401)
+      // A resolvable per-user token registers fine and owns the environment.
+      const store = getStore()
+      store.db
+        .prepare('INSERT INTO bridge_tokens (token, user_id, created_at) VALUES (?, ?, ?)')
+        .run('jbr_hardened_user', 'user_hardened', Date.now())
+      const ok = await make('Bearer jbr_hardened_user')
+      expect(ok.status).toBe(200)
+      const { environment_id } = (await ok.json()) as { environment_id: string }
+      const row = store.db
+        .prepare('SELECT user_id FROM environments WHERE environment_id = ?')
+        .get(environment_id) as { user_id: string }
+      expect(row.user_id).toBe('user_hardened')
+    } finally {
+      delete process.env.JARVIS_REQUIRE_LOCAL_AUTH
+    }
+  })
+
+  test("events rejects another user's bridge token for a foreign session (cross-tenant)", async () => {
+    const { environment_secret, environment_id } =
+      await registerEnvWithSession('sessTenant')
+    expect(environment_secret).toBeTruthy()
+    const store = getStore()
+    // Bind the environment to an owner, then present a DIFFERENT user's token.
+    store.db
+      .prepare('UPDATE environments SET user_id = ? WHERE environment_id = ?')
+      .run('user_owner', environment_id)
+    // sessions row must exist for the ownership check — archive-orphan path
+    // would otherwise allow any resolvable token. enqueue created only a work
+    // row, so create the sessions binding the way the server does.
+    store.db
+      .prepare(
+        'INSERT OR IGNORE INTO sessions (session_id, environment_id, created_at) VALUES (?, ?, ?)',
+      )
+      .run('sessTenant', environment_id, Date.now())
+    store.db
+      .prepare('INSERT INTO bridge_tokens (token, user_id, created_at) VALUES (?, ?, ?)')
+      .run('jbr_intruder', 'user_intruder', Date.now())
     const { POST } = await import(
       '@/app/api/bridge/v1/sessions/[sessionId]/events/route'
     )
@@ -568,7 +670,26 @@ describe('reconnect + events + archive', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: 'Bearer any',
+          Authorization: 'Bearer jbr_intruder',
+        },
+        body: JSON.stringify({ events: [{ type: 'noop' }] }),
+      }),
+      { params: Promise.resolve({ sessionId: 'sessTenant' }) },
+    )
+    expect(res.status).toBe(401)
+  })
+
+  test('events route returns 400 on missing events array', async () => {
+    const { environment_secret } = await registerEnvWithSession('sessX')
+    const { POST } = await import(
+      '@/app/api/bridge/v1/sessions/[sessionId]/events/route'
+    )
+    const res = await POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${environment_secret}`,
         },
         body: JSON.stringify({}),
       }),
@@ -593,7 +714,8 @@ describe('reconnect + events + archive', () => {
   })
 
   test('archive 204 first time, 409 second time', async () => {
-    const { environment_id, environment_secret } = await registerEnv()
+    const { environment_id, environment_secret } =
+      await registerEnvWithSession('sessA')
     const { POST } = await import(
       '@/app/api/bridge/v1/sessions/[sessionId]/archive/route'
     )

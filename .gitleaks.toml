@@ -10,7 +10,6 @@ description = "vendored trees + known false-positives"
 paths = [
   '''node_modules/''',
   '''\.venv/''',
-  '''src/android/app/src/main/cpp/llama\.cpp/''',
   '''.*\.test\.(ts|tsx|js|py)$''',
   '''package-lock\.json''',
   '''bun\.lock''',

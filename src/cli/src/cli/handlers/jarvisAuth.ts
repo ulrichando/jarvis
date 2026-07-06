@@ -151,7 +151,29 @@ async function fetchJson(
   url: string,
   init?: RequestInit,
 ): Promise<Response> {
-  return fetch(url, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+  // First-party client headers. The web app's proxy gate (src/web proxy.ts)
+  // admits /api/auth/* through its bearer gate only with a same-origin marker,
+  // and better-auth's CSRF check rejects a POST with no Origin. A browser sets
+  // both automatically; the CLI isn't a browser, so it sets them explicitly —
+  // mirroring the login form. Safe: /api/auth/* still validates credentials and
+  // /api/bridge/* still requires the session cookie, so this bypasses nothing.
+  // Without them a deployed server answers {"error":"auth required"} or
+  // {"code":"MISSING_OR_NULL_ORIGIN"} instead of authenticating.
+  let origin: string | undefined
+  try {
+    origin = new URL(url).origin
+  } catch {
+    origin = undefined
+  }
+  return fetch(url, {
+    ...init,
+    headers: {
+      'sec-fetch-site': 'same-origin',
+      ...(origin ? { origin } : {}),
+      ...(init?.headers as Record<string, string> | undefined),
+    },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  })
 }
 
 /** A response is only usable if it's a direct 2xx from our own server. `fetch`

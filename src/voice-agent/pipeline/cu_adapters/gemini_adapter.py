@@ -23,6 +23,17 @@ from .base import (CUAdapter, StepResult, ToolCall, ToolResult,
                    computer_use_description, computer_use_tool_params)
 
 
+def _gemini_schema(node: Any) -> Any:
+    """Gemini's Schema proto has no ``additionalProperties`` field and 400s on
+    unknown names — strip what ``strictify`` adds for Anthropic (live failure
+    2026-07-04: 'Unknown name "additional_properties"')."""
+    if isinstance(node, dict):
+        return {k: _gemini_schema(v) for k, v in node.items() if k != "additionalProperties"}
+    if isinstance(node, list):
+        return [_gemini_schema(v) for v in node]
+    return node
+
+
 class GeminiCUAdapter(CUAdapter):
     def __init__(self, model: str, system: str, client: Optional[Any] = None) -> None:
         super().__init__(model, system)
@@ -31,7 +42,7 @@ class GeminiCUAdapter(CUAdapter):
         self._tool = types.Tool(function_declarations=[types.FunctionDeclaration(
             name="computer_use",
             description=computer_use_description(),
-            parameters=computer_use_tool_params())])
+            parameters=_gemini_schema(computer_use_tool_params()))])
         self.contents: List[Any] = []
 
     def _img(self, b64: str) -> Any:

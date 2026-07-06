@@ -43,7 +43,7 @@ required-ness of defaulted params is dropped.
 
 Idempotent: reinstalling this patch is a no-op (guards on a flag
 attribute). Compatible with the deepseek_roundtrip + tool_name +
-pycall + dsml + handoff_text patches stack — install order doesn't
+pycall + dsml patches stack — install order doesn't
 matter since none of them touch the same call site.
 
 Alternative considered (rejected): swap every `groq.LLM(...)` to

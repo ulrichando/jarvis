@@ -89,14 +89,69 @@ def _ollama_has_models(base: str = "http://127.0.0.1:11434", timeout: float = 1.
 STATUS_PORT: int = int(os.environ.get("JARVIS_VOICE_CLIENT_PORT", "8767"))
 
 
-# CORS headers used on every response. Permissive on purpose — the
-# Tauri webview polls us from `tauri://localhost` and the web app
-# polls from the local dev origin; both need preflight-free access.
+# CORS headers used on every response. The per-request
+# `Access-Control-Allow-Origin` is set by `_origin_guard` (below): it echoes the
+# caller's origin only when that origin is on `_ALLOWED_ORIGINS`, never "*".
+# Methods/headers stay here so the OPTIONS preflight can advertise them.
 _CORS_HEADERS = {
-    "Access-Control-Allow-Origin":  "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
 }
+
+# Browser origins allowed to call this loopback control API. The Tauri desktop
+# webview's document origin is `https://tauri.localhost` (see the desktop CSP
+# `connect-src`); the rest cover Tauri on other platforms + the local dev
+# servers. A browser request always carries an `Origin` header the page CANNOT
+# forge; local IPC callers (curl / Python / the bin/* recovery scripts) send
+# none. `_origin_guard` rejects any request whose Origin is set-but-not-listed,
+# which closes the drive-by vector where any web page the user visits could POST
+# /user-input (injects a synthetic user turn into the action-capable agent),
+# /speak, /mute, /mode/*, or read /screen-share/token. Loopback bind + this
+# gate; local co-resident processes are out of scope (already trusted on a
+# single-user box). Extend via JARVIS_VOICE_CLIENT_CORS_ALLOW (comma-separated).
+_ALLOWED_ORIGINS = frozenset(
+    {
+        "https://tauri.localhost",
+        "http://tauri.localhost",
+        "tauri://localhost",
+        "app://localhost",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:1420",
+    }
+    | {
+        o.strip()
+        for o in os.environ.get("JARVIS_VOICE_CLIENT_CORS_ALLOW", "").split(",")
+        if o.strip()
+    }
+)
+
+
+@web.middleware
+async def _origin_guard(request: web.Request, handler):
+    """Auth boundary for the loopback control API: reject cross-origin browser
+    calls from origins not on `_ALLOWED_ORIGINS`, and pin every response's
+    `Access-Control-Allow-Origin` to the (approved) caller origin instead of
+    "*". Local IPC callers send no Origin and pass through untouched. Without
+    this, any web page the user visits could drive the voice agent (POST
+    /user-input feeds the action-capable session)."""
+    origin = request.headers.get("Origin")
+    if origin is not None and origin not in _ALLOWED_ORIGINS:
+        return web.json_response({"error": "origin not allowed"}, status=403)
+    try:
+        resp = await handler(request)
+    except web.HTTPException as exc:
+        resp = exc
+    # Normalize CORS on the way out (skip once the body stream is already
+    # flushed — e.g. the /events SSE response, whose headers were sent at
+    # prepare() time). `origin` here is either None or on the allowlist.
+    if not getattr(resp, "prepared", False):
+        if origin is not None:
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Vary"] = "Origin"
+        else:
+            resp.headers.pop("Access-Control-Allow-Origin", None)
+    return resp
 
 # Active conversation mode (bin/jarvis-mode writes it): jarvis|gemini|openai.
 # In a direct mode the active voice is a separate process and JARVIS-Claude's
@@ -231,7 +286,7 @@ class VoiceClientHttpApi:
     # ── Server bring-up ────────────────────────────────────────────
 
     def build_app(self) -> web.Application:
-        app = web.Application()
+        app = web.Application(middlewares=[_origin_guard])
         app.router.add_get("/status",  self.status)
         app.router.add_get("/level",   self.level)    # fast (~30fps) lip-sync poll
         app.router.add_get("/face",    self.face)    # per-frame viseme morph weights

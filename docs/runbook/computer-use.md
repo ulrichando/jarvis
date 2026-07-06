@@ -120,6 +120,7 @@ Don't trust training data for model names — these were verified online per the
 
 | Model id | Provider | Notes |
 |---|---|---|
+| `claude-sonnet-5` | Anthropic | newest balanced tier (added 2026-07-04; 2576px hi-res input) |
 | `claude-sonnet-4-6` | Anthropic | sidecar default; strongest on OSWorld (~72.7%) |
 | `claude-opus-4-8` | Anthropic | most capable |
 | `claude-opus-4-7` | Anthropic | allowed (sidecar set) |
@@ -130,8 +131,15 @@ Don't trust training data for model names — these were verified online per the
 Each provider is gated on its key (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
 `GEMINI_API_KEY`|`GOOGLE_API_KEY`, loaded from `~/.jarvis/keys.env`).
 `/health` reports availability so the page dims models whose key is absent.
-All are driven through the **uniform SOM custom-tool path** — native
-per-provider CU is a future per-adapter upgrade, not what runs today.
+**As of 2026-07-04 the sidecar's ANTHROPIC adapter drives the NATIVE
+`computer_20251124` tool** (beta `computer-use-2025-11-24`, `enable_zoom`,
+raw vision frames at per-model max px, Anthropic's screenshot
+prompt-injection classifiers) for sonnet-5 / opus-4-8 / opus-4-7 /
+sonnet-4-6 — actions are translated onto the same `handle_computer_use`
+executor, so tier gate / blocklist / audit are unchanged. Kill-switch
+`JARVIS_CU_NATIVE_ANTHROPIC=0` reverts to SOM. Haiku 4.5 (older
+`computer_20250124` surface only), GPT-5.5, Gemini, and the VOICE tool
+stay on the uniform SOM custom-tool path.
 
 ---
 
@@ -195,13 +203,19 @@ the code** — the code is correct; these are stale descriptions.
   example prompts. Polish candidates to confirm against a live screenshot:
   permission-card affordance, the takeover banner, and the "stream not ready"
   empty state.
-- **#46 E2E** (blocked on live-drive): auth half done — the page calls
-  `/api/computer-use` same-origin (covered by the proxy carve-out, now
-  session-tied); the sidecar `:8771` is reached host-side by the route, not the
-  browser. Remaining: a live drive of a real task end-to-end.
-- **#50 CLI computer use** (`src/cli`, blocked on sign-off): the natural path is
-  to reuse `handle_computer_use` + the SOM schema behind a CLI command, exactly
-  as the sidecar does — no new executor needed.
+- **#46 E2E** (2026-07-04): the whole chain is proven — seed+sign-in auth,
+  status probe, POST → SSE proxy → sidecar loop → screen capture → frames
+  back. The final hop (a model actually driving a task) is blocked on
+  provider credits (Anthropic + OpenAI billing, Gemini key invalid at the
+  time). Re-run one real task once any provider key works.
+- **#50 CLI computer use — SHIPPED 2026-07-04:** `jarvis computer-use
+  "<task>" [--model … --auto --session … --url …]` in `src/cli/src/computer-use/`
+  — SSE client for the sidecar with y/s/N approval prompts; registered in
+  main.tsx + the start.sh skip-list.
+- **Cloud CU deploy**: container + compose + Caddy `/cu-vnc` are on PR #114.
+  Pre-merge requirement: `JARVIS_CU_VNC_PASSWORD` in the box's
+  `.env.production` (compose `:?`-guards it). Post-merge: Cloudflare Access
+  bypass for `/cu-vnc`.
 
 ---
 

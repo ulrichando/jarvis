@@ -16,6 +16,12 @@
 #   JARVIS_SLO_FALLBACK_PCT=40      % of turns where the primary provider fell back
 #   JARVIS_SLO_TOOLERR_PCT=40       % of turns with a tool error
 #   JARVIS_SLO_RSS_MB=4500          worker RSS ceiling (OOM-wedge guard)
+#   JARVIS_SLO_CACHE_HIT_PCT=60     FLOOR: % of LLM turns (input_tokens>0) with a
+#                                   prompt-cache hit. Baseline is 89-100% on every
+#                                   rung (2026-07 measurement); a drop below 60%
+#                                   means caching silently broke (provider TTL
+#                                   regression, prompt-prefix churn) — pure cost/
+#                                   latency bleed with no user-visible failure.
 set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,12 +37,14 @@ T_TTFW="${JARVIS_SLO_TTFW_P95_MS:-6000}"
 T_FB="${JARVIS_SLO_FALLBACK_PCT:-40}"
 T_TE="${JARVIS_SLO_TOOLERR_PCT:-40}"
 T_RSS="${JARVIS_SLO_RSS_MB:-4500}"
+T_CACHE="${JARVIS_SLO_CACHE_HIT_PCT:-60}"
 
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$LOG"; }
 [ -f "$DB" ] || { log "no telemetry db"; exit 0; }
 
-# One query → "count|ttfw_p95|fallback_pct|toolerr_pct|rss_max" over last WIN turns.
-read -r CNT P95 FB TE RSS < <(sqlite3 -separator ' ' "$DB" "
+# One query → "count|ttfw_p95|fallback_pct|toolerr_pct|rss_max|cache_hit_pct|llm_turns"
+# over last WIN turns.
+read -r CNT P95 FB TE RSS CH CN < <(sqlite3 -separator ' ' "$DB" "
 WITH recent AS (SELECT * FROM turns ORDER BY ts_utc DESC LIMIT ${WIN})
 SELECT
   (SELECT COUNT(*) FROM recent),
@@ -44,7 +52,10 @@ SELECT
           LIMIT 1 OFFSET (SELECT CAST(0.95*(COUNT(*)-1) AS INT) FROM recent WHERE ttfw_ms IS NOT NULL)), 0),
   IFNULL((SELECT ROUND(100.0*SUM(COALESCE(route_fallback,0))/COUNT(*),0) FROM recent), 0),
   IFNULL((SELECT ROUND(100.0*SUM(COALESCE(had_tool_error,0))/COUNT(*),0) FROM recent), 0),
-  IFNULL((SELECT ROUND(MAX(rss_mb),0) FROM recent), 0);
+  IFNULL((SELECT ROUND(MAX(rss_mb),0) FROM recent), 0),
+  IFNULL((SELECT ROUND(100.0*SUM(COALESCE(prompt_cached_tokens,0)>0)/COUNT(*),0)
+          FROM recent WHERE COALESCE(input_tokens,0)>0), 100),
+  IFNULL((SELECT COUNT(*) FROM recent WHERE COALESCE(input_tokens,0)>0), 0);
 " 2>/dev/null)
 
 CNT="${CNT:-0}"
@@ -58,8 +69,11 @@ breaches=""
 [ "${FB%.*}"  -gt "$T_FB"   ] 2>/dev/null && breaches="${breaches}provider-fallback ${FB}% > ${T_FB}%; "
 [ "${TE%.*}"  -gt "$T_TE"   ] 2>/dev/null && breaches="${breaches}tool-error ${TE}% > ${T_TE}%; "
 [ "${RSS%.*}" -gt "$T_RSS"  ] 2>/dev/null && breaches="${breaches}RSS ${RSS}MB > ${T_RSS}MB; "
+# Floor check, gated on enough LLM turns in-window (session-start turns are
+# legitimate cache misses; MIN samples keeps one restart from paging).
+[ "${CN:-0}" -ge "$MIN" ] && [ "${CH%.*}" -lt "$T_CACHE" ] 2>/dev/null && breaches="${breaches}prompt-cache-hit ${CH}% < ${T_CACHE}%; "
 
-summary="n=${CNT} ttfw_p95=${P95}ms fallback=${FB}% toolerr=${TE}% rss=${RSS}MB"
+summary="n=${CNT} ttfw_p95=${P95}ms fallback=${FB}% toolerr=${TE}% rss=${RSS}MB cache_hit=${CH:-?}%"
 log "$summary${breaches:+ — BREACH: $breaches}"
 
 if [ -z "$breaches" ]; then

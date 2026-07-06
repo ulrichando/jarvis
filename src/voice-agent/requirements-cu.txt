@@ -1,0 +1,9 @@
+# Slim deps for the cloud computer-use sidecar (no torch/livekit/whisper).
+# Verified: importing computer_use_service loads none of the heavy voice stack.
+# Keep versions in sync with src/voice-agent/requirements.txt where they overlap.
+anthropic>=0.105
+openai>=1.50
+google-genai>=2.6
+aiohttp>=3.9
+mss>=10.0
+Pillow>=10.0

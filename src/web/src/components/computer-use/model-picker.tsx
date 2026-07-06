@@ -3,6 +3,7 @@ import { Cpu, ChevronDown, Check } from "lucide-react";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 
 export const CU_MODELS = [
+  { id: "claude-sonnet-5", label: "Claude Sonnet 5", hint: "Balanced · newest", provider: "anthropic" },
   { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", hint: "Balanced", provider: "anthropic" },
   { id: "claude-opus-4-8", label: "Claude Opus 4.8", hint: "Most capable", provider: "anthropic" },
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", hint: "Fastest", provider: "anthropic" },

@@ -119,3 +119,27 @@ class TestSessionWatchdog:
         mock_ev = MagicMock()
         mock_ev.error = Exception("Connection error")
         assert jarvis_agent._session_close_needs_restart(mock_ev)
+
+    def test_no_restart_on_billing_error(self):
+        """A billing/credit error must NOT restart — a bounce can't add
+        credits, so restarting just loops forever (2026-07-01 incident)."""
+        import importlib
+        import jarvis_agent
+        importlib.reload(jarvis_agent)
+
+        mock_ev = MagicMock()
+        mock_ev.error = Exception(
+            "Error code: 400 - Your credit balance is too low to access "
+            "the Anthropic API. Please go to Plans & Billing to upgrade."
+        )
+        assert not jarvis_agent._session_close_needs_restart(mock_ev)
+
+    def test_no_restart_on_auth_status(self):
+        """A 401/403 (bad/expired key) must NOT restart — same reasoning."""
+        import importlib
+        import jarvis_agent
+        importlib.reload(jarvis_agent)
+
+        mock_ev = MagicMock()
+        mock_ev.error = MagicMock(status_code=401)
+        assert not jarvis_agent._session_close_needs_restart(mock_ev)

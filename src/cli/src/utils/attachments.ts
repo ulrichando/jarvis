@@ -209,6 +209,12 @@ const sessionTranscriptModule = feature('KAIROS')
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { hasUltrathinkKeyword, isUltrathinkEnabled } from './thinking.js'
 import {
+  clampEffortToModel,
+  isUltracodeActive,
+  type EffortLevel,
+  type EffortValue,
+} from './effort.js'
+import {
   tokenCountFromLastAPIResponse,
   tokenCountWithEstimation,
 } from './tokens.js'
@@ -680,7 +686,12 @@ export type Attachment =
     }
   | {
       type: 'ultrathink_effort'
-      level: 'high'
+      level: EffortLevel
+    }
+  | {
+      type: 'ultracode_mode'
+      keyword: boolean
+      session: boolean
     }
   | {
       type: 'deferred_tools_delta'
@@ -831,7 +842,24 @@ export async function getAttachments(
       Promise.resolve(getDateChangeAttachments(messages)),
     ),
     maybe('ultrathink_effort', () =>
-      Promise.resolve(getUltrathinkEffortAttachment(input)),
+      Promise.resolve(
+        getUltrathinkEffortAttachment(
+          input,
+          toolUseContext.options.mainLoopModel,
+        ),
+      ),
+    ),
+    // Main thread only — subagents don't have the Workflow tool, so the
+    // orchestration opt-in reminder would be unactionable noise there.
+    maybe('ultracode_mode', () =>
+      Promise.resolve(
+        isMainThread
+          ? getUltracodeAttachment(
+              input,
+              toolUseContext.getAppState().effortValue,
+            )
+          : [],
+      ),
     ),
     maybe('deferred_tools_delta', () =>
       Promise.resolve(
@@ -1443,12 +1471,39 @@ export function getDateChangeAttachments(
   return [{ type: 'date_change', newDate: currentDate }]
 }
 
-function getUltrathinkEffortAttachment(input: string | null): Attachment[] {
+function getUltrathinkEffortAttachment(
+  input: string | null,
+  model: string,
+): Attachment[] {
   if (!isUltrathinkEnabled() || !input || !hasUltrathinkKeyword(input)) {
     return []
   }
   logEvent('tengu_ultrathink', {})
-  return [{ type: 'ultrathink_effort', level: 'high' }]
+  // ultrathink asks for the deepest reasoning the model's API accepts:
+  // max on Anthropic 4.6+/Fable, xhigh on DeepSeek v4, high elsewhere.
+  return [
+    { type: 'ultrathink_effort', level: clampEffortToModel('max', model) },
+  ]
+}
+
+// Ultracode = standing multi-agent orchestration opt-in (see WorkflowTool
+// prompt). Two triggers: the "ultracode" keyword (turn-scoped) and
+// /effort ultracode (session-scoped via appState.effortValue). Only
+// meaningful when the Workflow tool is compiled in.
+function getUltracodeAttachment(
+  input: string | null,
+  effortValue: EffortValue | undefined,
+): Attachment[] {
+  if (!feature('WORKFLOW_SCRIPTS')) {
+    return []
+  }
+  const keyword = !!input && /\bultracode\b/i.test(input)
+  const session = isUltracodeActive(effortValue)
+  if (!keyword && !session) {
+    return []
+  }
+  logEvent('tengu_ultracode', {})
+  return [{ type: 'ultracode_mode', keyword, session }]
 }
 
 // Exported for compact.ts — the gate must be identical at both call sites.

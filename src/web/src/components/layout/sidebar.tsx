@@ -45,7 +45,6 @@ import {
 } from "@/hooks/use-conversations";
 import { useProjects } from "@/hooks/use-projects";
 import { useSettings } from "@/hooks/use-settings";
-import { useEvolutionCount } from "@/hooks/use-evolution-count";
 import { cn } from "@/lib/utils";
 import { DEFAULT_MODEL, MODELS_META } from "@/lib/ai/models-meta";
 import { PROVIDER_FEATURES, PROVIDER_SECTIONS } from "@/lib/ai/features";
@@ -57,7 +56,6 @@ const CORE_NAV = [
   { href: "/chats", label: "Chats", icon: MessagesSquare },
   { href: "/code", label: "Code", icon: Code2 },
   { href: "/workbench", label: "Workbench", icon: Hammer },
-  { href: "/evolution", label: "Evolution", icon: GitPullRequest },
 ] as const;
 
 // Bucket a conversation into Today / Yesterday / Last 7 days / Older
@@ -130,7 +128,6 @@ export function Sidebar() {
   const recentsLabel = ux.recentsLabel ?? "Recents";
 
   const displayName = settings?.user?.name ?? "You";
-  const evolutionCount = useEvolutionCount();
 
   return (
     <>
@@ -200,14 +197,6 @@ export function Sidebar() {
                       >
                         <item.icon className="size-4 shrink-0 text-sidebar-foreground/70" />
                         {item.label}
-                        {item.href === "/evolution" && evolutionCount > 0 && (
-                          <span
-                            className="ml-auto inline-flex min-w-[1.1rem] items-center justify-center rounded-full bg-primary/15 px-1.5 text-[10px] font-medium tabular-nums text-primary"
-                            title={`${evolutionCount} proposal${evolutionCount === 1 ? "" : "s"} awaiting review`}
-                          >
-                            {evolutionCount}
-                          </span>
-                        )}
                       </Link>
                     );
                   })}

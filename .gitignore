@@ -65,20 +65,6 @@ jarvis-export-*.json
 # Reference source (Claude Code src — not part of JARVIS)
 resource-info/
 
-# Android client build artifacts (Gradle, APKs, SDK path)
-src/android/build/
-src/android/app/build/
-src/android/app/.cxx/
-src/android/.gradle/
-src/android/local.properties
-*.apk
-*.aab
-
-# OpenCL ICD loader stubs — built on demand via
-# src/android/scripts/build-opencl-stub.sh, one per ABI.
-src/android/app/src/main/cpp/opencl-stub/*/libOpenCL.so
-src/android/app/src/main/cpp/third_party/*/build/
-
 # Browser-extension packaged artifacts + signing keys
 *.crx
 *.xpi
@@ -92,17 +78,6 @@ jarvis-cli/
 .gstack/
 .pytest_cache/
 .remember/
-
-# The generic data/ and llm/ rules above (intended for runtime data dirs and
-# top-level LLM docs) ALSO match SOURCE directories inside the Android app —
-# .../com/jarvis/android/data/ and .../system/llm/ — silently leaving large
-# parts of the app unversioned. Re-include the app's own Kotlin source (main +
-# test); placed after both rules so the negation wins. The vendored
-# cpp/llama.cpp tree keeps its own ignores and is untouched by this.
-!src/android/app/src/main/java/com/jarvis/android/**/
-!src/android/app/src/main/java/com/jarvis/android/**
-!src/android/app/src/test/java/com/jarvis/android/**/
-!src/android/app/src/test/java/com/jarvis/android/**
 
 # Claude Code — personal overrides stay local
 CLAUDE.local.md
