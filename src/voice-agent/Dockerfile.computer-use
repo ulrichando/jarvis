@@ -9,7 +9,7 @@ FROM python:3.13-slim
 # the trixie slim base; it broke the 2026-07-06 build.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
       xvfb x11-utils openbox tint2 firefox-esr \
-      pcmanfm xterm mousepad \
+      pcmanfm xterm mousepad jgmenu \
       x11vnc websockify \
       xdotool wmctrl imagemagick scrot \
       fonts-dejavu-core ca-certificates \
@@ -50,6 +50,20 @@ RUN mkdir -p /usr/share/backgrounds /home/cu/.config/pcmanfm/default /home/cu/De
  && printf '[Desktop Entry]\nType=Application\nName=Firefox\nExec=firefox\nIcon=firefox-esr\nTerminal=false\n' > /home/cu/Desktop/firefox.desktop \
  && chmod +x /home/cu/Desktop/*.desktop \
  && chown -R cu:cu /home/cu/.config /home/cu/Desktop
+
+# Start-menu button in the panel (2026-07-06 "why is there no menu button"):
+# tint2 is a minimal panel (taskbar+clock only by default) and openbox's app
+# menu is stolen by pcmanfm's desktop right-click, so nothing gave a launcher
+# button. Add a labelled tint2 button that pops a jgmenu list of the apps.
+# jarvis-menu feeds a static CSV to `jgmenu --simple` (text entries render
+# without an icon theme, which we don't ship). panel_items=BTSC → Button,
+# Taskbar, Systray, Clock.
+RUN printf '#!/bin/sh\nprintf "Terminal,xterm\\nFiles,pcmanfm\\nText Editor,mousepad\\nFirefox,firefox\\n" | jgmenu --simple\n' > /usr/local/bin/jarvis-menu \
+ && chmod +x /usr/local/bin/jarvis-menu \
+ && mkdir -p /home/cu/.config/tint2 \
+ && printf 'panel_items = BTSC\npanel_size = 100%% 32\npanel_background_id = 1\nbackground_id = 1\nrounded = 0\nbackground_color = #0f1620 100\nbutton = new\nbutton_text = Menu\nbutton_lclick_command = jarvis-menu\nbutton_font_color = #e6edf3 100\nbutton_padding = 12 2\ntime1_format = %%H:%%M\n' \
+      > /home/cu/.config/tint2/tint2rc \
+ && chown -R cu:cu /home/cu/.config/tint2
 
 USER cu
 
