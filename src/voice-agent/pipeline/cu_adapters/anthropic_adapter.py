@@ -244,13 +244,21 @@ class AnthropicNativeCUAdapter(AnthropicCUAdapter):
             return 1.0, 1.0
         return sw / float(fw), sh / float(fh)
 
-    def _native_tool(self) -> Dict[str, Any]:
+    def _native_tools(self) -> List[Dict[str, Any]]:
         w, h = self._frame_size or self.screen_size or (1280, 800)
-        return {
+        tools: List[Dict[str, Any]] = [{
             "type": "computer_20251124", "name": "computer",
             "display_width_px": int(w), "display_height_px": int(h),
             "enable_zoom": True,
-        }
+        }]
+        # Sandbox-only shell (Anthropic's "augment computer use with other
+        # tools" pattern): launching an app or moving a file is one bash call
+        # instead of a click-hunt through a terminal (the 2026-07-06 local run
+        # burned 30 steps exactly that way). JARVIS_CU_BASH=1 is set ONLY in
+        # Dockerfile.computer-use — the user's real desktop never offers it.
+        if os.environ.get("JARVIS_CU_BASH", "").strip().lower() in {"1", "true", "on"}:
+            tools.append({"type": "bash_20250124", "name": "bash"})
+        return tools
 
     def _translate(self, inp: Dict[str, Any]) -> Dict[str, Any]:
         """Native computer_20251124 input → COMPUTER_USE_SCHEMA args."""
@@ -314,12 +322,18 @@ class AnthropicNativeCUAdapter(AnthropicCUAdapter):
     async def next_step(self) -> StepResult:
         # Same prefix-cache shape as the SOM adapter: breakpoint on the system
         # block caches tools+system across the loop (tools render first).
+        # Adaptive thinking per Anthropic's CU guidance (pairs with the
+        # per-model effort in _effort_kwargs); max_tokens has headroom for the
+        # thinking blocks. Kill-switch: JARVIS_CU_THINKING=0.
         system_blocks = [{"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}}]
+        kwargs: Dict[str, Any] = dict(self._effort_kwargs())
+        if os.environ.get("JARVIS_CU_THINKING", "1").strip().lower() not in {"0", "false", "off"}:
+            kwargs["thinking"] = {"type": "adaptive"}
         resp = await asyncio.to_thread(
-            self._client.messages.create, model=self.model, max_tokens=4096,
-            system=system_blocks, messages=self.messages, tools=[self._native_tool()],
+            self._client.messages.create, model=self.model, max_tokens=8192,
+            system=system_blocks, messages=self.messages, tools=self._native_tools(),
             extra_headers={"anthropic-beta": _NATIVE_BETA},
-            **self._effort_kwargs())
+            **kwargs)
         assistant: List[Dict[str, Any]] = []
         calls: List[ToolCall] = []
         text_out: Optional[str] = None
@@ -327,10 +341,23 @@ class AnthropicNativeCUAdapter(AnthropicCUAdapter):
             if b.type == "text":
                 assistant.append({"type": "text", "text": b.text})
                 text_out = (text_out or "") + b.text
+            elif b.type == "thinking":
+                # The API REQUIRES thinking blocks (with signatures) echoed
+                # back verbatim when tools + thinking are combined.
+                assistant.append({"type": "thinking", "thinking": b.thinking,
+                                  "signature": b.signature})
+            elif b.type == "redacted_thinking":
+                assistant.append({"type": "redacted_thinking", "data": b.data})
             elif b.type == "tool_use":
                 # History echoes the ORIGINAL native input; only the executor
                 # sees the translated args.
                 assistant.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
+                if b.name == "bash":
+                    # Sandbox shell (not a computer action): the service loop
+                    # executes it via _run_cu_bash, never handle_computer_use.
+                    args = dict(b.input) if isinstance(b.input, dict) else {}
+                    calls.append(ToolCall(id=b.id, action="bash", args={"action": "bash", **args}))
+                    continue
                 args = self._translate(dict(b.input) if isinstance(b.input, dict) else {})
                 calls.append(ToolCall(id=b.id, action=str(args.get("action") or "?"), args=args))
         self.messages.append({"role": "assistant", "content": assistant})
