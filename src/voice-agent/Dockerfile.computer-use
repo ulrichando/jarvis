@@ -34,6 +34,18 @@ RUN python -c "import computer_use_service; print('sidecar import OK')"
 
 # Non-root
 RUN useradd -m -u 10001 cu && chown -R cu:cu /app
+
+# Desktop wallpaper + pcmanfm desktop config so the desktop paints a real
+# background (2026-07-06: without this pcmanfm --desktop left a black void — a
+# panel over black read as "unfinished"). Wallpaper generated with imagemagick
+# (already installed); pcmanfm owns the desktop so its own config is the
+# reliable way to set the background — xsetroot needs a package we don't ship.
+RUN convert -size 1280x800 gradient:'#26374d'-'#0f1620' /usr/share/backgrounds/jarvis-cu.png \
+ && mkdir -p /home/cu/.config/pcmanfm/default \
+ && printf '[*]\nwallpaper_mode=stretch\nwallpaper=/usr/share/backgrounds/jarvis-cu.png\ndesktop_bg=#0f1620\ndesktop_fg=#e6edf3\nshow_trash=0\nshow_mounts=0\n' \
+      > /home/cu/.config/pcmanfm/default/desktop-items-0.conf \
+ && chown -R cu:cu /home/cu/.config
+
 USER cu
 
 ENV DISPLAY=:99 \
