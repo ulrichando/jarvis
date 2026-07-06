@@ -41,8 +41,10 @@ services:
         NEXT_PUBLIC_PTY_URL: ${NEXT_PUBLIC_PTY_URL:-}
     restart: unless-stopped
     # default = the stack (postgres, docker-proxy, caddy, hub); jarvis-code-bridge
-    # = the internal bridge /code workbench containers join to reach the git-proxy.
-    networks: [default, jarvis-code-bridge]
+    # = the internal bridge /code workbench containers join to reach the git-proxy;
+    # cu-net = the computer-use sandbox (:8771 SSE). One key — YAML rejects
+    # duplicates (the 2026-07-06 deploy failed to parse on exactly that).
+    networks: [default, jarvis-code-bridge, cu-net]
     env_file:
       - path: .env.production
         required: false
@@ -84,7 +86,6 @@ services:
       docker-proxy: { condition: service_started }
       postgres: { condition: service_healthy }
     expose: ["3000"]
-    networks: [default, cu-net]
 
   # Hub Gateway (JARVIS Hub sub-project 1): the CLI's :4000 proxy, holding the
   # provider keys + verifying login JWTs. Published on host 127.0.0.1:4000 so the
