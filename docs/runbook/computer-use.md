@@ -84,9 +84,26 @@ repeat  until the model stops emitting tool calls (or a cap fires)
 - History is trimmed (image-free) and can be re-imported across requests in a
   session.
 - **SSE frames emitted:** `start`, `text`, `action`, `permission_request`,
-  `blocked`, `denied`, `ping` (keep-alive), `done`, `error`. The page renders
-  each as a chat part (the `permission_request` becomes an Approve / For
-  session / Deny card).
+  `approval_resolved`, `blocked`, `denied`, `done`, `stopped`, `error`. The
+  page renders each as a chat part (the `permission_request` becomes an
+  Approve / For session / Deny card; `approval_resolved` marks it answered on
+  reattach). Keep-alives are `: ka` SSE comment frames per subscriber, never
+  buffered events.
+- **Runs are DETACHED for the web (2026-07-06):** the loop is a background
+  task writing seq-stamped events into a per-session buffer (`_RUNS`,
+  in-memory, cap 30 sessions × 1000 events); `POST /run` is just a
+  subscription to the new turn's events. Detach is OPT-IN per request: the web
+  route sends `detach: true`, so closing the browser drops the subscription,
+  NOT the run — the page reattaches via `GET /sessions` (id/status/task/model)
+  + `GET /events?session_id=&after=` (replay + follow). Bare `/run` callers —
+  the jarvis CLI — omit the flag and keep the legacy tie (Ctrl-C still stops
+  the desktop). `POST /stop {session_id}` is the intentional kill; `POST /mode
+  {session_id, supervised}` flips supervision LIVE (switching to auto releases
+  a pending approval; an unanswered prompt times out to deny and buffers an
+  `approval_resolved` so reattached cards don't dangle). Supervision is read
+  per-action, not snapshotted at run start. Kill-switch: `JARVIS_CU_DETACH=0`
+  forces the legacy tie for everyone. Sidecar restart forgets sessions (buffer
+  is in-memory only).
 
 ---
 
@@ -104,7 +121,8 @@ repeat  until the model stops emitting tool calls (or a cap fires)
 3. **Per-action approval:**
    - *Web:* the page's "Supervised" toggle requests an approval card per
      action *kind* (type / click / key / …); "Auto" skips it but the blocklist
-     still applies.
+     still applies. The preference persists (localStorage) and flipping it
+     mid-run takes effect on the next action (sidecar `POST /mode`).
    - *Voice:* destructive verbs + password/2FA screens route to a voice
      confirm; default-deny on timeout/ambiguity.
 
@@ -226,10 +244,10 @@ the code** — the code is correct; these are stale descriptions.
 | Tool schema + executor + safety/tier/blocklist + audit | `src/voice-agent/tools/computer_use.py` |
 | X11 backend (screenshot / xdotool / wmctrl) | `src/voice-agent/tools/computer_use_backend.py` |
 | SOM / vision / AX screen grounding | `src/voice-agent/pipeline/computer_use_vision.py` |
-| Web sidecar (loop, SSE, approval, health) | `src/voice-agent/computer_use_service.py` |
+| Web sidecar (detached runs, sessions, SSE, approval, health) | `src/voice-agent/computer_use_service.py` |
 | Per-provider adapters | `src/voice-agent/pipeline/cu_adapters/{base,anthropic_adapter,openai_adapter,gemini_adapter}.py` |
 | Web page | `src/web/src/app/(app)/computer-use/page.tsx` |
-| Web route (SSE proxy) + approve | `src/web/src/app/api/computer-use/{route,approve/route}.ts` |
+| Web routes (SSE proxy, approve, sessions, events, mode, stop) | `src/web/src/app/api/computer-use/{route,approve/route,sessions/route,events/route,mode/route,stop/route}.ts` |
 | noVNC view | `src/web/src/components/computer-use/novnc-view.tsx` |
 | Sidecar service unit | `setup/systemd/jarvis-computer-use.service` |
 | Historical design (superseded arch) | `docs/superpowers/specs/2026-05-18-jarvis-computer-use-parity-design.md` |
