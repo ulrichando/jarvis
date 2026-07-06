@@ -51,7 +51,9 @@ PORT = int(os.environ.get("JARVIS_COMPUTER_USE_WEB_PORT", "8771"))
 # 0.0.0.0 (Dockerfile.computer-use) so web/caddy reach it across cu-net — the
 # container is expose-only on that network, never published to the host.
 HOST = os.environ.get("JARVIS_COMPUTER_USE_WEB_HOST", "127.0.0.1")
-MODEL = os.environ.get("JARVIS_COMPUTER_USE_WEB_MODEL", "claude-sonnet-4-6")
+# claude-sonnet-5 default since 2026-07-06: 81.2% OSWorld-Verified (vs 78.5
+# rescored for sonnet-4-6), computer-use parity with Opus 4.8 at 60% price.
+MODEL = os.environ.get("JARVIS_COMPUTER_USE_WEB_MODEL", "claude-sonnet-5")
 MAX_STEPS = int(os.environ.get("JARVIS_COMPUTER_USE_WEB_MAX_STEPS", "30"))
 
 # Models the Anthropic sidecar can actually drive (vision + computer use). The
@@ -112,10 +114,13 @@ _APPROVAL_KINDS = {
     "key": "press keys",
     "app": "open or switch apps",
     "mouse": "click / move the mouse",
+    "bash": "run shell commands",
 }
 
 
 def _approval_kind(action: str) -> "str | None":
+    if action == "bash":
+        return "bash"
     if action == "type":
         return "type"
     if action in ("key", "hold_key", "key_down", "key_up"):
@@ -221,6 +226,38 @@ def _native_max_px(model: str) -> int:
     if any(m in mid for m in cuv._HIRES_MODEL_MARKERS):
         return cuv._MAX_PX_OPUS
     return cuv._MAX_PX_VISION
+
+
+def _cu_bash_enabled() -> bool:
+    """Sandbox shell gate — set ONLY by Dockerfile.computer-use. On the user's
+    real desktop this stays off (the voice `terminal` tool is the gated local
+    shell surface); a bash tool_use arriving with the gate off is refused."""
+    return os.environ.get("JARVIS_CU_BASH", "").strip().lower() in {"1", "true", "on"}
+
+
+def _run_cu_bash(args: Dict[str, Any]) -> str:
+    """Execute the native bash tool inside the sandbox container (non-root
+    `cu` user). Bounded: 60s wall, output capped, no stdin."""
+    if not _cu_bash_enabled():
+        return json.dumps({"error": "bash is not available on this desktop — use the computer tool."})
+    cmd = str(args.get("command") or "").strip()
+    if not cmd:
+        return json.dumps({"error": "command required"})
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["bash", "-lc", cmd], capture_output=True, text=True, timeout=60,
+            cwd=os.path.expanduser("~"),
+        )
+        out = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+        if len(out) > 8000:
+            out = out[:8000] + "\n… (output truncated)"
+        return json.dumps({"ok": proc.returncode == 0, "exit": proc.returncode,
+                           "output": out.strip()})
+    except subprocess.TimeoutExpired:
+        return json.dumps({"error": "command timed out after 60s"})
+    except Exception as e:  # noqa: BLE001
+        return json.dumps({"error": f"bash failed: {e}"})
 
 
 def _ensure_frame(mode: str = "som") -> None:
@@ -403,22 +440,30 @@ async def run_loop(
                         "Do not try to reach it; tell the user you can't operate sensitive apps."
                     }), _current_frame_b64(max_px)))
                     continue
+                summary = (
+                    f"bash: {str(call.args.get('command') or '')[:80]}"
+                    if call.action == "bash"
+                    else _summarize_action(call.action, call.args)
+                )
                 # Per-action-type approval (supervised mode): ask before the
-                # first mouse/type/key/app action of each kind this session.
+                # first mouse/type/key/app/bash action of each kind this session.
                 kind = _approval_kind(call.action)
                 if supervised and kind and kind not in _APPROVED_KINDS.get(session_id, set()):
-                    decision = await _ask_approval(call.action, _summarize_action(call.action, call.args), emit)
+                    decision = await _ask_approval(call.action, summary, emit)
                     if decision == "deny":
-                        await emit({"type": "denied", "summary": _summarize_action(call.action, call.args)})
+                        await emit({"type": "denied", "summary": summary})
                         results.append(ToolResult(call.id, json.dumps({
                             "error": "the user denied this action. Do not retry it — try another approach or stop and explain."
                         }), _current_frame_b64(max_px)))
                         continue
                     if decision == "session":
                         _APPROVED_KINDS.setdefault(session_id, set()).add(kind)
-                await emit({"type": "action", "summary": _summarize_action(call.action, call.args)})
+                await emit({"type": "action", "summary": summary})
                 try:
-                    out = await asyncio.to_thread(handle_computer_use, call.args)
+                    if call.action == "bash":
+                        out = await asyncio.to_thread(_run_cu_bash, call.args)
+                    else:
+                        out = await asyncio.to_thread(handle_computer_use, call.args)
                 except Exception as e:  # noqa: BLE001
                     out = json.dumps({"error": f"{call.action} failed: {e}"})
                 # Refresh the frame after anything that changes the screen so the

@@ -327,7 +327,8 @@ def _capturing_native(model, system="sys prompt"):
     return AnthropicNativeCUAdapter(model, system, client=client), captured, client, _Block
 
 
-def test_native_adapter_declares_computer_20251124():
+def test_native_adapter_declares_computer_20251124(monkeypatch):
+    monkeypatch.delenv("JARVIS_CU_BASH", raising=False)
     a, captured, _client, _Block = _capturing_native("claude-sonnet-4-6")
     a.seed("do it", _tiny_png_b64(640, 400))
     asyncio.run(a.next_step())
@@ -335,10 +336,78 @@ def test_native_adapter_declares_computer_20251124():
     assert tool["type"] == "computer_20251124" and tool["name"] == "computer"
     assert tool["display_width_px"] == 640 and tool["display_height_px"] == 400
     assert tool["enable_zoom"] is True
+    assert len(captured["tools"]) == 1                              # no bash off-gate
     assert captured["extra_headers"]["anthropic-beta"] == "computer-use-2025-11-24"
     sysb = captured["system"]
     assert sysb[-1]["cache_control"] == {"type": "ephemeral"}       # prefix cache kept
     assert captured["output_config"] == {"effort": "medium"}        # effort inherited
+    assert captured["thinking"] == {"type": "adaptive"}             # CU guidance
+
+
+def test_native_adapter_thinking_kill_switch(monkeypatch):
+    monkeypatch.setenv("JARVIS_CU_THINKING", "0")
+    a, captured, _c, _b = _capturing_native("claude-sonnet-4-6")
+    a.seed("x", None)
+    asyncio.run(a.next_step())
+    assert "thinking" not in captured
+
+
+def test_native_adapter_bash_tool_gated(monkeypatch):
+    monkeypatch.setenv("JARVIS_CU_BASH", "1")
+    a, captured, client, _Block = _capturing_native("claude-sonnet-5")
+    a.seed("x", None)
+    asyncio.run(a.next_step())
+    names = [t.get("name") for t in captured["tools"]]
+    assert names == ["computer", "bash"]
+    # A bash tool_use routes as action="bash" with the raw command.
+    client.messages.resp.content = [
+        _Block(type="tool_use", id="b1", name="bash", input={"command": "nautilus &"}),
+    ]
+    res = asyncio.run(a.next_step())
+    assert res.calls[0].action == "bash"
+    assert res.calls[0].args["command"] == "nautilus &"
+
+
+def test_native_adapter_echoes_thinking_blocks():
+    a, _captured, client, _Block = _capturing_native("claude-opus-4-8")
+    a.seed("go", _tiny_png_b64(64, 40))
+    client.messages.resp.content = [
+        _Block(type="thinking", thinking="hmm", signature="sig123"),
+        _Block(type="redacted_thinking", data="opaque"),
+        _Block(type="tool_use", id="t1", name="computer",
+               input={"action": "screenshot"}),
+    ]
+    asyncio.run(a.next_step())
+    blocks = a.messages[-1]["content"]
+    # The API requires thinking blocks (with signatures) echoed verbatim when
+    # tools + thinking are combined — dropping them 400s the next call.
+    assert blocks[0] == {"type": "thinking", "thinking": "hmm", "signature": "sig123"}
+    assert blocks[1] == {"type": "redacted_thinking", "data": "opaque"}
+    assert blocks[2]["type"] == "tool_use"
+
+
+def test_cu_bash_executor_gated_and_bounded(monkeypatch):
+    from computer_use_service import _run_cu_bash, _approval_kind
+    monkeypatch.delenv("JARVIS_CU_BASH", raising=False)
+    out = json.loads(_run_cu_bash({"command": "echo hi"}))
+    assert "error" in out                                   # off-gate refusal
+    monkeypatch.setenv("JARVIS_CU_BASH", "1")
+    out = json.loads(_run_cu_bash({"command": "echo hi"}))
+    assert out["ok"] is True and out["output"] == "hi"
+    assert "error" in json.loads(_run_cu_bash({"command": ""}))
+    assert _approval_kind("bash") == "bash"                 # supervised mode prompts
+
+
+def test_sidecar_default_model_is_sonnet_5(monkeypatch):
+    # Default flip 2026-07-06 (81.2% OSWorld vs 78.5 sonnet-4-6). Re-import a
+    # FRESH module object (not reload of the shared one — that leaked global
+    # state into a later test) with the env unset to read the shipped default.
+    import importlib.util
+    monkeypatch.delenv("JARVIS_COMPUTER_USE_WEB_MODEL", raising=False)
+    spec = importlib.util.find_spec("computer_use_service")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.MODEL == "claude-sonnet-5"
 
 
 def test_native_adapter_translates_and_scales():
@@ -394,7 +463,7 @@ def test_native_frame_dims_fixed_at_seed():
     # A zoom crop arriving later must NOT change the display declaration.
     a.add_results([ToolResult("t1", "{}", _tiny_png_b64(100, 50))])
     assert a._frame_size == (640, 400)
-    tool = a._native_tool()
+    tool = a._native_tools()[0]
     assert (tool["display_width_px"], tool["display_height_px"]) == (640, 400)
 
 
