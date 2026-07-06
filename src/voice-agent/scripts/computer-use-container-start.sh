@@ -18,6 +18,12 @@ for _ in $(seq 1 50); do xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 && break; 
 openbox >/tmp/openbox.log 2>&1 &
 tint2 >/tmp/tint2.log 2>&1 &
 
+# 2b. Desktop surface — pcmanfm --desktop paints a wallpaper + desktop icons +
+# right-click app menu, so a fresh connect reads as a real desktop (not a black
+# void behind one browser window). Best-effort; the WM works without it.
+( sleep 0.5; command -v xsetroot >/dev/null && xsetroot -solid "#1f2733"; \
+  command -v pcmanfm >/dev/null && pcmanfm --desktop --profile default >/tmp/pcmanfm-desktop.log 2>&1 & ) || true
+
 # 3. VNC server (localhost in-container) with the fixed password
 x11vnc -storepasswd "$PASS" "$RFBAUTH" >/dev/null 2>&1
 x11vnc -display "$DISPLAY" -rfbport "$VNC_PORT" -rfbauth "$RFBAUTH" \
