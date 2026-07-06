@@ -1387,7 +1387,11 @@ MEMORY_SYNC_DIRECTED_ONLY = (
 MEMORY_SYNC_WINDOW_SEC = float(
     os.environ.get("JARVIS_MEMORY_SYNC_WINDOW_SEC", "120")
 )
-_last_addressed_interaction = 0.0
+# -inf, not 0.0: time.monotonic() is seconds-since-boot, so a 0.0 init reads
+# as "addressed moments ago" for the first WINDOW seconds of machine uptime
+# (jarvis-voice-agent is a boot service → ambient chatter would sync right
+# after boot; same bug made the gate tests fail on fresh CI VMs).
+_last_addressed_interaction = float("-inf")
 
 
 def _touch_addressed() -> None:

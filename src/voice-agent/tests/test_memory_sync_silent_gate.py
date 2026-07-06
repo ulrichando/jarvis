@@ -28,8 +28,9 @@ def gate(monkeypatch):
     import jarvis_agent
     monkeypatch.setattr(jarvis_agent, "_is_silent", lambda: False)
     monkeypatch.setattr(jarvis_agent, "MEMORY_SYNC_DIRECTED_ONLY", True)
-    # stale stamp = no active directed exchange
-    monkeypatch.setattr(jarvis_agent, "_last_addressed_interaction", 0.0)
+    # stale stamp = no active directed exchange. -inf, not 0.0: monotonic()
+    # is seconds-since-boot, so 0.0 is "just now" on a fresh CI VM.
+    monkeypatch.setattr(jarvis_agent, "_last_addressed_interaction", float("-inf"))
     return jarvis_agent
 
 
