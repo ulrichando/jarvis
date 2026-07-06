@@ -316,7 +316,13 @@ export async function archiveBridgeSession(
     },
   )
 
-  if (response.status === 200) {
+  // 204 No Content is the jarvis server's archive success; 200 is the
+  // claude.ai shape. 409 = already archived (fine on double-shutdown).
+  if (
+    response.status === 200 ||
+    response.status === 204 ||
+    response.status === 409
+  ) {
     logForDebugging(`[bridge] Session ${sessionId} archived successfully`)
   } else {
     const detail = extractErrorDetail(response.data)
