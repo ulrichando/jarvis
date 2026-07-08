@@ -126,6 +126,22 @@ from sanitizers._leak_names import is_known_leak as _is_known_leak
 # Cleared when the envelope balances or the stream ends.
 _PYCALL_STATE: dict[str, dict[str, Any]] = {}
 
+# Bound the dict: a "meta-silence-suppressed" entry has no envelope-close
+# condition (it returns before the cleanup block), so one entry leaks per
+# suppressed meta reply and grows unbounded over a long session. Each live
+# stream needs only its own recent entry, so evicting the oldest well past any
+# realistic concurrency is safe. ponytail: FIFO cap; per-stream-end deletion if
+# the framework ever exposes a stream-close hook.
+_MAX_PYCALL_STATES = 256
+
+
+def _evict_pycall_state_if_full() -> None:
+    while len(_PYCALL_STATE) >= _MAX_PYCALL_STATES:
+        try:
+            _PYCALL_STATE.pop(next(iter(_PYCALL_STATE)))
+        except (StopIteration, KeyError):
+            break
+
 
 def _try_set_content(delta: Any, value: str) -> None:
     """Best-effort mutate delta.content. Mirrors dsml_sanitizer."""
@@ -152,6 +168,8 @@ def install() -> None:
     def patched(self, id, choice, thinking):
         delta = getattr(choice, "delta", None)
         if delta is not None:
+            if id not in _PYCALL_STATE:
+                _evict_pycall_state_if_full()
             content = getattr(delta, "content", None) or ""
             state = _PYCALL_STATE.get(id)
 

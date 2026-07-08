@@ -235,9 +235,9 @@ VISION_BACKEND: str      = _str("JARVIS_VISION_BACKEND", "auto")
 # screenshot() reads that cache so "what's on my screen?" returns in
 # ~0s instead of ~4s. Designed 2026-05-11 evening after Gemini Live
 # API smoke-test showed Live offered no advantage for our usage.
-SCREEN_OBSERVER_ENABLED: bool   = _str("JARVIS_SCREEN_OBSERVER_ENABLED", "1") not in ("0", "false", "")
-SCREEN_OBSERVER_INTERVAL_S: float = float(_str("JARVIS_SCREEN_OBSERVER_INTERVAL_S", "5.0"))
-SCREEN_OBSERVER_MAX_AGE_S: float  = float(_str("JARVIS_SCREEN_OBSERVER_MAX_AGE_S", "10.0"))
+SCREEN_OBSERVER_ENABLED: bool   = _bool("JARVIS_SCREEN_OBSERVER_ENABLED", True)
+SCREEN_OBSERVER_INTERVAL_S: float = _float("JARVIS_SCREEN_OBSERVER_INTERVAL_S", 5.0)
+SCREEN_OBSERVER_MAX_AGE_S: float  = _float("JARVIS_SCREEN_OBSERVER_MAX_AGE_S", 10.0)
 
 
 # ── Browser / external services ──────────────────────────────────────

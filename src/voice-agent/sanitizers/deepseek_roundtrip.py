@@ -41,6 +41,25 @@ logger = logging.getLogger("jarvis.deepseek_roundtrip")
 # call_id -> reasoning_content (full accumulated string)
 _REASONING_BY_CALL_ID: dict[str, str] = {}
 
+# Bound the reasoning cache: an entry is retained per DeepSeek tool call and was
+# never deleted, so a long agentic session grew it without limit (one full
+# reasoning trace each). The round-trip only needs reasoning for tool_calls
+# still present in chat_ctx; older ones (long since pruned) are dead weight.
+# ponytail: FIFO cap, generous enough that no live turn's tool_calls are evicted.
+_MAX_REASONING_ENTRIES = 512
+
+
+def _remember_reasoning(cid: str, reasoning: str) -> None:
+    if cid in _REASONING_BY_CALL_ID:
+        _REASONING_BY_CALL_ID[cid] = reasoning
+        return
+    while len(_REASONING_BY_CALL_ID) >= _MAX_REASONING_ENTRIES:
+        try:
+            _REASONING_BY_CALL_ID.pop(next(iter(_REASONING_BY_CALL_ID)))
+        except (StopIteration, KeyError):
+            break
+    _REASONING_BY_CALL_ID[cid] = reasoning
+
 # response.id -> {"reasoning": str, "tool_call_ids": list[str]}
 # Cleared per stream as soon as finish_reason fires.
 _STREAMING_STATE: dict[str, dict[str, Any]] = {}
@@ -95,7 +114,7 @@ def _patch_parse_choice() -> None:
             state = _STREAMING_STATE.pop(id, None)
             if state and state["tool_call_ids"] and state["reasoning"]:
                 for cid in state["tool_call_ids"]:
-                    _REASONING_BY_CALL_ID[cid] = state["reasoning"]
+                    _remember_reasoning(cid, state["reasoning"])
                 logger.debug(
                     "captured reasoning_content for %d tool_call(s) (response=%s, len=%d)",
                     len(state["tool_call_ids"]),
