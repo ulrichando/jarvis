@@ -9,12 +9,17 @@
 // any conversation in flight at restart would 400 on the next turn because
 // the prior assistant tool_use_ids would be cache-missed.
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { homedir } from 'node:os'
 
 const TTL_MS = 24 * 60 * 60 * 1000
 const MAX_ENTRIES = 5000
+// Per-entry cap: MAX_ENTRIES bounds the COUNT but not the SIZE, so one runaway
+// reasoning_content could pin megabytes × 5000. Real DeepSeek reasoning is well
+// under this; oversized entries are skipped and fall back to the placeholder
+// (the same graceful degradation a restart cache-miss already uses).
+const MAX_REASONING_BYTES = 1024 * 1024
 const CACHE_PATH = `${homedir()}/.jarvis/reasoning-cache.json`
 
 export const REASONING_PLACEHOLDER =
@@ -39,7 +44,13 @@ function flushToDisk(): void {
     mkdirSync(dirname(CACHE_PATH), { recursive: true })
     const obj: Record<string, Entry> = {}
     for (const [k, v] of cache) obj[k] = v
-    writeFileSync(CACHE_PATH, JSON.stringify(obj))
+    // Atomic write: a crash mid-writeFileSync would truncate the cache file
+    // in place (loadFromDisk then discards it → every in-flight conversation
+    // loses its reasoning context). Write to a temp file then rename (atomic
+    // on the same filesystem) so the live file is never partially written.
+    const tmp = `${CACHE_PATH}.tmp-${process.pid}`
+    writeFileSync(tmp, JSON.stringify(obj))
+    renameSync(tmp, CACHE_PATH)
   } catch (e) {
     console.error('[reasoning-cache] flush failed:', (e as Error).message)
   }
@@ -62,6 +73,9 @@ loadFromDisk()
 
 export function setReasoning(toolUseId: string, reasoning: string): void {
   if (!toolUseId || !reasoning) return
+  // Skip pathologically-large reasoning rather than pin it in memory + on disk
+  // for up to 24h × 5000 entries. The follow-up turn cache-misses → placeholder.
+  if (reasoning.length > MAX_REASONING_BYTES) return
   if (cache.size >= MAX_ENTRIES) {
     const oldest = cache.keys().next().value
     if (oldest !== undefined) cache.delete(oldest)
