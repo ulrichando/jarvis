@@ -56,19 +56,25 @@ if ! curl -fSL --proto '=https' --tlsv1.2 -o "$tmp/jarvis" "$url" 2>/dev/null \\
   die "download failed: $url (is a build published for $asset?)"
 fi
 
-# Optional integrity check against the manifest's sha256. Flatten whitespace
-# first so the asset→sha256 match works regardless of the manifest's JSON
-# pretty-printing (asset name and sha256 land on separate lines otherwise, and
-# grep is line-based — which would silently skip verification).
-if command -v sha256sum >/dev/null 2>&1; then
-  want="$(curl -fsSL "$BASE/releases/manifest.json" 2>/dev/null \\
-    | tr -d '[:space:]' \\
-    | grep -oE "\\"$asset\\":\\{\\"sha256\\":\\"[a-f0-9]{64}\\"" \\
-    | grep -oE '[a-f0-9]{64}' | head -1 || true)"
-  if [ -n "$want" ]; then
-    got="$(sha256sum "$tmp/jarvis" | cut -d' ' -f1)"
+# Integrity check against the manifest's sha256. Flatten whitespace first so
+# the asset→sha256 match is line-independent (pretty-printed JSON puts the asset
+# name and sha256 on separate lines; grep is line-based).
+want="$(curl -fsSL "$BASE/releases/manifest.json" 2>/dev/null \\
+  | tr -d '[:space:]' \\
+  | grep -oE "\\"$asset\\":\\{\\"sha256\\":\\"[a-f0-9]{64}\\"" \\
+  | grep -oE '[a-f0-9]{64}' | head -1 || true)"
+if [ -n "$want" ]; then
+  # sha256sum on Linux, shasum -a 256 on macOS (which ships no sha256sum) — so
+  # the integrity check runs on BOTH platforms instead of silently skipping on
+  # macOS, where an un-verified download is a real supply-chain gap.
+  if command -v sha256sum >/dev/null 2>&1; then got="$(sha256sum "$tmp/jarvis" | cut -d' ' -f1)"
+  elif command -v shasum >/dev/null 2>&1; then got="$(shasum -a 256 "$tmp/jarvis" | cut -d' ' -f1)"
+  else got=""; fi
+  if [ -n "$got" ]; then
     [ "$got" = "$want" ] || die "checksum mismatch (got $got, want $want) — aborting"
     c_g "  ✓ checksum verified"
+  else
+    c_y "  ⚠ no sha256 tool (sha256sum/shasum) found — skipping integrity check"
   fi
 fi
 
@@ -78,7 +84,11 @@ install -m 0755 "$tmp/jarvis" "$BIN_DIR/jarvis"
 c_g "  ✓ installed $BIN_DIR/jarvis"
 
 ver="$("$BIN_DIR/jarvis" --version 2>/dev/null || echo '?')"
-c_g "  ✓ jarvis $ver"
+if [ "$ver" = "?" ]; then
+  c_y "  ⚠ installed, but 'jarvis --version' did not run — the binary may not match your platform/libc"
+else
+  c_g "  ✓ jarvis $ver"
+fi
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
