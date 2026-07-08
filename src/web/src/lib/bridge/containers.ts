@@ -124,6 +124,24 @@ export function containerNameFor(sessionId: string): string {
   return `jarvis-code-${sessionId}`;
 }
 
+/**
+ * Best-effort removal of EVERYTHING a session launch may have created: the
+ * workbench container, the `jarvis-egress-<id>` squid proxy, and the private
+ * `jarvis-net-<id>` network. Containers go first — docker refuses to remove a
+ * network with containers still attached. Each step swallows its own failure,
+ * and the proxy/network rm's are no-ops for non-isolated (`--network=host`)
+ * sessions that never created them.
+ */
+async function teardownSessionDocker(
+  exec: DockerExec,
+  sessionId: string,
+  containerName?: string,
+): Promise<void> {
+  await exec(["rm", "-f", containerName ?? containerNameFor(sessionId)]).catch(() => {});
+  await exec(["rm", "-f", `jarvis-egress-${sessionId}`]).catch(() => {});
+  await exec(["network", "rm", `jarvis-net-${sessionId}`]).catch(() => {});
+}
+
 /** Repo root of this checkout (the web app runs from <root>/src/web). */
 function jarvisRepoRoot(): string {
   if (process.env.JARVIS_REPO_ROOT) return process.env.JARVIS_REPO_ROOT;
@@ -321,7 +339,13 @@ export async function launchContainerSession(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       emit(store, sessionId, `✗ ${label} — ${msg.slice(0, 300)}`);
-      await exec(["rm", "-f", name]).catch(() => {});
+      // Full teardown, not just the workbench: an isolated launch creates the
+      // egress proxy + private network BEFORE any failable step, and a launch
+      // that dies before setSessionContainer leaves container_json NULL — so
+      // idle-reclaim never sees the session and the proxy/network would leak
+      // forever without this (the sweep also maps egress names back now, as
+      // a second line of defense).
+      await teardownSessionDocker(exec, sessionId, name);
       throw err;
     }
   };
@@ -1228,12 +1252,7 @@ export async function stopContainerSession(
   const meta = session?.container_json
     ? (JSON.parse(session.container_json) as { container?: string })
     : null;
-  const name = meta?.container ?? containerNameFor(sessionId);
-  await exec(["rm", "-f", name]).catch(() => {});
-  // Reap the egress proxy + private network too (best-effort; no-ops for
-  // `full`/non-isolated sessions that never created them).
-  await exec(["rm", "-f", `jarvis-egress-${sessionId}`]).catch(() => {});
-  await exec(["network", "rm", `jarvis-net-${sessionId}`]).catch(() => {});
+  await teardownSessionDocker(exec, sessionId, meta?.container ?? containerNameFor(sessionId));
 }
 
 /**
@@ -1243,7 +1262,9 @@ export async function stopContainerSession(
  * being removed (a failed `docker rm`). The DB-driven `runReclaimTick` only
  * looks at sessions it still tracks, so these never get reaped and pile up
  * (observed live: 5 containers up 46h+). We map each container back to its
- * session via the `jarvis-code-<sessionId>` name and reap the untracked ones.
+ * session via the `jarvis-code-<sessionId>` / `jarvis-egress-<sessionId>`
+ * name and reap the untracked ones (the egress mapping catches squid proxies
+ * orphaned by a launch that failed before container_json was written).
  *
  * Safety: a freshly launched session writes `container_json` within ~seconds
  * of `docker run`, but to avoid racing that window we skip containers younger
@@ -1270,12 +1291,21 @@ export async function runOrphanContainerSweep(
   } catch {
     return 0; // docker unavailable — nothing to sweep
   }
-  const prefix = "jarvis-code-";
+  // Both the workbench (`jarvis-code-<id>`) and its egress squid proxy
+  // (`jarvis-egress-<id>`) carry our label — map EITHER name back to its
+  // session, so an egress proxy orphaned by a failed launch (workbench never
+  // started, or a half-successful teardown) still gets reaped. Dedupe by
+  // session: reaping goes through stopContainerSession, which removes the
+  // whole trio at once.
+  const prefixes = ["jarvis-code-", "jarvis-egress-"];
   let reaped = 0;
+  const seen = new Set<string>();
   for (const name of names) {
-    if (!name.startsWith(prefix)) continue;
+    const prefix = prefixes.find((p) => name.startsWith(p));
+    if (!prefix) continue;
     const sessionId = name.slice(prefix.length);
-    if (!sessionId) continue;
+    if (!sessionId || seen.has(sessionId)) continue;
+    seen.add(sessionId);
     // Still tracked by a live, non-archived session → leave it to the
     // DB-driven idle reclaim, which respects last-activity.
     const session = findSession(store, sessionId);
