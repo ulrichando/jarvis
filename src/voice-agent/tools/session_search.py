@@ -18,6 +18,7 @@ Design:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -115,40 +116,44 @@ def _handle_session_search(args: dict) -> str:
         return tool_error("Telemetry database not found — no conversation history yet.", success=False)
 
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        # closing() guarantees the connection is released even if execute/
+        # fetchall raises — the bare conn.close() below was skipped on error,
+        # leaking a connection per failed query.
+        with contextlib.closing(
+            sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        ) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
 
-        # Build WHERE clause.
-        like_pattern = f"%{query}%"
-        conditions: list[str] = []
-        params: list[str] = []
+            # Build WHERE clause.
+            like_pattern = f"%{query}%"
+            conditions: list[str] = []
+            params: list[str] = []
 
-        if focus == "user":
-            conditions.append("user_text LIKE ?")
-            params.append(like_pattern)
-        elif focus == "jarvis":
-            conditions.append("jarvis_text LIKE ?")
-            params.append(like_pattern)
-        else:
-            conditions.append("(user_text LIKE ? OR jarvis_text LIKE ?)")
-            params.extend([like_pattern, like_pattern])
+            if focus == "user":
+                conditions.append("user_text LIKE ?")
+                params.append(like_pattern)
+            elif focus == "jarvis":
+                conditions.append("jarvis_text LIKE ?")
+                params.append(like_pattern)
+            else:
+                conditions.append("(user_text LIKE ? OR jarvis_text LIKE ?)")
+                params.extend([like_pattern, like_pattern])
 
-        if days_back > 0:
-            conditions.append("ts_utc >= datetime('now', ?)")
-            params.append(f"-{days_back} days")
+            if days_back > 0:
+                conditions.append("ts_utc >= datetime('now', ?)")
+                params.append(f"-{days_back} days")
 
-        where = " AND ".join(conditions)
+            where = " AND ".join(conditions)
 
-        cursor.execute(
-            f"SELECT ts_utc, user_text, jarvis_text, route, emotion, llm_used "
-            f"FROM turns WHERE {where} "
-            f"ORDER BY ts_utc DESC LIMIT ?",
-            [*params, limit],
-        )
+            cursor.execute(
+                f"SELECT ts_utc, user_text, jarvis_text, route, emotion, llm_used "
+                f"FROM turns WHERE {where} "
+                f"ORDER BY ts_utc DESC LIMIT ?",
+                [*params, limit],
+            )
 
-        rows = cursor.fetchall()
-        conn.close()
+            rows = cursor.fetchall()
 
         results = []
         for row in rows:
