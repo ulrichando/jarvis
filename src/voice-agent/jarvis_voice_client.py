@@ -208,7 +208,11 @@ if _APM_NS or _APM_AGC or _APM_HPF or _APM_AEC:
 # ring buffer holds the 16 kHz reference DTLN consumes. Both module-level
 # so they survive LiveKit reconnects (run_once is re-entered per drop).
 # Spec: docs/superpowers/specs/2026-05-19-echo-cancellation-cascade-design.md §5.2
-from audio.apm_reverse_stream import APMDelayEstimator, ReverseRefRingBuffer
+from audio.apm_reverse_stream import (
+    APMDelayEstimator,
+    ReverseRefRingBuffer,
+    _DECIM_48K_TO_16K_TAPS,
+)
 _reverse_estimator = APMDelayEstimator()
 _reverse_ringbuf = ReverseRefRingBuffer(capacity_frames=64)
 
@@ -297,13 +301,20 @@ def _apply_dtln_to_mic(
         return frame_48k_int16_bytes
     try:
         from scipy.signal import resample_poly as _rp
+        # Pass the precomputed anti-alias FIR (see _DECIM_48K_TO_16K_TAPS) as
+        # the window for BOTH directions — with the default tuple window
+        # resample_poly redesigns a fresh Kaiser FIR on every call, and this
+        # runs twice per 10 ms mic frame on the realtime callback (the same
+        # 74%-CPU pattern already fixed on the playback path). scipy applies
+        # the ×up gain after the window branch, so the same taps array is
+        # correct for up=1/down=3 and up=3/down=1 (verified ~5e-7 identical).
         mic48 = np.frombuffer(frame_48k_int16_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        mic16 = _rp(mic48, up=1, down=3).astype(np.float32)
+        mic16 = _rp(mic48, up=1, down=3, window=_DECIM_48K_TO_16K_TAPS).astype(np.float32)
         ref16 = ring.read_16k_aligned(adc_t)
         if mic16.shape != ref16.shape:
             return frame_48k_int16_bytes
         cleaned16 = dtln.process(mic16, ref16)
-        cleaned48 = _rp(cleaned16, up=3, down=1).astype(np.float32)
+        cleaned48 = _rp(cleaned16, up=3, down=1, window=_DECIM_48K_TO_16K_TAPS).astype(np.float32)
         pcm48 = np.clip(cleaned48 * 32768.0, -32768, 32767).astype(np.int16)
         return pcm48.tobytes()
     except Exception:
@@ -319,6 +330,13 @@ def _apply_dtln_to_mic(
 # staleness (a headphones↔speakers flip is reflected immediately via
 # pw-mon instead of after the next TTL expiry). Spec §5.5 (T7 review #4).
 _current_profile: str = "unknown"
+
+# L1 (PipeWire echo-cancel source) active state, refreshed OFF the realtime
+# path by the AEC-state loop in main() — same pattern as _current_profile.
+# The mic callback reads THIS instead of calling l1_echo_cancel_active(),
+# whose pw-dump probe would otherwise spawn a blocking subprocess on the
+# 10 ms-deadline audio thread once per cache bucket during TTS.
+_l1_active_snapshot: bool = False
 
 
 def _should_publish_during_speak(*, profile: str, defense) -> bool:
@@ -1326,11 +1344,16 @@ async def run_once(shutdown: asyncio.Event) -> None:
         # for headphone users — superseded by the profile detection below,
         # but honored so callers that set it don't regress). Spec §4.2/§6.2.
         if state.speaking and os.environ.get("JARVIS_MIC_DURING_SPEAK", "0") != "1":
-            from audio.aec_health import current_echo_defense
+            from audio.aec_health import EchoDefense
             _gate_dtln = _get_dtln()
-            _defense = current_echo_defense(
-                apm_aec=(_apm is not None and _APM_AEC),
-                dtln_healthy=(_gate_dtln is not None and _gate_dtln.healthy),
+            # Build the defense snapshot from cheap in-memory state only. L1 is
+            # read from _l1_active_snapshot (maintained off-thread) rather than
+            # via current_echo_defense(), whose pw-dump probe would block this
+            # realtime callback and drop mic frames during barge-in.
+            _defense = EchoDefense(
+                l1=_l1_active_snapshot,
+                l2_aec=(_apm is not None and _APM_AEC),
+                l3=(_gate_dtln is not None and _gate_dtln.healthy),
             )
             if not _should_publish_during_speak(profile=_current_profile, defense=_defense):
                 return
@@ -1659,9 +1682,12 @@ async def main() -> None:
         _snap_dtln = _get_dtln()
         _l3_active = bool(_snap_dtln is not None and _snap_dtln.healthy)
         _dtln_p95 = _snap_dtln.p95_ms if _l3_active else None
+        # Publish L1 to the module snapshot the realtime mic gate reads.
+        global _l1_active_snapshot
+        _l1_active_snapshot = _aec_health.l1_echo_cancel_active()
         write_aec_state(
             output_profile=prof,
-            l1_active=_aec_health.l1_echo_cancel_active(),
+            l1_active=_l1_active_snapshot,
             l2_aec_active=_APM_AEC,
             l3_active=_l3_active,
             apm_delay_ms_p50=_reverse_estimator.current_delay_ms(),
@@ -1691,7 +1717,10 @@ async def main() -> None:
         while not shutdown.is_set():
             try:
                 await asyncio.sleep(5)
-                _write_aec_state_snapshot()
+                # Off-loop: the snapshot runs pw-dump/pactl probes + a file
+                # write, all blocking. Keeping them off the event loop protects
+                # the :8767 control endpoint + watchdog heartbeat.
+                await asyncio.to_thread(_write_aec_state_snapshot)
             except asyncio.CancelledError:
                 break
             except Exception as e:

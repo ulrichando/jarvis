@@ -6935,14 +6935,14 @@ async def entrypoint(ctx: JobContext) -> None:
                 # text.
                 lower = (text or "").lower()
                 if not _is_silent() and any(p in lower for p in _ASSISTANT_MUTE_ACKS):
-                    # Find the most recent user turn in `prior`.
-                    last_user_text = ""
-                    for prev in reversed(prior):
-                        if getattr(prev, "role", None) == "user":
-                            last_user_text = (
-                                _flatten_chat_content(getattr(prev, "content", None)) or ""
-                            ).lower()
-                            break
+                    # Most recent user turn — stashed by on_user_turn_completed
+                    # (and mirrored in _on_item for user items). `prior` was
+                    # never bound in this scope, so the old loop raised
+                    # NameError and aborted the rest of the post-turn block.
+                    last_user_text = (
+                        str(getattr(session, "_jarvis_last_user_text", "") or "")
+                        or str(getattr(session, "_jarvis_convo_user_text", "") or "")
+                    ).lower()
                     user_just_woke_jarvis = bool(last_user_text) and any(
                         p.search(last_user_text) for p in _WAKE_PATTERNS
                     )
@@ -7292,7 +7292,13 @@ async def entrypoint(ctx: JobContext) -> None:
                                 route=(getattr(session, "_jarvis_route", None) or ""),
                                 subagent=(subagent or ""),
                                 computer_use_steps=int(cua_steps or 0),
-                                tool_call_count=int(_tool_calls_this_turn or 0),
+                                # Count THIS turn's supervisor tool calls, not
+                                # the module-global CLI-subcall counter (which
+                                # is 0 for any non-CLI turn) — the wrong counter
+                                # kept this gate permanently below threshold.
+                                tool_call_count=len(
+                                    getattr(session, "_jarvis_tool_calls_this_turn", None) or []
+                                ),
                                 had_tool_error=bool(
                                     getattr(session, "_jarvis_had_tool_error_this_turn", False)
                                 ),
