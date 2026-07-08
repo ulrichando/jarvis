@@ -193,7 +193,8 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     provider: 'deepseek',
     upstreamModel: 'deepseek-v4-pro',
     tiers: ['reasoning'],
-    capabilities: ['effort', 'xhigh_effort'],
+    // Alias of v4-pro — mirror its max_effort so the effort ladder matches.
+    capabilities: ['effort', 'xhigh_effort', 'max_effort'],
     visibleInPicker: false,
   },
   {
@@ -213,9 +214,12 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     provider: 'deepseek',
     upstreamModel: 'deepseek-v4-pro',
     tiers: ['default', 'reasoning', 'long_context', 'orchestration'],
-    // DeepSeek v4 accepts effort up to `xhigh` — `max` is Anthropic-only
-    // (utils/effort.ts clamps max → xhigh here instead of → high).
-    capabilities: ['effort', 'xhigh_effort', 'thinking'],
+    // DeepSeek v4 accepts `max` (its docs list high+max and silently remap
+    // xhigh→max). Wire-wise the proxy sends binary thinking (convert.ts
+    // resolveDeepSeekThinking maps medium..max → thinking:enabled), so max and
+    // xhigh land identically upstream — but declaring max_effort makes /effort
+    // max DISPLAY and resolve as max here instead of clamping down to xhigh.
+    capabilities: ['effort', 'xhigh_effort', 'max_effort', 'thinking'],
     visibleInPicker: true,
     fallback: ['deepseek-v4-flash'],
   },

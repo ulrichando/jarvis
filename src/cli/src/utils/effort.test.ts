@@ -38,8 +38,8 @@ describe('clampEffortToModel', () => {
     expect(clampEffortToModel('max', 'claude-fable-5[1m]')).toBe('max')
   })
 
-  test('max clamps to xhigh on DeepSeek (xhigh_effort, no max_effort)', () => {
-    expect(clampEffortToModel('max', 'deepseek-v4-pro')).toBe('xhigh')
+  test('max stays max on DeepSeek (max_effort — proxy maps it to thinking:enabled)', () => {
+    expect(clampEffortToModel('max', 'deepseek-v4-pro')).toBe('max')
     expect(clampEffortToModel('xhigh', 'deepseek-v4-pro')).toBe('xhigh')
   })
 
@@ -94,8 +94,8 @@ describe('ultracode session pseudo-level', () => {
 })
 
 describe('resolveAppliedEffort max clamping', () => {
-  test('max requested on DeepSeek lands on xhigh (was high)', () => {
-    expect(resolveAppliedEffort('deepseek-v4-pro', 'max')).toBe('xhigh')
+  test('max requested on DeepSeek stays max (max_effort)', () => {
+    expect(resolveAppliedEffort('deepseek-v4-pro', 'max')).toBe('max')
   })
   test('max requested on GPT-5 lands on high', () => {
     expect(resolveAppliedEffort('gpt-5', 'max')).toBe('high')
@@ -170,7 +170,7 @@ describe('ultrathink end-to-end (raise → resolve → per-model clamp)', () => 
   test('lands on the model ceiling', () => {
     expect(resolveAppliedEffort('claude-fable-5[1m]', boostFor('claude-fable-5[1m]'))).toBe('max')
     expect(resolveAppliedEffort('claude-opus-4-8', boostFor('claude-opus-4-8'))).toBe('max')
-    expect(resolveAppliedEffort('deepseek-v4-pro', boostFor('deepseek-v4-pro'))).toBe('xhigh')
+    expect(resolveAppliedEffort('deepseek-v4-pro', boostFor('deepseek-v4-pro'))).toBe('max')
     expect(resolveAppliedEffort('gpt-5', boostFor('gpt-5'))).toBe('high')
   })
   test('CLAUDE_CODE_EFFORT_LEVEL env override still wins absolutely', () => {
