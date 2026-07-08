@@ -1,7 +1,7 @@
 // src/cli/src/gh-agent/task.test.ts
 import { describe, expect, test } from 'bun:test'
 import { tmpdir } from 'node:os'
-import { executeTask, realDeps, type TaskDeps } from './task.js'
+import { executeTask, realDeps, taskText, type TaskDeps } from './task.js'
 import type { Mention } from './gh.js'
 import { DEFAULTS } from './config.js'
 
@@ -209,6 +209,35 @@ describe('gh-agent executeTask', () => {
     const create = calls.find(c => c.includes('pr create'))!
     // args are space-joined: a newline in the --title arg would break this pairing
     expect(create).toContain('--title jarvis: fix the widget --body')
+  })
+
+  test('case-mismatched trigger (@Jarvis) still strips the token — listMentions accepts /i, so taskText must too', async () => {
+    // Regression: taskText used case-sensitive indexOf. listMentions matches
+    // '@Jarvis' with the /i regex and enqueues the comment, but indexOf('@jarvis')
+    // then missed → the '@Jarvis' token leaked into the prompt AND the commit
+    // subject. Now both use the same case-insensitive regex.
+    const { deps, calls } = harness({ isPR: false, producedChanges: true })
+    const r = await executeTask('o/r', mention({ body: '@Jarvis fix the widget' }), DEFAULTS, deps)
+    expect(r.ok).toBe(true)
+    const commit = calls.find(c => c.includes(' commit -m '))!
+    expect(commit).toContain('commit -m jarvis: fix the widget')
+    expect(commit).not.toContain('@Jarvis')
+  })
+
+  test('embedded trigger substring does not mis-slice — word-boundary match', async () => {
+    // 'notify@jarvis.io then @jarvis do the work': indexOf would slice at the
+    // FIRST substring (inside the email), leaving '.io then @jarvis do the work'.
+    // The word-boundary regex skips the email and matches the real mention.
+    const task = taskText('notify@jarvis.io then @jarvis fix the widget', '@jarvis')
+    expect(task).toBe('fix the widget')
+  })
+
+  test('taskText: bare/absent trigger and control-char stripping', () => {
+    expect(taskText('  @jarvis  ', '@jarvis')).toBe('')
+    // No trigger at all → whole body (defensive; listMentions should never pass this)
+    expect(taskText('just some text', '@jarvis')).toBe('just some text')
+    // NUL and other control chars stripped, newline/tab kept
+    expect(taskText('@jarvis a\x00b\nc\td', '@jarvis')).toBe('ab\nc\td')
   })
 
   test('SECURITY: untrusted task text reaches jarvis as one argv element, never a shell string', async () => {
