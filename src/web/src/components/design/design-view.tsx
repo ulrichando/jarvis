@@ -524,7 +524,10 @@ export function DesignView({
       });
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
-        const msg = j.error ?? r.statusText ?? "unknown error";
+        // Non-JSON failures (proxy timeouts, gateway errors) often have an
+        // empty statusText — always name the status code so the toast is
+        // diagnosable from a screenshot.
+        const msg = j.error ?? (r.statusText || `request failed (HTTP ${r.status})`);
         console.error("[design/build] failed:", r.status, msg);
         toast.error("Build failed", {
           id: buildToast,

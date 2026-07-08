@@ -17,6 +17,9 @@ __pycache__/
 *.pyo
 dist/
 build/
+# `build/` above swallowed this SOURCE dir — the /api/design/build route
+# never reached the repo (or production) until 2026-07-08. Keep un-ignored.
+!src/web/src/app/api/design/build/
 
 # Node modules
 node_modules/

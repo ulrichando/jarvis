@@ -238,6 +238,17 @@ type Body = {
 
 export async function POST(req: Request) {
   const { id, messages, model, system, workspaceId, mode, format, search, image }: Body = await req.json();
+  // UIMessage shape only — a {role, content} message (or missing array)
+  // used to 500 deep in extractText instead of failing at the boundary.
+  if (
+    !Array.isArray(messages) ||
+    messages.some((m) => !m || !Array.isArray(m.parts))
+  ) {
+    return Response.json(
+      { error: "malformed messages: expected UIMessage[] with a parts array" },
+      { status: 400 },
+    );
+  }
   let userId: string;
   try {
     userId = await requireUserId(req.headers);
