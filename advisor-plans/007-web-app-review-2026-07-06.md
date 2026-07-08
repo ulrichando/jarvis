@@ -1,7 +1,7 @@
 # JARVIS web app review (`src/web`) — findings + fix plan
 
 **Written against commit:** `77b6e21a` (review run 2026-07-06).
-**Status:** 2 of 14 fixed in the PR that carries this file; the rest are self-contained specs to resume.
+**Status:** 4 of 14 fixed on this branch (#1, #6, #7, #9) plus the settings-tab half of #13; the rest are self-contained specs to resume.
 
 This is the resume artifact for a `src/web` advisor review. Each finding below has
 file:line evidence, a fix sketch, effort, and risk — enough for a fresh session (or a
@@ -29,13 +29,13 @@ weaker executor) to pick up with zero prior context. Verify each cite still matc
 | 4 | PTY websocket falls open on loopback + host-shell fallback | SEC | S | HIGH | TODO |
 | 5 | Chat stage-progression fires on a stale `submit` closure | BUG | S | HIGH | TODO |
 | 6 | Settings write non-atomic + defaults-fallback wipes keys | BUG | S | HIGH | **DONE** |
-| 7 | Sidebar reads every session's full transcript per 6s poll | PERF | S | HIGH | TODO |
+| 7 | Sidebar reads every session's full transcript per 6s poll | PERF | S | HIGH | **DONE** |
 | 8 | MCP client connections leak on forced-image / error paths | BUG | S | HIGH | TODO |
-| 9 | Failed container launch leaks egress-proxy container + net | BUG | S | HIGH | TODO |
+| 9 | Failed container launch leaks egress-proxy container + net | BUG | S | HIGH | **DONE** |
 | 10 | Bridge auth hand-rolled per route + drifted (2 is one case) | DEBT | M | HIGH | TODO |
 | 11 | No `typecheck` script; CI `tsc` job non-blocking (clean today) | DX | S | HIGH | TODO |
 | 12 | `db:migrate` trap + `dotenv` phantom dep on `shadcn` | DX/DEP | S | HIGH | TODO |
-| 13 | God-components: settings-tab (3046) + chat.tsx (1925-L fn) | DEBT | M-L | HIGH | TODO (needs char tests first) |
+| 13 | God-components: settings-tab (3046) + chat.tsx (1925-L fn) | DEBT | M-L | HIGH | TODO — settings-tab split **DONE**; chat.tsx extraction remains (needs char tests) |
 | 14 | Per-viewer `docker exec` + git diff every 5s per session | PERF | M | HIGH | TODO |
 
 Direction (options, not bugs): Kimi K2 modes (built+tested, flag off 2mo — ship or
@@ -114,7 +114,7 @@ persisted — wiping every provider key. **Fix shipped:** atomic temp+rename wri
 `.bak` of the prior good file, and `loadSettings` now tries `settings.json` → `.bak` →
 legacy before defaulting. Regression tests in `tests/settings-store.test.ts`.
 
-## 7. Sidebar full-transcript N+1 — TODO
+## 7. Sidebar full-transcript N+1 — **DONE**
 
 `api/bridge/v1/sessions/route.ts:41` — `listSessionEvents(store, s.session_id, 0)` reads
 ALL events for each of up to 40 sessions on every 6s poll, using only `first` (first
@@ -123,6 +123,11 @@ ALL events for each of up to 40 sessions on every 6s poll, using only `first` (f
 via `MAX(rowid)`) and batch the `findEnvironment` calls into one `WHERE environment_id IN (...)`.
 Preserve the exact response shape. **Risk LOW.** Sibling: `api/v1/sessions/route.ts:118`
 is unbounded (no LIMIT) + 2 queries/row — same fix family.
+**Fix shipped:** `lib/bridge/store.ts` gained `firstUserPrompt` / `lastEvent` point
+queries, a batched `findEnvironments(WHERE environment_id IN (...))`, and an optional
+`limit` on `listSessions`; the GET in `api/bridge/v1/sessions/route.ts` now uses all
+three (response shape unchanged, full existing bridge suite green). NOT covered: the
+`api/v1/sessions` sibling was left untouched — its unbounded scan is still open.
 
 ## 8. MCP client connection leak — TODO
 
@@ -133,7 +138,7 @@ a provider error (`onError`, `:854`) skips `onFinish`. **Fix:** hoist cleanup in
 helper called on every exit — forced-image return, questionnaire return, onFinish, onError
 (double-close is already `.catch`-guarded). **Risk LOW.**
 
-## 9. Failed container launch leaks egress proxy + network — TODO
+## 9. Failed container launch leaks egress proxy + network — **DONE**
 
 `lib/bridge/containers.ts:317` — `step()`'s failure handler only `rm -f`s the workbench
 container, not the `jarvis-egress-<id>` squid container or `jarvis-net-<id>` network
@@ -143,6 +148,13 @@ containers are never reaped. A launch failing before `setSessionContainer` leave
 run the full teardown trio from `stopContainerSession` (`:1221`) — rm proxy + `network rm`
 + container; and let the sweep map `jarvis-egress-<id>` back to sessions. **Risk LOW**
 (cleanup is best-effort).
+**Fix shipped:** `containers.ts` gained `teardownSessionDocker` (container → egress proxy
+→ network, each rm best-effort) called from both `step()`'s failure handler and
+`stopContainerSession`; `runOrphanContainerSweep` now maps `jarvis-egress-<id>` names back
+to sessions too, deduped per session. Regression tests in
+`tests/bridge/containers-launch-teardown.test.ts` (8 tests: pre/mid-flight failure runs
+the trio in container-before-network order, teardown errors never mask the step error,
+sweep reaps orphaned egress proxies but spares live/fresh ones).
 
 ## 10. Bridge auth drift — TODO (fold #2 in here)
 
@@ -185,6 +197,14 @@ page (also fixes the hidden-section polling, finding 14-adjacent). chat.tsx need
 `useChatStream` / `useActionRunner` / artifact-panel hooks extracted, but ONLY after
 characterization tests cover the SSE stream loop. **Risk: settings-tab LOW (pure move),
 chat.tsx MED.**
+**Fix shipped (settings-tab half only):** pure move of the 3046-line settings-tab into 17
+files under `components/workbench/settings/` (shared.tsx + one per section) with a
+304-line shell in `tabs/settings-tab.tsx`; the workbench page imports it via
+`next/dynamic({ ssr: false })` like WorkbenchTerminal. Section bodies moved verbatim; the
+shell's runtime/git/db polls are unchanged (pushing git/db down into Backups/Database is a
+cheap follow-up). Render tests in `tests/settings/workbench-settings-tab.render.test.tsx`
+(sidebar+composition, section mount/unmount, no hidden-section fetch). chat.tsx extraction
+still TODO — blocked on characterization tests for the SSE stream loop.
 
 ## 14. Per-viewer docker exec + git diff every 5s — TODO
 
