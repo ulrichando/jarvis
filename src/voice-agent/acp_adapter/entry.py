@@ -66,13 +66,20 @@ def _setup_logging() -> None:
 
 
 def _load_env() -> None:
-    """Read ``src/voice-agent/.env`` if present so provider keys land."""
+    """Load provider keys so the IDE-spawned supervisor can authenticate.
+
+    ``~/.jarvis/keys.env`` is JARVIS's single secret store (provider keys +
+    JARVIS_PG_DSN etc.); ``src/voice-agent/.env`` carries voice config. Without
+    keys.env the ACP adapter had NO provider keys and every supervisor LLM call
+    failed with an auth error. Listed first; override=False so an explicitly-set
+    environment still wins."""
     try:
         from dotenv import load_dotenv  # type: ignore
     except ImportError:
         return
     # acp_adapter/entry.py -> acp_adapter/ -> src/voice-agent/
     candidates = [
+        Path.home() / ".jarvis" / "keys.env",
         Path(__file__).resolve().parent.parent / ".env",
         Path.home() / ".jarvis" / ".env",
     ]

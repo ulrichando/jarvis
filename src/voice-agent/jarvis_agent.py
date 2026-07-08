@@ -4233,6 +4233,31 @@ class JarvisAgent(Agent):
         async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
             yield chunk
 
+    async def tts_node(self, text, model_settings):
+        """Feed the echo-aware barge-in text tracker as speech is synthesized.
+
+        The Orpheus TTS shim used to call speaking_tracker.note_speaking() per
+        chunk; Orpheus was purged (2026-06-29) and the feed was never re-homed,
+        so current/recent_speaking_text() returned "" and the text-level echo
+        gate (echo_gate consumers in the barge-in / turn-rescue / phantom-turn
+        paths) was inert. tts_node is the one point every route's spoken text
+        flows through — tee each chunk here, then delegate to the default node.
+        mark_speech_ended()/reset() are already wired on the agent_state
+        transitions.
+        """
+        async def _teed():
+            async for chunk in text:
+                if chunk:
+                    try:
+                        from pipeline import speaking_tracker
+                        speaking_tracker.note_speaking(chunk)
+                    except Exception:
+                        pass
+                yield chunk
+
+        async for frame in Agent.default.tts_node(self, _teed(), model_settings):
+            yield frame
+
     async def on_user_turn_completed(
         self, turn_ctx: ChatContext, new_message: ChatMessage,
     ) -> None:

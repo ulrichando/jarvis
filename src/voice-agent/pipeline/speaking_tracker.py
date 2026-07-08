@@ -1,10 +1,11 @@
 """Process-local record of the text JARVIS is currently / was just speaking.
 
-Fed by the Orpheus TTS shim (`providers/tts.py`), which has no AgentSession
-reference — so it can't write `session._jarvis_speaking_text` as the design
-first assumed. One LiveKit worker job handles one session, so process-local
-state is session-scoped in practice; `reset()` is called per speech-start path
-to avoid cross-job bleed.
+Fed by ``JarvisAgent.tts_node`` (jarvis_agent.py), which tees every synthesized
+text chunk into ``note_speaking`` as it flows to the TTS engine — the one point
+every route's spoken text passes through. (Originally fed by the Orpheus TTS
+shim; when Orpheus was purged 2026-06-29 the feed moved to tts_node.) One
+LiveKit worker job handles one session, so process-local state is session-scoped
+in practice; `reset()` is called per speech-start path to avoid cross-job bleed.
 
 Consumed by the echo-aware barge-in gate (`pipeline/echo_gate.py`):
   - current_speaking_text()    — what JARVIS is saying NOW   (interrupt consumer)

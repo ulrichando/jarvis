@@ -777,7 +777,17 @@ class JarvisACPAgent(acp.Agent):
             info = getattr(tool, "info", None)
             name = getattr(info, "name", None) if info is not None else None
             if name == tool_name:
-                handler = getattr(tool, "_callable", None) or tool
+                # The awaitable behind a RawFunctionTool is `._func` (the async
+                # _run wrapper from tools/_adapter.py) — NOT `._callable` (which
+                # doesn't exist) and NOT the tool object itself. Using the tool
+                # object made iscoroutinefunction() False, so the executor
+                # branch returned the un-awaited coroutine and every ACP tool
+                # result was "<coroutine object _run at 0x…>" instead of output.
+                handler = (
+                    getattr(tool, "_func", None)
+                    or getattr(tool, "_callable", None)
+                    or tool
+                )
                 # contextvars are per-task so the edit-approval requester
                 # the supervisor loop set in this task is visible inside
                 # the awaited handler.

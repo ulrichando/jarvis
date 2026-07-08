@@ -40,10 +40,13 @@ class _StubTool:
         self.calls: list[dict] = []
         self._result = result
         self._is_async = is_async
+        # Mirror the REAL livekit RawFunctionTool attribute name (`_func`),
+        # not the nonexistent `_callable` — otherwise the dispatch test can't
+        # catch the "un-awaited coroutine repr" regression.
         if is_async:
-            self._callable = self._async_handler
+            self._func = self._async_handler
         else:
-            self._callable = self._sync_handler
+            self._func = self._sync_handler
 
     def _sync_handler(self, raw_arguments: dict) -> str:
         self.calls.append(raw_arguments)
@@ -241,6 +244,32 @@ async def test_tool_call_round_trip():
     assert len(completes) == 1
     assert starts[0].tool_call_id == "call-1"
     assert completes[0].status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_awaits_real_rawfunctiontool():
+    """A real livekit RawFunctionTool must be awaited and yield its output —
+    not returned as an '<coroutine object _run …>' repr. Guards the bug where
+    the dispatcher looked for the wrong attribute and dropped into the executor
+    branch with an un-awaited coroutine."""
+    from livekit.agents.llm import function_tool
+
+    async def _run(raw_arguments: dict) -> str:
+        return json.dumps({"echo": raw_arguments})
+
+    real_tool = function_tool(_run, raw_schema={
+        "name": "echo_tool", "description": "d",
+        "parameters": {"type": "object", "properties": {}},
+    })
+    agent = _make_agent(scripts=[], tools=[real_tool])
+    new_resp = await agent.new_session(cwd="/tmp")
+    state = agent.session_manager.get_session(new_resp.session_id)
+    loop = asyncio.get_event_loop()
+    result = await agent._dispatch_tool_call(
+        state, "echo_tool", {"a": 1}, [real_tool], loop,
+    )
+    assert "coroutine object" not in result, result
+    assert json.loads(result) == {"echo": {"a": 1}}
 
 
 # ---------------------------------------------------------------------------
