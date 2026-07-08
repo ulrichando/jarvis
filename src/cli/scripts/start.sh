@@ -81,15 +81,19 @@ CLI_CMD=( "$BUN"
 # sessions). Inject our defaults AFTER "$@", and only when the user didn't pass
 # their own — so `jarvis --permission-mode plan` still wins.
 CLI_CMD+=( "$@" )
-# …and NOT AT ALL for commander-parsed subcommands (auth/keys/plugin/…): they
-# reject unknown options, so appending agent-only defaults broke every one of
-# them ("error: unknown option '--permission-mode'" — live 2026-07-02, `jarvis
-# auth status`). The cli.tsx fast-paths (ps/logs/…) dispatch on args[0] before
-# commander and ignore trailing flags either way. Keep this list in sync with
-# the TOP-LEVEL program.command(...) registrations in src/main.tsx.
+# …and NOT AT ALL for non-agent invocations: commander-parsed subcommands
+# (auth/keys/plugin/…) reject unknown options, so appending agent-only defaults
+# broke every one ("error: unknown option '--permission-mode'" — live
+# 2026-07-02, `jarvis auth status`). The pre-commander BG_SESSIONS fast-paths
+# (ps/logs/attach/kill) take a POSITIONAL session id — an appended
+# `--permission-mode` landed at args[1] and was consumed as the identifier
+# (`jarvis logs` → "No session matching '--permission-mode'"), so they belong
+# here too. Keep the commander entries in sync with the TOP-LEVEL
+# program.command(...) registrations in src/main.tsx; the bg fast-paths live in
+# entrypoints/cli.tsx's BG_SESSIONS block.
 AGENT_INVOCATION=1
 case "${1:-}" in
-  agents|assistant|auth|auto-mode|cloud|completion|computer-use|doctor|error|export|gh-action|gh-agent|install|keys|log|mcp|open|plugin|remote-control|rollback|server|setup-token|ssh|task|teleport|uninstall|up|update)
+  agents|assistant|attach|auth|auto-mode|cloud|completion|computer-use|doctor|error|export|gh-action|gh-agent|install|keys|kill|log|logs|mcp|open|plugin|ps|remote-control|rollback|server|setup-token|ssh|task|teleport|uninstall|up|update)
     AGENT_INVOCATION=0 ;;
 esac
 if [ "$AGENT_INVOCATION" = 1 ]; then

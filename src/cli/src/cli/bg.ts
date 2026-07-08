@@ -86,6 +86,29 @@ function findSession(
   return found
 }
 
+// Launcher (start.sh) flags that take a following VALUE — so a leaked pair like
+// `--permission-mode bypassPermissions` is skipped whole, not mistaken (its
+// value) for the session id. start.sh no longer appends these for the bg
+// subcommands (they're in its skip-list), so this is defense-in-depth.
+const BG_VALUE_FLAGS = new Set(['--permission-mode', '--settings', '--model', '-m'])
+
+// The session identifier for `logs`/`attach`/`kill` is the first NON-flag token
+// after the subcommand. A session id/name/PID never starts with '-'. Reading
+// args[1] blindly consumed a launcher-appended flag → "No session matching
+// '--permission-mode'"; this skips flags (and value-flag values) instead.
+export function bgIdentifier(argsAfterSubcommand: string[]): string | undefined {
+  for (let i = 0; i < argsAfterSubcommand.length; i++) {
+    const a = argsAfterSubcommand[i]!
+    if (a.startsWith('-')) {
+      const next = argsAfterSubcommand[i + 1]
+      if (BG_VALUE_FLAGS.has(a) && next !== undefined && !next.startsWith('-')) i++
+      continue
+    }
+    return a
+  }
+  return undefined
+}
+
 function fmtAge(startedAt: number): string {
   const s = Math.floor((Date.now() - startedAt) / 1000)
   if (s < 60) return `${s}s`
