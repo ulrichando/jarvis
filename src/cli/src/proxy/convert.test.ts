@@ -336,3 +336,66 @@ describe('convertRequest — effort translation per provider', () => {
     expect(out.reasoning_effort).toBeUndefined()
   })
 })
+
+describe('convertRequest — tool_choice mapping', () => {
+  const base = (toolChoice?: unknown) => ({
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: [{ name: 'get_weather', description: 'w', input_schema: { type: 'object', properties: {} } }],
+    ...(toolChoice ? { tool_choice: toolChoice } : {}),
+  })
+  test('a forced SPECIFIC tool maps to {type:function,function:{name}} (was silently "auto")', () => {
+    const p = getProviderForModel('deepseek-v4-pro')!
+    const { convertRequest } = require('./convert.js')
+    const out = convertRequest(base({ type: 'tool', name: 'get_weather' }), p)
+    expect(out.tool_choice).toEqual({ type: 'function', function: { name: 'get_weather' } })
+  })
+  test('"any" → required, "none" → none, absent → auto', () => {
+    const p = getProviderForModel('deepseek-v4-pro')!
+    const { convertRequest } = require('./convert.js')
+    expect(convertRequest(base({ type: 'any' }), p).tool_choice).toBe('required')
+    expect(convertRequest(base({ type: 'none' }), p).tool_choice).toBe('none')
+    expect(convertRequest(base(), p).tool_choice).toBe('auto')
+  })
+})
+
+describe('convertRequest — stream_options.include_usage', () => {
+  test('streaming requests set stream_options.include_usage (else zero-token reports)', () => {
+    const p = getProviderForModel('deepseek-v4-pro')!
+    const { convertRequest } = require('./convert.js')
+    const out = convertRequest({ messages: [{ role: 'user', content: 'hi' }], stream: true }, p)
+    expect(out.stream_options).toEqual({ include_usage: true })
+  })
+  test('non-streaming requests omit stream_options', () => {
+    const p = getProviderForModel('deepseek-v4-pro')!
+    const { convertRequest } = require('./convert.js')
+    const out = convertRequest({ messages: [{ role: 'user', content: 'hi' }], stream: false }, p)
+    expect(out.stream_options).toBeUndefined()
+  })
+})
+
+describe('clampRequestForProvider — strips cross-provider reasoning params on fallback', () => {
+  test('DeepSeek thinking does NOT leak into a Kimi fallback body', () => {
+    const kimi = getProviderForModel('kimi-k2.6-instant')!
+    const { clampRequestForProvider } = require('./convert.js')
+    // Body shaped for a deepseek primary (carries binary thinking).
+    const primaryBody = { model: 'deepseek-v4-pro', messages: [], thinking: { type: 'enabled' } }
+    const out = clampRequestForProvider({ ...primaryBody, model: kimi.model }, kimi)
+    expect(out.thinking).toBeUndefined()
+  })
+  test('GPT-5 reasoning_effort does NOT leak into a DeepSeek fallback body', () => {
+    const ds = getProviderForModel('deepseek-v4-pro')!
+    const { clampRequestForProvider } = require('./convert.js')
+    const primaryBody = { model: 'gpt-5', messages: [], reasoning_effort: 'high' }
+    const out = clampRequestForProvider({ ...primaryBody, model: ds.model }, ds)
+    expect(out.reasoning_effort).toBeUndefined()
+  })
+  test("a provider keeps its OWN param (deepseek keeps thinking)", () => {
+    const ds = getProviderForModel('deepseek-v4-pro')!
+    const { clampRequestForProvider } = require('./convert.js')
+    const out = clampRequestForProvider(
+      { model: ds.model, messages: [], thinking: { type: 'enabled' } },
+      ds,
+    )
+    expect(out.thinking).toEqual({ type: 'enabled' })
+  })
+})
