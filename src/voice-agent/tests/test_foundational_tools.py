@@ -444,3 +444,52 @@ def test_no_forbidden_tokens_in_tool_files():
         assert result.returncode != 0 and result.stdout.strip() == "", (
             f"Forbidden token '{forbidden}' found in {f}:\n{result.stdout}"
         )
+
+
+class TestFileSafetyWiring:
+    """The direct file tools must consult the file_safety denylist."""
+
+    def test_write_denied_for_shell_init(self, tmp_path, monkeypatch):
+        # Point HOME at a temp dir so we don't touch the real ~/.bashrc.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        from tools.file_tools import _write_file_impl
+        res = json.loads(_write_file_impl(str(tmp_path / ".bashrc"), "evil"))
+        assert "error" in res or res.get("success") is not True
+        assert not (tmp_path / ".bashrc").exists(), "shell-init write was not blocked"
+
+    def test_write_denied_for_claude_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        from tools.file_tools import _write_file_impl
+        target = tmp_path / ".claude" / "settings.json"
+        res = json.loads(_write_file_impl(str(target), "{}"))
+        assert "error" in res or res.get("success") is not True
+        assert not target.exists(), "~/.claude write was not blocked"
+
+    def test_read_denied_for_secret(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        from tools.file_tools import _read_file_impl, _read_tracker
+        _read_tracker.clear()
+        secret = tmp_path / ".git-credentials"
+        secret.write_text("https://user:s3cr3t-pw@example.com\n")
+        res = json.loads(_read_file_impl(str(secret)))
+        assert "error" in res and "content" not in res
+        assert "s3cr3t-pw" not in json.dumps(res), "secret content leaked into read result"
+
+
+class TestV4APatchIntegrity:
+    """A hunk whose context can't be located must fail, never corrupt."""
+
+    def test_mismatched_context_relocates(self):
+        from tools.file_tools import _apply_unified_hunks
+        original = "alpha\nbeta\ngamma\ndelta\n"
+        # Correct context (beta/gamma) but a wrong @@ line number (claims line 1).
+        patch = "@@ -1,2 +1,2 @@\n beta\n-gamma\n+GAMMA\n"
+        updated = _apply_unified_hunks(original, patch)
+        assert updated == "alpha\nbeta\nGAMMA\ndelta\n", updated
+
+    def test_unfindable_context_fails_cleanly(self):
+        from tools.file_tools import _apply_unified_hunks
+        original = "alpha\nbeta\ngamma\n"
+        # Old context ("zeta") does not exist — must return None, not splice blind.
+        patch = "@@ -2,1 +2,1 @@\n-zeta\n+ZETA\n"
+        assert _apply_unified_hunks(original, patch) is None

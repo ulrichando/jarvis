@@ -91,7 +91,11 @@ def render_skill_md(
     """Compose a SKILL.md string from fields. Block-scalar for multi-line
     when_to_use (2-space indent — matches the loader's block parser)."""
     name = (name or "").strip()
-    description = (description or "").strip()
+    # Collapse interior newlines so a multi-line description can't inject extra
+    # frontmatter lines (e.g. a second `name:` that wins on YAML parse and
+    # registers the skill under an attacker-chosen name). description is a
+    # single-line field by contract.
+    description = " ".join((description or "").split())
     when_to_use = (when_to_use or "").strip()
     body = (body or "").strip()
 
@@ -150,6 +154,11 @@ def create_user_skill(
     verr = validate_skill_markdown(content)
     if verr:
         return {"ok": False, "error": verr}
+    # Defense-in-depth: the rendered frontmatter name must be exactly the
+    # requested name (guards against any residual field-injection).
+    _fm, _ = _parse_frontmatter(content)
+    if str((_fm or {}).get("name", "")).strip() != name:
+        return {"ok": False, "error": "frontmatter name mismatch — refusing to create."}
 
     # Reload to pick up the current JARVIS_SKILLS_PATHS (may have changed in
     # tests via monkeypatch.setenv, or new files added by other callers).
@@ -202,11 +211,24 @@ def _resolve_user_skill(name: str) -> tuple[Optional[Skill], Optional[str]]:
     return sk, None
 
 
-def _write_validated(path: Path, content: str) -> dict:
-    """Validate `content`, run the write-denylist, write atomically, reload."""
+def _write_validated(path: Path, content: str, expected_name: Optional[str] = None) -> dict:
+    """Validate `content`, run the write-denylist, write atomically, reload.
+
+    When `expected_name` is given, the frontmatter `name` must match it — this
+    stops a patch/edit from rewriting the name field so the skill re-registers
+    under a different (arbitrary) name at the same file location."""
     verr = validate_skill_markdown(content)
     if verr:
         return {"ok": False, "error": f"result would be invalid: {verr}"}
+    if expected_name is not None:
+        fm, _ = _parse_frontmatter(content)
+        parsed_name = str((fm or {}).get("name", "")).strip()
+        if parsed_name != expected_name.strip():
+            return {"ok": False, "error": (
+                f"refusing write: frontmatter name {parsed_name!r} does not match "
+                f"the skill being written ({expected_name!r}). The name field "
+                f"can't be changed via patch/edit."
+            )}
     from tools import file_safety
     denial = file_safety.write_denial_message(str(path))
     if denial:
@@ -242,7 +264,7 @@ def patch_user_skill(
         new_content = content.replace(old_string, new_string)
     else:
         new_content = content.replace(old_string, new_string, 1)
-    res = _write_validated(sk.path, new_content)
+    res = _write_validated(sk.path, new_content, expected_name=sk.name)
     if res["ok"]:
         log.info(f"[skills] patched user skill {name!r}")
     return res
@@ -262,7 +284,7 @@ def edit_user_skill(
     desc = sk.description if description is None else description
     wtu = sk.when_to_use if when_to_use is None else when_to_use
     content = render_skill_md(name.strip(), desc, wtu, body)
-    res = _write_validated(sk.path, content)
+    res = _write_validated(sk.path, content, expected_name=sk.name)
     if res["ok"]:
         log.info(f"[skills] rewrote user skill {name!r}")
     return res

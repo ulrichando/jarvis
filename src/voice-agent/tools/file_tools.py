@@ -29,6 +29,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+from . import file_safety
 from .registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,15 @@ def _check_sensitive_path(filepath: str) -> Optional[str]:
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool (with elevation) if you genuinely need to modify system files."
     )
+
+    # file_safety's denylist is broader than the system-path lists below:
+    # shell-init files, ~/.claude, user systemd units, ~/.kube/.docker/.azure,
+    # and the JARVIS secret .env files — all persistence/escalation/exfil
+    # vectors a prompt-injected write could otherwise hit. Reuse it here so the
+    # direct write/patch tools get the same guard as the skill/agent authors.
+    fs_denial = file_safety.write_denial_message(filepath)
+    if fs_denial:
+        return fs_denial
 
     def _norm(s: str) -> str:
         return s.replace("\\", "/").lower()
@@ -334,6 +344,13 @@ def _read_file_impl(path: str, offset: int = 1, limit: int = 500,
                 "block or produce infinite output."
             ),
         })
+
+    # Secret-read guard: refuse to read credential/secret files into the
+    # conversation (SSH/cloud keys, auth tokens, secret .env) — a prompt-
+    # injected read + voice-out is an exfiltration path.
+    read_denial = file_safety.read_denial_message(path)
+    if read_denial:
+        return json.dumps({"error": read_denial, "path": path}, ensure_ascii=False)
 
     try:
         resolved = _resolve_path(path)
@@ -782,14 +799,38 @@ def _apply_unified_hunks(original: str, patch_section: str) -> Optional[str]:
         actual_text = [l if l.endswith("\n") else l + "\n" for l in actual]
         old_text = [l if l.endswith("\n") else l + "\n" for l in old_chunk]
         if actual_text != old_text:
-            # Fuzzy: just try to proceed anyway with best-effort splice
-            pass
+            # Line numbers drifted. Relocate the old block by content rather
+            # than splicing blind at apply_at — a blind splice overwrites
+            # whatever happens to sit there, silently corrupting the file
+            # while still reporting success. If the block can't be found, fail
+            # the patch (caller surfaces "Failed to apply patch hunks").
+            relocated = _locate_block(result_lines, old_text, apply_at)
+            if relocated is None:
+                return None
+            apply_at = relocated
         result_lines[apply_at:apply_at + len(old_chunk)] = [
             l if l.endswith("\n") else l + "\n" for l in new_chunk
         ]
         offset += len(new_chunk) - len(old_chunk)
 
     return "".join(result_lines)
+
+
+def _locate_block(lines: list[str], block: list[str], near: int) -> Optional[int]:
+    """Find the start index where the contiguous *block* matches *lines*.
+
+    Both sides are newline-normalized before comparison. When the block occurs
+    more than once, the occurrence nearest *near* wins. Returns None if the
+    block is empty or not found (so the caller can fail cleanly rather than
+    splice at the wrong place)."""
+    n = len(block)
+    if n == 0:
+        return None
+    norm = [l if l.endswith("\n") else l + "\n" for l in lines]
+    candidates = [i for i in range(0, len(norm) - n + 1) if norm[i:i + n] == block]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda i: abs(i - near))
 
 
 # ---------------------------------------------------------------------------

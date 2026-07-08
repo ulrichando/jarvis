@@ -298,6 +298,30 @@ def test_web_fetch_handler_blocks_file_scheme():
     assert "Error:" in result
 
 
+def test_redirect_handler_blocks_private_target():
+    """A 302 redirect to a private/metadata address must be blocked mid-fetch
+    (defeats the SSRF-via-redirect bypass)."""
+    import urllib.request
+    import urllib.error
+    import tools.web_tools as _wt
+
+    handler = _wt._SSRFSafeRedirectHandler()
+    req = urllib.request.Request("https://public.example.com/")
+
+    # Redirect to cloud-metadata → must raise, not follow.
+    with pytest.raises(urllib.error.HTTPError):
+        handler.redirect_request(
+            req, None, 302, "Found", {},  # type: ignore[arg-type]
+            "http://169.254.169.254/latest/meta-data/",
+        )
+    # Redirect to an IPv4-mapped loopback → must also raise.
+    with pytest.raises(urllib.error.HTTPError):
+        handler.redirect_request(
+            req, None, 302, "Found", {},  # type: ignore[arg-type]
+            "http://[::ffff:127.0.0.1]:8000/",
+        )
+
+
 def test_web_fetch_handler_allows_public_url():
     """A legitimate public URL reaches urlopen (or fails with a network error
     — either way it's NOT blocked at the safety layer)."""
@@ -306,7 +330,7 @@ def test_web_fetch_handler_allows_public_url():
 
     urlopen_called = []
 
-    def _fake_urlopen(req, *a, **kw):
+    def _fake_open(req, *a, **kw):
         urlopen_called.append(True)
         # Simulate an HTTP error (e.g. 404) — this is a legit network response,
         # not a safety block.
@@ -314,7 +338,11 @@ def test_web_fetch_handler_allows_public_url():
             str(req), 404, "Not Found", {}, None  # type: ignore[arg-type]
         )
 
-    with patch.object(urllib.request, "urlopen", _fake_urlopen):
+    # web_fetch fetches through a private SSRF-safe opener (which re-validates
+    # redirect targets), not the module-level urlopen — patch the opener.
+    import tools.web_tools as _wt
+
+    with patch.object(_wt._SSRF_SAFE_OPENER, "open", _fake_open):
         from tools.web_tools import _handle_web_fetch
 
         result = _run_async(_handle_web_fetch({"url": "https://example.com/page"}))

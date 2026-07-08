@@ -45,6 +45,28 @@ _FETCH_CHAR_CAP = 3_072
 _BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
 
 
+class _SSRFSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-run the SSRF guard on every redirect target.
+
+    check_url() only sees the original URL; urllib's default opener then
+    transparently follows 3xx redirects, so a public attacker origin could
+    302 → http://169.254.169.254/… or a loopback service and defeat the guard.
+    Blocking the redirect here closes that hole.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        denial = check_url(newurl)
+        if denial:
+            raise urllib.error.HTTPError(
+                newurl, code, f"blocked redirect to private/internal address: {denial}",
+                headers, fp,
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_SSRF_SAFE_OPENER = urllib.request.build_opener(_SSRFSafeRedirectHandler())
+
+
 # ---------------------------------------------------------------------------
 # DDG Instant Answer fallback (for anomaly/CAPTCHA pages)
 # ---------------------------------------------------------------------------
@@ -265,8 +287,12 @@ async def _handle_web_search(args: dict) -> str:
         r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
         re.DOTALL | re.IGNORECASE,
     )
-    anchors = anchor_re.findall(html)
-    snippets = snippet_re.findall(html)
+    # Match with positions so each anchor keeps its own following snippet even
+    # after ad anchors are dropped — a plain index-pair on two independently
+    # filtered lists shifts every snippet by one per removed ad, mismatching
+    # organic title/URL/snippet triples.
+    anchor_matches = list(anchor_re.finditer(html))
+    snippet_spans = [(m.start(), m.group(1)) for m in snippet_re.finditer(html)]
 
     # DDG injects sponsored "ad" units that reuse class="result__a" but whose
     # href is the y.js ad-click tracker (ad_domain/ad_provider/ad_type) instead
@@ -277,7 +303,20 @@ async def _handle_web_search(args: dict) -> str:
         h = href.lower()
         return "y.js" in h or "ad_domain=" in h or "ad_provider=" in h or "ad_type=" in h
 
-    anchors = [(href, title) for (href, title) in anchors if not _is_ad(href)]
+    def _snippet_after(start: int, end: int) -> str:
+        """First snippet whose position falls between this anchor and the next."""
+        for s_pos, s_html in snippet_spans:
+            if start < s_pos < end:
+                return s_html
+        return ""
+
+    anchors = []
+    for idx, m in enumerate(anchor_matches):
+        href, title_html = m.group(1), m.group(2)
+        if _is_ad(href):
+            continue
+        next_start = anchor_matches[idx + 1].start() if idx + 1 < len(anchor_matches) else len(html)
+        anchors.append((href, title_html, _snippet_after(m.start(), next_start)))
 
     def _strip_tags(s: str) -> str:
         s = re.sub(r"<[^>]+>", " ", s)
@@ -300,10 +339,10 @@ async def _handle_web_search(args: dict) -> str:
         return redirect.lstrip("/")
 
     results = []
-    for i, (href, title_html) in enumerate(anchors[:n]):
+    for href, title_html, snippet_html in anchors[:n]:
         title = _strip_tags(title_html)
         url_real = _real_url(href)
-        snippet = _strip_tags(snippets[i]) if i < len(snippets) else ""
+        snippet = _strip_tags(snippet_html)
         snippet = (snippet[:160] + "…") if len(snippet) > 160 else snippet
         results.append(f"{len(results)+1}. {title}\n   {url_real}\n   {snippet}")
 
@@ -354,7 +393,7 @@ async def _handle_web_fetch(args: dict) -> str:
 
     def _fetch() -> str:
         req = urllib.request.Request(url, headers={"User-Agent": "JARVIS-voice/1.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _SSRF_SAFE_OPENER.open(req, timeout=timeout) as resp:
             ct = resp.headers.get("Content-Type", "")
             raw = resp.read(64 * 1024)
             if "text" not in ct and "json" not in ct and "html" not in ct:

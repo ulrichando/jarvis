@@ -134,11 +134,17 @@ def render_agent_md(
         toks = [t.strip() for t in tools.split(",") if t.strip()]
     elif tools is not None:
         toks = [str(t).strip() for t in tools if str(t).strip()]
+    # Tool names and model ids are single tokens by contract. Drop anything
+    # containing interior whitespace/newlines so a crafted value can't inject
+    # extra frontmatter lines (e.g. `tools: *` escalation or a rogue `name:`);
+    # description is already escaped, these two fields were not.
+    toks = [t for t in toks if not any(c.isspace() for c in t)]
     if toks and not (len(toks) == 1 and toks[0] == "*"):
         lines.append("tools: " + ", ".join(toks))
 
-    if model and str(model).strip():
-        lines.append(f"model: {str(model).strip()}")
+    model_clean = "".join(str(model).split()) if model else ""
+    if model_clean:
+        lines.append(f"model: {model_clean}")
 
     lines.append("---")
     return "\n".join(lines) + "\n\n" + body + "\n"

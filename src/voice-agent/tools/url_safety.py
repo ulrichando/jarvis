@@ -52,33 +52,33 @@ _ALLOWED_SCHEMES = frozenset({"http", "https"})
 # Private / internal address ranges
 # ---------------------------------------------------------------------------
 
-_PRIVATE_V4_NETS = [
-    ipaddress.ip_network("127.0.0.0/8"),       # loopback
-    ipaddress.ip_network("169.254.0.0/16"),    # link-local / APIPA / cloud metadata
-    ipaddress.ip_network("10.0.0.0/8"),        # private class A
-    ipaddress.ip_network("172.16.0.0/12"),     # private class B
-    ipaddress.ip_network("192.168.0.0/16"),    # private class C
-    ipaddress.ip_network("0.0.0.0/8"),         # unspecified / this-network
-]
-
-_PRIVATE_V6_NETS = [
-    ipaddress.ip_network("::1/128"),           # loopback
-    ipaddress.ip_network("fc00::/7"),          # unique-local (fc00::/7 covers fc00:: and fd00::)
-    ipaddress.ip_network("::/128"),            # unspecified
-]
-
-
 def _ip_is_private(addr: str) -> bool:
-    """Return True if *addr* (string) falls in any private / loopback / metadata range."""
+    """Return True if *addr* (string) falls in any private / loopback / metadata range.
+
+    Uses the stdlib address classifiers rather than hand-rolled net lists so
+    IPv4-mapped IPv6 (``::ffff:127.0.0.1`` / ``::ffff:169.254.169.254``),
+    link-local (``fe80::/10``), 6to4/Teredo embeddings, and reserved ranges are
+    all covered — the hand-rolled lists missed these, letting a prompt-injected
+    ``web_fetch('http://[::ffff:169.254.169.254]/...')`` reach cloud metadata or
+    a loopback service.
+    """
     try:
         ip = ipaddress.ip_address(addr)
     except ValueError:
         return False  # not a parseable IP — don't block
 
-    if isinstance(ip, ipaddress.IPv4Address):
-        return any(ip in net for net in _PRIVATE_V4_NETS)
-    else:
-        return any(ip in net for net in _PRIVATE_V6_NETS)
+    # IPv4-mapped IPv6 (::ffff:a.b.c.d) reports as global; re-check the embedded v4.
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_unspecified
+        or ip.is_multicast
+    )
 
 
 def _host_resolves_private(host: str, port: int) -> bool:
