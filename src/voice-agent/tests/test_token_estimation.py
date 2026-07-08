@@ -142,6 +142,23 @@ def test_cost_unknown_model_returns_zero():
     assert cost_usd("imaginary-model-x", 100, 100) == 0.0
 
 
+@pytest.mark.parametrize("label,base", [
+    ("deepseek-chat-v3", "deepseek-chat"),        # version suffix
+    ("deepseek:deepseek-chat", "deepseek-chat"),  # provider prefix
+    ("kimi-k2.6-agent", "kimi-k2.6"),             # variant suffix
+    ("kimi-k2.6-instant", "kimi-k2.6"),           # the live pin fallback
+])
+def test_cost_tolerant_label_matching(label, base):
+    """Live telemetry recorded label variants (version suffixes, provider
+    prefixes) that exact-match missed → hundreds of $0.00 turns. The lookup
+    now falls back to prefix/stripped matching so these cost the same as the
+    base model rather than 0."""
+    got = cost_usd(label, 1_000_000, 1_000_000)
+    expected = cost_usd(base, 1_000_000, 1_000_000)
+    assert got > 0
+    assert abs(got - expected) < 1e-12
+
+
 def test_cost_vendor_prefixed_alias_matches_bare_id():
     """Some labels carry the plugin's vendor prefix ('anthropic:…') —
     the pricing table lists those aliases with the SAME rates as the

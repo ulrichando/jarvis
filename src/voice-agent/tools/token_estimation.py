@@ -212,6 +212,34 @@ def context_pressure_state(token_count: int) -> str:
     return "ok"
 
 
+def _lookup_rates(model: str) -> Optional[tuple[float, float]]:
+    """Resolve a model label to (input, output) rates, tolerant of the label
+    variants that actually reach telemetry.
+
+    Exact-match only was too strict — live telemetry recorded labels like
+    ``deepseek-chat-v3``, ``deepseek:deepseek-chat`` and ``kimi-k2.6-agent``
+    that don't equal any key, so hundreds of turns costed $0.00 (a repeat of
+    the §P0-17 cost-NULL bug). Fallbacks: strip a ``provider:`` prefix, then
+    match the longest pricing key that is a prefix of the (bare) label."""
+    if not model:
+        return None
+    m = model.strip()
+    if m in _PRICING_USD_PER_1M:
+        return _PRICING_USD_PER_1M[m]
+    if ":" in m:
+        bare = m.split(":", 1)[1]
+        if bare in _PRICING_USD_PER_1M:
+            return _PRICING_USD_PER_1M[bare]
+        m = bare
+    best_key = ""
+    for key in _PRICING_USD_PER_1M:
+        cand = key.split(":", 1)[1] if ":" in key else key
+        if m.startswith(cand) and len(cand) > len(best_key):
+            best_key = cand
+            best_rates = _PRICING_USD_PER_1M[key]
+    return best_rates if best_key else None
+
+
 def cost_usd(
     model: str,
     input_tokens: int,
@@ -227,7 +255,7 @@ def cost_usd(
         input_tokens: prompt tokens (system + chat_ctx + tools).
         output_tokens: completion tokens (the supervisor's reply).
     """
-    rates = _PRICING_USD_PER_1M.get(model)
+    rates = _lookup_rates(model)
     if rates is None:
         logger.debug(
             f"[cost] unknown model '{model}' — pricing returns 0; "
