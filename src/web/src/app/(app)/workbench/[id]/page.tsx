@@ -1,6 +1,7 @@
 "use client";
 
 import { use, useCallback, useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -10,8 +11,15 @@ import { Chat } from "@/components/chat/chat";
 import { WorkbenchToolbar, type WorkbenchTab, type ViewportPreset } from "@/components/workbench/toolbar";
 import { CodeTab } from "@/components/workbench/tabs/code-tab";
 import { PreviewTab } from "@/components/workbench/tabs/preview-tab";
-import { SettingsTab } from "@/components/workbench/tabs/settings-tab";
 import { useUI } from "@/stores/ui";
+
+// Settings is the least-visited tab and (post-split) pulls in ~17 section
+// modules — load it on demand instead of bundling it with the workbench
+// route. Same pattern as WorkbenchTerminal in code-tab.tsx.
+const SettingsTab = dynamic(
+  () => import("@/components/workbench/tabs/settings-tab").then((m) => m.SettingsTab),
+  { ssr: false },
+);
 
 type Workspace = { id: string; name: string; conversationId?: string };
 
