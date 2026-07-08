@@ -40,6 +40,15 @@ export async function GET(req: Request): Promise<NextResponse> {
   const userId = resolveBridgeToken(getStore(), token);
   if (!userId) return bridgeError(401, "unauthorized", "Invalid token");
 
+  // SECURITY — latent multi-user leak (safe today: single-user deploy with
+  // signup disabled, so the only real account is the operator). `userId` is
+  // resolved but NOT scoped: these are the OPERATOR's global provider keys
+  // (host env + web settings), so ANY valid bridge token — including a second
+  // account, were signup ever enabled — would pull them. Before this box goes
+  // multi-user, gate on the resolved user being the owner (LOCAL_USER_ID or a
+  // configured owner id) or move to per-user provider keys. Do NOT naively
+  // restrict to LOCAL_USER_ID: the real operator logs in via `jarvis auth
+  // login` under a better-auth id ≠ LOCAL_USER_ID, so that breaks keys pull.
   const settings = await loadSettings();
   const keys: Record<string, string> = {};
   for (const [provider, envName] of Object.entries(ENV_NAME) as [
