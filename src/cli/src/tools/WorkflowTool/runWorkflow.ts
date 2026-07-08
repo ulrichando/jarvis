@@ -17,7 +17,7 @@ export type RunWorkflowInput = {
   onProgress: (p: SdkWorkflowProgress) => void
   signal: AbortSignal
   syncTimeoutMs?: number
-  priorJournal?: JournalEntry[]
+  priorJournal?: (JournalEntry | null)[]
 }
 
 export type RunWorkflowResult = {
@@ -27,7 +27,7 @@ export type RunWorkflowResult = {
   failures: string[]
   durationMs: number
   error?: string
-  journal: JournalEntry[]
+  journal: (JournalEntry | null)[]
 }
 
 const MAX_LOGS = 1000
