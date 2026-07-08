@@ -96,4 +96,38 @@ describe('settings store path + migration', () => {
     expect(loaded.providers.openai.apiKey).toBe('sk-keep-me')
     expect(loaded.defaults.model).toBe(DEFAULT_MODEL)
   })
+
+  // Regression: a torn/invalid settings.json (crash mid-write) must recover
+  // from the .bak that saveSettings keeps — NOT fall back to defaults and then
+  // persist those defaults over the real provider keys on the next save.
+  test('recovers real keys from .bak when settings.json is torn', async () => {
+    const home = await mktmp()
+    const cwd = await mktmp()
+    const store = await loadStore(home, cwd)
+    // First save creates settings.json; second save copies it to .bak.
+    const withKey = {
+      ...DEFAULT_SETTINGS,
+      providers: { ...DEFAULT_SETTINGS.providers, openai: { apiKey: 'sk-precious' } },
+    }
+    await store.saveSettings(withKey)
+    await store.saveSettings(withKey) // now a .bak exists
+    // Simulate a torn write on the live file, then a fresh process (cache reset).
+    await fs.writeFile(path.join(home, '.jarvis', 'settings.json'), '{ half-writ')
+    const store2 = await loadStore(home, cwd)
+    const loaded = await store2.loadSettings()
+    expect(loaded.providers.openai.apiKey).toBe('sk-precious')
+  })
+
+  // The write must be atomic (temp + rename) so a reader never sees a partial
+  // file. We can at least assert the .bak is produced on the second save.
+  test('keeps a .bak of the prior good file on save', async () => {
+    const home = await mktmp()
+    const cwd = await mktmp()
+    const store = await loadStore(home, cwd)
+    await store.saveSettings(DEFAULT_SETTINGS)
+    await store.saveSettings(DEFAULT_SETTINGS)
+    await expect(
+      fs.access(path.join(home, '.jarvis', 'settings.json.bak')),
+    ).resolves.toBeUndefined()
+  })
 })
