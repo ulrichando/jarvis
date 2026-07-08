@@ -3,9 +3,11 @@ import { randomBytes } from 'node:crypto'
 import { getStore } from '@/lib/bridge/db'
 import {
   listSessions,
-  listSessionEvents,
+  firstUserPrompt,
+  lastEvent,
   listGroups,
   findEnvironment,
+  findEnvironments,
   getOrCreateSession,
   appendSessionEvent,
   resolveBridgeToken,
@@ -35,13 +37,21 @@ export async function GET(req: Request): Promise<NextResponse> {
     const userId = await getUserId(req.headers)
     if (!userId) return bridgeError(401, 'unauthenticated', 'Sign in required')
     const groupName = new Map(listGroups(store, userId).map((g) => [g.group_id, g.name]))
-    const sessions = listSessions(store, userId)
-      .slice(0, 40)
+    const rows = listSessions(store, userId, 40)
+    // One batched env lookup for the page instead of a findEnvironment per row
+    // — this route is polled every 6s, so per-session work adds up fast.
+    const envById = findEnvironments(
+      store,
+      rows.map((s) => s.environment_id).filter((id): id is string => !!id),
+    )
+    const sessions = rows
       .map((s) => {
-        const events = listSessionEvents(store, s.session_id, 0)
-        const first = events.find((e) => e.type === 'user_prompt')
-        const last = events[events.length - 1]
-        const env = s.environment_id ? findEnvironment(store, s.environment_id) : null
+        // Point queries (first user_prompt + newest event) — the old full
+        // listSessionEvents read the entire transcript of every session on
+        // every poll just to derive these two rows.
+        const first = firstUserPrompt(store, s.session_id)
+        const last = lastEvent(store, s.session_id)
+        const env = s.environment_id ? (envById.get(s.environment_id) ?? null) : null
         const safe = (json: string | undefined, key: string): string => {
           try {
             const v = (JSON.parse(json ?? '{}') as Record<string, unknown>)[key]

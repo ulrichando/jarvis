@@ -482,6 +482,27 @@ export function findEnvironment(
   return row ?? null
 }
 
+/**
+ * Batch findEnvironment for session lists: one `WHERE environment_id IN (...)`
+ * query instead of a lookup per row (the /code sidebar polls every 6s across
+ * up to 40 sessions). Unknown ids are simply absent from the returned map.
+ */
+export function findEnvironments(
+  store: Store,
+  envIds: ReadonlyArray<string>,
+): Map<string, EnvironmentRow> {
+  const map = new Map<string, EnvironmentRow>()
+  const ids = [...new Set(envIds)]
+  if (ids.length === 0) return map
+  const rows = store.db
+    .prepare(
+      `SELECT * FROM environments WHERE environment_id IN (${ids.map(() => '?').join(', ')})`,
+    )
+    .all(...ids) as EnvironmentRow[]
+  for (const row of rows) map.set(row.environment_id, row)
+  return map
+}
+
 /** Parse an environment's stored config (env vars + setup script). Always
  *  returns a usable object, even for legacy rows with no config_json. */
 export function parseEnvironmentConfig(row: EnvironmentRow | null): EnvironmentConfig {
@@ -1545,21 +1566,29 @@ export function listInternalEvents(
  * `userId` is given, only sessions whose environment is owned by that user are
  * returned (per-user scoping).
  */
-export function listSessions(store: Store, userId?: string | null): SessionRow[] {
+export function listSessions(
+  store: Store,
+  userId?: string | null,
+  limit?: number,
+): SessionRow[] {
   // Pinned first, then newest. Matches the /code sidebar's display order.
+  // LIMIT -1 is SQLite's "no limit" — callers that don't pass one keep the
+  // unbounded behavior.
+  const cap = limit && limit > 0 ? Math.floor(limit) : -1
   if (userId) {
     return store.db
       .prepare(
         `SELECT s.* FROM sessions s
          JOIN environments e ON e.environment_id = s.environment_id
          WHERE e.user_id = ?
-         ORDER BY s.pinned DESC, s.created_at DESC`,
+         ORDER BY s.pinned DESC, s.created_at DESC
+         LIMIT ?`,
       )
-      .all(userId) as SessionRow[]
+      .all(userId, cap) as SessionRow[]
   }
   return store.db
-    .prepare('SELECT * FROM sessions ORDER BY pinned DESC, created_at DESC')
-    .all() as SessionRow[]
+    .prepare('SELECT * FROM sessions ORDER BY pinned DESC, created_at DESC LIMIT ?')
+    .all(cap) as SessionRow[]
 }
 
 /** Pin/unpin a session (sidebar "Pin"). */
@@ -1776,4 +1805,43 @@ export function listSessionEvents(
        ORDER BY rowid ASC`,
     )
     .all(sessionId, sinceRowid) as SessionEventRow[]
+}
+
+/**
+ * A session's first `user_prompt` event (MIN rowid of that type) — the sidebar
+ * title source. Point query: the session list only needs this one row, not the
+ * whole transcript listSessionEvents would read.
+ */
+export function firstUserPrompt(
+  store: Store,
+  sessionId: string,
+): SessionEventRow | null {
+  const row = store.db
+    .prepare(
+      `SELECT rowid, event_id, session_id, type, payload_json, created_at
+       FROM session_events
+       WHERE session_id = ? AND type = 'user_prompt'
+       ORDER BY rowid ASC LIMIT 1`,
+    )
+    .get(sessionId) as SessionEventRow | undefined
+  return row ?? null
+}
+
+/**
+ * A session's newest event (MAX rowid) — the sidebar preview / status /
+ * last-activity source. Point-query counterpart of firstUserPrompt.
+ */
+export function lastEvent(
+  store: Store,
+  sessionId: string,
+): SessionEventRow | null {
+  const row = store.db
+    .prepare(
+      `SELECT rowid, event_id, session_id, type, payload_json, created_at
+       FROM session_events
+       WHERE session_id = ?
+       ORDER BY rowid DESC LIMIT 1`,
+    )
+    .get(sessionId) as SessionEventRow | undefined
+  return row ?? null
 }
