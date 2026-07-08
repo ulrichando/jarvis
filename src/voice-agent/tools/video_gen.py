@@ -34,6 +34,7 @@ import asyncio
 import datetime
 import logging
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -385,17 +386,44 @@ class XAIVideoGenProvider:
                     aspect_ratio=ar,
                 )
 
-            # Poll
-            elapsed = 0.0
+            # Poll. The submit above already spent xAI credits, so a single
+            # transient 429/5xx or network blip must NOT abort the job —
+            # swallow up to a few consecutive poll errors and keep waiting.
+            # Deadline is wall-clock (monotonic), not a sum of sleep intervals,
+            # so each poll request's own time counts against the timeout.
+            deadline = time.monotonic() + _XAI_TIMEOUT_SECONDS
             last_status = "queued"
             body: Dict[str, Any] = {}
-            while elapsed < _XAI_TIMEOUT_SECONDS:
-                poll = await client.get(
-                    f"{base_url}/videos/{request_id}",
-                    headers=self._headers(api_key),
-                    timeout=30,
-                )
-                poll.raise_for_status()
+            consecutive_poll_errors = 0
+            while time.monotonic() < deadline:
+                try:
+                    poll = await client.get(
+                        f"{base_url}/videos/{request_id}",
+                        headers=self._headers(api_key),
+                        timeout=30,
+                    )
+                    poll.raise_for_status()
+                    consecutive_poll_errors = 0
+                except httpx.HTTPError as poll_exc:
+                    consecutive_poll_errors += 1
+                    logger.warning(
+                        "xAI video poll transient error (%d/5) for %s: %s",
+                        consecutive_poll_errors, request_id, poll_exc,
+                    )
+                    if consecutive_poll_errors >= 5:
+                        return error_response(
+                            error=(
+                                f"xAI video polling failed after 5 consecutive errors "
+                                f"(request_id={request_id}, may still be generating): {poll_exc}"
+                            ),
+                            error_type="connection_error",
+                            provider="xai",
+                            model=model or _XAI_DEFAULT_MODEL,
+                            prompt=prompt,
+                            aspect_ratio=ar,
+                        )
+                    await asyncio.sleep(_XAI_POLL_INTERVAL_SECONDS)
+                    continue
                 body = poll.json() or {}
                 last_status = (body.get("status") or "").lower()
                 if last_status == "done":
@@ -403,14 +431,18 @@ class XAIVideoGenProvider:
                 if last_status in {"failed", "error", "expired", "cancelled"}:
                     break
                 await asyncio.sleep(_XAI_POLL_INTERVAL_SECONDS)
-                elapsed += _XAI_POLL_INTERVAL_SECONDS
 
             if last_status != "done":
-                if elapsed >= _XAI_TIMEOUT_SECONDS and last_status not in {
+                if last_status not in {
                     "failed", "error", "expired", "cancelled",
                 }:
+                    # Loop exited on the wall-clock deadline without a terminal
+                    # status → genuine timeout (job may still be generating).
                     return error_response(
-                        error=f"Timed out waiting for video generation after {_XAI_TIMEOUT_SECONDS}s",
+                        error=(
+                            f"Timed out waiting for video generation after "
+                            f"{_XAI_TIMEOUT_SECONDS}s (request_id={request_id})"
+                        ),
                         error_type="timeout",
                         provider="xai",
                         model=model or _XAI_DEFAULT_MODEL,

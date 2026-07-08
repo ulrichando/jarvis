@@ -160,6 +160,17 @@ def test_emotion_caps_escalates_to_frustrated():
     assert detect_emotion("WHY IS THIS BROKEN", AudioMeta()) == "frustrated"
 
 
+@pytest.mark.parametrize("transcript", [
+    "I didn't give up",     # didn't — not in the old explicit list
+    "I can't be sad",       # can't
+    "things weren't bad",   # weren't
+])
+def test_contraction_negation_flips_sign(transcript):
+    """Contractions the old `\\bn't\\b` alternative couldn't match must still
+    negate — otherwise a negated sad/frustrated phrase scores as that emotion."""
+    assert detect_emotion(transcript, AudioMeta()) != "sad"
+
+
 def test_emotion_high_speech_rate_signals_urgent():
     am = AudioMeta(speech_rate_wpm=240, baseline_wpm=140)
     assert detect_emotion("I need that file now", am) == "urgent"

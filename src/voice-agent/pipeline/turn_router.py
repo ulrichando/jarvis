@@ -90,10 +90,12 @@ _EMOTION_LEX: dict[str, list[str]] = {
 
 # Negation in the 30 chars BEFORE a match flips the sign of that match.
 # Rationale: "I'm NOT frustrated" should not push the frustrated score up.
+# The `\w+n't` alternative matches ANY contraction (didn't/can't/weren't/
+# mustn't/ain't/…) — a bare `\bn't\b` never fires because there's no word
+# boundary between the two word chars of "…dn't", so contractions not spelled
+# out below were silently missed and their emotion sign never flipped.
 _NEGATION_RE = re.compile(
-    r"\b(not|no|never|n't|cannot|don't|doesn't|isn't|wasn't|aren't|"
-    r"won't|wouldn't|couldn't|shouldn't|hasn't|haven't|hadn't|"
-    r"none|nothing|neither|nor|without)\b",
+    r"(?:\b(?:not|no|never|cannot|none|nothing|neither|nor|without)\b|\w+n't\b)",
     re.IGNORECASE,
 )
 

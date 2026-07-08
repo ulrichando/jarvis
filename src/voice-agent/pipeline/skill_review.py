@@ -245,28 +245,11 @@ _INTENT_VERB_RE = re.compile(
     r"open|close|send|post|book|order)\b"
 )
 
-# Spec B (Plane 3) — light correction-signal extractor. The pattern
-# detector queries `turns.correction_signal`; we populate it here from
-# the autonomous review path. Liberal-by-design: false positives cost
-# nothing (just a queued candidate that the threshold gate + manual
-# review filter out); false negatives mean the recurring pattern isn't
-# detected. Conservative shapes only — high-confidence corrections.
-_CORRECTION_RE = re.compile(
-    r"(?i)\b(stop\s+\w+|don'?t\s+\w+|too\s+\w+|just\s+give\s+me|"
-    r"i\s+already\s+said\s+\w+|never\s+(?:say|do)\s+\w+)"
-)
-
-
-def _extract_correction_signal(user_text: str) -> str | None:
-    """Lightweight regex that flags obvious user corrections. Returns
-    the matched substring (lowercased + stripped) or None. False
-    positives accepted; the >=3-occurrence threshold filters noise.
-
-    Spec B (Plane 3)."""
-    if not user_text:
-        return None
-    m = _CORRECTION_RE.search(user_text)
-    return m.group(0).strip().lower() if m else None
+# NOTE: correction-signal extraction now lives in pipeline/turn_telemetry.py
+# (log_turn owns it). It used to be duplicated here and written from
+# autonomous_review_turn, but that path always passed turn_id=0 so the UPDATE
+# matched zero rows — a guaranteed no-op that still did blocking sqlite on the
+# voice event loop. Removed 2026-07-08.
 
 
 def _is_successful_trajectory(
@@ -756,18 +739,6 @@ def apply_proposal(p: Proposal) -> ApplyResult:
         )
 
 
-def _run_coro(coro: Awaitable[None]) -> None:
-    """Run an async publish from the (sync) apply path. The CLI runs
-    outside an event loop, so asyncio.run is correct here. If somehow
-    called inside a loop, schedule a task instead of nesting run()."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        asyncio.run(coro)  # type: ignore[arg-type]
-        return
-    loop.create_task(coro)  # pragma: no cover - CLI is sync
-
-
 # ── Report logging ───────────────────────────────────────────────────
 def _reports_root() -> Path:
     """Per-run reports under the JARVIS home logs dir. Mirrors the
@@ -1077,22 +1048,6 @@ async def autonomous_review_turn(
 
     NEVER raises — any failure returns ``[]`` so the turn handler that
     fired this can't break. Returns the list of ``ApplyResult``."""
-    # Spec B (Plane 3) — extract correction signal for pattern detection.
-    # Writes to turns.correction_signal so the automod pattern detector
-    # can find cross-session recurrences. Best-effort; never blocks.
-    try:
-        _signal = _extract_correction_signal(snapshot.user_text)
-        if _signal:
-            import sqlite3 as _sqlite3_for_signal
-            from pipeline.turn_telemetry import DEFAULT_DB_PATH as _DEFAULT_DB
-            with _sqlite3_for_signal.connect(str(_DEFAULT_DB)) as _conn:
-                _conn.execute(
-                    "UPDATE turns SET correction_signal=? WHERE id=?",
-                    (_signal, snapshot.turn_id),
-                )
-    except Exception as _e:  # noqa: BLE001
-        logger.debug("[automod] correction-signal extract failed: %s", _e)
-
     if self_improve_disabled():
         logger.debug(
             "[skill_review] autonomous review skipped — "
@@ -1132,7 +1087,11 @@ async def autonomous_review_turn(
     results: list[ApplyResult] = []
     for p in proposals:
         try:
-            res = apply_proposal(p)
+            # apply_proposal does file writes + two full skill-tree rescans +
+            # a blocking fcntl.flock (file_memory) — run it off the event loop
+            # so a slow disk / contended memory lock can't stall TTS/STT/
+            # barge-in. Matches _run_curator_off_loop's pattern.
+            res = await asyncio.to_thread(apply_proposal, p)
         except Exception as e:  # apply_proposal already guards, belt+braces
             res = ApplyResult(proposal=p, ok=False, detail=f"{type(e).__name__}: {e}")
         results.append(res)

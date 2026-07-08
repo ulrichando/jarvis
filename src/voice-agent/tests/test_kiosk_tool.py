@@ -66,8 +66,14 @@ async def test_monitor_non_integer_returns_error():
 
 @pytest.mark.asyncio
 async def test_bridge_down_returns_error():
+    import httpx
     from tools.kiosk_tool import _handle_toggle_kiosk
-    with patch("tools.kiosk_tool._post_to_bridge", new=AsyncMock(side_effect=ConnectionError("bridge down"))):
+    # httpx raises httpx.ConnectError (NOT builtin ConnectionError) when the
+    # bridge is down — exercise the real exception so the dedicated
+    # "could not reach desktop bridge" branch is actually hit.
+    with patch("tools.kiosk_tool._post_to_bridge",
+               new=AsyncMock(side_effect=httpx.ConnectError("bridge down"))):
         result = await _handle_toggle_kiosk({"state": "on", "monitor": 0})
         parsed = json.loads(result)
         assert "error" in parsed
+        assert "could not reach desktop bridge" in parsed["error"]

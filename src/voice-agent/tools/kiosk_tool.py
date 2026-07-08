@@ -56,7 +56,11 @@ async def _handle_toggle_kiosk(args: Dict[str, Any]) -> str:
         resp = await _post_to_bridge(payload)
         if hasattr(resp, "raise_for_status"):
             resp.raise_for_status()
-    except ConnectionError as e:
+    except httpx.ConnectError as e:
+        # httpx.ConnectError is NOT a builtin ConnectionError — catching the
+        # builtin here never fired, so bridge-down fell through to the generic
+        # branch with the wrong message. Must stay above httpx.HTTPError
+        # (ConnectError is a subclass of it).
         return tool_error(f"toggle_kiosk: could not reach desktop bridge — {e}")
     except httpx.HTTPError as e:
         return tool_error(f"toggle_kiosk: bridge returned error — {e}")
