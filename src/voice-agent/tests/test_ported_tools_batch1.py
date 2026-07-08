@@ -279,6 +279,20 @@ class TestScheduleBehavior:
         resume_result = self._call({"action": "resume", "job_id": job_id})
         assert resume_result["success"] is True
 
+    def test_confirm_makes_voice_job_eligible(self):
+        # Voice-created jobs start pending_confirm=True/enabled=False and the
+        # scheduler's due-gate skips them until confirmed. confirm must clear
+        # both flags so the job can actually run.
+        from pipeline import cron_jobs as cj
+        created = self._call({"action": "create", "name": "Job4", "schedule": "in 1s",
+                               "type": "prompt", "prompt": "test"})
+        job_id = created["job"]["id"]
+        assert cj.get_job(job_id)["pending_confirm"] is True
+        confirm_result = self._call({"action": "confirm", "job_id": job_id})
+        assert confirm_result["success"] is True
+        after = cj.get_job(job_id)
+        assert after["pending_confirm"] is False and after["enabled"] is True
+
     def test_unknown_action_returns_error(self):
         result = self._call({"action": "blorp"})
         assert "error" in result

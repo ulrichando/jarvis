@@ -185,7 +185,8 @@ def new_job(*, name: str, type: str, schedule: dict, command: str | None = None,
             prompt: str | None = None, delivery: str = "notify+voice",
             created_by: str = "config") -> dict:
     """Build a job dict (not yet persisted). Voice-created jobs are gated
-    behind pending_confirm/enabled=False until confirm_schedule fires."""
+    behind pending_confirm/enabled=False until set_confirmed() fires (the
+    schedule tool's 'confirm'/'resume' action)."""
     scan_job_content(f"{name}\n{command or ''}\n{prompt or ''}")
     if type not in ("script", "prompt"):
         raise ValueError(f"type must be 'script' or 'prompt' (got {type!r})")

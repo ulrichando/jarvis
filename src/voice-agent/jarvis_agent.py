@@ -4236,6 +4236,63 @@ class JarvisAgent(Agent):
     async def on_user_turn_completed(
         self, turn_ctx: ChatContext, new_message: ChatMessage,
     ) -> None:
+        # ── Pre-flight token estimate + hard-pressure prune ──────────────
+        # turn_ctx is a per-generation COPY (livekit AgentActivity:
+        # `temp_mutable_chat_ctx = agent.chat_ctx.copy()`), and it is what's
+        # passed as chat_ctx= to _generate_reply — so pruning it here sends
+        # less to the LLM without touching the persistent history. This block
+        # was lost when the Groq LLM wrapper (which used to host it) was
+        # purged; without it LAST_PREFLIGHT stays None (no context_pressure
+        # telemetry) AND a bloated session silently truncates head-first at
+        # the provider, dropping JARVIS_INSTRUCTIONS → supervisor degrades.
+        # Kill-switch: JARVIS_TOKEN_AWARE_PRUNE=0. (CLAUDE.md "Token-aware
+        # chat_ctx pruning".)
+        try:
+            from tools.token_estimation import (
+                estimate_tokens, context_pressure_state, MAX_CONTEXT_TOKENS,
+            )
+            _items = list(getattr(turn_ctx, "items", None) or [])
+            _tools_str = ""
+            for _t in (getattr(self, "tools", None) or []):
+                _info = getattr(_t, "info", None)
+                _tools_str += (
+                    (getattr(_info, "name", "") or "") + " "
+                    + (getattr(_info, "description", "") or "") + "\n"
+                ) if _info is not None else (str(_t) + "\n")
+            _tool_tokens = estimate_tokens(_tools_str)
+            _est = _ctx_items_token_estimate(_items) + _tool_tokens
+            _pressure = context_pressure_state(_est)
+            _LAST_PREFLIGHT["tokens"] = _est
+            _LAST_PREFLIGHT["pressure"] = _pressure
+            _LAST_PREFLIGHT["model"] = getattr(self, "_jarvis_label", "supervisor")
+            if _pressure != "ok":
+                logger.warning(
+                    "[token-estimation] pressure=%s est_tokens=%d max=%d",
+                    _pressure, _est, MAX_CONTEXT_TOKENS,
+                )
+            if (
+                _pressure == "hard"
+                and os.environ.get("JARVIS_TOKEN_AWARE_PRUNE", "1") == "1"
+            ):
+                _target = max(40_000, MAX_CONTEXT_TOKENS - 13_000) - _tool_tokens
+                _pruned = _prune_chat_ctx_for_budget(turn_ctx, _target)
+                _pruned_items = list(getattr(_pruned, "items", None) or [])
+                if len(_pruned_items) < len(_items):
+                    _new_est = _ctx_items_token_estimate(_pruned_items) + _tool_tokens
+                    logger.warning(
+                        "[token-prune] dropped %d oldest non-system items: "
+                        "%d→%d items, est %d→%d tokens",
+                        len(_items) - len(_pruned_items), len(_items),
+                        len(_pruned_items), _est, _new_est,
+                    )
+                    # Mutate the per-generation copy in place — this is what
+                    # gets sent to the LLM this turn.
+                    turn_ctx.items[:] = _pruned_items
+                    _LAST_PREFLIGHT["tokens"] = _new_est
+                    _LAST_PREFLIGHT["pressure"] = context_pressure_state(_new_est)
+        except Exception as _pf_err:
+            logger.debug("[token-estimation] pre-flight skipped: %s", _pf_err)
+
         # Vision-feedback loop (P2a): a new user turn invalidates any cached
         # post-action screen so it can't bleed into an unrelated turn.
         try:

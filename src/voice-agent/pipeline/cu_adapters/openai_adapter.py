@@ -64,14 +64,20 @@ class OpenAICUAdapter(CUAdapter):
             model=self.model, messages=self.messages, tools=self._tools)
         msg = resp.choices[0].message
         raw_tcs = getattr(msg, "tool_calls", None) or []
-        self.messages.append({
+        assistant_msg: Dict[str, Any] = {
             "role": "assistant",
             "content": msg.content or "",
-            "tool_calls": [{
+        }
+        # Only attach tool_calls when there ARE some — Chat Completions rejects
+        # an assistant message carrying an empty tool_calls array (400 on the
+        # next request), which happens on any step that returns text and no
+        # tool call (task done / thinking aloud).
+        if raw_tcs:
+            assistant_msg["tool_calls"] = [{
                 "id": tc.id, "type": "function",
                 "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-            } for tc in raw_tcs],
-        })
+            } for tc in raw_tcs]
+        self.messages.append(assistant_msg)
         calls: List[ToolCall] = []
         for tc in raw_tcs:
             try:

@@ -158,8 +158,13 @@ def _handle_schedule(args: dict, **_kw) -> str:
         updated = cj.set_enabled(job_id, False)
         return json.dumps({"success": True, "job": _format_job(updated or job)}, ensure_ascii=False)
 
-    if action == "resume":
-        updated = cj.set_enabled(job_id, True)
+    if action in ("resume", "confirm"):
+        # Both clear pending_confirm AND enable. A voice-created job starts
+        # pending_confirm=True/enabled=False, and the scheduler's due-gate skips
+        # any job that is pending_confirm OR not enabled — so plain set_enabled
+        # would leave it stuck. confirm_schedule flips both, which is exactly
+        # what "confirm" and "resume this job" both mean.
+        updated = cj.set_confirmed(job_id)
         return json.dumps({"success": True, "job": _format_job(updated or job)}, ensure_ascii=False)
 
     if action == "run_now":
@@ -173,7 +178,7 @@ def _handle_schedule(args: dict, **_kw) -> str:
         }, ensure_ascii=False)
 
     return tool_error(
-        f"Unknown action '{action}'. Valid: create, list, pause, resume, remove, run_now."
+        f"Unknown action '{action}'. Valid: create, list, pause, resume, confirm, remove, run_now."
     )
 
 
@@ -199,7 +204,7 @@ _SCHEDULE_SCHEMA = {
     "description": (
         "Create and manage JARVIS scheduled jobs. Jobs run autonomously at the "
         "specified time — prompts run through the AI, scripts run as shell commands.\n\n"
-        "Actions: create, list, pause, resume, remove, run_now.\n\n"
+        "Actions: create, list, pause, resume, confirm, remove, run_now.\n\n"
         "Schedule examples: 'every 30m', 'every 2h', 'daily at 09:00', "
         "'at 8am', 'in 1h', ISO timestamp.\n\n"
         "New voice-created jobs start paused pending confirmation. "
@@ -210,8 +215,11 @@ _SCHEDULE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["create", "list", "pause", "resume", "remove", "run_now"],
-                "description": "What to do.",
+                "enum": ["create", "list", "pause", "resume", "confirm", "remove", "run_now"],
+                "description": (
+                    "What to do. 'confirm' activates a voice-created job that "
+                    "started pending (say 'confirm schedule')."
+                ),
             },
             "name": {
                 "type": "string",
@@ -252,7 +260,7 @@ _SCHEDULE_SCHEMA = {
             },
             "job_id": {
                 "type": "string",
-                "description": "Job id (required for pause/resume/remove/run_now). Use list to find ids.",
+                "description": "Job id (required for pause/resume/confirm/remove/run_now). Use list to find ids.",
             },
         },
         "required": ["action"],
