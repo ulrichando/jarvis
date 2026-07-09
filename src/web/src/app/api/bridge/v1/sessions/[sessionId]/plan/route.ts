@@ -113,6 +113,16 @@ export async function POST(
       // tool emits it as the "(edited by user)" variant. local/reject → deny,
       // with the decision content as the message (becomes the is_error
       // tool_result the poller scans for the teleport sentinel / rejection).
+      //
+      // local ALSO sets interrupt:true — the CLI's deny+interrupt protocol
+      // (PermissionPromptToolResultSchema → abortController.abort()) emits the
+      // sentinel tool_result and then STOPS the agent's turn. Without it the
+      // plan-mode agent treats the deny as a revision request and re-calls
+      // ExitPlanMode within seconds (live capture 2026-07-09: 3.5s), so the
+      // remote keeps working in parallel and the new pending call shadows the
+      // teleport tool_result in the CLI poller — the plan never returns to the
+      // terminal. reject must NOT interrupt: the agent has to stay alive to
+      // revise the plan.
       const response =
         decision === "approve"
           ? {
@@ -120,7 +130,11 @@ export async function POST(
               updatedInput:
                 edited && plan.trim() ? { ...perm.input, plan } : perm.input,
             }
-          : { behavior: "deny" as const, message: content };
+          : {
+              behavior: "deny" as const,
+              message: content,
+              ...(decision === "local" ? { interrupt: true } : {}),
+            };
       appendInbound(store, sessionId, {
         type: "control_response",
         uuid: randomBytes(8).toString("hex"),

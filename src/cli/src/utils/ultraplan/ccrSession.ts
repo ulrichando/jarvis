@@ -156,6 +156,25 @@ export class ExitPlanModeScanner {
         }
         break
       }
+      // Teleport override: a teleport deny is a TERMINAL user decision ("run
+      // locally"). The remote agent may react to the deny by re-calling
+      // ExitPlanMode within the poll window (live capture 2026-07-09: re-call
+      // 3.5s after the deny), so one batch can contain BOTH the sentinel
+      // tool_result on the old call AND a newer pending call. The newest-first
+      // scan above would return 'pending' forever — the new call pauses for a
+      // browser decision the user already made — and the CLI never gets the
+      // plan back. Sweep older calls for the sentinel before trusting pending.
+      if (found?.kind === 'pending') {
+        for (let i = this.exitPlanCalls.length - 1; i >= 0; i--) {
+          const tr = this.results.get(this.exitPlanCalls[i]!)
+          if (!tr || tr.is_error !== true) continue
+          const teleportPlan = extractTeleportPlan(tr.content)
+          if (teleportPlan !== null) {
+            found = { kind: 'teleport', plan: teleportPlan }
+            break
+          }
+        }
+      }
       if (found?.kind === 'approved' || found?.kind === 'teleport') return found
     }
 
