@@ -199,6 +199,9 @@ export async function createV2ReplTransport(opts: {
     getAuthHeaders,
   )
   let onCloseCb: ((closeCode?: number) => void) | undefined
+  // Set by the returned object's close(); read at 409 time by onEpochMismatch.
+  // Declared before the CCRClient so the closure reference is above-define.
+  let closed = false
   const ccr = new CCRClient(sse, new URL(sessionUrl), {
     getAuthHeaders,
     heartbeatIntervalMs: opts.heartbeatIntervalMs,
@@ -207,6 +210,18 @@ export async function createV2ReplTransport(opts: {
     // that kills the REPL. Close instead: replBridge's onClose wakes the poll
     // loop, which picks up the server's re-dispatch (with fresh epoch).
     onEpochMismatch: () => {
+      // Deliberate close already happened (transport swap: the /bridge refresh
+      // bumps the server epoch, then rebuildTransport closes this instance —
+      // but an in-flight POST from before the close can still resolve 409
+      // here). The dead instance must not fire lifecycle callbacks; the
+      // replacement transport owns the connection now. Still throw to unwind
+      // the caller.
+      if (closed) {
+        logForDebugging(
+          '[bridge:repl] CCR v2: 409 on already-closed transport — suppressing onClose (swap in flight)',
+        )
+        throw new Error('epoch superseded (transport already closed)')
+      }
       logForDebugging(
         '[bridge:repl] CCR v2: epoch superseded (409) — closing for poll-loop recovery',
       )
@@ -265,7 +280,7 @@ export async function createV2ReplTransport(opts: {
   // inbound events via setOnData; outbound doesn't need to wait for it.
   let onConnectCb: (() => void) | undefined
   let ccrInitialized = false
-  let closed = false
+  // (`closed` is declared above the CCRClient — onEpochMismatch reads it.)
 
   return {
     write(msg) {
