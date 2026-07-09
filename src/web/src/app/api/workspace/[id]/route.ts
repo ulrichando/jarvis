@@ -155,7 +155,7 @@ export async function PATCH(req: Request, ctx: RouteContext<"/api/workspace/[id]
   return NextResponse.json({ workspace: publicShape(ws) });
 }
 
-export async function DELETE(_req: Request, ctx: RouteContext<"/api/workspace/[id]">) {
+export async function DELETE(req: Request, ctx: RouteContext<"/api/workspace/[id]">) {
   const denied = await authOr401(req);
   if (denied) return denied;
   const { id } = await ctx.params;
