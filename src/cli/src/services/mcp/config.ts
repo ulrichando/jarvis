@@ -7,6 +7,7 @@ import { getPlatform } from 'src/utils/platform.js'
 import type { PluginError } from '../../types/plugin.js'
 import { getPluginErrorMessage } from '../../types/plugin.js'
 import { isClaudeInChromeMCPServer } from '../../utils/jarvisInChrome/common.js'
+import { isJarvisInChromeMCPServer } from '../../utils/jarvisChromeMcp/server.js'
 import {
   getCurrentProjectConfig,
   getGlobalConfig,
@@ -633,8 +634,8 @@ export async function addMcpConfig(
     )
   }
 
-  // Block reserved server name "claude-in-chrome"
-  if (isClaudeInChromeMCPServer(name)) {
+  // Block reserved server names "claude-in-chrome" / "jarvis-in-chrome"
+  if (isClaudeInChromeMCPServer(name) || isJarvisInChromeMCPServer(name)) {
     throw new Error(`Cannot add MCP server "${name}": this name is reserved.`)
   }
 

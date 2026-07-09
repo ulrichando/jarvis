@@ -322,6 +322,10 @@ import {
   JARVIS_IN_CHROME_MCP_SERVER_NAME,
   isClaudeInChromeMCPServer,
 } from "src/utils/jarvisInChrome/common.js";
+import {
+  JARVIS_IN_CHROME_SERVER_NAME,
+  isJarvisInChromeMCPServer,
+} from "src/utils/jarvisChromeMcp/server.js";
 import { registerCleanup } from "src/utils/cleanupRegistry.js";
 import { eagerParseCliFlag } from "src/utils/cliArgs.js";
 import { createEmptyAttributionState } from "src/utils/commitAttribution.js";
@@ -2369,6 +2373,8 @@ async function run(): Promise<CommanderCommand> {
           let reservedNameError: string | null = null;
           if (nonSdkConfigNames.some(isClaudeInChromeMCPServer)) {
             reservedNameError = `Invalid MCP configuration: "${JARVIS_IN_CHROME_MCP_SERVER_NAME}" is a reserved MCP name.`;
+          } else if (nonSdkConfigNames.some(isJarvisInChromeMCPServer)) {
+            reservedNameError = `Invalid MCP configuration: "${JARVIS_IN_CHROME_SERVER_NAME}" is a reserved MCP name.`;
           } else if (feature("CHICAGO_MCP")) {
             const { isComputerUseMCPServer, COMPUTER_USE_MCP_SERVER_NAME } =
               await import("src/utils/computerUse/common.js");
