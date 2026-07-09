@@ -111,6 +111,9 @@ async def call_web(
         detail = _safe_text(resp)
         raise WebError(f"web app returned HTTP {sc}{': ' + detail if detail else ''}")
 
+    # 204 No Content (e.g. DELETE) or an empty body → success with no payload.
+    if sc == 204 or not _safe_text(resp).strip():
+        return None
     try:
         return resp.json()
     except Exception as e:  # noqa: BLE001

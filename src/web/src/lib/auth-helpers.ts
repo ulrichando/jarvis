@@ -55,3 +55,33 @@ export async function requireUserId(reqHeaders?: Headers): Promise<string> {
   if (!id) throw new Unauthenticated();
   return id;
 }
+
+/**
+ * Like {@link requireUserId}, but ALSO accepts the shared
+ * `JARVIS_LOCAL_API_TOKEN` bearer, resolving it to the canonical single-user id
+ * (`LOCAL_USER_ID`). This is the EXPLICIT, per-route opt-in that lets a trusted
+ * same-box service caller — the voice agent's `web_*` tools — reach user-scoped
+ * routes over loopback without a browser session cookie.
+ *
+ * `getUserId` intentionally stays cookie-only (no silent global fallback); only
+ * routes that deliberately call THIS helper accept the shared token. The bearer
+ * has already cleared the proxy gate (`proxy.ts` accepts it for every `/api/*`
+ * route), so this is the in-handler half of the same check — mirroring how
+ * `/api/v1/sessions` accepts `isSharedLocalToken`. The shared token is exactly
+ * as privileged as the box it lives on; do NOT adopt this helper on a
+ * multi-user deployment. Imports are lazy so this stays out of any module cycle.
+ */
+export async function requireUserIdOrSharedLocal(
+  reqHeaders?: Headers,
+): Promise<string> {
+  const id = await getUserId(reqHeaders);
+  if (id) return id;
+  const { extractBearer, isSharedLocalToken } = await import("./bridge/auth");
+  const token = extractBearer(reqHeaders?.get("authorization") ?? null);
+  if (token && isSharedLocalToken(token)) {
+    const { LOCAL_USER_ID, ensureLocalUser } = await import("./chat/persist");
+    await ensureLocalUser();
+    return LOCAL_USER_ID;
+  }
+  throw new Unauthenticated();
+}
