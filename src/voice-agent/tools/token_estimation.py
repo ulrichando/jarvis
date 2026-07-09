@@ -244,6 +244,7 @@ def cost_usd(
     model: str,
     input_tokens: int,
     output_tokens: int,
+    cached_input_tokens: int = 0,
 ) -> float:
     """Compute the USD cost for an LLM call.
 
@@ -254,6 +255,10 @@ def cost_usd(
         model: provider:model string (e.g. "deepseek-v4-flash").
         input_tokens: prompt tokens (system + chat_ctx + tools).
         output_tokens: completion tokens (the supervisor's reply).
+        cached_input_tokens: subset of input_tokens served from the provider's
+            prompt cache — billed at the reduced cache-read rate. Previously
+            ignored, so cached tokens (Anthropic 10%, DeepSeek 2%) were costed
+            at full rate, overstating spend on JARVIS's heavily-cached prompts.
     """
     rates = _lookup_rates(model)
     if rates is None:
@@ -263,7 +268,14 @@ def cost_usd(
         )
         return 0.0
     in_rate, out_rate = rates
-    return (input_tokens / 1_000_000) * in_rate + (output_tokens / 1_000_000) * out_rate
+    cached = max(0, min(int(cached_input_tokens or 0), int(input_tokens)))
+    uncached = int(input_tokens) - cached
+    cache_cost = (cached / 1_000_000) * in_rate * cache_read_rate(model)
+    return (
+        (uncached / 1_000_000) * in_rate
+        + cache_cost
+        + (output_tokens / 1_000_000) * out_rate
+    )
 
 
 def preflight(

@@ -7114,7 +7114,8 @@ async def entrypoint(ctx: JobContext) -> None:
                     cost = None
                     if _cost_usd is not None and in_tok is not None and out_tok is not None and llm_used:
                         try:
-                            cost = _cost_usd(llm_used, in_tok, out_tok)
+                            _cache_read = getattr(session, "_jarvis_last_cache_read_tokens", 0) or 0
+                            cost = _cost_usd(llm_used, in_tok, out_tok, _cache_read)
                         except Exception:
                             cost = None
                     # total_audio_ms — sum of all "speaking" segments in

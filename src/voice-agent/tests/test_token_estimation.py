@@ -159,6 +159,18 @@ def test_cost_tolerant_label_matching(label, base):
     assert abs(got - expected) < 1e-12
 
 
+def test_cost_applies_cache_read_discount():
+    """Cached input tokens bill at the reduced cache-read rate, not full rate —
+    the discount helper was previously dead so cached tokens were over-costed."""
+    full = cost_usd("claude-haiku-4-5", 1_000_000, 0, 0)
+    all_cached = cost_usd("claude-haiku-4-5", 1_000_000, 0, 1_000_000)
+    assert abs(all_cached - full * 0.10) < 1e-9   # Anthropic cache = 10% of input
+    # Backward compatible: omitting the arg = no discount (full input rate).
+    assert cost_usd("claude-haiku-4-5", 1_000_000, 0) == full
+    # Cached count is clamped to input_tokens (can't exceed it).
+    assert cost_usd("claude-haiku-4-5", 100, 0, 999) == cost_usd("claude-haiku-4-5", 100, 0, 100)
+
+
 def test_cost_vendor_prefixed_alias_matches_bare_id():
     """Some labels carry the plugin's vendor prefix ('anthropic:…') —
     the pricing table lists those aliases with the SAME rates as the
