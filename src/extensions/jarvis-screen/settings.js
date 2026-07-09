@@ -17,8 +17,11 @@ document.querySelectorAll(".navitem").forEach((b) =>
   }));
 
 // ── Account + logout ─────────────────────────────────────────────────────
-chrome.storage.local.get("account_email").then(({ account_email }) => {
-  $("acct").textContent = account_email || "Not signed in";
+chrome.storage.local.get(["account_email", "bridge_token"]).then(({ account_email, bridge_token }) => {
+  // Signed-in state is the presence of the bridge credential; account_email is
+  // just a nicer label when the account has one (some accounts have no email,
+  // so keying the badge off the email alone falsely showed "Not signed in").
+  $("acct").textContent = account_email || (bridge_token ? "Signed in" : "Not signed in");
 });
 $("logout").addEventListener("click", async () => {
   await chrome.storage.local.remove(["bridge_token", "account_email"]);
