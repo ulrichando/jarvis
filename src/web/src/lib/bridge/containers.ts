@@ -277,6 +277,10 @@ export async function launchContainerSession(
   const exec = opts.exec ?? realDockerExec;
   const { sessionId, repoFullName } = opts;
   const name = containerNameFor(sessionId);
+  // No-repo sessions (ultraplan / research / remote agentic tasks): the CCR
+  // path launches a container that just runs the agent, no repo to clone.
+  // repoDirName("") → "repo", so the workdir stays a stable /workspace/repo.
+  const hasRepo = validRepoFullName(repoFullName);
   const dir = repoDirName(repoFullName);
   const workdir = `/workspace/${dir}`;
 
@@ -495,9 +499,21 @@ export async function launchContainerSession(
 
   // 2. Cloned repository (or, on a cache hit, freshen the baked-in checkout).
   // All git goes through the per-session proxy URL — no token in any argv.
-  await step(cacheHit ? "Restored repository" : "Cloned repository", async () => {
+  await step(
+    !hasRepo ? "Prepared workspace" : cacheHit ? "Restored repository" : "Cloned repository",
+    async () => {
     // Write the cap credential FIRST so clone/fetch through the proxy can auth.
     await configureGitProxy();
+    if (!hasRepo) {
+      // No repo to clone. Create an empty git workdir so the CLI's workspace
+      // trust check + any git-dependent tooling still work (the agent just
+      // reasons/plans; nothing is pushed).
+      await exec([
+        "exec", name, "sh", "-c",
+        `mkdir -p ${shq(workdir)} && git -C ${shq(workdir)} init -q 2>/dev/null || true`,
+      ]);
+      return;
+    }
     if (cacheHit) {
       // The baked-in remote points at a PREVIOUS session's proxy path — reset it
       // to THIS session's proxy URL before fetching, then freshen the checkout.

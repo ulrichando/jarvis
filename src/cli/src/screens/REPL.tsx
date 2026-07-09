@@ -206,6 +206,11 @@ import type { SandboxAskCallback, NetworkHostPattern } from '../utils/sandbox/sa
 import { type IDEExtensionInstallationStatus, closeOpenDiffs, getConnectedIdeClient, type IdeType } from '../utils/ide.js';
 import { useIDEIntegration } from '../hooks/useIDEIntegration.js';
 import exit from '../commands/exit/index.js';
+// The ultraplan launch dialog's onChoice handler calls launchUltraplan; the
+// import was stripped from the donor build along with the dialog machinery, so
+// selecting "Launch" threw `launchUltraplan is not defined` inside the Select
+// callback (swallowed by Ink → silent no-op, no session). Restored 2026-07-09.
+import { launchUltraplan } from '../commands/ultraplan.js';
 import { ExitFlow } from '../components/ExitFlow.js';
 import { getCurrentWorktreeSession } from '../utils/worktree.js';
 import { popAllEditable, enqueue, type SetAppState, getCommandQueue, getCommandQueueLength, removeByFilter } from '../utils/messageQueueManager.js';
