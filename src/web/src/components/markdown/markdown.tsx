@@ -474,12 +474,35 @@ export const Markdown = memo(function Markdown({
   // rehypeRaw passes it through as an inline element so it joins the
   // last paragraph's last line, and CSS styles + animates it.
   isStreaming,
+  // Settings → Capabilities → "Render markdown" OFF. Render the raw
+  // (design-tag-stripped) text as plain whitespace-pre-wrap prose —
+  // no ReactMarkdown, no remark/rehype pipeline, no CodeBlock. The
+  // caret becomes a real <span> sibling since there's no rehypeRaw to
+  // materialize an embedded one. Additive prop: every existing caller
+  // omits it and keeps the markdown render (regression rule 3 —
+  // artifacts / plan cards / code sessions don't follow the chat
+  // capability toggle).
+  plain,
 }: {
   content: string;
   className?: string;
   isStreaming?: boolean;
+  plain?: boolean;
 }) {
   const safe = stripDesignTags(content);
+  if (plain) {
+    return (
+      <div
+        className={cn(
+          "whitespace-pre-wrap text-[length:var(--chat-fs,15px)] leading-[1.7]",
+          className,
+        )}
+      >
+        {safe}
+        {isStreaming ? <span data-stream-caret /> : null}
+      </div>
+    );
+  }
   const blocks = splitBlocks(safe);
   // Tail-block streaming caret. We mutate ONLY the last block so all
   // earlier (settled) blocks stay referentially identical across

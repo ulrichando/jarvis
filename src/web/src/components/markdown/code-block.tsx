@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Check, ChevronsDownUp, ChevronsUpDown, Copy } from "lucide-react";
 import { codeToHtml } from "shiki";
 import { cn } from "@/lib/utils";
+import { useSettings } from "@/hooks/use-settings";
 
 type CodeBlockProps = {
   code: string;
@@ -23,8 +24,21 @@ export function CodeBlock({ code, language = "text", className }: CodeBlockProps
   const [expanded, setExpanded] = useState(!isLong);
   const [html, setHtml] = useState<string>("");
   const [copied, setCopied] = useState(false);
+  // Settings → Capabilities → "Code syntax highlighting". When OFF, skip
+  // the Shiki pass entirely and fall through to the escaped plain
+  // <pre><code> render below. Default ON (also while settings load).
+  // Read here (not per call site) — every CodeBlock consumer wants the
+  // same behavior, so change in place rather than gate per caller.
+  const { data: settings } = useSettings();
+  const highlightEnabled = settings?.capabilities?.codeHighlight !== false;
 
   useEffect(() => {
+    if (!highlightEnabled) {
+      // Toggle can flip mid-session: clear any previously highlighted
+      // HTML so the plain fallback below takes over immediately.
+      setHtml("");
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -49,7 +63,7 @@ export function CodeBlock({ code, language = "text", className }: CodeBlockProps
     return () => {
       cancelled = true;
     };
-  }, [code, language]);
+  }, [code, language, highlightEnabled]);
 
   const copy = async () => {
     await navigator.clipboard.writeText(code);
@@ -123,6 +137,12 @@ export function CodeBlock({ code, language = "text", className }: CodeBlockProps
           "relative overflow-x-auto text-[13px] leading-6",
           "[&_pre]:bg-transparent! [&_pre]:p-4 [&_pre]:m-0!",
           "[&_code]:bg-transparent! [&_code]:font-mono",
+          // Plain (unhighlighted) render — highlight toggled off, shiki
+          // still loading, or shiki errored. Shiki output carries its own
+          // inline colors; the plain <pre><code> inherits ambient text
+          // color, which is near-black in light theme against this
+          // always-dark block. Pin a readable neutral.
+          !html && "text-zinc-200",
           !expanded && "max-h-104 overflow-y-hidden",
         )}
         dangerouslySetInnerHTML={{

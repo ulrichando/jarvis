@@ -31,6 +31,7 @@ import { cn } from "@/lib/utils";
 import { MODELS_META } from "@/lib/ai/models-meta";
 import { estimateCostUsd } from "@/lib/ai/pricing";
 import { useVoiceRead } from "@/stores/voice-read";
+import { useSettings } from "@/hooks/use-settings";
 
 // Synthetic-prompt patterns the chat layer's plumbing emits but the
 // user shouldn't see. Stripped at the SOURCE (textFromParts) so every
@@ -396,6 +397,13 @@ export function Message({
   // this char index is "read" (white), the rest stays gray. Per-message selector
   // so only the message being read re-renders on each word boundary.
   const voiceReadChar = useVoiceRead((s) => (s.readingId === message.id ? s.readChar : -1));
+  // Settings → Capabilities → "Render markdown". When OFF, the assistant
+  // body renders as plain whitespace-pre-wrap text instead of formatted
+  // markdown. Default ON (also while settings are still loading). Shared
+  // react-query cache — one fetch app-wide, per-message subscriptions are
+  // dedup'd by the ["settings"] key.
+  const { data: settings } = useSettings();
+  const markdownEnabled = settings?.capabilities?.markdown !== false;
   const kimiReasoning = kimiReasoningFromMessage(message.parts);
   const toolTrace = toolTraceFromMessage(message.parts);
   const swarmStatus = swarmStatusFromMessage(message.parts);
@@ -523,11 +531,16 @@ export function Message({
               </p>
             ) : (
               <Markdown
-                content={linkifyCitations(
-                  text,
-                  extractSources(message).map((s) => s.url),
-                )}
+                content={
+                  markdownEnabled
+                    ? linkifyCitations(
+                        text,
+                        extractSources(message).map((s) => s.url),
+                      )
+                    : text
+                }
                 isStreaming={isStreaming}
+                plain={!markdownEnabled}
               />
             )
           ) : isStreaming && !reasoning && !plan && genImages.length === 0 ? (
