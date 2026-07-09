@@ -61,10 +61,17 @@ export function assertRepoAllowed(allowedRepos: string[], owner: string, repo: s
 
 /**
  * Transparently reverse-proxy ONE git smart-HTTP request to github.com with the
- * real PAT injected as Basic auth. Forwards only the headers git needs
- * (content-type, accept, git-protocol, user-agent) — deliberately NOT
- * accept-encoding, so undici decodes upstream and we pass plain bytes (avoids
- * the gzip double-decode proxy trap). Streams request + response bodies.
+ * real PAT injected as Basic auth. Forwards the headers git needs
+ * (content-type, accept, git-protocol, user-agent, content-encoding) — but
+ * deliberately NOT accept-encoding (a RESPONSE-side hint), so undici decodes the
+ * upstream response and we pass plain bytes (avoids the gzip double-decode trap).
+ *
+ * content-encoding is REQUEST-side and MUST be forwarded: git gzips the
+ * upload-pack "fetch" negotiation body once the want-list is large (repos with
+ * many refs — jarvis has ~210), and the raw gzip bytes are streamed straight
+ * through below. Dropping the header while sending gzip bytes made GitHub reject
+ * the body as malformed with HTTP 400 ("expected 'packfile'"), so any non-tiny
+ * repo failed to clone/fetch through /code. Streams request + response bodies.
  */
 export async function forwardToGithub(req: Request, target: GitRequest, pat: string): Promise<Response> {
   const path = target.kind === 'info-refs' ? 'info/refs' : target.service
@@ -73,7 +80,7 @@ export async function forwardToGithub(req: Request, target: GitRequest, pat: str
 
   const headers = new Headers()
   headers.set('authorization', 'Basic ' + Buffer.from(`x-access-token:${pat}`).toString('base64'))
-  for (const h of ['content-type', 'accept', 'git-protocol', 'user-agent']) {
+  for (const h of ['content-type', 'accept', 'git-protocol', 'user-agent', 'content-encoding']) {
     const v = req.headers.get(h)
     if (v) headers.set(h, v)
   }

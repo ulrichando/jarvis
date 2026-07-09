@@ -71,8 +71,18 @@ export function makeDispatch(deps: DispatchDeps) {
     if (opts.isolation === 'worktree') {
       try {
         worktreeInfo = await createAgentWorktree(`agent-${agentId.slice(0, 8)}`)
-      } catch {
-        worktreeInfo = null // fall back to the shared cwd rather than fail the agent
+      } catch (e) {
+        // Fall back to the shared cwd rather than fail the agent — but WARN.
+        // isolation:'worktree' is requested precisely for file-mutating parallel
+        // agents; silently sharing the cwd reintroduces the exact write conflict
+        // the caller asked to avoid, and a resulting corruption would otherwise
+        // be a total mystery. Loud so the cause is visible in the run's stderr.
+        worktreeInfo = null
+        console.warn(
+          `[workflow] agent ${agentId.slice(0, 8)} requested worktree isolation but ` +
+          `creation failed (${(e as Error).message}); running in the SHARED cwd — ` +
+          `parallel file-mutating agents may conflict.`,
+        )
       }
     }
 

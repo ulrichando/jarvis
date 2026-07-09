@@ -4,7 +4,7 @@ import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
-import { type EffortValue, getDisplayedEffortLevel, getEffortEnvOverride, getEffortValueDescription, isEffortLevel, modelSupportsEffort, toPersistableEffort, ULTRACODE } from '../../utils/effort.js';
+import { type EffortValue, convertEffortValueToLevel, getDisplayedEffortLevel, getEffortEnvOverride, getEffortValueDescription, isEffortLevel, modelSupportsEffort, toPersistableEffort, ULTRACODE } from '../../utils/effort.js';
 import { modelDisplayString } from '../../utils/model/model.js';
 import { formatJarvisModelLabels, getJarvisModelsWithCapability, isJarvisModelRegistryEnabled } from '../../utils/model/jarvisModelRegistry.js';
 import { updateSettingsForSource } from '../../utils/settings/settings.js';
@@ -181,7 +181,26 @@ function ApplyEffortAndClose(t0) {
     message
   } = result;
   const jarvisAvailabilityMessage = getJarvisEffortAvailabilityMessage(model);
-  const finalMessage = effortUpdate?.value !== undefined && jarvisAvailabilityMessage ? `${message}\n${jarvisAvailabilityMessage} Saved effort will apply after you switch models.` : message;
+  // When the requested effort clamps down for this model (e.g. max/xhigh on a
+  // model whose ceiling is high), say so — otherwise "Set effort level to
+  // xhigh" reads as if it took effect while the indicator correctly shows the
+  // clamped tier. Only in the else branch (no "does not support effort" note),
+  // so effort-capable-but-lower-ceiling models like gpt-5.x get an explanation.
+  const requestedLevel =
+    effortUpdate?.value !== undefined
+      ? convertEffortValueToLevel(effortUpdate.value)
+      : undefined;
+  const appliedLevel =
+    effortUpdate?.value !== undefined
+      ? getDisplayedEffortLevel(model, effortUpdate.value)
+      : undefined;
+  const clampNote =
+    requestedLevel !== undefined &&
+    appliedLevel !== undefined &&
+    appliedLevel !== requestedLevel
+      ? ` Applies as ${appliedLevel} on ${model} (its highest supported tier).`
+      : '';
+  const finalMessage = effortUpdate?.value !== undefined && jarvisAvailabilityMessage ? `${message}\n${jarvisAvailabilityMessage} Saved effort will apply after you switch models.` : `${message}${clampNote}`;
   let t1;
   let t2;
   if ($[0] !== effortUpdate || $[1] !== finalMessage || $[2] !== onDone || $[3] !== setAppState) {

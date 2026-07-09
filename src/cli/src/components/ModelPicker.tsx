@@ -8,7 +8,7 @@ import { FAST_MODE_MODEL_DISPLAY, isFastModeAvailable, isFastModeCooldown, isFas
 import { Box, Text } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import { useAppState, useSetAppState } from '../state/AppState.js';
-import { convertEffortValueToLevel, type EffortLevel, getDefaultEffortForModel, modelSupportsEffort, modelSupportsMaxEffort, modelSupportsXhighEffort, resolvePickerEffortPersistence, toPersistableEffort } from '../utils/effort.js';
+import { clampEffortToModel, convertEffortValueToLevel, type EffortLevel, getDefaultEffortForModel, isUltracodeActive, modelSupportsEffort, modelSupportsMaxEffort, modelSupportsXhighEffort, resolvePickerEffortPersistence, toPersistableEffort } from '../utils/effort.js';
 import { getDefaultMainLoopModel, type ModelSetting, modelDisplayString, parseUserSpecifiedModel } from '../utils/model/model.js';
 import { isJarvisModelRegistryEnabled } from '../utils/model/jarvisModelRegistry.js';
 import { getModelOptions } from '../utils/model/modelOptions.js';
@@ -182,14 +182,17 @@ export function ModelPicker(t0) {
     t9 = $[24];
   }
   const focusedDefaultEffort = t9;
-  // Mirror clampEffortToModel's ladder (max → xhigh → high) so the footer shows
-  // the effort the wire will actually carry for the focused model.
+  // Show the level the focused model will actually apply, using the real
+  // per-model ladder (max → xhigh → high) rather than a bare max→high collapse.
+  // Plain per-render const (like the original) — no memo dependency, so
+  // recomputing resolveOptionModel here is safe and stays in sync with the
+  // focused model on every switch. Fixes the footer showing "High (default)"
+  // on xhigh-capable models (e.g. DeepSeek) when session effort is max/xhigh.
+  const focusedModelForClamp = resolveOptionModel(focusedValue);
   const displayEffort =
-    effort === "max" && !focusedSupportsMax
-      ? (focusedSupportsXhigh ? "xhigh" : "high")
-      : effort === "xhigh" && !focusedSupportsXhigh
-        ? "high"
-        : effort;
+    effort !== undefined && focusedModelForClamp
+      ? clampEffortToModel(effort, focusedModelForClamp)
+      : effort;
   let t10;
   if ($[25] !== effortValue || $[26] !== hasToggledEffort) {
     t10 = value => {
@@ -261,7 +264,13 @@ export function ModelPicker(t0) {
         }
         setAppState(prev_0 => ({
           ...prev_0,
-          effortValue: effortLevel
+          // Preserve an active ultracode session across a pure model switch
+          // (no effort toggle in the picker). Reading prev_0 keeps this in the
+          // functional updater, so it sees the live session value — otherwise
+          // ultracode silently collapses to plain xhigh, killing workflow mode.
+          effortValue: isUltracodeActive(prev_0.effortValue) && !hasToggledEffort
+            ? prev_0.effortValue
+            : effortLevel
         }));
       }
       const selectedModel = resolveOptionModel(value_0);

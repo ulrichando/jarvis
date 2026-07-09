@@ -189,6 +189,13 @@ export JARVIS_ULTRAPLAN="${JARVIS_ULTRAPLAN:-1}"
 if [ -z "${JARVIS_CCR_BASE_URL:-}" ] && [ -n "${JARVIS_SERVER_URL:-}" ]; then
   export JARVIS_CCR_BASE_URL="${JARVIS_SERVER_URL%/}/api"
 fi
+# `jarvis auth login` persists JARVIS_BRIDGE_BASE_URL (…/api/bridge) but NOT
+# JARVIS_SERVER_URL, so derive the CCR base from the bridge base too — else
+# teleport falls to the localhost default after a login to a real server.
+# (Kept in lockstep with src/proxy/bootstrapEnv.ts, the compiled-binary path.)
+if [ -z "${JARVIS_CCR_BASE_URL:-}" ] && [ -n "${JARVIS_BRIDGE_BASE_URL:-}" ]; then
+  export JARVIS_CCR_BASE_URL="${JARVIS_BRIDGE_BASE_URL%/api/bridge}/api"
+fi
 export JARVIS_CCR_BASE_URL="${JARVIS_CCR_BASE_URL:-http://127.0.0.1:3000/api}"
 # Teleport/CCR auth = the Remote Control bridge token (per-user), not a claude.ai
 # OAuth token. teleport/api.js uses JARVIS_CCR_TOKEN as the Bearer in JARVIS mode.

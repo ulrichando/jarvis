@@ -10,6 +10,8 @@ export type RunOnceDeps = {
   cfg?: GhAgentConfig
   cursorDir?: string
   execute?: (repo: string, m: Mention, cfg: GhAgentConfig) => Promise<{ ok: boolean; prUrl?: string; noChanges?: boolean; error?: string }>
+  // Injectable clock (ms) for the per-sweep wall-clock budget; tests drive it.
+  now?: () => number
 }
 
 // owner/name only — anything else never reaches a gh invocation.
@@ -57,10 +59,17 @@ export async function runGhAgentOnce(args: RunOnceArgs, deps: RunOnceDeps = {}):
     // guarantee; the cursor only narrows the fetch window.
     const handled = readHandledIds(repo, deps.cursorDir)
     const fresh = ordered.filter(m => !handled.has(m.id))
-    // Oldest updated_at among mentions whose execution FAILED this sweep —
-    // the window must not advance past it or the retry could never re-fetch it.
-    let oldestFailed: string | null = null
-    for (const m of fresh) {
+    // Oldest updated_at among mentions NOT finished this sweep (execution failed,
+    // OR deferred because the wall-clock budget ran out) — the window must not
+    // advance past it or the retry could never re-fetch it (?since= is inclusive).
+    let oldestUnfinished: string | null = null
+    const foldUnfinished = (updatedAt: string) => {
+      if (oldestUnfinished === null || updatedAt < oldestUnfinished) oldestUnfinished = updatedAt
+    }
+    const now = deps.now ?? Date.now
+    const startedAt = now()
+    for (let i = 0; i < fresh.length; i++) {
+      const m = fresh[i]!
       if (!isAllowedAuthor(cfg, m.author)) {
         log(`  #${m.issueNumber} ignored — @${m.author} not in allowlist`)
         // Decision is final: mark handled now so it isn't re-evaluated every
@@ -72,6 +81,17 @@ export async function runGhAgentOnce(args: RunOnceArgs, deps: RunOnceDeps = {}):
         const task = taskText(m.body, cfg.trigger)
         log('  #'+m.issueNumber+' DRY-RUN would handle @'+m.author+': "'+task+'"')
       } else {
+        // Wall-clock budget: never START an execution that couldn't finish
+        // before systemd's TimeoutStartSec SIGKILLs the sweep mid-task. Defer
+        // this and every remaining fresh mention to the next sweep, treating
+        // them as unfinished so the cursor can't skip past them.
+        const elapsedSec = (now() - startedAt) / 1000
+        if (elapsedSec + cfg.executionTimeoutSec > cfg.sweepBudgetSec) {
+          const deferred = fresh.slice(i)
+          log(`  budget (${cfg.sweepBudgetSec}s) reached — deferring ${deferred.length} mention(s) to next sweep`)
+          for (const d of deferred) foldUnfinished(d.updatedAt)
+          break
+        }
         const res = await execute(repo, m, cfg)
         if (res.ok) {
           log(`  #${m.issueNumber} ${res.noChanges ? 'no-changes' : (res.prUrl ? 'PR '+res.prUrl : 'pushed')} @${m.author}`)
@@ -81,17 +101,17 @@ export async function runGhAgentOnce(args: RunOnceArgs, deps: RunOnceDeps = {}):
           log(`  #${m.issueNumber} FAILED @${m.author}: ${res.error ?? 'unknown'}`)
           // do NOT mark handled → retried next sweep; surface failure to exit.
           process.exitCode = 1
-          if (oldestFailed === null || m.updatedAt < oldestFailed) oldestFailed = m.updatedAt
+          foldUnfinished(m.updatedAt)
         }
       }
     }
     // Advance the since-window to the newest FETCHED comment (matching or
-    // not) so unrelated chatter still shrinks the window — but never past a
-    // failed task: ?since= is inclusive (updated_at >= since), so advancing
-    // exactly TO the failed mention keeps it re-fetchable next sweep.
+    // not) so unrelated chatter still shrinks the window — but never past an
+    // unfinished task: ?since= is inclusive (updated_at >= since), so advancing
+    // exactly TO the oldest unfinished mention keeps it re-fetchable next sweep.
     // advanceCursor's monotonic floor absorbs any regression. Dry-run
     // persists nothing.
-    const windowTo = oldestFailed ?? maxUpdatedAt
+    const windowTo = oldestUnfinished ?? maxUpdatedAt
     if (!args.dryRun && windowTo !== null) {
       advanceCursor(repo, windowTo, deps.cursorDir)
     }

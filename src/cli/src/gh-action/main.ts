@@ -1,7 +1,7 @@
 // src/cli/src/gh-action/main.ts
-import { readFileSync, existsSync, renameSync, mkdtempSync, rmSync } from 'node:fs'
+import { readFileSync, existsSync, renameSync, mkdtempSync, rmSync, cpSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { execFileNoThrow, execFileNoThrowWithCwd } from '../utils/execFileNoThrow.js'
 import { actionCtxFromEnv, parseActionEvent, isAuthorized, type ActionEvent } from './event.js'
 import { SELF_MARKER } from '../gh-agent/gh.js'
@@ -78,11 +78,45 @@ export function realActionDeps(): ActionDeps {
     neutralizeClaude: (dir) => {
       const src = join(dir, '.claude')
       if (!existsSync(src)) return () => {}
-      let stash: string
-      // Stash OUTSIDE the work tree (os tmp) so neither the removal nor a
-      // `.claude.untrusted` shows up to `git add -A`.
-      try { stash = join(mkdtempSync(join(tmpdir(), 'jarvis-claude-')), '.claude'); renameSync(src, stash) } catch { return () => {} }
-      return () => { try { if (existsSync(src)) rmSync(src, { recursive: true, force: true }); renameSync(stash, src) } catch { /* best effort */ } }
+      // Stash the target repo's .claude OUTSIDE the work tree (so neither the
+      // removal nor the stash shows up to `git add -A`) while the agent runs —
+      // its hooks/settings must not hijack the agent. SECURITY-load-bearing.
+      //
+      // Prefer a stash in the repo's PARENT dir: it's outside the git tree AND
+      // (almost always) on the same filesystem as .claude, so renameSync is
+      // atomic. os tmpdir is often a DIFFERENT mount (esp. in CI) → renameSync
+      // throws EXDEV, which the old code swallowed into a no-op — silently
+      // leaving .claude in the tree, un-neutralized. A cpSync+rm fallback
+      // covers any residual cross-device case so neutralization ALWAYS happens.
+      let stashDir: string
+      try { stashDir = mkdtempSync(join(dirname(dir), 'jarvis-claude-')) }
+      catch { stashDir = mkdtempSync(join(tmpdir(), 'jarvis-claude-')) }
+      const stash = join(stashDir, '.claude')
+      const move = (from: string, to: string) => {
+        try { renameSync(from, to) }
+        catch {
+          // Cross-device (EXDEV) or other rename failure → copy then remove.
+          cpSync(from, to, { recursive: true })
+          rmSync(from, { recursive: true, force: true })
+        }
+      }
+      try { move(src, stash) }
+      catch (e) {
+        // Could not move .claude out AT ALL — do not silently run with the
+        // target's hooks live. Remove it (git still tracks it; restore re-checks
+        // it out) and surface the failure loudly.
+        try { rmSync(src, { recursive: true, force: true }) } catch {}
+        try { rmSync(stashDir, { recursive: true, force: true }) } catch {}
+        console.error('[jarvis-gh-action] could not stash .claude, removed it to stay safe:', (e as Error).message)
+        return () => {}
+      }
+      return () => {
+        try {
+          if (existsSync(src)) rmSync(src, { recursive: true, force: true })
+          move(stash, src)
+        } catch { /* best effort */ }
+        finally { try { rmSync(stashDir, { recursive: true, force: true }) } catch {} }
+      }
     },
     exec: async (prompt) => { const r = await execFileNoThrowWithCwd(jarvisBin, ['-p', prompt], { cwd: ws, timeout: timeoutSec * 1000, env: { ...process.env, JARVIS_SKIP_VERIFY: '1' } }); return { code: r.code, stdout: r.stdout, stderr: r.stderr } },
     git: (args) => run('git')(['-C', ws, ...args]),

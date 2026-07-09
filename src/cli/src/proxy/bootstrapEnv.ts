@@ -46,6 +46,36 @@ export function bootstrapProxyEnv(
       const tok = resolve('JARVIS_PROXY_TOKEN')
       if (tok) env.ANTHROPIC_AUTH_TOKEN = tok
     }
+
+    // Remote Control (bridge) + teleport (CCR) env. Source-run gets these from
+    // scripts/start-env.sh (which sources keys.env and derives the CCR vars);
+    // the compiled binary runs none of that, so without this remote-control and
+    // /teleport stay DARK after `jarvis auth login` — bridgeEnabled.ts and
+    // teleport/api.ts read process.env directly with no keys.env fallback of
+    // their own, and auth login only persisted these to keys.env. Mirrors
+    // scripts/start-env.sh:185-195.
+    for (const k of ['JARVIS_BRIDGE_BASE_URL', 'JARVIS_BRIDGE_TOKEN', 'JARVIS_SERVER_URL'] as const) {
+      if (!env[k]) {
+        const v = resolve(k)
+        if (v) env[k] = v
+      }
+    }
+    // CCR/teleport base = the linked server root + /api. Prefer JARVIS_SERVER_URL;
+    // else derive from the bridge base by stripping its /api/bridge suffix (auth
+    // login persists the bridge base, not JARVIS_SERVER_URL, so this is what lets
+    // teleport work off a single login); else the local dev web.
+    if (!env.JARVIS_CCR_BASE_URL) {
+      const serverRoot = (env.JARVIS_SERVER_URL ?? '').replace(/\/+$/, '')
+      const bridgeRoot = (env.JARVIS_BRIDGE_BASE_URL ?? '')
+        .replace(/\/api\/bridge\/?$/, '')
+        .replace(/\/+$/, '')
+      const root = serverRoot || bridgeRoot
+      env.JARVIS_CCR_BASE_URL = root ? `${root}/api` : 'http://127.0.0.1:3000/api'
+    }
+    // CCR auth = the per-user Remote Control bridge token (start-env.sh:195).
+    if (!env.JARVIS_CCR_TOKEN && env.JARVIS_BRIDGE_TOKEN) {
+      env.JARVIS_CCR_TOKEN = env.JARVIS_BRIDGE_TOKEN
+    }
   } catch {
     // Self-config must never break startup. If it genuinely couldn't configure,
     // the SDK surfaces a clear "missing base URL / auth" error downstream.

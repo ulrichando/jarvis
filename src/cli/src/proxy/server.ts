@@ -8,7 +8,7 @@ import { classifyChatCompletionsRequest, buildHubConfig } from './hubGateway.js'
 import {
   buildSyntheticWebSearchResponse,
   extractWebSearchQuery,
-  searchDuckDuckGo,
+  webSearch,
   writeSyntheticWebSearchStream,
 } from './webSearch.js'
 import { verifyProxyToken } from './proxyJwt.js'
@@ -42,6 +42,12 @@ type AttemptOutcome = {
   provider: Provider
   fallbackUsed: boolean
   primaryError: string | null
+  // The upstream HTTP status when the failure was a definitive (non-transient)
+  // provider response — 400/401/403/404/429/402 etc. Lets the caller relay the
+  // REAL status to the CLI (e.g. "out of credits" 429, "bad key" 401) instead
+  // of masking every failure as a generic 502 upstream_unreachable. Null when
+  // the failure was a connection/transport error (no HTTP status).
+  upstreamStatus?: number | null
 }
 
 async function executeWithFallback(
@@ -50,8 +56,18 @@ async function executeWithFallback(
 ): Promise<AttemptOutcome> {
   const chain: Provider[] = [primary]
   for (const fallbackId of primary.fallback) {
-    const fp = getProviderForModel(fallbackId)
-    if (fp) chain.push(fp)
+    // getProviderForModel THROWS when the fallback provider's API key env is
+    // missing (the Provider builder validates the key). A broken fallback must
+    // NOT block a healthy primary — skip it instead of letting the throw abort
+    // the whole request before the primary is even attempted.
+    try {
+      const fp = getProviderForModel(fallbackId)
+      if (fp) chain.push(fp)
+    } catch (e) {
+      console.warn(
+        `[jarvis-proxy] fallback ${fallbackId} unavailable (${(e as Error).message}); skipping`,
+      )
+    }
   }
 
   let primaryError: string | null = null
@@ -100,7 +116,9 @@ async function executeWithFallback(
       thisErr = `HTTP ${status}: ${body.slice(0, 500)}`
       const transient = status === 408 || status === 429 || (status >= 500 && status <= 599)
       if (!transient) {
-        // Fail fast — no fallback, return the error to caller.
+        // Fail fast — no fallback, return the error to caller. Carry the real
+        // upstream status so the caller relays it (400/401/403/404/402) rather
+        // than masking it as a generic 502.
         return {
           response: null,
           errorMessage: thisErr,
@@ -109,6 +127,7 @@ async function executeWithFallback(
           provider,
           fallbackUsed: i > 0,
           primaryError,
+          upstreamStatus: status,
         }
       }
     } else {
@@ -357,17 +376,17 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
       })
     }
 
-    let hits: Awaited<ReturnType<typeof searchDuckDuckGo>> = []
+    let hits: Awaited<ReturnType<typeof webSearch>> = []
     let failed = false
     try {
-      hits = await searchDuckDuckGo(webSearchQuery)
+      hits = await webSearch(webSearchQuery)
     } catch (e) {
-      console.error('[jarvis-proxy] DuckDuckGo search failed:', e)
+      console.error('[jarvis-proxy] web search failed:', e)
       failed = true
     }
     finish({
       provider: 'web_search',
-      upstream_model: 'duckduckgo',
+      upstream_model: (process.env.SEARXNG_URL ?? '').trim() ? 'searxng' : 'duckduckgo',
       error_type: failed ? 'web_search_failed' : null,
     })
     return new Response(
@@ -378,7 +397,19 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
 
   let primaryProvider: Provider
   try {
-    primaryProvider = getProviderForModel(anthropicReq.model) ?? getProvider()
+    const matched = getProviderForModel(anthropicReq.model)
+    // A client that NAMED a model we don't recognize gets silently routed to the
+    // default provider/model — which can mask a typo or a stale/removed model id
+    // (the request runs, just not on the model the caller asked for). Surface it
+    // once per request so it's diagnosable, but only when a real name was given
+    // (an empty/absent model legitimately means "use the default", no warning).
+    if (!matched && anthropicReq.model && String(anthropicReq.model).trim()) {
+      console.warn(
+        `[jarvis-proxy] [${requestId.slice(0, 8)}] unknown model "${anthropicReq.model}" ` +
+        `not in the registry — falling back to the default provider/model`,
+      )
+    }
+    primaryProvider = matched ?? getProvider()
   } catch (e: any) {
     finish({ status: 400, error_type: 'invalid_request_error', error_message: e.message })
     return new Response(
@@ -431,10 +462,23 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
 
   if (!outcome.response) {
     const errMsg = outcome.errorMessage ?? 'upstream unreachable'
-    console.error(`[jarvis-proxy] [${requestId.slice(0, 8)}] all providers failed: ${errMsg}`)
+    // Relay the REAL upstream status when the failure was a definitive provider
+    // response (out-of-credits/bad-key/bad-request), so the CLI's error
+    // classifier can say "out of credits" / "invalid key" instead of treating a
+    // 4xx as a gateway failure. Genuine connection/exhaustion failures → 502.
+    const status = outcome.upstreamStatus ?? 502
+    const errorType =
+      status === 401 ? 'authentication_error'
+      : status === 403 ? 'permission_error'
+      : status === 404 ? 'not_found_error'
+      : status === 429 ? 'rate_limit_error'
+      : status === 400 ? 'invalid_request_error'
+      : status >= 400 && status < 500 ? 'invalid_request_error'
+      : 'upstream_unreachable'
+    console.error(`[jarvis-proxy] [${requestId.slice(0, 8)}] all providers failed (status ${status}): ${errMsg}`)
     finish({
-      status: 502,
-      error_type: 'upstream_unreachable',
+      status,
+      error_type: errorType,
       error_message: errMsg,
       retries_used: outcome.retriesUsed,
       fallback_used: outcome.fallbackUsed,
@@ -447,7 +491,7 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
       const enc = new TextEncoder()
       const errStream = new ReadableStream<Uint8Array>({
         start(controller) {
-          const errorEvent = `event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message: errMsg } })}\n\n`
+          const errorEvent = `event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: errorType, message: errMsg } })}\n\n`
           controller.enqueue(enc.encode(errorEvent))
           controller.close()
         },
@@ -462,8 +506,8 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
     }
 
     return new Response(
-      JSON.stringify({ type: 'error', error: { message: errMsg, type: 'api_error' } }),
-      { status: 502, headers: { 'Content-Type': 'application/json' } },
+      JSON.stringify({ type: 'error', error: { message: errMsg, type: errorType } }),
+      { status, headers: { 'Content-Type': 'application/json' } },
     )
   }
 
@@ -541,7 +585,23 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
       { status: 502, headers: { 'Content-Type': 'application/json', 'x-jarvis-request-id': requestId } },
     )
   }
-  const anthropicResp = convertResponse(openaiResp, provider.model)
+  // A 200 with no usable choices/message (content filter, provider hiccup,
+  // some rate-limit shapes) makes convertResponse throw ("No choices …"). Catch
+  // it and return a clear error with a body preview instead of an opaque 500.
+  let anthropicResp: any
+  try {
+    anthropicResp = convertResponse(openaiResp, provider.model)
+  } catch (e) {
+    finish({
+      status: 502,
+      error_type: 'upstream_no_choices',
+      error_message: `Upstream 200 but unusable (${(e as Error).message}): ${rawText.slice(0, 120)}`,
+    })
+    return new Response(
+      JSON.stringify({ type: 'error', error: { type: 'api_error', message: `Upstream returned no usable response: ${(e as Error).message}` } }),
+      { status: 502, headers: { 'Content-Type': 'application/json', 'x-jarvis-request-id': requestId } },
+    )
+  }
   // DeepSeek cache observability (Goal B). Hit/miss come straight from
   // the upstream usage block — no derivation needed on the batch path.
   if (provider.name === 'deepseek' && openaiResp?.usage) {

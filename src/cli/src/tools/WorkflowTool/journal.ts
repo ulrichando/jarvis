@@ -14,20 +14,32 @@ export function hashCall(prompt: string, opts: unknown): string {
 }
 
 export class WorkflowJournal {
-  private recorded: JournalEntry[] = []
-  private prior: JournalEntry[] = []
+  // Addressed by CALL INDEX (agent() invocation order), NOT completion order.
+  // Parallel agents finish out of order, so a push()-based journal recorded
+  // results in completion order while lookup() reads by call index — on resume
+  // that replayed each cached result to the WRONG call. Index-addressing keeps
+  // record and lookup aligned. Holes (skipped/failed calls that never recorded)
+  // serialize as explicit nulls so the on-disk index alignment survives.
+  private recorded: (JournalEntry | null)[] = []
+  private prior: (JournalEntry | null)[] = []
   // Once a resume call diverges, every later call runs live even if its hash
   // coincidentally matches a prior entry. This is the prefix invariant.
   private diverged = false
 
-  static fromEntries(entries: JournalEntry[]): WorkflowJournal {
+  static fromEntries(entries: (JournalEntry | null)[]): WorkflowJournal {
     const j = new WorkflowJournal()
     j.prior = entries
     return j
   }
 
-  entries(): JournalEntry[] {
-    return this.recorded
+  entries(): (JournalEntry | null)[] {
+    // Dense array over 0..maxRecordedIndex so holes serialize as `null` lines
+    // and the reloaded journal stays index-aligned (a sparse array would drop
+    // holes on .map and shift every later entry).
+    return Array.from(
+      { length: this.recorded.length },
+      (_, i) => this.recorded[i] ?? null,
+    )
   }
 
   lookup(
@@ -42,10 +54,14 @@ export class WorkflowJournal {
       this.diverged = true
       return { hit: false }
     }
+    // Re-record the hit at its call index so entries() reproduces the FULL
+    // journal — otherwise a resumed run persists only the newly-live agents and
+    // the cached prefix is lost, degrading journal.jsonl on every resume.
+    this.recorded[index] = prior
     return { hit: true, result: prior.result }
   }
 
-  record(prompt: string, opts: unknown, result: unknown): void {
-    this.recorded.push({ hash: hashCall(prompt, opts), result })
+  record(index: number, prompt: string, opts: unknown, result: unknown): void {
+    this.recorded[index] = { hash: hashCall(prompt, opts), result }
   }
 }

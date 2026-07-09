@@ -1622,10 +1622,18 @@ async function run(): Promise<CommanderCommand> {
     .addOption(
       new Option(
         "--effort <level>",
-        `Effort level for the current session (low, medium, high, max)`,
+        `Effort level for the current session (low, medium, high, xhigh, max)`,
       ).argParser((rawValue: string) => {
         const value = rawValue.toLowerCase();
-        const allowed = ["low", "medium", "high", "max"];
+        // ultracode is a session-only pseudo-level (xhigh + standing Workflow
+        // orchestration), never an API tier — it can't be set at launch.
+        // Signpost the two ways to enable it instead of a bare "invalid" error.
+        if (value === "ultracode") {
+          throw new InvalidArgumentError(
+            "ultracode is session-only — run /effort ultracode inside a session, or include the keyword 'ultracode' in your prompt (works with -p too).",
+          );
+        }
+        const allowed = ["low", "medium", "high", "xhigh", "max"];
         if (!allowed.includes(value)) {
           throw new InvalidArgumentError(
             `It must be one of: ${allowed.join(", ")}`,

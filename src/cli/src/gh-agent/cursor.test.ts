@@ -1,6 +1,6 @@
 // src/cli/src/gh-agent/cursor.test.ts
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { addHandledIds, advanceCursor, readCursor, readHandledIds } from './cursor.js'
@@ -53,6 +53,17 @@ describe('gh-agent cursor', () => {
     addHandledIds('owner/repo', [11, 22], dir)
     addHandledIds('owner/repo', [22, 33], dir)
     expect(readHandledIds('owner/repo', dir)).toEqual(new Set([11, 22, 33]))
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('atomic writes leave no .tmp residue (cursor + handled)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ghc-'))
+    advanceCursor('owner/repo', '2026-07-02T00:00:00Z', dir)
+    addHandledIds('owner/repo', [1, 2, 3], dir)
+    // Only the final files exist — the temp file was renamed away, not left behind.
+    const files = readdirSync(dir).sort()
+    expect(files).toEqual(['owner__repo.cursor', 'owner__repo.handled'])
+    expect(files.some(f => f.endsWith('.tmp'))).toBe(false)
     rmSync(dir, { recursive: true, force: true })
   })
 

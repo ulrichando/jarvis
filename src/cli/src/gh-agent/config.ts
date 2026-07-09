@@ -9,6 +9,13 @@ export type GhAgentConfig = {
   trigger: string
   pollSeconds: number
   executionTimeoutSec: number
+  // Wall-clock budget for one --once sweep. The systemd unit SIGKILLs the sweep
+  // at TimeoutStartSec (900s); a sweep that starts a task it can't finish before
+  // then gets killed mid-PR (false OnFailure page) and can advance the cursor
+  // past un-executed mentions → silent drop. runGhAgentOnce stops STARTING new
+  // executions once (elapsed + executionTimeoutSec) would exceed this, deferring
+  // the rest to the next sweep. Default 840s leaves 60s headroom under 900s.
+  sweepBudgetSec: number
   // P3 adds rate-limiting (maxTasksPerHour) + model override.
 }
 
@@ -21,6 +28,7 @@ export const DEFAULTS: GhAgentConfig = {
   trigger: '@jarvis',
   pollSeconds: 45,
   executionTimeoutSec: 600,
+  sweepBudgetSec: 840,
 }
 
 export function loadGhAgentConfig(path: string = CONFIG_PATH): GhAgentConfig {
@@ -37,6 +45,7 @@ export function loadGhAgentConfig(path: string = CONFIG_PATH): GhAgentConfig {
       pollSeconds: typeof raw.pollSeconds === 'number' ? raw.pollSeconds : DEFAULTS.pollSeconds,
       // Clamp: 0/negative/NaN would mean an instant (or no) kill for jarvis -p.
       executionTimeoutSec: (typeof raw.executionTimeoutSec === 'number' && raw.executionTimeoutSec > 0) ? raw.executionTimeoutSec : DEFAULTS.executionTimeoutSec,
+      sweepBudgetSec: (typeof raw.sweepBudgetSec === 'number' && raw.sweepBudgetSec > 0) ? raw.sweepBudgetSec : DEFAULTS.sweepBudgetSec,
     }
   } catch {
     return { ...DEFAULTS }
