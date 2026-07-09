@@ -21,7 +21,7 @@ afterAll(() => {
 // the builder), so plain re-imports work — the variable just needs to
 // be set BEFORE the builder runs.
 import { getProviderForModel } from './providers.js'
-import { convertRequest, clampRequestForProvider, stripThinkTags, ThinkTagStripper } from './convert.js'
+import { convertRequest, clampRequestForProvider, convertResponse, stripThinkTags, ThinkTagStripper } from './convert.js'
 
 describe('Gemini env-var alias (Fix 1)', () => {
   test('GEMINI_API_KEY alone is enough to build a Gemini provider', () => {
@@ -467,5 +467,27 @@ describe('clampRequestForProvider — fallback re-shaping (Fix 8)', () => {
     // Both must produce the same clamped max_tokens.
     expect(viaClamped.max_tokens).toBe(viaConvertRequest.max_tokens)
     expect(viaClamped.max_completion_tokens).toBe(viaConvertRequest.max_completion_tokens)
+  })
+})
+
+// convertResponse contract: a 200 with no usable choices/message THROWS a
+// clear error. server.ts wraps the call in try/catch and returns a clean
+// upstream_no_choices error instead of an opaque 500 (Fix: 200-no-choices).
+describe('convertResponse — no-choices / no-message throws catchably', () => {
+  test('empty choices array throws "No choices"', () => {
+    expect(() => convertResponse({ choices: [] }, 'gpt-5')).toThrow(/no choices/i)
+  })
+  test('missing choices field throws', () => {
+    expect(() => convertResponse({}, 'gpt-5')).toThrow(/no choices/i)
+  })
+  test('choice present but message missing throws (not a silent bad shape)', () => {
+    expect(() => convertResponse({ choices: [{ finish_reason: 'stop' }] }, 'gpt-5')).toThrow()
+  })
+  test('a normal response still converts', () => {
+    const out = convertResponse(
+      { choices: [{ message: { content: 'hello' }, finish_reason: 'stop' }] },
+      'gpt-5',
+    )
+    expect(out.content?.[0]?.text).toBe('hello')
   })
 })
