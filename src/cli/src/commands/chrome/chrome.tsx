@@ -5,15 +5,17 @@ import { Dialog } from '../../components/design-system/Dialog.js';
 import { Box, Text } from '../../ink.js';
 import { useAppState } from '../../state/AppState.js';
 import { isClaudeAISubscriber } from '../../utils/auth.js';
+import { isSelfHostedBridge } from '../../bridge/bridgeEnabled.js';
 import { openBrowser } from '../../utils/browser.js';
 import { JARVIS_IN_CHROME_MCP_SERVER_NAME, openInChrome } from '../../utils/jarvisInChrome/common.js';
-import { isChromeExtensionInstalled } from '../../utils/jarvisInChrome/setup.js';
+import { isJarvisInChromeMCPServer } from '../../utils/jarvisChromeMcp/server.js';
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';
 import { env } from '../../utils/env.js';
 import { isRunningOnHomespace } from '../../utils/envUtils.js';
-const CHROME_EXTENSION_URL = 'https://claude.ai/chrome';
-const CHROME_PERMISSIONS_URL = 'https://clau.de/chrome/permissions';
-const CHROME_RECONNECT_URL = 'https://clau.de/chrome/reconnect';
+import { resolveChromeBridge } from '../../utils/jarvisChromeMcp/resolveChromeBridge.js';
+const CHROME_EXTENSION_URL = 'https://0wlan.com/extension';
+const CHROME_PERMISSIONS_URL = 'https://0wlan.com/extension';
+const CHROME_RECONNECT_URL = 'https://0wlan.com/extension';
 type MenuAction = 'install-extension' | 'reconnect' | 'manage-permissions' | 'toggle-default';
 type Props = {
   onDone: (result?: string) => void;
@@ -82,7 +84,7 @@ function ClaudeInChromeMenu(t0) {
         case "reconnect":
           {
             setSelectKey(_temp4);
-            isChromeExtensionInstalled().then(installed_0 => {
+            extensionConnectedViaBridge().then(installed_0 => {
               setIsExtensionInstalled(installed_0);
               if (installed_0) {
                 setShowInstallHint(false);
@@ -270,15 +272,25 @@ function _temp3(k_1) {
   return k_1 + 1;
 }
 function _temp2(c) {
-  return c.name === JARVIS_IN_CHROME_MCP_SERVER_NAME;
+  return c.name === JARVIS_IN_CHROME_MCP_SERVER_NAME || isJarvisInChromeMCPServer(c.name);
 }
 function _temp(s) {
   return s.mcp.clients;
 }
+// live extension-connected status from the local Jarvis bridge; false if bridge down
+async function extensionConnectedViaBridge(): Promise<boolean> {
+  try {
+    const { baseUrl, token } = resolveChromeBridge();
+    const res = await fetch(`${baseUrl}/api/ext_status`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(2000) });
+    if (!res.ok) return false;
+    const j: any = await res.json();
+    return !!j.connected;
+  } catch { return false; }
+}
 export const call = async function (onDone: (result?: string) => void): Promise<React.ReactNode> {
-  const isExtensionInstalled = await isChromeExtensionInstalled();
+  const isExtensionInstalled = await extensionConnectedViaBridge();
   const config = getGlobalConfig();
-  const isSubscriber = isClaudeAISubscriber();
+  const isSubscriber = isSelfHostedBridge() || isClaudeAISubscriber();
   const isWSL = env.isWslEnvironment();
   return <ClaudeInChromeMenu onDone={onDone} isExtensionInstalled={isExtensionInstalled} configEnabled={config.claudeInChromeDefaultEnabled} isClaudeAISubscriber={isSubscriber} isWSL={isWSL} />;
 };

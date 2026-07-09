@@ -229,6 +229,7 @@ function getMcpToolTimeoutMs(): number {
 }
 
 import { isClaudeInChromeMCPServer } from '../../utils/jarvisInChrome/common.js'
+import { isJarvisInChromeMCPServer } from '../../utils/jarvisChromeMcp/server.js'
 
 // Lazy: toolRendering.tsx pulls React/ink; only needed when Claude-in-Chrome MCP server is connected
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -941,6 +942,23 @@ export const connectToServer = memoize(
         await inProcessServer.connect(serverTransport)
         transport = clientTransport
         logMCPDebug(name, `In-process Computer Use MCP server started`)
+      } else if (
+        (serverRef.type === 'stdio' || !serverRef.type) &&
+        isJarvisInChromeMCPServer(name)
+      ) {
+        // Run the Jarvis-in-Chrome MCP server in-process; its tools POST to the
+        // local Jarvis bridge (/api/ext_browse) which drives the jarvis-screen extension.
+        const { createJarvisInChromeMcpServer } = await import(
+          '../../utils/jarvisChromeMcp/server.js'
+        )
+        const { createLinkedTransportPair } = await import(
+          './InProcessTransport.js'
+        )
+        inProcessServer = await createJarvisInChromeMcpServer()
+        const [clientTransport, serverTransport] = createLinkedTransportPair()
+        await inProcessServer.connect(serverTransport)
+        transport = clientTransport
+        logMCPDebug(name, `In-process Jarvis-in-Chrome MCP server started`)
       } else if (serverRef.type === 'stdio' || !serverRef.type) {
         const finalCommand =
           process.env.CLAUDE_CODE_SHELL_PREFIX || serverRef.command
