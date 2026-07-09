@@ -193,8 +193,10 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     provider: 'deepseek',
     upstreamModel: 'deepseek-v4-pro',
     tiers: ['reasoning'],
-    // Alias of v4-pro — mirror its max_effort so the effort ladder matches.
-    capabilities: ['effort', 'xhigh_effort', 'max_effort'],
+    // Alias of v4-pro — mirror its full capability set (incl. `thinking`, which
+    // was missing: the reasoning alias routed to v4-pro WITHOUT the thinking-mode
+    // reasoning_content round-trip, defeating the whole point of "reasoner").
+    capabilities: ['effort', 'xhigh_effort', 'max_effort', 'thinking'],
     visibleInPicker: false,
   },
   {

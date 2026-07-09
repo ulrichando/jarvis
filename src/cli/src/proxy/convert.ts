@@ -686,6 +686,20 @@ export function clampRequestForProvider(openaiReq: any, provider: Provider): any
     delete out.tool_choice
   }
 
+  // Strip provider-specific reasoning params that belong to a DIFFERENT
+  // provider. This body may have been shaped for the PRIMARY before falling
+  // back (executeWithFallback re-clamps the primary body for each fallback),
+  // so e.g. DeepSeek's binary `thinking` could leak into a Kimi request, or a
+  // GPT-5 `reasoning_effort` into DeepSeek — mismatches that 400 or mislead.
+  // Each provider keeps its OWN param via the family check; anything else is a
+  // cross-provider leak. Graceful degradation: the fallback runs at its
+  // default reasoning depth (the effort intent is already lost post-conversion,
+  // and capabilities differ across the chain by design).
+  if (provider.name !== 'deepseek') delete out.thinking
+  const usesReasoningEffort =
+    gpt5 || (provider.name === 'ollama' && provider.model.includes('gpt-oss'))
+  if (!usesReasoningEffort) delete out.reasoning_effort
+
   // No current provider sets service_tier (the provider that used it was
   // removed 2026-06-29) — strip any stale value that slipped through.
   delete out.service_tier
@@ -739,12 +753,30 @@ export function convertRequest(req: any, provider: Provider): any {
       ? { max_completion_tokens: maxTokens, temperature: 1 }
       : { max_tokens: maxTokens, temperature: req.temperature ?? 0.3 }),
     stream: req.stream ?? false,
+    // OpenAI-compat streaming reports usage only in the final chunk when
+    // include_usage is set; without it, streamed responses report zero
+    // tokens (breaks cost/telemetry). Standard across DeepSeek/Kimi/Gemini-
+    // compat/Ollama/OpenAI. Only meaningful for streaming requests.
+    ...(req.stream ? { stream_options: { include_usage: true } } : {}),
   }
 
   if (tools && tools.length > 0) {
     out.tools = tools
     if (provider.supportsToolChoice) {
-      out.tool_choice = req.tool_choice?.type === 'any' ? 'required' : 'auto'
+      // Map Anthropic tool_choice → OpenAI. A forced SPECIFIC tool
+      // ({type:'tool',name}) must become {type:'function',function:{name}},
+      // not collapse to 'auto' — otherwise "you must call tool X" was silently
+      // downgraded to "call whatever you like".
+      const tc = req.tool_choice
+      if (tc?.type === 'tool' && tc.name) {
+        out.tool_choice = { type: 'function', function: { name: tc.name } }
+      } else if (tc?.type === 'any') {
+        out.tool_choice = 'required'
+      } else if (tc?.type === 'none') {
+        out.tool_choice = 'none'
+      } else {
+        out.tool_choice = 'auto'
+      }
     }
   }
 
