@@ -217,18 +217,22 @@ async function main(): Promise<void> {
     } = await import('../utils/config.js');
     enableConfigs();
     const bg = await import('../cli/bg.js');
+    // Identifier = first non-flag token after the subcommand (bg.bgIdentifier);
+    // reading args[1] blindly consumed a launcher-appended flag as the id
+    // (`jarvis logs` → "No session matching '--permission-mode'").
+    const bgId = bg.bgIdentifier(args.slice(1));
     switch (args[0]) {
       case 'ps':
         await bg.psHandler(args.slice(1));
         break;
       case 'logs':
-        await bg.logsHandler(args[1]);
+        await bg.logsHandler(bgId);
         break;
       case 'attach':
-        await bg.attachHandler(args[1]);
+        await bg.attachHandler(bgId);
         break;
       case 'kill':
-        await bg.killHandler(args[1]);
+        await bg.killHandler(bgId);
         break;
       default:
         await bg.handleBgFlag(args);
