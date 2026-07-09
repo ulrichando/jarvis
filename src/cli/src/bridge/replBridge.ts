@@ -1394,6 +1394,19 @@ export async function initBridgeCore(
         logForDebugging(
           `[bridge:repl] CCR v2: sessionUrl=${sessionUrl} session=${workSessionId} gen=${thisGen}`,
         )
+        // Cover the handshake window: transport is null and the gate was just
+        // deactivated, but createV2ReplTransport awaits a full registerWorker
+        // HTTP round-trip before wireTransport runs. Any writeMessages in
+        // that window fell through to the !transport drop path — and the hook
+        // has ALREADY advanced lastWrittenIndex, so dropped messages were
+        // never re-offered (permanently missing from the remote view). v1
+        // doesn't need this: it wires synchronously, zero gap. Queue instead;
+        // drained after wiring in the success handler. On handshake failure
+        // the gate stays active ON PURPOSE — the server re-dispatches
+        // (onWorkReceived fires again → deactivate() preserves the queue →
+        // the next success drains it) and teardown paths drop() it. Mirrors
+        // remoteBridgeCore.rebuildTransport's gate around its async swap.
+        flushGate.start()
         void createV2ReplTransport({
           sessionUrl,
           ingressToken,
@@ -1423,6 +1436,13 @@ export async function initBridgeCore(
               return
             }
             wireTransport(t)
+            // Drain the swap-window queue. Skip when the initial-flush path
+            // owns the gate (wireTransport re-started it for history): its
+            // flushHistory .finally drains in order — history first, then
+            // anything queued during the handshake.
+            if (initialFlushDone || !initialMessages || initialMessages.length === 0) {
+              drainFlushGate()
+            }
           },
           (err: unknown) => {
             logForDebugging(
