@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { type GhAgentConfig, isAllowedAuthor } from './config.js'
-import { type Mention, postComment, SELF_MARKER } from './gh.js'
+import { type Mention, postComment, SELF_MARKER, triggerRegex } from './gh.js'
 
 export type Runner = (args: string[]) => Promise<{ stdout: string; stderr: string; code: number }>
 export type TaskDeps = {
@@ -53,8 +53,12 @@ export function realDeps(): TaskDeps {
 }
 
 export function taskText(body: string, trigger: string): string {
-  const i = body.indexOf(trigger)
-  const raw = (i === -1 ? body : body.slice(i + trigger.length)).trim()
+  // Slice AFTER the trigger using the SAME word-boundary/case-insensitive match
+  // that listMentions used to accept this comment. indexOf was case-sensitive
+  // and matched embedded substrings, so '@Jarvis fix' or 'email@jarvis.com fix'
+  // either left the '@jarvis' token in the prompt or sliced at the wrong offset.
+  const m = body.match(triggerRegex(trigger))
+  const raw = (m ? body.slice(m.index! + m[0].length) : body).trim()
   // Strip NUL + non-printable control chars (keep \n \t). Defense in depth now
   // that the prompt goes via argv (a NUL would truncate the argv at the execve
   // boundary), and keeps control chars out of the commit-message / PR-body uses.

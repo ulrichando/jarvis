@@ -66,6 +66,20 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+// The single source of truth for what counts as a trigger mention. Word-boundary
+// match: '@jarvis do x' hits; '@jarvisfan99', '@jarvis-bot', 'me@jarvis' don't.
+// '-' counts as a word char because GitHub logins may contain it. 'i' flag
+// because GitHub logins/mentions are case-insensitive (@talos-agents ==
+// @Talos-agents). Both the fetch filter (listMentions) and the task-text
+// stripper (taskText) MUST use this same regex — a mismatch means the sweep
+// accepts a comment the stripper can't find the trigger in, so the whole body
+// (including the '@jarvis' token) becomes the task prompt. NB: no /g — callers
+// use .test() and a single .match(); a shared /g regex would carry lastIndex
+// state across calls.
+export function triggerRegex(trigger: string): RegExp {
+  return new RegExp(`(?<![\\w-])${escapeRegExp(trigger)}(?![\\w-])`, 'i')
+}
+
 export async function listMentions(
   repo: string,
   trigger: string,
@@ -95,11 +109,8 @@ export async function listMentions(
     (mx, c) => (mx === null || c.updated_at > mx ? c.updated_at : mx),
     null,
   )
-  // Word-boundary trigger match: '@jarvis do x' hits; '@jarvisfan99',
-  // '@jarvis-bot', 'me@jarvis' don't. '-' counts as a word char because
-  // GitHub logins may contain it. 'i' because GitHub logins/mentions are
-  // case-insensitive (@talos-agents == @Talos-agents).
-  const triggerRe = new RegExp(`(?<![\\w-])${escapeRegExp(trigger)}(?![\\w-])`, 'i')
+  // Word-boundary trigger match — see triggerRegex for the rationale.
+  const triggerRe = triggerRegex(trigger)
   const mentions = comments
     .filter(c => !c.body.includes(SELF_MARKER) && triggerRe.test(c.body))
     .map(c => ({
