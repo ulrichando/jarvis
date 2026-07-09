@@ -397,7 +397,19 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
 
   let primaryProvider: Provider
   try {
-    primaryProvider = getProviderForModel(anthropicReq.model) ?? getProvider()
+    const matched = getProviderForModel(anthropicReq.model)
+    // A client that NAMED a model we don't recognize gets silently routed to the
+    // default provider/model — which can mask a typo or a stale/removed model id
+    // (the request runs, just not on the model the caller asked for). Surface it
+    // once per request so it's diagnosable, but only when a real name was given
+    // (an empty/absent model legitimately means "use the default", no warning).
+    if (!matched && anthropicReq.model && String(anthropicReq.model).trim()) {
+      console.warn(
+        `[jarvis-proxy] [${requestId.slice(0, 8)}] unknown model "${anthropicReq.model}" ` +
+        `not in the registry — falling back to the default provider/model`,
+      )
+    }
+    primaryProvider = matched ?? getProvider()
   } catch (e: any) {
     finish({ status: 400, error_type: 'invalid_request_error', error_message: e.message })
     return new Response(
