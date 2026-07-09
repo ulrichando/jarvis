@@ -59,7 +59,7 @@ import { Cursor } from '../../utils/Cursor.js';
 import { getGlobalConfig, type PastedContent, saveGlobalConfig } from '../../utils/config.js';
 import { logForDebugging } from '../../utils/debug.js';
 import { parseDirectMemberMessage, sendDirectMemberMessage } from '../../utils/directMemberMessage.js';
-import type { EffortLevel } from '../../utils/effort.js';
+import { clampEffortToModel, type EffortLevel } from '../../utils/effort.js';
 import { env } from '../../utils/env.js';
 import { errorMessage } from '../../utils/errors.js';
 import { isBilledAsExtraUsage } from '../../utils/extraUsage.js';
@@ -746,19 +746,22 @@ function PromptInput({
     removeNotification
   } = useNotifications();
 
-  // Show ultrathink notification
+  // Show ultrathink notification. Report the level the wire will actually
+  // carry — the same clamp attachments.ts applies to the ultrathink_effort
+  // boost — not a hardcoded tier (this said "high" while the request went out
+  // at max, which read as "ultrathink isn't working").
   useEffect(() => {
     if (thinkTriggers.length && isUltrathinkEnabled()) {
       addNotification({
         key: 'ultrathink-active',
-        text: 'Effort set to high for this turn',
+        text: `Effort set to ${clampEffortToModel('max', mainLoopModel)} for this turn`,
         priority: 'immediate',
         timeoutMs: 5000
       });
     } else {
       removeNotification('ultrathink-active');
     }
-  }, [addNotification, removeNotification, thinkTriggers.length]);
+  }, [addNotification, removeNotification, thinkTriggers.length, mainLoopModel]);
   useEffect(() => {
     if (feature('ULTRAPLAN') && ultraplanTriggers.length) {
       addNotification({
