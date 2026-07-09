@@ -734,6 +734,20 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
     }
   }
 
+  // Single MCP-cleanup path invoked on EVERY exit after the connect above.
+  // Previously mcpClose was only awaited in streamText's onFinish, so the
+  // forced-image early return (below) and a provider error surfaced via
+  // onError (which skips onFinish) both leaked the open MCP client + its
+  // transport socket. Idempotent + null-guarded: safe to call from more than
+  // one path (double-close is swallowed by the .catch), and a no-op when no
+  // server connected. Nulls mcpClose after use so a later call can't double-run
+  // the underlying close.
+  const closeMcp = async (): Promise<void> => {
+    const c = mcpClose;
+    mcpClose = null;
+    if (c) await c().catch(() => {});
+  };
+
   // Image generation — a tool the chat model delegates to, decoupled from the
   // text model: any model that can call tools (incl. DeepSeek, which has no
   // image endpoint of its own) can trigger it; the pixels come from the user's
@@ -821,6 +835,9 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
           controller.close();
         },
       });
+      // This early return bypasses streamText entirely, so onFinish never
+      // runs — close the MCP client here or the connection leaks.
+      await closeMcp();
       return new Response(stream, { headers });
     } catch (err) {
       console.warn(
@@ -883,10 +900,15 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
         d.raw = err;
       }
       console.error("[chat] streamText error", { model: modelId, detail: d });
+      // A provider error surfaced here does NOT run onFinish, so the MCP
+      // client would leak. Close it on the error path too (idempotent).
+      void closeMcp();
     },
     onFinish: async ({ text, totalUsage, finishReason }) => {
       // Disconnect MCP servers now that all tool-calling steps are done.
-      await mcpClose?.().catch(() => {});
+      // (onError may have already closed it on a provider failure — the
+      // helper nulls itself after use, so this is a safe no-op then.)
+      await closeMcp();
       if (finishReason === "length") {
         // Length cutoff = the model ran out of tokens mid-output. Log it
         // so we can spot patterns; the client surfaces a toast separately.
