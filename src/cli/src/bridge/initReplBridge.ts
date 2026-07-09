@@ -164,7 +164,14 @@ export async function initReplBridge(
   // uses that token directly via getBridgeAccessToken() — keychain state is
   // irrelevant. Skip 2b/2c to preserve that decoupling: an expired keychain
   // token shouldn't block a bridge connection that doesn't use it.
-  if (!getBridgeTokenOverride()) {
+  // The self-hosted path (JARVIS_BRIDGE_BASE_URL + JARVIS_BRIDGE_TOKEN via
+  // `jarvis auth login`) equally never touches the claude.ai keychain — its
+  // bearer is the JARVIS bridge token. Without this exemption, a dead leftover
+  // claude.ai token (from an earlier /login) hard-failed self-hosted Remote
+  // Control with a misleading '/login' hint that targets claude.ai — driven
+  // entirely by a credential the connection doesn't use. The bridgeOauthDead*
+  // cross-process backoff stays claude.ai-scoped by the same logic.
+  if (!getBridgeTokenOverride() && !isSelfHostedBridge()) {
     // 2a. Cross-process backoff. If N prior processes already saw this exact
     // dead token (matched by expiresAt), skip silently — no event, no refresh
     // attempt. The count threshold tolerates transient refresh failures (auth
