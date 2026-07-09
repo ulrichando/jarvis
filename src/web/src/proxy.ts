@@ -167,6 +167,11 @@ const SELF_AUTH_GET_PATTERNS: RegExp[] = [
   /^\/api\/v1\/sessions$/, //                 list your sessions
   /^\/api\/v1\/sessions\/[^/]+$/, //          fetchSession metadata
   /^\/api\/v1\/sessions\/[^/]+\/events$/, //  conversation events
+  // CCR teleport/ultraplan fetchEnvironments — the client GETs this with its
+  // bridge token to pick an environment before session-create. Self-auths
+  // in-handler (resolveBridgeToken → the caller's own environments); without
+  // this the proxy gate 401'd it and teleport bailed with no session.
+  /^\/api\/v1\/environment_providers$/,
   // /code session list for the voice agent's web_code tool. GET-only (the same
   // path's POST is the REPL-bridge session create, already in the POST list).
   // Now self-authing (getUserIdOrSharedLocal → the caller's own sessions), so a
