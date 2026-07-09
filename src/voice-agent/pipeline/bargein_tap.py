@@ -97,9 +97,21 @@ class PartialBargeInTap:
         *,
         session,
         on_interrupt: Callable[[str], None],
+        should_veto: Optional[Callable[[str], bool]] = None,
+        is_kill_phrase: Optional[Callable[[str], bool]] = None,
     ) -> None:
         self._session = session
         self._on_interrupt = on_interrupt
+        # should_veto(partial) -> True to SUPPRESS the interrupt: the transcript
+        # would be discarded at turn admission anyway (silent mode, garbage, or
+        # — the important one — UNADDRESSED AMBIENT: no vocative + no recent
+        # interaction, i.e. a side conversation / TV / people near the mic). This
+        # is the same veto the finals-based echo-bargein path uses; wiring it
+        # here stops the fast path from cutting JARVIS off on speech not aimed at
+        # him. is_kill_phrase(partial) -> True for a deliberate stop/wait/cancel,
+        # which ALWAYS interrupts (bypasses cooldown + echo + veto).
+        self._should_veto = should_veto
+        self._is_kill_phrase = is_kill_phrase
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=_QUEUE_MAX)
         self._task: Optional[asyncio.Task] = None
         self._rec = None            # KaldiRecognizer, armed by the worker
@@ -221,20 +233,40 @@ class PartialBargeInTap:
         words = partial.split()
         if len(words) < 2 and len(words[0]) < 4:
             return False
+        kill = False
         try:
             from pipeline import echo_gate, speaking_tracker
-            if echo_gate.in_cooldown():
-                return False
-            if echo_gate.is_echo(
-                partial, speaking_tracker.current_speaking_text()
-            ):
-                return False
+            # Kill-phrases ("stop"/"wait"/"cancel"/…) ALWAYS interrupt — they
+            # bypass the cooldown, the echo-novelty check, AND the addressing
+            # veto. This is the fix for "won't stop when I mean it": the old
+            # code checked in_cooldown() first with no kill bypass, so a "stop"
+            # during the 1.5 s post-barge-in cooldown was silently dropped.
+            kill = bool(self._is_kill_phrase and self._is_kill_phrase(partial))
+            if not kill:
+                if echo_gate.in_cooldown():
+                    return False
+                if echo_gate.is_echo(
+                    partial, speaking_tracker.current_speaking_text()
+                ):
+                    return False
+                # Addressing veto — the SAME gate the finals echo-bargein path
+                # uses. Suppresses ambient/side-conversation speech (no vocative,
+                # no recent interaction) so the room's audio can't cut JARVIS off.
+                if self._should_veto and self._should_veto(partial):
+                    logger.debug(
+                        "[partial-bargein] vetoed (ambient/unaddressed): %r",
+                        partial[:60],
+                    )
+                    return False
             echo_gate.note_bargein()
         except Exception as e:
-            logger.debug(f"[partial-bargein] echo check failed: {e}")
+            logger.debug(f"[partial-bargein] gate check failed: {e}")
             return False  # fail safe — never interrupt on an unverified partial
         self._fired_this_speech = True
-        logger.info(f"[partial-bargein] novel partial → interrupt: {partial[:60]!r}")
+        logger.info(
+            "[partial-bargein] %s partial → interrupt: %r",
+            "kill-phrase" if kill else "novel", partial[:60],
+        )
         try:
             self._on_interrupt(partial)
         except Exception as e:

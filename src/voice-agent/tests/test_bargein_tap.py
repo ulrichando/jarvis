@@ -95,6 +95,60 @@ class TestDecisionCore:
         assert tap.feed_partial_text("real words") is True
 
 
+class TestAddressingAndKillPhrase:
+    """The fast partial path must consult the SAME addressing veto the finals
+    path uses, and let kill-phrases bypass the cooldown."""
+
+    def _tap(self, monkeypatch, *, echo=False, cooldown=False,
+             veto=None, is_kill=None):
+        from pipeline import echo_gate, speaking_tracker
+        monkeypatch.setattr(echo_gate, "is_echo", lambda t, s, **kw: echo)
+        monkeypatch.setattr(echo_gate, "in_cooldown", lambda: cooldown)
+        monkeypatch.setattr(echo_gate, "note_bargein", lambda: None)
+        monkeypatch.setattr(speaking_tracker, "current_speaking_text", lambda: "tts text")
+        fired = []
+        tap = PartialBargeInTap(
+            session=SimpleNamespace(agent_state="speaking"),
+            on_interrupt=fired.append,
+            should_veto=veto,
+            is_kill_phrase=is_kill,
+        )
+        return tap, fired
+
+    def test_unaddressed_ambient_partial_does_not_interrupt(self, monkeypatch):
+        # veto → True means "would be discarded / ambient / not aimed at JARVIS".
+        tap, fired = self._tap(monkeypatch, veto=lambda t: True)
+        assert tap.feed_partial_text("melissa to set up dating") is False
+        assert fired == []
+
+    def test_addressed_partial_still_interrupts(self, monkeypatch):
+        tap, fired = self._tap(monkeypatch, veto=lambda t: False)
+        assert tap.feed_partial_text("open my email please") is True
+        assert fired == ["open my email please"]
+
+    def test_kill_phrase_bypasses_cooldown(self, monkeypatch):
+        # During the post-barge-in cooldown a deliberate "stop" must STILL fire.
+        tap, fired = self._tap(
+            monkeypatch, cooldown=True,
+            is_kill=lambda t: t.strip().startswith("stop"),
+            veto=lambda t: True,  # even if the veto would suppress, kill wins
+        )
+        assert tap.feed_partial_text("stop") is True
+        assert fired == ["stop"]
+
+    def test_kill_phrase_bypasses_veto(self, monkeypatch):
+        tap, fired = self._tap(
+            monkeypatch, veto=lambda t: True,
+            is_kill=lambda t: "stop" in t,
+        )
+        assert tap.feed_partial_text("no stop") is True
+
+    def test_no_veto_injected_preserves_old_behavior(self, monkeypatch):
+        # Backward compat: with no veto/kill callables, novel partial fires.
+        tap, fired = self._tap(monkeypatch)
+        assert tap.feed_partial_text("real user words") is True
+
+
 class TestResample:
     def test_48k_stereo_to_16k_mono(self):
         import numpy as np

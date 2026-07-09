@@ -6800,7 +6800,14 @@ async def entrypoint(ctx: JobContext) -> None:
             session._jarvis_was_interrupted = True
 
         _pb_tap = PartialBargeInTap(
-            session=session, on_interrupt=_partial_bargein_interrupt
+            session=session,
+            on_interrupt=_partial_bargein_interrupt,
+            # Give the fast partial path the SAME gating the finals path has:
+            # _bargein_veto suppresses ambient/unaddressed/silent/garbage speech
+            # (so side conversations / TV can't cut JARVIS off), and kill-phrases
+            # always interrupt (so "stop"/"wait" work even during the cooldown).
+            should_veto=_bargein_veto,
+            is_kill_phrase=lambda t: bool(_KILL_PHRASES.search(t)),
         )
         # v2: frames arrive via the JarvisAgent.stt_node tee (a second
         # rtc.AudioStream starved after ~1 s live); start() spins the
