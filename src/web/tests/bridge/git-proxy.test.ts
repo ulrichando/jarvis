@@ -82,6 +82,28 @@ describe('forwardToGithub', () => {
     expect(init.method).toBe('POST')
     expect(init.duplex).toBe('half')
   })
+
+  test('forwards content-encoding (gzipped upload-pack body) but not accept-encoding', async () => {
+    // git gzips the upload-pack negotiation body for repos with many refs and
+    // streams the raw gzip bytes; dropping content-encoding made GitHub 400
+    // ("expected 'packfile'"). accept-encoding stays excluded so undici decodes
+    // the upstream response for us.
+    const target: GitRequest = { owner: 'o', repo: 'big', service: 'git-upload-pack', kind: 'service' }
+    const req = new Request('http://host/x', {
+      method: 'POST',
+      body: 'GZIPPED',
+      headers: {
+        'content-type': 'application/x-git-upload-pack-request',
+        'content-encoding': 'gzip',
+        'accept-encoding': 'gzip,deflate',
+      },
+    })
+    await forwardToGithub(req, target, 'P')
+    const [, init] = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    const h = init.headers as Headers
+    expect(h.get('content-encoding')).toBe('gzip')
+    expect(h.get('accept-encoding')).toBeNull()
+  })
 })
 
 describe('git proxy route', () => {
