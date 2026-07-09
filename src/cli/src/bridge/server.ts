@@ -210,6 +210,10 @@ async function askLLM(text: string, model: string = ACTIVE_MODEL): Promise<strin
   const resp = await fetch(`${PROXY_URL}/v1/messages`, {
     method: 'POST',
     headers: proxyHeaders(),
+    // Same 45s cap as the sibling proxy calls (vision.ts, browserAgent.ts): a
+    // wedged proxy must reject into handleQuery's catch/finally so the chat
+    // panel gets an error + 'idle' instead of a forever-'thinking' spinner.
+    signal: AbortSignal.timeout(45_000),
     body: JSON.stringify({
       model,
       max_tokens: 4000,
@@ -338,17 +342,33 @@ async function handlePageQuery(req: Request): Promise<Response> {
   const prompt = buildPagePrompt(query, body.pageContent, body.mentionedTabs)
   const model  = typeof body.model === 'string' && body.model ? body.model : ACTIVE_MODEL
 
-  const upstream = await fetch(`${PROXY_URL}/v1/messages`, {
-    method: 'POST',
-    headers: proxyHeaders(),
-    body: JSON.stringify({
-      model,
-      max_tokens: 4000,
-      stream: true,
-      messages: [{ role: 'user', content: prompt }],
-      system: 'You are Jarvis, a helpful AI assistant. Respond concisely and refer to the provided page context when relevant.',
-    }),
-  })
+  // Request-phase-only timeout: a stalled proxy must reject into sseError
+  // instead of hanging the SSE client forever, but the cap is disarmed once
+  // headers arrive so a healthy long stream is never severed at 45s.
+  const connectCtrl = new AbortController()
+  const connectTimer = setTimeout(
+    () => connectCtrl.abort(new Error('proxy connect timeout (45s)')),
+    45_000,
+  )
+  let upstream: Response
+  try {
+    upstream = await fetch(`${PROXY_URL}/v1/messages`, {
+      method: 'POST',
+      headers: proxyHeaders(),
+      signal: connectCtrl.signal,
+      body: JSON.stringify({
+        model,
+        max_tokens: 4000,
+        stream: true,
+        messages: [{ role: 'user', content: prompt }],
+        system: 'You are Jarvis, a helpful AI assistant. Respond concisely and refer to the provided page context when relevant.',
+      }),
+    })
+  } catch (e) {
+    return sseError(`proxy unreachable: ${e instanceof Error ? e.message : String(e)}`)
+  } finally {
+    clearTimeout(connectTimer)
+  }
 
   if (!upstream.ok || !upstream.body) {
     const msg = `upstream ${upstream.status}: ${await upstream.text()}`
