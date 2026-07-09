@@ -13,6 +13,7 @@ import {
 // LOCAL_USER_ID (the same getUserId fallback + the owner the test envs use).
 vi.mock('@/lib/auth-helpers', () => ({
   getUserId: async () => '00000000-0000-0000-0000-000000000001',
+  getUserIdOrSharedLocal: async () => '00000000-0000-0000-0000-000000000001',
 }))
 
 const USER = '00000000-0000-0000-0000-000000000001'

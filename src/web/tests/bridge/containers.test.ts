@@ -34,6 +34,7 @@ import {
 
 vi.mock('@/lib/auth-helpers', () => ({
   getUserId: async () => '00000000-0000-0000-0000-000000000001',
+  getUserIdOrSharedLocal: async () => '00000000-0000-0000-0000-000000000001',
 }))
 vi.mock('@/lib/connectors/github', () => ({
   getGithubToken: async () => 'ghp_test_token',
