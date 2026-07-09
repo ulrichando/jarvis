@@ -378,7 +378,18 @@ export async function initEnvLessBridgeCore(
 
   // ── 6. Wire callbacks (extracted so transport-rebuild can re-wire) ──────
   function wireTransportCallbacks(): void {
+    // Capture the instance being wired. rebuildTransport closes the old
+    // transport only AFTER the /bridge fetch that bumps the server epoch, so
+    // for that whole round-trip the old CCRClient keeps POSTing with the
+    // stale epoch — any of those resolving 409 fires the OLD transport's
+    // onClose(4090) into these shared handlers. Without an identity guard, a
+    // routine proactive JWT refresh emitted a terminal 'failed' (worst case:
+    // useReplBridge's auto-disable tears Remote Control down while the
+    // rebuilt transport is perfectly healthy). Same guard as replBridge's
+    // setOnClose (`if (transport !== newTransport) return`).
+    const wired = transport
     transport.setOnConnect(() => {
+      if (transport !== wired) return
       clearTimeout(connectDeadline)
       logForDebugging('[remote-bridge] v2 transport connected')
       logForDiagnosticsNoPII('info', 'bridge_repl_v2_transport_connected')
@@ -448,6 +459,9 @@ export async function initEnvLessBridgeCore(
     })
 
     transport.setOnClose((code?: number) => {
+      // Stale-instance close (old transport's in-flight POST resolving 409
+      // during a rebuild) must not reach the shared failure handling.
+      if (transport !== wired) return
       clearTimeout(connectDeadline)
       if (tornDown) return
       logForDebugging(`[remote-bridge] v2 transport closed (code=${code})`)
