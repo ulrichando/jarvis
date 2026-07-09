@@ -12,6 +12,7 @@ import {
   findSession,
   getDiffSnapshot,
   getWorkerSpec,
+  latestSessionEventAt,
   parseEnvironmentConfig,
   resumeFloorSeq,
   setDiffSnapshot,
@@ -1002,18 +1003,70 @@ export async function readCliTranscript(
 }
 
 /**
+ * Per-session memo of the CHEAP summary-only diff. The header +/- chip polls
+ * `getContainerDiff(..., summaryOnly=true)` every few seconds from EVERY open
+ * viewer, and the autofix/automerge ticks call it too — each miss spawns a
+ * `docker exec … git add -A -N; git diff --stat`, so N tabs × ticks fan out to
+ * ~720 exec/hr/tab against one container (advisor finding #14). This collapses
+ * all the summary reads within a short window into one exec, shared across
+ * viewers + ticks. Only summary reads are memoized (full-diff reads carry the
+ * heavy body and are on-demand, not polled). The memo is BUSTED the instant a
+ * new session event lands (a turn, a tool result) so the badge never reads
+ * stale right after the agent changes files — `latestSessionEventAt` is a cheap
+ * indexed MAX() on the same SQLite the caller already holds open.
+ */
+const SUMMARY_DIFF_TTL_MS = 5_000;
+type SummaryMemoEntry = {
+  at: number;
+  eventAt: number | null;
+  result: ContainerDiff | { error: string };
+};
+const summaryDiffMemo = new Map<string, SummaryMemoEntry>();
+
+/** Test hook: clear the summary memo so fake-timer tests start clean. */
+export function _resetDiffMemoForTests(): void {
+  summaryDiffMemo.clear();
+}
+
+/**
  * Read what the agent changed in a container session — the claude.ai/code
  * "review the diff" view. Diffs the working tree (committed-on-branch +
  * staged + unstaged, and new files via intent-to-add) against the remote
  * default branch, which stays pinned at the clone point, so it captures the
  * whole session regardless of whether the agent committed yet. Read-only
  * except a benign `add -N` (intent-to-add) so untracked files appear.
+ *
+ * `summaryOnly` reads are served from a short-TTL per-session memo shared
+ * across viewers + the autofix/automerge ticks (see `summaryDiffMemo`); full
+ * reads always hit the container.
  */
 export async function getContainerDiff(
   store: Store,
   sessionId: string,
   exec: DockerExec = realDockerExec,
   summaryOnly = false,
+): Promise<ContainerDiff | { error: string }> {
+  if (summaryOnly) {
+    const eventAt = latestSessionEventAt(store, sessionId);
+    const memo = summaryDiffMemo.get(sessionId);
+    // Fresh AND no new session event since the memoized read → reuse it. A new
+    // event (turn/tool result) shifts eventAt and forces a fresh read, so the
+    // chip is never stale right after the agent touches files.
+    if (memo && Date.now() - memo.at < SUMMARY_DIFF_TTL_MS && memo.eventAt === eventAt) {
+      return memo.result;
+    }
+    const result = await getContainerDiffUncached(store, sessionId, exec, true);
+    summaryDiffMemo.set(sessionId, { at: Date.now(), eventAt, result });
+    return result;
+  }
+  return getContainerDiffUncached(store, sessionId, exec, false);
+}
+
+async function getContainerDiffUncached(
+  store: Store,
+  sessionId: string,
+  exec: DockerExec,
+  summaryOnly: boolean,
 ): Promise<ContainerDiff | { error: string }> {
   const session = findSession(store, sessionId);
   const meta = session?.container_json

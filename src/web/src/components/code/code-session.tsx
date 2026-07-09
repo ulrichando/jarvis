@@ -610,6 +610,10 @@ export function CodeSession({
   // output" so the thinking indicator shows now, not on the next idle tick.
   const pokeRef = useRef<() => void>(() => {});
   const pendingSendRef = useRef(false);
+  // Lets the events poll / a composer send wake the diff-summary poll the
+  // moment the agent does something, so pausing it while idle never delays the
+  // +/- chip once work resumes (advisor finding #14).
+  const pokeDiffRef = useRef<() => void>(() => {});
   const scrollRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const layoutRef = useRef<HTMLDivElement>(null);
@@ -657,6 +661,9 @@ export function CodeSession({
               pendingSendRef.current = false;
             }
             busyNow = true;
+            // New events mean the agent may have touched files — un-park the
+            // diff chip poll so the +/- indicator reflects the change promptly.
+            pokeDiffRef.current();
           }
           if (active) {
             setWorker(j.worker ?? null);
@@ -694,6 +701,9 @@ export function CodeSession({
     pendingSendRef.current = true;
     setWaiting(true);
     pokeRef.current();
+    // A send means the agent is about to change files — un-park the diff chip
+    // poll so the +/- indicator tracks the turn without waiting for idle.
+    pokeDiffRef.current();
     // On first send, ask for notification permission so we can ping you when a
     // backgrounded session finishes its turn or needs input.
     try {
@@ -720,10 +730,18 @@ export function CodeSession({
   }, [sessionId]);
 
   // Header +/- indicator: a cheap summary-only diff poll (skips the full diff).
+  // Each poll costs a `docker exec … git diff --stat` server-side (shared across
+  // viewers via a short memo), so we PAUSE the loop once the session is idle and
+  // the last read was empty — an idle session with no changes never needs
+  // re-polling. Activity (a composer send, or the events poll seeing output /
+  // the worker running) wakes it via pokeDiffRef, so the chip stays live.
   useEffect(() => {
     let active = true;
-    let timer: ReturnType<typeof setTimeout>;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Snapshot the last observed diff so we can tell "nothing changed AND idle".
+    let lastEmpty = false;
     const load = async () => {
+      let empty = true;
       try {
         const r = await fetch(`/api/bridge/v1/sessions/${sessionId}/diff?summary=1`);
         if (r.ok && active) {
@@ -731,21 +749,36 @@ export function CodeSession({
           const stat = j.stat ?? "";
           const adds = Number(/(\d+) insertion/.exec(stat)?.[1] ?? 0);
           const dels = Number(/(\d+) deletion/.exec(stat)?.[1] ?? 0);
-          setDiffStat(adds || dels ? { adds, dels } : null);
+          empty = !(adds || dels);
+          setDiffStat(empty ? null : { adds, dels });
           setDiffBranch(j.branch ?? "");
           setDiffStale(!!j.stale);
         }
       } catch {
         /* transient */
       }
-      if (active) timer = setTimeout(load, 5000);
+      if (!active) return;
+      lastEmpty = empty;
+      // Idle worker + an empty diff → pause. pokeDiffRef resumes on activity.
+      const busy = worker?.worker_status === "running" || pendingSendRef.current;
+      if (empty && !busy) return; // leave `timer` cleared → loop parked
+      timer = setTimeout(load, 5000);
+    };
+    // Re-arm the loop when it has parked itself (idle + empty). A running loop
+    // is left alone — clearing its timer would strand it.
+    pokeDiffRef.current = () => {
+      if (!active || !lastEmpty) return;
+      lastEmpty = false; // guard against a double poke re-entering load()
+      clearTimeout(timer);
+      load();
     };
     load();
     return () => {
       active = false;
       clearTimeout(timer);
+      pokeDiffRef.current = () => {};
     };
-  }, [sessionId]);
+  }, [sessionId, worker?.worker_status]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
