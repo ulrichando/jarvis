@@ -49,4 +49,52 @@ describe('bootstrapProxyEnv', () => {
     bootstrapProxyEnv(env, () => 'https://file-gw')
     expect(env.ANTHROPIC_BASE_URL).toBe('https://env-gw')
   })
+
+  // Remote Control (bridge) + teleport (CCR) hydration — the compiled binary's
+  // only source of these, since it never runs start-env.sh. Without it,
+  // remote-control and /teleport stay dark after `jarvis auth login`.
+  test('binary: bridge creds + derived CCR base/token from keys.env after login', () => {
+    const persisted: Record<string, string> = {
+      JARVIS_BRIDGE_BASE_URL: 'https://0wlan.com/api/bridge',
+      JARVIS_BRIDGE_TOKEN: 'brdg.tok.123',
+    }
+    const env: NodeJS.ProcessEnv = {}
+    bootstrapProxyEnv(env, k => persisted[k])
+    expect(env.JARVIS_BRIDGE_BASE_URL).toBe('https://0wlan.com/api/bridge')
+    expect(env.JARVIS_BRIDGE_TOKEN).toBe('brdg.tok.123')
+    // CCR base derived from the bridge base (auth login persists no SERVER_URL)
+    expect(env.JARVIS_CCR_BASE_URL).toBe('https://0wlan.com/api')
+    // CCR bearer = the per-user bridge token
+    expect(env.JARVIS_CCR_TOKEN).toBe('brdg.tok.123')
+  })
+
+  test('CCR base prefers JARVIS_SERVER_URL over the bridge-derived root', () => {
+    const persisted: Record<string, string> = {
+      JARVIS_SERVER_URL: 'https://custom.example.com/',
+      JARVIS_BRIDGE_BASE_URL: 'https://0wlan.com/api/bridge',
+    }
+    const env: NodeJS.ProcessEnv = {}
+    bootstrapProxyEnv(env, k => persisted[k])
+    expect(env.JARVIS_CCR_BASE_URL).toBe('https://custom.example.com/api')
+  })
+
+  test('no login → CCR base falls back to the local dev web', () => {
+    const env: NodeJS.ProcessEnv = {}
+    bootstrapProxyEnv(env, noKeys)
+    expect(env.JARVIS_CCR_BASE_URL).toBe('http://127.0.0.1:3000/api')
+    // no bridge token → no CCR token invented
+    expect(env.JARVIS_CCR_TOKEN).toBeUndefined()
+  })
+
+  test('idempotent: never overrides an already-set bridge/CCR value', () => {
+    const env: NodeJS.ProcessEnv = {
+      JARVIS_BRIDGE_BASE_URL: 'https://preset/api/bridge',
+      JARVIS_CCR_BASE_URL: 'https://preset-ccr/api',
+      JARVIS_CCR_TOKEN: 'preset-tok',
+    }
+    bootstrapProxyEnv(env, () => 'should-be-ignored')
+    expect(env.JARVIS_BRIDGE_BASE_URL).toBe('https://preset/api/bridge')
+    expect(env.JARVIS_CCR_BASE_URL).toBe('https://preset-ccr/api')
+    expect(env.JARVIS_CCR_TOKEN).toBe('preset-tok')
+  })
 })

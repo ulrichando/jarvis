@@ -219,6 +219,41 @@ describe('gh-agent runGhAgentOnce', () => {
     }
   })
 
+  test('wall-clock budget defers the tasks it cannot finish; cursor never skips a deferred mention', async () => {
+    // Two allowlisted mentions (11:00, 11:30) + later unrelated chatter (12:00).
+    // The injected clock reports enough budget for the first task but not the
+    // second, so #14 is deferred. The since-window must pin to the DEFERRED
+    // mention's updated_at (11:30), NOT advance to maxUpdatedAt (12:00) — else a
+    // real inclusive ?since= fetch would never return #14 again (silent drop).
+    const dir = mkdtempSync(join(tmpdir(), 'ghm-'))
+    try {
+      const twoPlusChatter = JSON.stringify([[
+        { id: 2, body: '@jarvis do X', user: { login: 'ulrichando' }, created_at: '2026-07-01T11:00:00Z', updated_at: '2026-07-01T11:00:00Z', issue_url: 'https://api.github.com/repos/o/r/issues/13', html_url: 'u13' },
+        { id: 3, body: '@jarvis do Y', user: { login: 'ulrichando' }, created_at: '2026-07-01T11:30:00Z', updated_at: '2026-07-01T11:30:00Z', issue_url: 'https://api.github.com/repos/o/r/issues/14', html_url: 'u14' },
+        { id: 9, body: 'unrelated chatter', user: { login: 'bob' }, created_at: '2026-07-01T12:00:00Z', updated_at: '2026-07-01T12:00:00Z', issue_url: 'https://api.github.com/repos/o/r/issues/15', html_url: 'u15' },
+      ]])
+      advanceCursor('o/r', '2026-07-01T10:00:00Z', dir)
+      const { run } = recorder(twoPlusChatter)
+      const cfg = { ...DEFAULTS, allowlist: ['ulrichando'], executionTimeoutSec: 600, sweepBudgetSec: 840 }
+      const seen: number[] = []
+      const execute = async (_repo: string, m: any) => { seen.push(m.id); return { ok: true } }
+      // now() calls: [startedAt, elapsed-for-#13, elapsed-for-#14].
+      // #13: elapsed 0 → 0+600 ≤ 840 → runs. #14: elapsed 300 → 300+600 > 840 → defer.
+      const ticks = [0, 0, 300_000]
+      let t = 0
+      const now = () => ticks[Math.min(t++, ticks.length - 1)]!
+      await runGhAgentOnce({ repo: 'o/r', dryRun: false }, { run, cfg, cursorDir: dir, execute, now })
+      expect(seen).toEqual([2])                       // only the first ran
+      const handled = readHandledIds('o/r', dir)
+      expect(handled.has(2)).toBe(true)
+      expect(handled.has(3)).toBe(false)              // deferred, not consumed
+      // Window pinned to the deferred mention, not the 12:00 chatter.
+      expect(readCursor('o/r', dir)).toBe('2026-07-01T11:30:00.000Z')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   test('malformed repo is skipped with a warning — no gh call ever runs for it', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ghm-'))
     const err = captureStderr()
