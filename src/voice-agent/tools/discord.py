@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -52,6 +53,13 @@ class DiscordAPIError(Exception):
         super().__init__(f"Discord API error {status}: {body}")
 
 
+# Every API path is built from fixed segments + numeric snowflake IDs (and the
+# literal @me). LLM-supplied ids flow straight into f"/channels/{id}/..." — reject
+# anything with path-traversal or URL-control chars so a crafted id can't retarget
+# the request (query params are passed separately via `params`, never in `path`).
+_SAFE_PATH_RE = re.compile(r"^/[A-Za-z0-9/_@-]*$")
+
+
 def _discord_request(
     method: str,
     path: str,
@@ -60,6 +68,8 @@ def _discord_request(
     body: Optional[Dict[str, Any]] = None,
     timeout: int = 15,
 ) -> Any:
+    if not _SAFE_PATH_RE.match(path) or ".." in path:
+        raise DiscordAPIError(400, f"unsafe API path (bad id?): {path!r}")
     url = f"{DISCORD_API_BASE}{path}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
