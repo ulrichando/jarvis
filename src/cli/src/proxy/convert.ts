@@ -590,6 +590,24 @@ function applyProviderSpecificParams(out: any, req: any, provider: Provider): vo
       out.reasoning_effort = reasoningEffort
     }
   }
+
+  if (isGpt5Family(provider) && !provider.model.includes('chat')) {
+    // OpenAI GPT-5 reasoning models take a top-level `reasoning_effort` on the
+    // chat-completions endpoint. Without this branch the CLI's /effort choice
+    // was silently dropped (convertRequest never forwards output_config), so
+    // every GPT-5 request ran at the model default regardless of the picker.
+    // Use the conservative low/medium/high mapping (xhigh/max → high): the
+    // model page documents an `xhigh` tier on the Responses API, but whether
+    // the chat-completions endpoint accepts it is unverified here, and a bad
+    // enum value 400s the whole request — so clamp until it's proven live.
+    // The registry keeps gpt-5* at a `high` ceiling to match, so the indicator
+    // doesn't promise a tier the wire won't send. The non-reasoning …-chat
+    // variants don't take reasoning_effort — excluded.
+    const reasoningEffort = resolveReasoningEffort(req)
+    if (reasoningEffort) {
+      out.reasoning_effort = reasoningEffort
+    }
+  }
 }
 
 // ── clampRequestForProvider ───────────────────────────────────────────────

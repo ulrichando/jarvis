@@ -11,6 +11,7 @@ import {
 } from './model/jarvisModelRegistry.js'
 import { isEnvTruthy } from './envUtils.js'
 import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
+import type { Message } from '../types/message.js'
 
 export type { EffortLevel }
 
@@ -129,6 +130,56 @@ export function clampEffortToModel(
     level = 'high'
   }
   return level
+}
+
+const EFFORT_RANK: Record<EffortLevel, number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  xhigh: 3,
+  max: 4,
+}
+
+/**
+ * Turn-scoped raise (ultrathink): the higher of the session effort and the
+ * boost wins — it NEVER lowers. A session value whose tier already meets or
+ * exceeds the boost is returned UNCHANGED, so ULTRACODE (rides xhigh) and
+ * ant numeric values keep their identity/semantics. The result still flows
+ * through resolveAppliedEffort, so the CLAUDE_CODE_EFFORT_LEVEL env override
+ * and the per-model clamp keep precedence.
+ */
+export function raiseEffortValue(
+  session: EffortValue | undefined,
+  boost: EffortLevel,
+): EffortValue {
+  if (session === undefined) {
+    return boost
+  }
+  const sessionLevel = convertEffortValueToLevel(session)
+  return EFFORT_RANK[sessionLevel] >= EFFORT_RANK[boost] ? session : boost
+}
+
+/**
+ * Current-turn ultrathink boost. Scans backward over the trailing
+ * non-assistant segment (the just-submitted user message plus its attachment
+ * messages, per processTextPrompt) for the `ultrathink_effort` attachment
+ * emitted by getUltrathinkEffortAttachment. Stops at the first assistant
+ * message so a prior turn's ultrathink never leaks forward.
+ */
+export function findUltrathinkBoostForTurn(
+  messages: readonly Message[],
+): EffortLevel | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (!m) continue
+    if (m.type === 'assistant') {
+      return undefined
+    }
+    if (m.type === 'attachment' && m.attachment.type === 'ultrathink_effort') {
+      return m.attachment.level
+    }
+  }
+  return undefined
 }
 
 export function isEffortLevel(value: string): value is EffortLevel {

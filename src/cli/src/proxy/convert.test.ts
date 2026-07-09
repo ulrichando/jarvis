@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 
 // Test-time env so the Provider builder doesn't throw on resolveApiKey.
 beforeAll(() => {
@@ -295,5 +295,44 @@ describe('convertRequest — provider.supportsVision wired through', () => {
     const userMsg = out.messages.find((m: any) => m.role === 'user')
     expect(typeof userMsg.content).toBe('string')
     expect(userMsg.content).toBe('no vision here: [image]')
+  })
+})
+
+describe('convertRequest — effort translation per provider', () => {
+  const prevRegistry = process.env.JARVIS_MODEL_REGISTRY_ENABLED
+  beforeAll(() => {
+    process.env.JARVIS_MODEL_REGISTRY_ENABLED = '1'
+  })
+  afterAll(() => {
+    if (prevRegistry === undefined) delete process.env.JARVIS_MODEL_REGISTRY_ENABLED
+    else process.env.JARVIS_MODEL_REGISTRY_ENABLED = prevRegistry
+  })
+
+  const req = (effort?: string) => ({
+    messages: [{ role: 'user', content: 'hi' }],
+    ...(effort ? { output_config: { effort } } : {}),
+  })
+
+  test('GPT-5 gets a top-level reasoning_effort (was silently dropped)', () => {
+    const p = getProviderForModel('gpt-5')
+    expect(p?.name).toBe('openai')
+    const { convertRequest } = require('./convert.js')
+    expect(convertRequest(req('high'), p).reasoning_effort).toBe('high')
+    expect(convertRequest(req('low'), p).reasoning_effort).toBe('low')
+    // xhigh/max clamp to high — conservative until the chat endpoint's xhigh
+    // acceptance is verified live (a bad enum 400s the whole request).
+    expect(convertRequest(req('max'), p).reasoning_effort).toBe('high')
+    expect(convertRequest(req('xhigh'), p).reasoning_effort).toBe('high')
+    // No effort chosen → omit the field entirely.
+    expect(convertRequest(req(), p).reasoning_effort).toBeUndefined()
+  })
+
+  test('DeepSeek uses binary thinking, not reasoning_effort', () => {
+    const p = getProviderForModel('deepseek-v4-pro')
+    expect(p?.name).toBe('deepseek')
+    const { convertRequest } = require('./convert.js')
+    const out = convertRequest(req('max'), p)
+    expect(out.thinking).toEqual({ type: 'enabled' })
+    expect(out.reasoning_effort).toBeUndefined()
   })
 })
