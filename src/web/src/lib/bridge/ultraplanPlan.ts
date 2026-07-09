@@ -74,3 +74,53 @@ export function findPendingExitPlanToolUseId(
   }
   return null;
 }
+
+/**
+ * Container sessions gate ExitPlanMode behind a `can_use_tool` permission that
+ * the worker/events route records as an `ultraplan_permission` event (and
+ * deliberately does NOT auto-approve — the plan must PAUSE for a human
+ * decision). Returns the newest such permission for the given ExitPlanMode
+ * tool_use that hasn't been resolved yet (no matching
+ * `ultraplan_permission_resolved`): its request_id and the ORIGINAL tool input
+ * (so the approve path replays exactly what the auto-approve path used to send
+ * — the plan is read from disk, not input.plan, so the original input must be
+ * preserved or the tool hits its empty-plan branch and drops the "## Approved
+ * Plan:" marker the poller scans for). Browser-driven local sessions have no
+ * such event → null → the /plan route falls back to injecting a tool_result.
+ */
+export function findUnresolvedPlanPermission(
+  events: Array<Pick<SessionEventRow, "type" | "payload_json">>,
+  toolUseId: string,
+): { requestId: string; input: Record<string, unknown> } | null {
+  const resolved = new Set<string>();
+  let match: { requestId: string; input: Record<string, unknown> } | null =
+    null;
+  for (const e of events) {
+    let p: {
+      request_id?: unknown;
+      tool_use_id?: unknown;
+      input?: unknown;
+    };
+    try {
+      p = JSON.parse(e.payload_json) as typeof p;
+    } catch {
+      continue;
+    }
+    if (e.type === "ultraplan_permission_resolved") {
+      if (typeof p.request_id === "string") resolved.add(p.request_id);
+    } else if (
+      e.type === "ultraplan_permission" &&
+      p.tool_use_id === toolUseId &&
+      typeof p.request_id === "string"
+    ) {
+      match = {
+        requestId: p.request_id,
+        input:
+          p.input && typeof p.input === "object"
+            ? (p.input as Record<string, unknown>)
+            : {},
+      }; // newest wins
+    }
+  }
+  return match && !resolved.has(match.requestId) ? match : null;
+}

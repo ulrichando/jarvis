@@ -1,12 +1,18 @@
 import { NextResponse } from "next/server";
 import { randomBytes } from "node:crypto";
 import { getStore } from "@/lib/bridge/db";
-import { appendInbound, listSessionEvents } from "@/lib/bridge/store";
+import {
+  appendInbound,
+  appendSessionEvent,
+  listSessionEvents,
+} from "@/lib/bridge/store";
+import { emitInbound } from "@/lib/bridge/events";
 import { authorizeSession } from "@/lib/bridge/authz";
 import { bridgeError } from "@/lib/bridge/errors";
 import {
   buildPlanDecision,
   findPendingExitPlanToolUseId,
+  findUnresolvedPlanPermission,
 } from "@/lib/bridge/ultraplanPlan";
 
 // GET /api/bridge/v1/sessions/{id}/plan — the latest plan the agent proposed
@@ -78,18 +84,60 @@ export async function POST(
   }
   try {
     const store = getStore();
-    const toolUseId = findPendingExitPlanToolUseId(
-      listSessionEvents(store, sessionId, 0),
-    );
+    const events = listSessionEvents(store, sessionId, 0);
+    const toolUseId = findPendingExitPlanToolUseId(events);
     if (!toolUseId) {
       return bridgeError(409, "no_pending_plan", "No plan awaiting a decision");
     }
     const plan = typeof body?.plan === "string" ? body.plan : "";
-    const { isError, content } = buildPlanDecision(
-      decision,
-      plan,
-      body?.edited === true,
-    );
+    const edited = body?.edited === true;
+    const { isError, content } = buildPlanDecision(decision, plan, edited);
+
+    // Container sessions gate ExitPlanMode through a `can_use_tool` permission
+    // the worker/events route recorded (ultraplan_permission) and deliberately
+    // did NOT auto-approve — the plan paused for this decision. Resolve THAT
+    // permission so the paused plan-mode agent continues correctly:
+    //   approve → allow (the tool runs and emits "## Approved Plan:" →
+    //             execute on the web) with the plan carried in updatedInput
+    //   local   → deny, message = "__ULTRAPLAN_TELEPORT_LOCAL__\n<plan>"
+    //             (becomes the is_error tool_result the poller scans → teleport
+    //             the plan back to the terminal, and the remote agent stops)
+    //   reject  → deny, message = "Plan rejected by user." (no marker → the
+    //             poller iterates and the agent revises)
+    // Browser-driven local sessions have no such event → fall through to the
+    // legacy tool_result injection below (unchanged).
+    const perm = findUnresolvedPlanPermission(events, toolUseId);
+    if (perm) {
+      // approve → allow, replaying the original input (plan read from disk);
+      // only when the user edited the plan do we override input.plan so the
+      // tool emits it as the "(edited by user)" variant. local/reject → deny,
+      // with the decision content as the message (becomes the is_error
+      // tool_result the poller scans for the teleport sentinel / rejection).
+      const response =
+        decision === "approve"
+          ? {
+              behavior: "allow" as const,
+              updatedInput:
+                edited && plan.trim() ? { ...perm.input, plan } : perm.input,
+            }
+          : { behavior: "deny" as const, message: content };
+      appendInbound(store, sessionId, {
+        type: "control_response",
+        uuid: randomBytes(8).toString("hex"),
+        response: {
+          subtype: "success",
+          request_id: perm.requestId,
+          response,
+        },
+      });
+      appendSessionEvent(store, sessionId, {
+        type: "ultraplan_permission_resolved",
+        payload: { request_id: perm.requestId },
+      });
+      emitInbound(sessionId);
+      return NextResponse.json({ ok: true });
+    }
+
     appendInbound(store, sessionId, {
       type: "user",
       uuid: randomBytes(8).toString("hex"),
