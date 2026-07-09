@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getStore } from '@/lib/bridge/db'
 import { appendInbound, listSessionEvents } from '@/lib/bridge/store'
-import { extractBearer } from '@/lib/bridge/auth'
+import { authorizeSessionCredential, extractBearer } from '@/lib/bridge/auth'
 import { bridgeError } from '@/lib/bridge/errors'
 import { authSessionOwner } from '../route'
 
@@ -54,6 +54,15 @@ export async function POST(
   const { sessionId } = await ctx.params
   const token = extractBearer(req.headers.get('authorization'))
   if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
+  // Validate the bearer as a real session credential (ingress token / owning
+  // env secret / per-user bridge token / shared infra token) — NOT just
+  // "a bearer is present". This POST is on the proxy's SELF_AUTH_POST
+  // allowlist (a web→worker follow-up turn), so the in-handler check is the
+  // only gate; the old presence-only test let any junk bearer inject inbound
+  // turns into any session by id.
+  if (!authorizeSessionCredential(getStore(), sessionId, token)) {
+    return bridgeError(401, 'unauthorized', 'Invalid session credential')
+  }
   const body = (await req.json().catch(() => null)) as {
     events?: Array<{ type?: string; [k: string]: unknown }>
   } | null

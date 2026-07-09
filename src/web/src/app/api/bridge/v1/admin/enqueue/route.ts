@@ -1,15 +1,32 @@
 import { NextResponse } from 'next/server'
 import { getStore } from '@/lib/bridge/db'
-import { enqueueWork, findEnvironment } from '@/lib/bridge/store'
+import {
+  enqueueWork,
+  findEnvironment,
+  resolveBridgeToken,
+  validateEnvSecret,
+} from '@/lib/bridge/store'
 import { emitWorkAvailable } from '@/lib/bridge/events'
+import { extractBearer, isSharedLocalToken } from '@/lib/bridge/auth'
 import { bridgeError } from '@/lib/bridge/errors'
 
-// Admin enqueue is intentionally unauthenticated. v1 access control relies
-// on the server binding to 127.0.0.1 only (loopback assumption documented
-// in the spec). Do NOT add bearer-auth here unless sub-project 3 has also
-// switched the web UI to send a real token. If the bind ever moves off
-// loopback, this route MUST grow auth before going live.
+// Enqueue a work item for a bridge environment. AUTHENTICATED (2026-07-06
+// security review): the old comment claimed this was safe "unauthenticated"
+// because the server binds 127.0.0.1 — but the box is now Cloudflare-fronted,
+// so that precondition is false and an unauth POST could inject work into any
+// environment by id. Require one of the credentials a legitimate caller holds
+// for the TARGET environment:
+//   - the shared infra token (single-operator deploy), OR
+//   - the environment's own secret (the worker enqueuing for itself — the same
+//     register-time credential the v1 events/archive routes accept), OR
+//   - a per-user bridge token whose user OWNS the environment.
+// Mirrors the api/bridge/v1/sessions POST owner check + the env-secret path the
+// sibling worker routes use. No in-repo caller passed a bearer to this route
+// before (only the proxy.ts comment referenced it), so closing the anonymous
+// path breaks no live caller.
 export async function POST(req: Request): Promise<NextResponse> {
+  const token = extractBearer(req.headers.get('authorization'))
+  if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
   const body = (await req.json().catch(() => null)) as {
     environment_id?: string
     session_id?: string
@@ -29,8 +46,25 @@ export async function POST(req: Request): Promise<NextResponse> {
   let workId: string
   try {
     const store = getStore()
-    if (!findEnvironment(store, body.environment_id)) {
+    const env = findEnvironment(store, body.environment_id)
+    if (!env) {
       return bridgeError(404, 'not_found', 'Environment not found')
+    }
+    // Ownership gate. The shared infra token (single-operator) or the
+    // environment's own secret (the worker enqueuing for itself) authorize
+    // directly; otherwise the bearer must resolve to a user who OWNS the
+    // target environment. An ownerless env is reachable only via the shared
+    // token or its env-secret — never via an arbitrary per-user token, and
+    // never anonymously.
+    const authorized =
+      isSharedLocalToken(token) ||
+      validateEnvSecret(store, body.environment_id, token) ||
+      (() => {
+        const userId = resolveBridgeToken(store, token)
+        return !!userId && !!env.user_id && env.user_id === userId
+      })()
+    if (!authorized) {
+      return bridgeError(403, 'forbidden', 'Not your environment')
     }
     const work = enqueueWork(store, body.environment_id, {
       session_id: body.session_id,

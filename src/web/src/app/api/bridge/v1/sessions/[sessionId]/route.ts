@@ -4,7 +4,6 @@ import {
   archiveSession,
   unarchiveSession,
   deleteSession,
-  findEnvironment,
   findSession,
   setSessionAutofix,
   setSessionAutomerge,
@@ -13,37 +12,20 @@ import {
   setSessionRead,
   setSessionTitle,
 } from '@/lib/bridge/store'
-import { extractBearer } from '@/lib/bridge/auth'
-import { getUserId } from '@/lib/auth-helpers'
+import { authorizeBridgeRequest } from '@/lib/bridge/authz'
 import { bridgeError } from '@/lib/bridge/errors'
 import { ccrSessionStatus } from '@/lib/bridge/ccrCompat'
 
-// Authorize a mutation on a session two ways: the CLI worker presents a
-// bearer (v1-permissive — any non-empty token); the /code browser presents a
-// same-origin session cookie, checked against the session's owning
-// environment (mirrors the messages route). Returns an error response, or
-// null when allowed.
+// Authorize a mutation on a session: the CLI worker presents a bearer
+// (v1-permissive — any non-empty token, the proxy shared-token gate fronts
+// this); the /code browser presents a same-origin session cookie, checked
+// against the session's owning environment. Unified "session-owner" scope
+// (finding #10) — was an inline copy of the ladder.
 async function authorizeMutation(
   req: Request,
   sessionId: string,
 ): Promise<NextResponse | null> {
-  if (extractBearer(req.headers.get('authorization'))) return null
-  const store = getStore()
-  const session = findSession(store, sessionId)
-  if (!session) return bridgeError(404, 'not_found', 'Session not found')
-  const env = session.environment_id
-    ? findEnvironment(store, session.environment_id)
-    : null
-  const userId = await getUserId(req.headers)
-  if (env?.user_id && env.user_id !== userId) {
-    // No valid session against a real-owned session → 401 (re-login), not a
-    // dead-end 403. A real cross-user mismatch still 403s.
-    if (userId === null) {
-      return bridgeError(401, 'unauthenticated', 'Session expired — please sign in again')
-    }
-    return bridgeError(403, 'forbidden', 'Not your session')
-  }
-  return null
+  return authorizeBridgeRequest(req, { scope: 'session-owner', sessionId })
 }
 
 // GET /api/bridge/v1/sessions/{id} — single-session fetch, used by the CLI's

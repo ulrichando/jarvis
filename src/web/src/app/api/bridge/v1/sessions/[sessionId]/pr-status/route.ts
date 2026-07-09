@@ -3,7 +3,7 @@ import { getStore } from "@/lib/bridge/db";
 import { findSession } from "@/lib/bridge/store";
 import { freshInstallationToken } from "@/lib/bridge/gh-app-token";
 import { githubPrStatus } from "@/lib/connectors/github";
-import { authorizeSession } from "@/lib/bridge/authz";
+import { authorizeBridgeRequest } from "@/lib/bridge/authz";
 import { bridgeError } from "@/lib/bridge/errors";
 
 // GET /api/bridge/v1/sessions/{id}/pr-status?branch=<branch> — PR + CI check
@@ -14,7 +14,7 @@ export async function GET(
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params;
-  const denied = await authorizeSession(req, sessionId);
+  const denied = await authorizeBridgeRequest(req, { scope: "session-owner", sessionId });
   if (denied) return denied;
   const branch = new URL(req.url).searchParams.get("branch") ?? "";
   const empty = NextResponse.json({ pr: null, checks: null, sha: null, repo: null });

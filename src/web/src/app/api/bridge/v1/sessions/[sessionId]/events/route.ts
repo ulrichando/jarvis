@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { authorizeSessionCredential, extractBearer } from '@/lib/bridge/auth'
+import { authorizeBridgeRequest } from '@/lib/bridge/authz'
 import { getLiveText } from '@/lib/bridge/events'
 import { getStore } from '@/lib/bridge/db'
 import {
@@ -15,16 +15,14 @@ export async function POST(
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params
-  const token = extractBearer(req.headers.get('authorization'))
-  if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
-  // Validate the bearer as the session's ingress token (worker) or an
-  // owning per-user bridge token — this route is on the proxy's SELF_AUTH
-  // allowlist so the remote-control worker can reach it online, which means
-  // it must reject junk bearers itself (the old v1 "any non-empty bearer"
-  // rule predates that exposure).
-  if (!authorizeSessionCredential(getStore(), sessionId, token)) {
-    return bridgeError(401, 'unauthorized', 'Invalid session credential')
-  }
+  // Validate the bearer as the session's ingress token (worker), the owning
+  // environment's secret, an owning per-user bridge token, or the shared infra
+  // token — this route is on the proxy's SELF_AUTH allowlist so the
+  // remote-control worker can reach it online, which means it must reject junk
+  // bearers itself (the old v1 "any non-empty bearer" rule predates that
+  // exposure). Unified "session-credential" scope (finding #10).
+  const denied = await authorizeBridgeRequest(req, { scope: 'session-credential', sessionId })
+  if (denied) return denied
   const body = (await req.json().catch(() => null)) as {
     events?: Array<{ type: string; [k: string]: unknown }>
   } | null
@@ -59,6 +57,13 @@ export async function GET(
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params
+  // Ownership gate (was MISSING — the GET returned any session's full
+  // transcript to any caller the proxy let through, and the same-origin
+  // carve-out passes ANY logged-in user's cookie, so this was cross-user
+  // transcript disclosure by id iteration). Accepts the /code cookie poller
+  // AND the bearer-presenting CLI worker; rejects anonymous / other-user.
+  const denied = await authorizeBridgeRequest(req, { scope: 'session-read', sessionId })
+  if (denied) return denied
   const sinceRaw = Number(new URL(req.url).searchParams.get('since') ?? '0')
   const since = Number.isFinite(sinceRaw) && sinceRaw >= 0 ? sinceRaw : 0
   // Reopen = a chance to reconnect a worker that died while away (e.g. a

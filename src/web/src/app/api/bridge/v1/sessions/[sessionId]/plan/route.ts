@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { randomBytes } from "node:crypto";
 import { getStore } from "@/lib/bridge/db";
 import { appendInbound, listSessionEvents } from "@/lib/bridge/store";
-import { authorizeSession } from "@/lib/bridge/authz";
+import { authorizeBridgeRequest } from "@/lib/bridge/authz";
 import { bridgeError } from "@/lib/bridge/errors";
 
 // Scan a session's events for ExitPlanMode tool calls and their results.
@@ -51,7 +51,7 @@ export async function GET(
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params;
-  const denied = await authorizeSession(req, sessionId);
+  const denied = await authorizeBridgeRequest(req, { scope: "session-owner", sessionId });
   if (denied) return denied;
   try {
     const events = listSessionEvents(getStore(), sessionId, 0);
@@ -95,7 +95,7 @@ export async function POST(
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params;
-  const denied = await authorizeSession(req, sessionId);
+  const denied = await authorizeBridgeRequest(req, { scope: "session-owner", sessionId });
   if (denied) return denied;
   const body = (await req.json().catch(() => null)) as {
     decision?: string;

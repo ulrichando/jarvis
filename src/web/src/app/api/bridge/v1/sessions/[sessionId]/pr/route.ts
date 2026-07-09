@@ -1,39 +1,21 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/bridge/db";
 import { createContainerPR } from "@/lib/bridge/containers";
-import { findEnvironment, findSession } from "@/lib/bridge/store";
-import { extractBearer } from "@/lib/bridge/auth";
-import { getUserId } from "@/lib/auth-helpers";
+import { authorizeBridgeRequest } from "@/lib/bridge/authz";
 import { bridgeError } from "@/lib/bridge/errors";
 
-// Authorize a mutation on a session two ways: the CLI worker presents a bearer
+// Authorize a mutation on a session: the CLI worker presents a bearer
 // (v1-permissive — any non-empty token); the /code browser presents a
 // same-origin session cookie, checked against the session's owning
-// environment. Returns an error response, or null when allowed. Mirrors
-// sessions/[sessionId]/route.ts (the network bearer gate in proxy.ts is a
-// single shared token, so it does NOT establish per-session ownership — this
-// is the IDOR check the bearer gate can't do).
+// environment. Unified "session-owner" scope (finding #10) — was an inline
+// copy of the ladder. The network bearer gate in proxy.ts is a single shared
+// token, so it does NOT establish per-session ownership; this is the IDOR
+// check the bearer gate can't do.
 async function authorizeMutation(
   req: Request,
   sessionId: string,
 ): Promise<NextResponse | null> {
-  if (extractBearer(req.headers.get("authorization"))) return null;
-  const store = getStore();
-  const session = findSession(store, sessionId);
-  if (!session) return bridgeError(404, "not_found", "Session not found");
-  const env = session.environment_id
-    ? findEnvironment(store, session.environment_id)
-    : null;
-  const userId = await getUserId(req.headers);
-  if (env?.user_id && env.user_id !== userId) {
-    // No valid session against a real-owned session → 401 (re-login); a real
-    // cross-user mismatch still 403s.
-    if (userId === null) {
-      return bridgeError(401, "unauthenticated", "Session expired — please sign in again");
-    }
-    return bridgeError(403, "forbidden", "Not your session");
-  }
-  return null;
+  return authorizeBridgeRequest(req, { scope: "session-owner", sessionId });
 }
 
 // POST /api/bridge/v1/sessions/{id}/pr — open (or find) a pull request for the

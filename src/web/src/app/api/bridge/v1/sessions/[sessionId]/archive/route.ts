@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { authorizeSessionCredential, extractBearer } from '@/lib/bridge/auth'
+import { authorizeBridgeRequest } from '@/lib/bridge/authz'
 import { getStore } from '@/lib/bridge/db'
 import { archiveSession, findSession } from '@/lib/bridge/store'
 import { stopContainerSession } from '@/lib/bridge/containers'
@@ -10,17 +10,15 @@ export async function POST(
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params
-  const token = extractBearer(req.headers.get('authorization'))
-  if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
-  // Validate the bearer as the session's ingress token (worker) or an owning
-  // per-user bridge token — this route is on the proxy's SELF_AUTH allowlist
-  // so the remote-control worker can archive on shutdown online; junk bearers
-  // must be rejected here (replaces the v1 "any non-empty bearer" rule).
-  // Orphan archives (no session row) still work but require a resolvable
-  // per-user token.
-  if (!authorizeSessionCredential(getStore(), sessionId, token)) {
-    return bridgeError(401, 'unauthorized', 'Invalid session credential')
-  }
+  // Validate the bearer as the session's ingress token (worker), env secret,
+  // owning per-user bridge token, or the shared infra token — this route is on
+  // the proxy's SELF_AUTH allowlist so the remote-control worker can archive on
+  // shutdown online; junk bearers must be rejected here (replaces the v1 "any
+  // non-empty bearer" rule). Orphan archives (no session row) still work but
+  // require a resolvable per-user token. Unified "session-credential" scope
+  // (finding #10).
+  const denied = await authorizeBridgeRequest(req, { scope: 'session-credential', sessionId })
+  if (denied) return denied
   try {
     const store = getStore()
     // Container sessions: archiving is the session's end of life — stop and

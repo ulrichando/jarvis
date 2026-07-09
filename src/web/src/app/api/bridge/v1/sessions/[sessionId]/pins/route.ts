@@ -1,41 +1,23 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/bridge/db";
 import {
-  findEnvironment,
-  findSession,
   listPinnedMessageUuids,
   setMessagePin,
 } from "@/lib/bridge/store";
-import { extractBearer } from "@/lib/bridge/auth";
-import { getUserId } from "@/lib/auth-helpers";
+import { authorizeBridgeRequest } from "@/lib/bridge/authz";
 import { bridgeError } from "@/lib/bridge/errors";
 
 // Authorize access to a session's pins: the CLI worker presents a bearer; the
 // browser presents a session cookie, checked against the session's owning
-// environment. Mirrors sessions/[sessionId]/route.ts. The /api/* network bearer
-// gate is a single shared token, so it can't establish per-session ownership —
-// this is the IDOR check it can't do. Returns an error response, or null.
+// environment. Unified "session-owner" scope (finding #10) — was an inline
+// copy of the ladder. The /api/* network bearer gate is a single shared token,
+// so it can't establish per-session ownership; this is the IDOR check it can't
+// do. Returns an error response, or null.
 async function authorizeSession(
   req: Request,
   sessionId: string,
 ): Promise<NextResponse | null> {
-  if (extractBearer(req.headers.get("authorization"))) return null;
-  const store = getStore();
-  const session = findSession(store, sessionId);
-  if (!session) return bridgeError(404, "not_found", "Session not found");
-  const env = session.environment_id
-    ? findEnvironment(store, session.environment_id)
-    : null;
-  const userId = await getUserId(req.headers);
-  if (env?.user_id && env.user_id !== userId) {
-    // No valid session against a real-owned session → 401 (re-login); a real
-    // cross-user mismatch still 403s.
-    if (userId === null) {
-      return bridgeError(401, "unauthenticated", "Session expired — please sign in again");
-    }
-    return bridgeError(403, "forbidden", "Not your session");
-  }
-  return null;
+  return authorizeBridgeRequest(req, { scope: "session-owner", sessionId });
 }
 
 // Per-message pins for a /code session, server-synced (survive across

@@ -550,7 +550,12 @@ describe('reconnect + events + archive', () => {
     const res = await enq.POST(
       new Request(`http://x/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // enqueue now requires a credential owning the target env — the
+          // worker uses its own environment_secret (2026-07-06 security fix).
+          Authorization: `Bearer ${reg.environment_secret}`,
+        },
         body: JSON.stringify({
           environment_id: reg.environment_id,
           session_id: sessionId,
@@ -845,14 +850,17 @@ describe('reconnect + events + archive', () => {
 
 describe('admin enqueue + full E2E', () => {
   test('admin enqueue returns 200 + work_id', async () => {
-    const { environment_id } = await registerEnv()
+    const { environment_id, environment_secret } = await registerEnv()
     const { POST } = await import(
       '@/app/api/bridge/v1/admin/enqueue/route'
     )
     const res = await POST(
       new Request(`http://x/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${environment_secret}`,
+        },
         body: JSON.stringify({
           environment_id,
           session_id: 'sess1',
@@ -866,13 +874,19 @@ describe('admin enqueue + full E2E', () => {
   })
 
   test('admin enqueue 400 on missing fields', async () => {
+    // A valid env-secret bearer gets past the 401; the missing-params 400 is
+    // returned before the ownership check runs.
+    const { environment_secret } = await registerEnv()
     const { POST } = await import(
       '@/app/api/bridge/v1/admin/enqueue/route'
     )
     const res = await POST(
       new Request(`http://x/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${environment_secret}`,
+        },
         body: JSON.stringify({ environment_id: 'x' }),
       }),
     )
@@ -882,13 +896,19 @@ describe('admin enqueue + full E2E', () => {
   })
 
   test('admin enqueue 404 on unknown environment_id', async () => {
+    // Authenticate with a real env's secret, but target a nonexistent env —
+    // the env lookup 404s before the ownership check.
+    const { environment_secret } = await registerEnv()
     const { POST } = await import(
       '@/app/api/bridge/v1/admin/enqueue/route'
     )
     const res = await POST(
       new Request(`http://x/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${environment_secret}`,
+        },
         body: JSON.stringify({
           environment_id: 'nonexistent',
           session_id: 's',
@@ -901,16 +921,36 @@ describe('admin enqueue + full E2E', () => {
     expect(body.error.type).toBe('not_found')
   })
 
+  test('admin enqueue 401 with no bearer (2026-07-06 security fix)', async () => {
+    const { environment_id } = await registerEnv()
+    const { POST } = await import('@/app/api/bridge/v1/admin/enqueue/route')
+    const res = await POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          environment_id,
+          session_id: 's',
+          data: {},
+        }),
+      }),
+    )
+    expect(res.status).toBe(401)
+  })
+
   test('full happy path: register → enqueue → poll → ack → heartbeat → events → archive → unregister', async () => {
     const reg = await registerEnv()
     const { environment_id, environment_secret } = reg
 
-    // Enqueue via admin route
+    // Enqueue via admin route (authenticated with the env's own secret).
     const enq = await import('@/app/api/bridge/v1/admin/enqueue/route')
     const enqRes = await enq.POST(
       new Request(`http://x/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${environment_secret}`,
+        },
         body: JSON.stringify({
           environment_id,
           session_id: 'sessE',
