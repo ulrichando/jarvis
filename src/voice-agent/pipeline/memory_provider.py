@@ -36,6 +36,10 @@ logger = logging.getLogger("jarvis.memory_provider")
 # Module-level session state: True while a session has been successfully begun.
 _session_started: bool = False
 
+# Strong refs to in-flight background sync tasks (asyncio keeps only weak ones,
+# so an unreferenced task can be GC'd mid-run).
+_BG_SYNC_TASKS: set = set()
+
 
 # ---------------------------------------------------------------------------
 # Provider resolution
@@ -122,7 +126,11 @@ def sync_item_async(role: str, text: str) -> None:
 
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(_task())
+        _t = loop.create_task(_task())
+        # Keep a strong ref — the loop only holds a weak one, so an unreferenced
+        # task can be GC'd mid-run and the sync silently drops.
+        _BG_SYNC_TASKS.add(_t)
+        _t.add_done_callback(_BG_SYNC_TASKS.discard)
     except RuntimeError:
         # No running loop (sync context / test) — inline best-effort.
         try:

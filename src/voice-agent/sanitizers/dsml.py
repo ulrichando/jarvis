@@ -73,6 +73,9 @@ _DSML_PARAM_RE = re.compile(
 # stream finishes.
 _DSML_STATE: dict[str, dict[str, Any]] = {}
 
+# Strong refs to in-flight recovery-dispatch tasks (asyncio holds only weak ones).
+_DSML_TASKS: set = set()
+
 
 def _try_set_content(delta: Any, value: str) -> None:
     """Best-effort mutate `delta.content`. Pydantic models in newer
@@ -260,7 +263,11 @@ def install() -> None:
                 # user from hearing the markup spoken aloud.
                 try:
                     loop = asyncio.get_running_loop()
-                    loop.create_task(_dispatch(self, envelope, agents_llm))
+                    _dt = loop.create_task(_dispatch(self, envelope, agents_llm))
+                    # Strong ref — the loop keeps only a weak one, so an
+                    # unreferenced recovery task can be GC'd mid-dispatch.
+                    _DSML_TASKS.add(_dt)
+                    _dt.add_done_callback(_DSML_TASKS.discard)
                 except RuntimeError:
                     logger.debug(
                         "[dsml] no running event loop; suppressed envelope without recovery"

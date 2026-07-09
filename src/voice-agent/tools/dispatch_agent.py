@@ -55,6 +55,10 @@ _BIN_JARVIS = Path(__file__).resolve().parents[3] / "bin" / "jarvis"
 # in one breath (the spoken announcement carries a summary + a pointer here).
 _BG_RESULTS_DIR = Path(os.path.expanduser("~/.local/share/jarvis/background_tasks"))
 
+# Strong refs to in-flight background dispatch tasks — asyncio keeps only weak
+# ones, so an unreferenced task can be GC'd mid-run (the dispatch silently dies).
+_BG_DISPATCH_TASKS: set = set()
+
 # Per-type policy. cli_agent is the exact string bin/jarvis --agent expects
 # (per the project's agent registry — verified via bin/jarvis --help).
 _POLICY: Dict[str, Dict[str, Any]] = {
@@ -357,10 +361,12 @@ def _start_background(subagent_type: str, task: str, description: str) -> str:
 
     task_id = uuid.uuid4().hex[:12]
     background_tasks.register(task_id, label)
-    asyncio.create_task(
+    _bt = asyncio.create_task(
         _run_background(subagent_type, task, label, task_id),
         name=f"bg-dispatch-{task_id}",
     )
+    _BG_DISPATCH_TASKS.add(_bt)
+    _bt.add_done_callback(_BG_DISPATCH_TASKS.discard)
 
     # Record on the side-channel so the telemetry observer sees a started bg
     # task this turn (the real outcome is logged separately by the runner).

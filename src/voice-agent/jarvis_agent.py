@@ -7740,7 +7740,9 @@ async def entrypoint(ctx: JobContext) -> None:
             first = False
             await asyncio.sleep(_crondelivery.PENDING_POLL_S)
 
-    asyncio.create_task(_cron_pending_watcher())
+    _cpw = asyncio.create_task(_cron_pending_watcher(), name="cron-pending-watcher")
+    _bg_tasks.add(_cpw)
+    _cpw.add_done_callback(_bg_tasks.discard)
 
     # ── Background-task completion watcher ────────────────────────
     # In-session fire-and-forget delivery: dispatch_agent(background=True)
@@ -7773,7 +7775,9 @@ async def entrypoint(ctx: JobContext) -> None:
                     _bgtasks.requeue(ann)  # session not ready — retry next tick
             await asyncio.sleep(_bgtasks.poll_s())
 
-    asyncio.create_task(_background_task_watcher(), name="bg-task-watcher")
+    _btw = asyncio.create_task(_background_task_watcher(), name="bg-task-watcher")
+    _bg_tasks.add(_btw)
+    _btw.add_done_callback(_bg_tasks.discard)
 
     # Spawn the background watchers — each is a fire-and-forget task
     # whose lifetime is bound to the job. Extracted 2026-05-10 (Step
