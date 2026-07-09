@@ -157,7 +157,7 @@ def _tracker_loop() -> None:
     fps_update_ts = time.monotonic()
 
     try:
-        while True:
+        while not _stop_event.is_set():
             ret, frame = cap.read()
             if not ret:
                 time.sleep(0.1)
@@ -193,8 +193,13 @@ def _tracker_loop() -> None:
                 _write_status_file()
                 try:
                     import cv2 as _cv2
-                    _cv2.imwrite(str(FRAME_FILE), frame,
-                                 [_cv2.IMWRITE_JPEG_QUALITY, 75])
+                    # Atomic write (tmp + rename) so webcam.py consumers never
+                    # read a half-written JPEG (torn-read race). Mirrors the
+                    # status-file write above.
+                    _frame_tmp = FRAME_FILE.with_suffix(".tmp.jpg")
+                    if _cv2.imwrite(str(_frame_tmp), frame,
+                                    [_cv2.IMWRITE_JPEG_QUALITY, 75]):
+                        os.replace(_frame_tmp, FRAME_FILE)
                 except Exception:
                     pass
                 last_write = now
@@ -220,6 +225,7 @@ def _tracker_loop() -> None:
 # Public API
 # ---------------------------------------------------------------------------
 _tracker_thread: Optional[threading.Thread] = None
+_stop_event = threading.Event()
 
 def start(daemon: bool = True) -> threading.Thread:
     """Start the person tracker in a background daemon thread. Idempotent."""
@@ -227,6 +233,7 @@ def start(daemon: bool = True) -> threading.Thread:
     if _tracker_thread is not None and _tracker_thread.is_alive():
         log.debug("person-tracker already running")
         return _tracker_thread
+    _stop_event.clear()  # fresh run — clear any prior stop signal
     _tracker_thread = threading.Thread(
         target=_tracker_loop, name="person-tracker", daemon=daemon,
     )
@@ -235,9 +242,14 @@ def start(daemon: bool = True) -> threading.Thread:
 
 
 def stop() -> None:
-    """Signal the tracker to stop (it will exit on next frame read)."""
+    """Signal the tracker loop to exit (releases the webcam on next iteration).
+
+    Previously this only nulled the thread ref, so the real loop kept grabbing
+    the webcam forever and a later start() spawned a SECOND capture loop.
+    """
     global _tracker_thread
-    _tracker_thread = None  # daemon thread will die with process
+    _stop_event.set()
+    _tracker_thread = None
 
 
 if __name__ == "__main__":
