@@ -181,31 +181,60 @@ export async function validateGitState(): Promise<void> {
 }
 
 /**
- * Fetches a specific branch from remote origin
+ * Fetches a specific branch from remote origin.
  * @param branch The branch to fetch. If not specified, fetches all branches.
+ * @returns an Error when the local branch could not be brought up to date —
+ * the caller propagates it as branchError so the user sees "resumed without
+ * branch" instead of silently continuing on a stale/diverged local branch
+ * (the transcript would then reference commits the working tree doesn't have).
  */
-async function fetchFromOrigin(branch?: string): Promise<void> {
-  const fetchArgs = branch ? ['fetch', 'origin', `${branch}:${branch}`] : ['fetch', 'origin'];
-  const {
-    code: fetchCode,
-    stderr: fetchStderr
-  } = await execFileNoThrow(gitExe(), fetchArgs);
-  if (fetchCode !== 0) {
-    // If fetching a specific branch fails, it might not exist locally yet
-    // Try fetching just the ref without mapping to local branch
-    if (branch && fetchStderr.includes('refspec')) {
-      logForDebugging(`Specific branch fetch failed, trying to fetch ref: ${branch}`);
-      const {
-        code: refFetchCode,
-        stderr: refFetchStderr
-      } = await execFileNoThrow(gitExe(), ['fetch', 'origin', branch]);
-      if (refFetchCode !== 0) {
-        logError(new Error(`Failed to fetch from remote origin: ${refFetchStderr}`));
-      }
-    } else {
-      logError(new Error(`Failed to fetch from remote origin: ${fetchStderr}`));
+async function fetchFromOrigin(branch?: string): Promise<Error | null> {
+  if (!branch) {
+    const { code, stderr } = await execFileNoThrow(gitExe(), ['fetch', 'origin']);
+    if (code !== 0) {
+      const err = new Error(`Failed to fetch from remote origin: ${stderr}`);
+      logError(err);
+      return err;
+    }
+    return null;
+  }
+
+  // Re-teleport case: `fetch origin <branch>:<branch>` REFUSES to update the
+  // currently-checked-out branch (exit 128, "refusing to fetch into branch").
+  // Fetch the remote ref, then fast-forward the work tree explicitly.
+  const currentBranch = await getCurrentBranch();
+  if (branch === currentBranch) {
+    const fetch = await execFileNoThrow(gitExe(), ['fetch', 'origin', branch]);
+    if (fetch.code !== 0) {
+      const err = new Error(`Failed to fetch origin/${branch}: ${fetch.stderr}`);
+      logError(err);
+      return err;
+    }
+    const ff = await execFileNoThrow(gitExe(), ['merge', '--ff-only', `origin/${branch}`]);
+    if (ff.code !== 0) {
+      // Behind-or-diverged, or dirty tree — do NOT clobber local work; surface.
+      const err = new Error(`Local branch '${branch}' could not fast-forward to origin/${branch} — it may be behind or diverged from the remote session: ${ff.stderr}`);
+      logError(err);
+      return err;
+    }
+    return null;
+  }
+
+  const { code, stderr } = await execFileNoThrow(gitExe(), ['fetch', 'origin', `${branch}:${branch}`]);
+  if (code !== 0) {
+    // The refspec form fails for reasons the old `stderr.includes('refspec')`
+    // gate never matched (git says "couldn't find remote ref" / "refusing to
+    // fetch into branch"). Always fall back to a bare ref fetch; checkoutBranch's
+    // --track path can then create the local branch from origin/<branch>.
+    logForDebugging(`Refspec fetch failed, trying bare ref fetch: ${stderr}`);
+    const refFetch = await execFileNoThrow(gitExe(), ['fetch', 'origin', branch]);
+    if (refFetch.code !== 0) {
+      const err = new Error(`Failed to fetch from remote origin: ${refFetch.stderr}`);
+      logError(err);
+      return err;
     }
   }
+  return null;
 }
 
 /**
@@ -319,9 +348,14 @@ export async function checkOutTeleportedSessionBranch(branch?: string): Promise<
   try {
     const currentBranch = await getCurrentBranch();
     logForDebugging(`Current branch before teleport: '${currentBranch}'`);
+    let fetchError: Error | null = null;
     if (branch) {
       logForDebugging(`Switching to branch '${branch}'...`);
-      await fetchFromOrigin(branch);
+      // Soft failure: the checkout below may still succeed (branch exists
+      // locally), but the user must be told the branch may be BEHIND the
+      // remote session — the transcript references commits the working tree
+      // might not have. Propagated as branchError, not thrown.
+      fetchError = await fetchFromOrigin(branch);
       await checkoutBranch(branch);
       const newBranch = await getCurrentBranch();
       logForDebugging(`Branch after checkout: '${newBranch}'`);
@@ -331,7 +365,7 @@ export async function checkOutTeleportedSessionBranch(branch?: string): Promise<
     const branchName = await getCurrentBranch();
     return {
       branchName,
-      branchError: null
+      branchError: fetchError
     };
   } catch (error) {
     const branchName = await getCurrentBranch();
