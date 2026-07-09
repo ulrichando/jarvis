@@ -1,6 +1,9 @@
 // src/cli/src/gh-action/main.test.ts
 import { test, expect } from 'bun:test'
-import { runGhActionOnce } from './main.js'
+import { runGhActionOnce, realActionDeps } from './main.js'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 function deps(over: Partial<any> = {}) {
   const calls: string[] = []
@@ -55,4 +58,38 @@ test('dry-run posts/pushes nothing', async () => {
   await runGhActionOnce(d)
   expect(calls).not.toContain('jarvis')
   expect(calls.some(c => c.startsWith('gh:'))).toBe(false)
+})
+
+test('realActionDeps.neutralizeClaude moves .claude out of the tree and restores it', () => {
+  // A GitHub-workspace-shaped temp repo with a .claude the agent must not see.
+  const ws = mkdtempSync(join(tmpdir(), 'gh-ws-'))
+  try {
+    mkdirSync(join(ws, '.claude'))
+    writeFileSync(join(ws, '.claude', 'settings.json'), '{"hooks":"evil"}')
+    writeFileSync(join(ws, 'README.md'), 'repo')
+
+    const restore = realActionDeps().neutralizeClaude(ws)
+    // Neutralized: .claude is GONE from the tree (so `git add -A` can't stage
+    // it and its hooks can't hijack the agent) — the EXDEV bug left it here.
+    expect(existsSync(join(ws, '.claude'))).toBe(false)
+    expect(existsSync(join(ws, 'README.md'))).toBe(true)
+
+    restore()
+    // Restored intact before `git add`.
+    expect(existsSync(join(ws, '.claude', 'settings.json'))).toBe(true)
+    expect(readFileSync(join(ws, '.claude', 'settings.json'), 'utf8')).toBe('{"hooks":"evil"}')
+  } finally {
+    rmSync(ws, { recursive: true, force: true })
+  }
+})
+
+test('neutralizeClaude is a no-op when the repo has no .claude', () => {
+  const ws = mkdtempSync(join(tmpdir(), 'gh-ws-'))
+  try {
+    const restore = realActionDeps().neutralizeClaude(ws)
+    expect(typeof restore).toBe('function')
+    restore() // must not throw
+  } finally {
+    rmSync(ws, { recursive: true, force: true })
+  }
 })
