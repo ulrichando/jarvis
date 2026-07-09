@@ -182,6 +182,53 @@ export function findUltrathinkBoostForTurn(
   return undefined
 }
 
+/**
+ * Current-turn ultracode boost. Same trailing-segment scan as
+ * findUltrathinkBoostForTurn, but for the `ultracode_mode` attachment with
+ * keyword=true (session-mode ultracode already rides xhigh via
+ * resolveAppliedEffort, so only the turn-scoped keyword needs a boost here).
+ * "ultracode = xhigh + Workflow" — the reminder opts the turn into the
+ * Workflow tool; this makes the same turn's wire effort match. An alt+w
+ * ignore suppresses the attachment, so it suppresses this boost too.
+ */
+export function findUltracodeBoostForTurn(
+  messages: readonly Message[],
+): EffortLevel | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (!m) continue
+    if (m.type === 'assistant') {
+      return undefined
+    }
+    if (
+      m.type === 'attachment' &&
+      m.attachment.type === 'ultracode_mode' &&
+      m.attachment.keyword
+    ) {
+      return 'xhigh'
+    }
+  }
+  return undefined
+}
+
+/**
+ * Fold any number of optional turn boosts into the session effort value —
+ * each defined boost raises via raiseEffortValue (which preserves ULTRACODE
+ * session identity on ties and never lowers).
+ */
+export function applyTurnEffortBoosts(
+  session: EffortValue | undefined,
+  ...boosts: Array<EffortLevel | undefined>
+): EffortValue | undefined {
+  let value = session
+  for (const boost of boosts) {
+    if (boost !== undefined) {
+      value = raiseEffortValue(value, boost)
+    }
+  }
+  return value
+}
+
 export function isEffortLevel(value: string): value is EffortLevel {
   return (EFFORT_LEVELS as readonly string[]).includes(value)
 }

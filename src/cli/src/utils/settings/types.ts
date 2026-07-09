@@ -871,6 +871,16 @@ export const SettingsSchema = lazySchema(() =>
               .boolean()
               .optional()
               .describe('Enable voice mode (hold-to-talk dictation)'),
+            // Latch for the session-start "Voice mode is now available"
+            // notice. Lives HERE (jarvis-owned settings.json), NOT in the
+            // shared ~/.claude.json global config — real Claude Code
+            // sessions rewrite that file from their own in-memory state and
+            // clobber fork-only keys, which made the old voiceNoticeSeenCount
+            // counter reset forever (the notice nagged every session).
+            voiceNoticeSeen: z
+              .boolean()
+              .optional()
+              .describe('The one-time voice-mode availability notice was shown'),
           }
         : {}),
       ...(feature('KAIROS')
