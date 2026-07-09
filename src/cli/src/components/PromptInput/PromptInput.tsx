@@ -92,7 +92,7 @@ import type { TextHighlight } from '../../utils/textHighlighting.js';
 import type { Theme } from '../../utils/theme.js';
 import { findThinkingTriggerPositions, getRainbowColor, isUltrathinkEnabled } from '../../utils/thinking.js';
 import { findTokenBudgetPositions } from '../../utils/tokenBudget.js';
-import { findUltraplanTriggerPositions, findUltrareviewTriggerPositions } from '../../utils/ultraplan/keyword.js';
+import { findUltracodeTriggerPositions, findUltraplanTriggerPositions, findUltrareviewTriggerPositions } from '../../utils/ultraplan/keyword.js';
 import { AutoModeOptInDialog } from '../AutoModeOptInDialog.js';
 import { BridgeDialog } from '../BridgeDialog.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
@@ -523,6 +523,9 @@ function PromptInput({
   const ultraplanLaunching = useAppState(s => s.ultraplanLaunching);
   const ultraplanTriggers = useMemo(() => feature('ULTRAPLAN') && !ultraplanSessionUrl && !ultraplanLaunching ? findUltraplanTriggerPositions(displayedValue) : [], [displayedValue, ultraplanSessionUrl, ultraplanLaunching]);
   const ultrareviewTriggers = useMemo(() => isUltrareviewEnabled() ? findUltrareviewTriggerPositions(displayedValue) : [], [displayedValue]);
+  const ultracodeIgnoredInput = useAppState(s => s.ultracodeIgnoredInput);
+  const ultracodeIgnored = ultracodeIgnoredInput !== undefined && ultracodeIgnoredInput === displayedValue;
+  const ultracodeTriggers = useMemo(() => feature('WORKFLOW_SCRIPTS') && !ultracodeIgnored ? findUltracodeTriggerPositions(displayedValue) : [], [displayedValue, ultracodeIgnored]);
   const btwTriggers = useMemo(() => findBtwTriggerPositions(displayedValue), [displayedValue]);
   const buddyTriggers = useMemo(() => findBuddyTriggerPositions(displayedValue), [displayedValue]);
   const slashCommandTriggers = useMemo(() => {
@@ -699,6 +702,19 @@ function PromptInput({
       }
     }
 
+    // Same rainbow treatment for the ultracode keyword (Workflow opt-in)
+    for (const trigger of ultracodeTriggers) {
+      for (let i = trigger.start; i < trigger.end; i++) {
+        highlights.push({
+          start: i,
+          end: i + 1,
+          color: getRainbowColor(i - trigger.start),
+          shimmerColor: getRainbowColor(i - trigger.start, true),
+          priority: 10
+        });
+      }
+    }
+
     // Same rainbow treatment for the ultraplan keyword
     if (feature('ULTRAPLAN')) {
       for (const trigger of ultraplanTriggers) {
@@ -740,7 +756,7 @@ function PromptInput({
       }
     }
     return highlights;
-  }, [isSearchingHistory, historyQuery, historyMatch, historyFailedMatch, cursorOffset, btwTriggers, imageRefPositions, memberMentionHighlights, slashCommandTriggers, tokenBudgetTriggers, slackChannelTriggers, displayedValue, voiceInterimRange, thinkTriggers, ultraplanTriggers, ultrareviewTriggers, buddyTriggers]);
+  }, [isSearchingHistory, historyQuery, historyMatch, historyFailedMatch, cursorOffset, btwTriggers, imageRefPositions, memberMentionHighlights, slashCommandTriggers, tokenBudgetTriggers, slackChannelTriggers, displayedValue, voiceInterimRange, thinkTriggers, ultraplanTriggers, ultracodeTriggers, ultrareviewTriggers, buddyTriggers]);
   const {
     addNotification,
     removeNotification
@@ -774,6 +790,21 @@ function PromptInput({
       removeNotification('ultraplan-active');
     }
   }, [addNotification, removeNotification, ultraplanTriggers.length]);
+  // Ultracode keyword → this turn opts into Workflow orchestration. The
+  // ignore shortcut suppresses the attachment + xhigh boost for the turn
+  // (consumed by the attachment pipeline; see AppStateStore.ultracodeIgnored).
+  useEffect(() => {
+    if (ultracodeTriggers.length) {
+      addNotification({
+        key: 'ultracode-active',
+        text: `Dynamic workflow requested for this turn · ${getShortcutDisplay('chat:ultracodeIgnore', 'Chat', 'alt+w')} to ignore`,
+        priority: 'immediate',
+        timeoutMs: 5000
+      });
+    } else {
+      removeNotification('ultracode-active');
+    }
+  }, [addNotification, removeNotification, ultracodeTriggers.length]);
   useEffect(() => {
     if (isUltrareviewEnabled() && ultrareviewTriggers.length) {
       addNotification({
@@ -1415,6 +1446,22 @@ function PromptInput({
     }
   }, [helpOpen]);
 
+  // Handler for chat:ultracodeIgnore — suppress the ultracode Workflow opt-in
+  // for the currently composed turn (the notification advertises this key).
+  const handleUltracodeIgnore = useCallback(() => {
+    if (!ultracodeTriggers.length) return;
+    // Snapshot the composed text — suppression holds only while the input
+    // matches, so any edit or a fresh prompt re-arms automatically.
+    setAppState(prev => ({ ...prev, ultracodeIgnoredInput: input }));
+    removeNotification('ultracode-active');
+    addNotification({
+      key: 'ultracode-ignored',
+      text: 'Workflow request ignored for this turn',
+      priority: 'immediate',
+      timeoutMs: 3000
+    });
+  }, [ultracodeTriggers.length, input, setAppState, addNotification, removeNotification]);
+
   // Handler for chat:cycleMode - cycle through permission modes
   const handleCycleMode = useCallback(() => {
     // When viewing a teammate, cycle their mode instead of the leader's
@@ -1673,9 +1720,10 @@ function PromptInput({
     'chat:stash': handleStash,
     'chat:modelPicker': handleModelPicker,
     'chat:thinkingToggle': handleThinkingToggle,
+    'chat:ultracodeIgnore': handleUltracodeIgnore,
     'chat:cycleMode': handleCycleMode,
     'chat:imagePaste': handleImagePaste
-  }), [handleUndo, handleNewline, handleExternalEditor, handleStash, handleModelPicker, handleThinkingToggle, handleCycleMode, handleImagePaste]);
+  }), [handleUndo, handleNewline, handleExternalEditor, handleStash, handleModelPicker, handleThinkingToggle, handleUltracodeIgnore, handleCycleMode, handleImagePaste]);
   useKeybindings(chatHandlers, {
     context: 'Chat',
     isActive: !isModalOverlayActive

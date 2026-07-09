@@ -24,6 +24,11 @@ export function getEffortNotificationText(
   effortValue: EffortValue | undefined,
   model: string,
 ): string {
+  // Session ultracode shows by NAME — getDisplayedEffortLevel converts it to
+  // 'xhigh' (the wire level), which hid that standing workflow mode was on.
+  if (effortValue === ULTRACODE) {
+    return `${EFFORT_ULTRACODE} ultracode · /effort`
+  }
   const level = getDisplayedEffortLevel(model, effortValue)
   return `${effortLevelToSymbol(level)} ${level} · /effort`
 }

@@ -84,6 +84,7 @@ export const KEYBINDING_ACTIONS = [
   'chat:modelPicker',
   'chat:fastMode',
   'chat:thinkingToggle',
+  'chat:ultracodeIgnore',
   'chat:submit',
   'chat:newline',
   'chat:undo',

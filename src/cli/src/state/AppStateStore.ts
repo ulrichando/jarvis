@@ -430,6 +430,15 @@ export type AppState = DeepImmutable<{
   // ultraplanSessionUrl is set by teleportToRemote. Cleared by launchDetached
   // once the URL is set or on failure.
   ultraplanLaunching?: boolean
+  // chat:ultracodeIgnore (alt+w): the EXACT composed input the user ignored.
+  // Suppression (highlight, notification, Workflow attachment, xhigh boost)
+  // applies only while the input matches this snapshot — any edit, wipe, or
+  // new prompt auto-re-arms with no clearing race against the async
+  // attachment build. Consumed by the attachment pipeline on the submitted
+  // turn. Known edge: paste-placeholder expansion changes the text between
+  // PromptInput and the attachment build, so an ignore on a prompt that
+  // embeds pasted content may not suppress — rare compound case, accepted.
+  ultracodeIgnoredInput?: string
   // Active ultraplan CCR session URL. Set while the RemoteAgentTask runs;
   // truthy disables the keyword trigger + rainbow. Cleared when the poll
   // reaches terminal state.

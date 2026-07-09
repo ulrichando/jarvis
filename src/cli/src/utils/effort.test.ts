@@ -1,7 +1,9 @@
 import { beforeAll, describe, expect, test } from 'bun:test'
 import {
+  applyTurnEffortBoosts,
   clampEffortToModel,
   convertEffortValueToLevel,
+  findUltracodeBoostForTurn,
   findUltrathinkBoostForTurn,
   getEffortValueDescription,
   isUltracodeActive,
@@ -21,6 +23,11 @@ const ultrathinkMsg = (level: 'max' | 'xhigh' | 'high') =>
   ({
     type: 'attachment',
     attachment: { type: 'ultrathink_effort', level },
+  }) as unknown as Message
+const ultracodeMsg = (keyword: boolean) =>
+  ({
+    type: 'attachment',
+    attachment: { type: 'ultracode_mode', keyword, session: !keyword },
   }) as unknown as Message
 
 // The per-model effort ladder rides on the jarvis registry capabilities
@@ -177,5 +184,47 @@ describe('ultrathink end-to-end (raise → resolve → per-model clamp)', () => 
     process.env.CLAUDE_CODE_EFFORT_LEVEL = 'low'
     expect(resolveAppliedEffort('claude-fable-5[1m]', 'max')).toBe('low')
     delete process.env.CLAUDE_CODE_EFFORT_LEVEL
+  })
+})
+
+describe('findUltracodeBoostForTurn', () => {
+  test('keyword attachment in the trailing segment boosts to xhigh', () => {
+    expect(findUltracodeBoostForTurn([userMsg, ultracodeMsg(true)])).toBe(
+      'xhigh',
+    )
+  })
+
+  test('session-only attachment (no keyword) does not boost', () => {
+    expect(
+      findUltracodeBoostForTurn([userMsg, ultracodeMsg(false)]),
+    ).toBeUndefined()
+  })
+
+  test('stops at the previous assistant message (no cross-turn leak)', () => {
+    expect(
+      findUltracodeBoostForTurn([ultracodeMsg(true), assistantMsg, userMsg]),
+    ).toBeUndefined()
+  })
+})
+
+describe('applyTurnEffortBoosts', () => {
+  test('folds multiple boosts, highest wins', () => {
+    expect(applyTurnEffortBoosts('low', 'xhigh', 'max')).toBe('max')
+  })
+
+  test('undefined boosts are skipped', () => {
+    expect(applyTurnEffortBoosts('high', undefined, undefined)).toBe('high')
+  })
+
+  test('no boosts returns the session value untouched', () => {
+    expect(applyTurnEffortBoosts(undefined)).toBeUndefined()
+  })
+
+  test('preserves ULTRACODE session identity on an xhigh tie', () => {
+    expect(applyTurnEffortBoosts(ULTRACODE, 'xhigh')).toBe(ULTRACODE)
+  })
+
+  test('ultracode keyword (xhigh) + ultrathink (max) yields max', () => {
+    expect(applyTurnEffortBoosts(undefined, 'xhigh', 'max')).toBe('max')
   })
 })

@@ -38,7 +38,11 @@ import type {
   TombstoneMessage,
 } from './types/message.js'
 import { logError } from './utils/log.js'
-import { findUltrathinkBoostForTurn, raiseEffortValue } from './utils/effort.js'
+import {
+  applyTurnEffortBoosts,
+  findUltracodeBoostForTurn,
+  findUltrathinkBoostForTurn,
+} from './utils/effort.js'
 import {
   PROMPT_TOO_LONG_ERROR_MESSAGE,
   isPromptTooLongMessage,
@@ -303,6 +307,10 @@ async function* queryLoop(
   // — ultracode mode, the Spinner/Logo suffix, and get_settings keep seeing
   // the real session value while only the wire effort is raised.
   const ultrathinkBoost = findUltrathinkBoostForTurn(params.messages)
+  // Turn-scoped ultracode keyword: xhigh on the wire, matching the Workflow
+  // opt-in reminder in the same trailing segment (suppressed together by
+  // chat:ultracodeIgnore since both derive from the ultracode_mode attachment).
+  const ultracodeBoost = findUltracodeBoostForTurn(params.messages)
 
   // Fired once per user turn — the prompt is invariant across loop iterations,
   // so per-iteration firing would ask sideQuery the same question N times.
@@ -700,10 +708,11 @@ async function* queryLoop(
                 c => c.type === 'pending',
               ),
               queryTracking,
-              effortValue:
-                ultrathinkBoost !== undefined
-                  ? raiseEffortValue(appState.effortValue, ultrathinkBoost)
-                  : appState.effortValue,
+              effortValue: applyTurnEffortBoosts(
+                appState.effortValue,
+                ultracodeBoost,
+                ultrathinkBoost,
+              ),
               advisorModel: appState.advisorModel,
               skipCacheWrite,
               agentId: toolUseContext.agentId,

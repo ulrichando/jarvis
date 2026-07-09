@@ -214,6 +214,7 @@ import {
   type EffortLevel,
   type EffortValue,
 } from './effort.js'
+import { hasUltracodeKeyword } from './ultraplan/keyword.js'
 import {
   tokenCountFromLastAPIResponse,
   tokenCountWithEstimation,
@@ -851,16 +852,24 @@ export async function getAttachments(
     ),
     // Main thread only — subagents don't have the Workflow tool, so the
     // orchestration opt-in reminder would be unactionable noise there.
-    maybe('ultracode_mode', () =>
-      Promise.resolve(
-        isMainThread
-          ? getUltracodeAttachment(
-              input,
-              toolUseContext.getAppState().effortValue,
-            )
-          : [],
-      ),
-    ),
+    maybe('ultracode_mode', () => {
+      if (!isMainThread) return Promise.resolve([])
+      const appState = toolUseContext.getAppState()
+      const ignored =
+        appState.ultracodeIgnoredInput !== undefined &&
+        appState.ultracodeIgnoredInput === input
+      const out = getUltracodeAttachment(input, appState.effortValue, ignored)
+      // The ignore is turn-scoped: consume the snapshot here (the one place
+      // every submitted turn passes through) so re-typing the same prompt
+      // later doesn't silently inherit the old ignore.
+      if (ignored) {
+        toolUseContext.setAppState(prev => ({
+          ...prev,
+          ultracodeIgnoredInput: undefined,
+        }))
+      }
+      return Promise.resolve(out)
+    }),
     maybe('deferred_tools_delta', () =>
       Promise.resolve(
         getDeferredToolsDeltaAttachment(
@@ -1493,11 +1502,17 @@ function getUltrathinkEffortAttachment(
 function getUltracodeAttachment(
   input: string | null,
   effortValue: EffortValue | undefined,
+  keywordIgnored = false,
 ): Attachment[] {
   if (!feature('WORKFLOW_SCRIPTS')) {
     return []
   }
-  const keyword = !!input && /\bultracode\b/i.test(input)
+  // Shared exclusion-aware matcher (same as ultraplan/ultrareview): quoted
+  // spans, path/identifier context, trailing '?', and slash-command lines
+  // don't fire — so the attachment and the PromptInput rainbow/notification
+  // agree on what counts as the keyword. keywordIgnored = the user pressed
+  // the ignore shortcut (chat:ultracodeIgnore) while composing this turn.
+  const keyword = !keywordIgnored && !!input && hasUltracodeKeyword(input)
   const session = isUltracodeActive(effortValue)
   if (!keyword && !session) {
     return []
