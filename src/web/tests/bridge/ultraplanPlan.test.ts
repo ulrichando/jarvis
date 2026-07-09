@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   buildPlanDecision,
   findPendingExitPlanToolUseId,
+  findUnresolvedPlanPermission,
 } from "@/lib/bridge/ultraplanPlan";
 
 // The exact markers the CLI poller scans for in
@@ -86,5 +87,75 @@ describe("findPendingExitPlanToolUseId", () => {
 
   test("no events → null", () => {
     expect(findPendingExitPlanToolUseId([])).toBeNull();
+  });
+});
+
+// The container ExitPlanMode permission event the worker/events route records
+// (instead of auto-approving) so the /plan route can resolve it with the
+// user's decision.
+const perm = (requestId: string, toolUseId: string, input: unknown = {}) => ({
+  type: "ultraplan_permission",
+  payload_json: JSON.stringify({
+    request_id: requestId,
+    tool_use_id: toolUseId,
+    input,
+  }),
+});
+const permResolved = (requestId: string) => ({
+  type: "ultraplan_permission_resolved",
+  payload_json: JSON.stringify({ request_id: requestId }),
+});
+const evTyped = (content: unknown) => ({
+  type: "assistant",
+  payload_json: JSON.stringify({ message: { content } }),
+});
+
+describe("findUnresolvedPlanPermission", () => {
+  test("pending permission for the tool_use → its request_id + original input", () => {
+    const input = { allowedPrompts: [{ prompt: "edit files" }] };
+    const events = [evTyped([toolUse("t1")]), perm("req-1", "t1", input)];
+    expect(findUnresolvedPlanPermission(events, "t1")).toEqual({
+      requestId: "req-1",
+      input,
+    });
+  });
+
+  test("resolved permission → null (idempotent double-POST guard)", () => {
+    const events = [perm("req-1", "t1"), permResolved("req-1")];
+    expect(findUnresolvedPlanPermission(events, "t1")).toBeNull();
+  });
+
+  test("permission for a different tool_use → null", () => {
+    expect(findUnresolvedPlanPermission([perm("req-1", "t1")], "t2")).toBeNull();
+  });
+
+  test("no permission event (browser-local session) → null", () => {
+    expect(
+      findUnresolvedPlanPermission([evTyped([toolUse("t1")])], "t1"),
+    ).toBeNull();
+  });
+
+  test("newest unresolved permission wins", () => {
+    const events = [
+      perm("req-1", "t1", { a: 1 }),
+      perm("req-2", "t1", { a: 2 }),
+    ];
+    expect(findUnresolvedPlanPermission(events, "t1")).toEqual({
+      requestId: "req-2",
+      input: { a: 2 },
+    });
+  });
+
+  test("missing/invalid input defaults to {}", () => {
+    const events = [
+      {
+        type: "ultraplan_permission",
+        payload_json: JSON.stringify({ request_id: "req-1", tool_use_id: "t1" }),
+      },
+    ];
+    expect(findUnresolvedPlanPermission(events, "t1")).toEqual({
+      requestId: "req-1",
+      input: {},
+    });
   });
 });

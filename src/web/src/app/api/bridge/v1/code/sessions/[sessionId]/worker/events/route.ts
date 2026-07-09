@@ -90,25 +90,54 @@ export async function POST(
         // container_json (only set for launched container sessions).
         if (payload.type === 'control_request' && session?.container_json) {
           const r = payload.request as
-            | { subtype?: string; input?: Record<string, unknown> }
+            | {
+                subtype?: string
+                tool_name?: string
+                tool_use_id?: string
+                input?: Record<string, unknown>
+              }
             | undefined
           const requestId =
             typeof payload.request_id === 'string' ? payload.request_id : ''
           if (r?.subtype === 'can_use_tool' && requestId) {
-            appendInbound(store, sessionId, {
-              type: 'control_response',
-              uuid: randomUUID(),
-              response: {
-                subtype: 'success',
-                request_id: requestId,
-                response: {
-                  behavior: 'allow',
-                  updatedInput:
-                    r.input && typeof r.input === 'object' ? r.input : {},
+            // ExitPlanMode is the /ultraplan review gate: the plan must PAUSE
+            // for a human decision (approve → execute on web / local →
+            // teleport back to the terminal / reject → revise) rather than
+            // auto-run. Record the pending permission (request_id ↔
+            // tool_use_id) so the /plan route can resolve it with the user's
+            // decision, and do NOT auto-approve it here. Every other tool
+            // still auto-approves — the container runs bypassPermissions with
+            // no human in the loop, so without it the worker blocks forever on
+            // the first Write/Bash.
+            if (/^exit_?plan_?mode/i.test(r.tool_name ?? '')) {
+              appendSessionEvent(store, sessionId, {
+                type: 'ultraplan_permission',
+                payload: {
+                  request_id: requestId,
+                  tool_use_id:
+                    typeof r.tool_use_id === 'string' ? r.tool_use_id : '',
+                  // Original input — the approve path replays it verbatim so
+                  // the tool reads the plan from disk exactly as the old
+                  // auto-approve did (input.plan is absent; plan lives on disk).
+                  input: r.input && typeof r.input === 'object' ? r.input : {},
                 },
-              },
-            })
-            emitInbound(sessionId)
+              })
+            } else {
+              appendInbound(store, sessionId, {
+                type: 'control_response',
+                uuid: randomUUID(),
+                response: {
+                  subtype: 'success',
+                  request_id: requestId,
+                  response: {
+                    behavior: 'allow',
+                    updatedInput:
+                      r.input && typeof r.input === 'object' ? r.input : {},
+                  },
+                },
+              })
+              emitInbound(sessionId)
+            }
           }
         }
         continue
