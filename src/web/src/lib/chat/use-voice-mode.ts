@@ -1,12 +1,12 @@
 "use client";
 
 // Voice mode — the /chat live-conversation loop (#53).
-//   STT: REMOVED 2026-06-29. Web speech-to-text ran only on the eradicated
-//        cloud provider (/api/stt → its Whisper endpoint); that route is gone
-//        and there is no replacement web STT, so voice INPUT is unavailable —
-//        `transcribe` warns once and feeds nothing. The mic-capture +
-//        energy-endpointer machinery below is kept intact (dormant) so wiring
-//        a replacement /api/stt back in is a small change, not a rebuild.
+//   STT: RESTORED 2026-07-09. /api/stt proxies each captured utterance to an
+//        OpenAI-compatible transcription endpoint (default: OpenAI
+//        gpt-4o-mini-transcribe; JARVIS_STT_URL swaps providers). It was dead
+//        2026-06-29 → 2026-07-09 after the provider-eradication pass removed
+//        the old route's only backend. 503 = no key configured server-side —
+//        `transcribe` toasts that once instead of failing silently.
 //   TTS: Kokoro via /api/tts (local, natural voice — same engine the voice
 //        agent uses), with a browser speechSynthesis fallback. The gray→white
 //        highlight rides the real audio.currentTime (exact) or a time estimate
@@ -69,10 +69,15 @@ export function useVoiceMode(opts: {
   const lastVoiceTsRef = useRef(0);
   const lastTickTsRef = useRef(0);
   const endpointingRef = useRef(false);
-  // Warn once (not per-utterance) when STT is unavailable — /api/stt was
-  // removed 2026-06-29 (its only backend was the eradicated cloud provider),
-  // so it 404s.
+  // Warn once (not per-utterance) when STT fails — 503 means the server has
+  // no transcription key configured; anything else is an upstream failure.
+  // Reset on each start() so a new voice session gets fresh feedback.
   const sttWarnedRef = useRef(false);
+  // Voice-session generation: bumped on stop() so an in-flight /api/stt fetch
+  // from BEFORE a stop can't deliver its transcript into a restarted session
+  // (active+listening are true again after stop→start, so those guards alone
+  // don't survive a restart — a discarded utterance would submit a real turn).
+  const sttGenRef = useRef(0);
 
   // TTS machinery: read the reply aloud + drive the gray→white highlight.
   const intervalRef = useRef<number | null>(null);
@@ -92,6 +97,7 @@ export function useVoiceMode(opts: {
 
   // --- STT: transcribe a settled utterance ---------------------------------
   const transcribe = useCallback(async (blob: Blob) => {
+    const gen = sttGenRef.current;
     const fd = new FormData();
     fd.append("file", blob, "utterance.webm");
     let res: Response;
@@ -100,13 +106,17 @@ export function useVoiceMode(opts: {
     } catch {
       return; // network hiccup — the next utterance will try again
     }
+    if (gen !== sttGenRef.current) return; // voice mode stopped meanwhile
     if (!res.ok) {
-      // /api/stt was removed 2026-06-29 (its only backend was the eradicated
-      // cloud provider); it now 404s. Warn once so the mic toggle isn't a
-      // silent dead end.
+      // Warn once so the mic toggle isn't a silent dead end. 503 = the server
+      // has no transcription key; other statuses = upstream/transient failure.
       if (!sttWarnedRef.current) {
         sttWarnedRef.current = true;
-        toast.error("Voice input isn't available on the web (speech-to-text was removed).");
+        toast.error(
+          res.status === 503
+            ? "Voice input isn't set up on this server — configure a transcription key (OPENAI_API_KEY or JARVIS_STT_API_KEY)."
+            : "Speech-to-text failed — try again or check the server logs.",
+        );
       }
       return;
     }
@@ -243,6 +253,7 @@ export function useVoiceMode(opts: {
     setActive(true);
     setPhase("connecting");
     phaseRef.current = "connecting";
+    sttWarnedRef.current = false; // fresh session → fresh failure feedback
     let stream: MediaStream;
     try {
       stream = await md.getUserMedia({
@@ -291,6 +302,7 @@ export function useVoiceMode(opts: {
   }, [onUnsupported, startListening, teardown]);
 
   const stop = useCallback(() => {
+    sttGenRef.current++; // invalidate in-flight transcriptions from this session
     activeRef.current = false;
     setActive(false);
     setPhase("idle");
