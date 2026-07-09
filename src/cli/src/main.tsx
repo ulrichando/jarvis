@@ -92,6 +92,10 @@ import {
   prefetchGcpCredentialsIfSafe,
   validateForceLoginOrg,
 } from "./utils/auth.js";
+// JARVIS: self-hosted users have no claude.ai subscription; isSelfHostedBridge()
+// (JARVIS_BRIDGE_BASE_URL) is the entitlement signal for bridge-brokered features
+// like the Chrome extension, mirroring isBridgeEnabled(). See bridgeEnabled.ts.
+import { isSelfHostedBridge } from "./bridge/bridgeEnabled.js";
 import {
   checkHasTrustDialogAccepted,
   getGlobalConfig,
@@ -209,6 +213,7 @@ import {
   shouldAutoEnableClaudeInChrome,
   shouldEnableClaudeInChrome,
 } from "./utils/jarvisInChrome/setup.js";
+import { setupJarvisInChrome } from "./utils/jarvisChromeMcp/setup.js";
 import { getContextWindowForModel } from "./utils/context.js";
 import { loadConversationForResume } from "./utils/conversationRecovery.js";
 import { buildDeepLinkBanner } from "./utils/deepLink/banner.js";
@@ -2417,7 +2422,7 @@ async function run(): Promise<CommanderCommand> {
       setChromeFlagOverride(chromeOpts.chrome);
       const enableClaudeInChrome =
         shouldEnableClaudeInChrome(chromeOpts.chrome) &&
-        ("external" === "ant" || isClaudeAISubscriber());
+        ("external" === "ant" || isSelfHostedBridge() || isClaudeAISubscriber());
       const autoEnableClaudeInChrome =
         !enableClaudeInChrome && shouldAutoEnableClaudeInChrome();
       if (enableClaudeInChrome) {
@@ -2427,11 +2432,14 @@ async function run(): Promise<CommanderCommand> {
             platform:
               platform as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
           });
+          const chromeSetup = isSelfHostedBridge()
+            ? setupJarvisInChrome()
+            : setupClaudeInChrome();
           const {
             mcpConfig: chromeMcpConfig,
             allowedTools: chromeMcpTools,
             systemPrompt: chromeSystemPrompt,
-          } = setupClaudeInChrome();
+          } = chromeSetup;
           dynamicMcpConfig = {
             ...dynamicMcpConfig,
             ...chromeMcpConfig,
@@ -2455,7 +2463,10 @@ async function run(): Promise<CommanderCommand> {
         }
       } else if (autoEnableClaudeInChrome) {
         try {
-          const { mcpConfig: chromeMcpConfig } = setupClaudeInChrome();
+          const chromeSetup = isSelfHostedBridge()
+            ? setupJarvisInChrome()
+            : setupClaudeInChrome();
+          const { mcpConfig: chromeMcpConfig } = chromeSetup;
           dynamicMcpConfig = {
             ...dynamicMcpConfig,
             ...chromeMcpConfig,
