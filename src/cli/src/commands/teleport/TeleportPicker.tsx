@@ -37,6 +37,13 @@ function TeleportPickerUI(props: {
   const onSelect = useCallback(
     (session: CodeSession) => {
       void (async () => {
+        // switchToRepoCheckout chdirs into the session's checkout BEFORE the
+        // resume runs. If a later step throws, the working directory has
+        // already moved — surface that in the error so the strand isn't
+        // silent/confusing (full state-restore isn't attempted: the switch
+        // mutates several coupled caches and a partial undo risks a worse
+        // inconsistent state — the user is validly in the session's repo).
+        let switchedPath: string | null = null
         try {
           setStatus(`Resuming "${session.title || 'session'}"…`)
           const sw = await switchToRepoCheckout(session)
@@ -48,6 +55,7 @@ function TeleportPickerUI(props: {
             return
           }
           if (sw.kind === 'switched') {
+            switchedPath = sw.path
             setStatus(`Switched to ${sw.path} · resuming…`)
           }
           const result = await teleportResumeCodeSession(session.id)
@@ -62,7 +70,12 @@ function TeleportPickerUI(props: {
           context.setMessages(() => messages)
           onDone(undefined, { display: 'skip' })
         } catch (e) {
-          onDone(`Teleport failed: ${errorMessage(e)}`)
+          onDone(
+            `Teleport failed: ${errorMessage(e)}` +
+              (switchedPath
+                ? ` — note: your working directory was changed to ${switchedPath} (the session's repo). Retry the teleport there, or cd back to your previous directory.`
+                : ''),
+          )
         }
       })()
     },
