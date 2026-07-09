@@ -97,7 +97,14 @@ export class RemoteIO extends StructuredIO {
     this.isDebug = isDebugMode()
     this.transport.setOnData((data: string) => {
       this.inputStream.write(data)
-      if (this.isBridge && this.isDebug) {
+      // Bridge parent reads child stdout for first-prompt title derivation
+      // (sessionRunner's onFirstUserMessage watches for 'user' frames). This
+      // was debug-gated, but sessionRunner only enables debug for verbose/ant
+      // runs — so in every DEFAULT external run the parent never saw a user
+      // frame and web-created untitled sessions never got titled. Inbound
+      // volume is user-driven (prompts + control), so echo whenever spawned
+      // under the bridge.
+      if (this.isBridge) {
         writeToStdout(data.endsWith('\n') ? data : data + '\n')
       }
     })
@@ -224,9 +231,13 @@ export class RemoteIO extends StructuredIO {
 
   /**
    * Send output to the transport.
-   * In bridge mode, control_request messages are always echoed to stdout so the
-   * bridge parent can detect permission requests. Other messages are echoed only
-   * in debug mode.
+   * In bridge mode, the message types the parent's stdout parser consumes are
+   * always echoed: control_request (permission detection), assistant
+   * (extractActivities' tool/text activity trail), result (completion/error
+   * status). These were debug-gated, but sessionRunner only enables debug for
+   * verbose/ant runs — so in every DEFAULT external run the bridge terminal
+   * showed no activity trail and sessions sat at bare "Attached" forever.
+   * Everything else is echoed only in debug mode.
    */
   async write(message: StdoutMessage): Promise<void> {
     if (this.ccrClient) {
@@ -235,7 +246,12 @@ export class RemoteIO extends StructuredIO {
       await this.transport.write(message)
     }
     if (this.isBridge) {
-      if (message.type === 'control_request' || this.isDebug) {
+      if (
+        message.type === 'control_request' ||
+        message.type === 'assistant' ||
+        message.type === 'result' ||
+        this.isDebug
+      ) {
         writeToStdout(ndjsonSafeStringify(message) + '\n')
       }
     }
