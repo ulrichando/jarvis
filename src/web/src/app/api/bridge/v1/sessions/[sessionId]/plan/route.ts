@@ -4,44 +4,10 @@ import { getStore } from "@/lib/bridge/db";
 import { appendInbound, listSessionEvents } from "@/lib/bridge/store";
 import { authorizeSession } from "@/lib/bridge/authz";
 import { bridgeError } from "@/lib/bridge/errors";
-
-// Scan a session's events for ExitPlanMode tool calls and their results.
-// Returns the tool_use id of the NEWEST ExitPlanMode call that has no
-// tool_result yet (the plan awaiting a decision), or null.
-function findPendingExitPlanToolUseId(
-  events: ReturnType<typeof listSessionEvents>,
-): string | null {
-  const calls: string[] = [];
-  const resolved = new Set<string>();
-  for (const e of events) {
-    let payload: Record<string, unknown>;
-    try {
-      payload = JSON.parse(e.payload_json) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    const content = (payload.message as { content?: unknown } | undefined)
-      ?.content;
-    if (!Array.isArray(content)) continue;
-    for (const block of content as Array<Record<string, unknown>>) {
-      if (
-        block?.type === "tool_use" &&
-        typeof block?.name === "string" &&
-        /exit_?plan_?mode/i.test(block.name) &&
-        typeof block?.id === "string"
-      ) {
-        calls.push(block.id);
-      }
-      if (block?.type === "tool_result" && typeof block?.tool_use_id === "string") {
-        resolved.add(block.tool_use_id);
-      }
-    }
-  }
-  for (let i = calls.length - 1; i >= 0; i--) {
-    if (!resolved.has(calls[i]!)) return calls[i]!;
-  }
-  return null;
-}
+import {
+  buildPlanDecision,
+  findPendingExitPlanToolUseId,
+} from "@/lib/bridge/ultraplanPlan";
 
 // GET /api/bridge/v1/sessions/{id}/plan — the latest plan the agent proposed
 // in plan mode (an ExitPlanMode tool call in an assistant turn). Read-only;
@@ -119,21 +85,11 @@ export async function POST(
       return bridgeError(409, "no_pending_plan", "No plan awaiting a decision");
     }
     const plan = typeof body?.plan === "string" ? body.plan : "";
-    let isError: boolean;
-    let content: string;
-    if (decision === "approve") {
-      isError = false;
-      const marker = body?.edited
-        ? "## Approved Plan (edited by user):"
-        : "## Approved Plan:";
-      content = `${marker}\n${plan}`;
-    } else if (decision === "local") {
-      isError = true;
-      content = `__ULTRAPLAN_TELEPORT_LOCAL__\n${plan}`;
-    } else {
-      isError = true;
-      content = "Plan rejected by user.";
-    }
+    const { isError, content } = buildPlanDecision(
+      decision,
+      plan,
+      body?.edited === true,
+    );
     appendInbound(store, sessionId, {
       type: "user",
       uuid: randomBytes(8).toString("hex"),
