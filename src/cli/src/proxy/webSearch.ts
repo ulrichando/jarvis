@@ -17,6 +17,43 @@ const DDG_ENDPOINT = 'https://html.duckduckgo.com/html/'
 const USER_AGENT =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
+// Primary backend: self-hosted SearXNG (same SEARXNG_URL the voice stack uses).
+// The DuckDuckGo HTML endpoint CAPTCHA-blocks datacenter/VPS IPs — the voice
+// stack already hit this and moved to SearXNG; the CLI proxy was left on DDG.
+export async function searchSearxng(query: string): Promise<SearchHit[]> {
+  const base = (process.env.SEARXNG_URL ?? '').trim().replace(/\/+$/, '')
+  if (!base) throw new Error('SEARXNG_URL not set')
+  // SearXNG needs `search.formats: [html, json]` server-side or /search?format=json 403s.
+  const url = `${base}/search?q=${encodeURIComponent(query)}&format=json&pageno=1`
+  const res = await fetch(url, { headers: { Accept: 'application/json' } })
+  if (!res.ok) throw new Error(`SearXNG HTTP ${res.status}`)
+  const data: any = await res.json()
+  const results = Array.isArray(data?.results) ? data.results : []
+  return results
+    .map((r: any) => ({
+      title: String(r?.title ?? '').trim(),
+      url: String(r?.url ?? '').trim(),
+    }))
+    .filter((h: SearchHit) => h.title && h.url)
+    .slice(0, 10)
+}
+
+// A DuckDuckGo anti-bot / CAPTCHA interstitial returns HTTP 200 with NO result
+// anchors — so an empty parse looked like a clean "0 results". Detect the block
+// page by its markers so the caller can report the search as FAILED (the model
+// then knows the search was blocked, not that the web has nothing).
+function looksLikeDuckDuckGoBlockPage(html: string): boolean {
+  const h = html.toLowerCase()
+  return (
+    h.includes('anomaly') ||
+    h.includes('challenge-form') ||
+    h.includes('detected unusual') ||
+    h.includes('unusual traffic') ||
+    h.includes('are you a robot') ||
+    h.includes('captcha')
+  )
+}
+
 export async function searchDuckDuckGo(query: string): Promise<SearchHit[]> {
   const url = `${DDG_ENDPOINT}?q=${encodeURIComponent(query)}`
   const res = await fetch(url, {
@@ -30,7 +67,31 @@ export async function searchDuckDuckGo(query: string): Promise<SearchHit[]> {
     body: `q=${encodeURIComponent(query)}&b=&kl=us-en`,
   })
   if (!res.ok) throw new Error(`DuckDuckGo HTTP ${res.status}`)
-  return parseDuckDuckGoHtml(await res.text())
+  const html = await res.text()
+  const hits = parseDuckDuckGoHtml(html)
+  if (hits.length === 0 && looksLikeDuckDuckGoBlockPage(html)) {
+    // THROW rather than return [] — a blocked search must not masquerade as
+    // "no results exist" (the exact silent-failure the sweep flagged).
+    throw new Error('DuckDuckGo returned an anti-bot/CAPTCHA page (search blocked)')
+  }
+  return hits
+}
+
+// Top-level entry the proxy uses: prefer SearXNG when configured, fall back to
+// DuckDuckGo. Throws if the chosen backend(s) fail — callers surface that as a
+// web_search_tool_result_error (not a silent empty).
+export async function webSearch(query: string): Promise<SearchHit[]> {
+  if ((process.env.SEARXNG_URL ?? '').trim()) {
+    try {
+      return await searchSearxng(query)
+    } catch (e) {
+      console.warn(
+        '[jarvis-proxy] SearXNG search failed, falling back to DuckDuckGo:',
+        (e as Error).message,
+      )
+    }
+  }
+  return searchDuckDuckGo(query)
 }
 
 export function parseDuckDuckGoHtml(html: string): SearchHit[] {
@@ -195,9 +256,9 @@ export async function writeSyntheticWebSearchStream(
   let hits: SearchHit[] = []
   let failed = false
   try {
-    hits = await searchDuckDuckGo(query)
+    hits = await webSearch(query)
   } catch (e) {
-    console.error('[jarvis-proxy] DuckDuckGo search failed:', e)
+    console.error('[jarvis-proxy] web search failed:', e)
     failed = true
   }
 

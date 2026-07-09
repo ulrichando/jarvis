@@ -8,7 +8,7 @@ import { classifyChatCompletionsRequest, buildHubConfig } from './hubGateway.js'
 import {
   buildSyntheticWebSearchResponse,
   extractWebSearchQuery,
-  searchDuckDuckGo,
+  webSearch,
   writeSyntheticWebSearchStream,
 } from './webSearch.js'
 import { verifyProxyToken } from './proxyJwt.js'
@@ -376,17 +376,17 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
       })
     }
 
-    let hits: Awaited<ReturnType<typeof searchDuckDuckGo>> = []
+    let hits: Awaited<ReturnType<typeof webSearch>> = []
     let failed = false
     try {
-      hits = await searchDuckDuckGo(webSearchQuery)
+      hits = await webSearch(webSearchQuery)
     } catch (e) {
-      console.error('[jarvis-proxy] DuckDuckGo search failed:', e)
+      console.error('[jarvis-proxy] web search failed:', e)
       failed = true
     }
     finish({
       provider: 'web_search',
-      upstream_model: 'duckduckgo',
+      upstream_model: (process.env.SEARXNG_URL ?? '').trim() ? 'searxng' : 'duckduckgo',
       error_type: failed ? 'web_search_failed' : null,
     })
     return new Response(
