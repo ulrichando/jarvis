@@ -148,6 +148,30 @@ class TestTerminalTool:
         assert result["exit_code"] == 0
         assert str(tmp_path) in result["output"]
 
+    @pytest.mark.skipif(os.name == "nt", reason="process-group kill is POSIX")
+    def test_timeout_kills_pipeline_children(self):
+        """A foreground timeout must kill the whole pipeline, not just the shell
+        (children would otherwise orphan and keep running)."""
+        import subprocess as _sp
+        import time as _t
+        from tools.terminal_tool import terminal_tool
+        marker = "jarvis-orphan-probe-4732"
+        raw = terminal_tool(f"sleep 40 && echo {marker} | cat", timeout=1)
+        assert json.loads(raw)["exit_code"] == 124
+        _t.sleep(0.4)
+        alive = _sp.run(["pgrep", "-af", marker], capture_output=True, text=True).stdout
+        # Only our own pgrep echoes the marker string; no real sleep child.
+        assert "sleep 40" not in alive
+
+    def test_background_registry_reaps_and_bounds(self):
+        from tools.terminal_tool import terminal_tool, _bg_processes, _reap_bg_processes
+        import time as _t
+        for _ in range(5):
+            terminal_tool("true", background=True)
+        _t.sleep(0.3)
+        _reap_bg_processes()
+        assert len(_bg_processes) == 0, "finished background procs were not reaped"
+
     def test_dangerous_workdir_blocked(self):
         from tools.terminal_tool import terminal_tool
         raw = terminal_tool("pwd", workdir="/tmp; rm -rf /")

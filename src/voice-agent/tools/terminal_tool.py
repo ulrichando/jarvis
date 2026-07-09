@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -235,6 +236,42 @@ def _next_session_id() -> str:
         return f"jarvis-bg-{_bg_counter}"
 
 
+# Cap the background-process registry so a long session that launches many
+# background commands can't grow it (and its finished-but-unreaped zombie
+# children) without bound. ponytail: FIFO + reap-on-launch; a poll/kill tool
+# action would be the fuller fix if bg processes ever need lifecycle control.
+_MAX_BG_PROCESSES = 64
+
+
+def _kill_proc_tree(proc: subprocess.Popen) -> None:
+    """Kill *proc* and, on POSIX, its whole process group (children of a
+    pipeline/compound command). Falls back to proc.kill() on Windows or if the
+    group is already gone."""
+    if os.name != "nt":
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
+
+
+def _reap_bg_processes() -> None:
+    """Poll every tracked background process (reaps finished ones so they don't
+    linger as zombies) and drop completed entries; enforce the size cap."""
+    with _bg_lock:
+        for sid in list(_bg_processes.keys()):
+            entry = _bg_processes[sid]
+            if entry["proc"].poll() is not None:  # finished → poll() reaps it
+                del _bg_processes[sid]
+        # Still over cap (all live) → evict oldest so the dict stays bounded.
+        while len(_bg_processes) >= _MAX_BG_PROCESSES:
+            _bg_processes.pop(next(iter(_bg_processes)))
+
+
 def _poll_bg_process(session_id: str) -> Optional[dict]:
     """Return status dict for a background process, or None if unknown."""
     with _bg_lock:
@@ -274,12 +311,16 @@ def _run_local(
             text=True,
             errors="replace",
             creationflags=_NO_WINDOW_FLAGS,
+            # New session → the shell is a process-group leader, so a
+            # timeout can kill the WHOLE pipeline/compound command, not just
+            # the shell (its children would otherwise orphan and keep running).
+            start_new_session=(os.name != "nt"),
         )
         try:
             output, _ = proc.communicate(timeout=timeout)
             return {"output": output or "", "returncode": proc.returncode}
         except subprocess.TimeoutExpired:
-            proc.kill()
+            _kill_proc_tree(proc)
             try:
                 out, _ = proc.communicate(timeout=5)
             except Exception:
@@ -370,6 +411,7 @@ def terminal_tool(
             }, ensure_ascii=False)
 
         if background:
+            _reap_bg_processes()  # drop + reap finished entries; bound the dict
             session_id = _next_session_id()
             try:
                 env = os.environ.copy()
@@ -380,6 +422,7 @@ def terminal_tool(
                     cwd=cwd,
                     env=env,
                     creationflags=_NO_WINDOW_FLAGS,
+                    start_new_session=(os.name != "nt"),
                 )
                 with _bg_lock:
                     _bg_processes[session_id] = {
