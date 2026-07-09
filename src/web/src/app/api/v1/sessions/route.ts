@@ -26,7 +26,7 @@ type SessionContext = Record<string, unknown>
 // `events` (teleport wraps each payload as { type:'event', data:{...} }). The
 // ultraplan client sends a set_permission_mode control_request (mode 'plan')
 // plus a user message.
-function parseCcrInitialEvents(
+export function parseCcrInitialEvents(
   events: Array<{ type?: string; [k: string]: unknown }> | undefined,
 ): { prompt: string; mode: string | null } {
   let prompt = ''
@@ -64,7 +64,7 @@ function parseCcrInitialEvents(
 }
 
 // owner/name from a git_repository source URL, or '' for a no-repo session.
-function repoFromContext(ctx: Record<string, unknown> | undefined): string {
+export function repoFromContext(ctx: Record<string, unknown> | undefined): string {
   const sources = (ctx?.sources as Array<{ url?: string }> | undefined) ?? []
   const url = sources.find((s) => typeof s?.url === 'string')?.url
   const m = url?.match(/github\.com[/:]([^/]+)\/([^/.]+)/)
