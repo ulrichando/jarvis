@@ -9,6 +9,10 @@ import { jsonStringify } from '../utils/slowOperations.js'
 const DEBUG_MSG_LIMIT = 2000
 
 const SECRET_FIELD_NAMES = [
+  // The update_environment_variables stdin frame carries the session bearer
+  // under this env-var key (sessionRunner.updateAccessToken) — without it the
+  // full token lands unredacted in the debug log on every token refresh.
+  'CLAUDE_CODE_SESSION_ACCESS_TOKEN',
   'session_ingress_token',
   'environment_secret',
   'access_token',

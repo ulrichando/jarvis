@@ -4,7 +4,7 @@ import { tmpdir } from 'os'
 import { dirname, join } from 'path'
 import { createInterface } from 'readline'
 import { jsonParse, jsonStringify } from '../utils/slowOperations.js'
-import { debugTruncate } from './debugUtils.js'
+import { debugTruncate, redactSecrets } from './debugUtils.js'
 import type {
   SessionActivity,
   SessionDoneStatus,
@@ -376,7 +376,7 @@ export function createSessionSpawner(deps: SessionSpawnerDeps): SessionSpawner {
 
           // Log all messages flowing from the child CLI to the bridge
           deps.onDebug(
-            `[bridge:ws] sessionId=${opts.sessionId} <<< ${debugTruncate(line)}`,
+            `[bridge:ws] sessionId=${opts.sessionId} <<< ${debugTruncate(redactSecrets(line))}`,
           )
 
           // In verbose mode, forward raw output to stderr
@@ -519,7 +519,7 @@ export function createSessionSpawner(deps: SessionSpawnerDeps): SessionSpawner {
         writeStdin(data: string): void {
           if (child.stdin && !child.stdin.destroyed) {
             deps.onDebug(
-              `[bridge:ws] sessionId=${opts.sessionId} >>> ${debugTruncate(data)}`,
+              `[bridge:ws] sessionId=${opts.sessionId} >>> ${debugTruncate(redactSecrets(data))}`,
             )
             child.stdin.write(data)
           }
