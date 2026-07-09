@@ -1,6 +1,6 @@
 import { desc, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
-import { requireUserId, Unauthenticated } from "@/lib/auth-helpers";
+import { requireUserIdOrSharedLocal, Unauthenticated } from "@/lib/auth-helpers";
 
 export const runtime = "nodejs";
 
@@ -8,7 +8,7 @@ export async function GET(req: Request) {
   if (!db) return Response.json({ projects: [] });
   let userId: string;
   try {
-    userId = await requireUserId(req.headers);
+    userId = await requireUserIdOrSharedLocal(req.headers);
   } catch (e) {
     if (e instanceof Unauthenticated) return new Response("Unauthorized", { status: 401 });
     throw e;
@@ -36,7 +36,7 @@ export async function POST(req: Request) {
   if (!db) return new Response("Persistence disabled", { status: 503 });
   let userId: string;
   try {
-    userId = await requireUserId(req.headers);
+    userId = await requireUserIdOrSharedLocal(req.headers);
   } catch (e) {
     if (e instanceof Unauthenticated) return new Response("Unauthorized", { status: 401 });
     throw e;

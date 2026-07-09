@@ -10,7 +10,7 @@ function extractText(parts: UIMessage["parts"]): string {
   return parts.map((p) => (p.type === "text" ? p.text : "")).join("");
 }
 
-async function ensureLocalUser() {
+export async function ensureLocalUser() {
   if (!db) return;
   const existing = await db
     .select({ id: schema.users.id })

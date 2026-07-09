@@ -6,7 +6,7 @@ import {
   listRoutines,
   type RoutineTrigger,
 } from "@/lib/bridge/store";
-import { getUserId } from "@/lib/auth-helpers";
+import { getUserIdOrSharedLocal } from "@/lib/auth-helpers";
 import { validRepoFullName } from "@/lib/bridge/containers";
 import { bridgeError } from "@/lib/bridge/errors";
 
@@ -40,7 +40,7 @@ function rowToApi(r: ReturnType<typeof listRoutines>[number]) {
 // GET /api/bridge/v1/routines — the user's routines.
 export async function GET(req: Request): Promise<NextResponse> {
   try {
-    const userId = await getUserId(req.headers);
+    const userId = await getUserIdOrSharedLocal(req.headers);
     if (!userId) return bridgeError(401, "unauthenticated", "Sign in required");
     const routines = listRoutines(getStore(), userId).map(rowToApi);
     return NextResponse.json({ routines });
@@ -107,7 +107,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       : "acceptEdits";
 
   try {
-    const userId = await getUserId(req.headers);
+    const userId = await getUserIdOrSharedLocal(req.headers);
     if (!userId) return bridgeError(401, "unauthenticated", "Sign in required");
     const r = createRoutine(getStore(), {
       name,

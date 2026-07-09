@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getStore } from '@/lib/bridge/db'
 import { listEnvironments, reapStaleSandboxes, isEnvironmentOnline, ensureDefaultCloudEnv, BOT_ENV_MACHINE } from '@/lib/bridge/store'
-import { getUserId } from '@/lib/auth-helpers'
+import { getUserIdOrSharedLocal } from '@/lib/auth-helpers'
 import { bridgeError } from '@/lib/bridge/errors'
 
 // GET /api/bridge/v1/environments — the logged-in user's registered machines
@@ -11,7 +11,7 @@ import { bridgeError } from '@/lib/bridge/errors'
 export async function GET(req: Request): Promise<NextResponse> {
   try {
     const store = getStore()
-    const userId = await getUserId(req.headers)
+    const userId = await getUserIdOrSharedLocal(req.headers)
     if (!userId) return bridgeError(401, 'unauthenticated', 'Sign in required')
     ensureDefaultCloudEnv(store, userId) // always offer a "Default" cloud env (claude.ai parity)
     reapStaleSandboxes(store) // lazy GC of stale cloud sandboxes

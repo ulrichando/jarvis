@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
-import { requireUserId, Unauthenticated } from "@/lib/auth-helpers";
+import { requireUserIdOrSharedLocal, Unauthenticated } from "@/lib/auth-helpers";
 
 export const runtime = "nodejs";
 
@@ -13,7 +13,7 @@ export async function GET(
   const { id } = await ctx.params;
   let userId: string;
   try {
-    userId = await requireUserId(req.headers);
+    userId = await requireUserIdOrSharedLocal(req.headers);
   } catch (e) {
     if (e instanceof Unauthenticated) return new Response("Unauthorized", { status: 401 });
     throw e;
@@ -43,7 +43,7 @@ export async function PATCH(
   const { id } = await ctx.params;
   let userId: string;
   try {
-    userId = await requireUserId(req.headers);
+    userId = await requireUserIdOrSharedLocal(req.headers);
   } catch (e) {
     if (e instanceof Unauthenticated) return new Response("Unauthorized", { status: 401 });
     throw e;
@@ -87,7 +87,7 @@ export async function DELETE(
   const { id } = await ctx.params;
   let userId: string;
   try {
-    userId = await requireUserId(req.headers);
+    userId = await requireUserIdOrSharedLocal(req.headers);
   } catch (e) {
     if (e instanceof Unauthenticated) return new Response("Unauthorized", { status: 401 });
     throw e;

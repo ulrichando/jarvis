@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/bridge/db";
 import { deleteRoutine, findRoutine, updateRoutine } from "@/lib/bridge/store";
-import { getUserId } from "@/lib/auth-helpers";
+import { getUserIdOrSharedLocal } from "@/lib/auth-helpers";
 import { bridgeError } from "@/lib/bridge/errors";
 
 // Authorize a routine mutation: the routine must be owned by the requesting
@@ -17,7 +17,7 @@ async function authorizeRoutine(
   const store = getStore();
   const routine = findRoutine(store, id);
   if (!routine) return bridgeError(404, "not_found", "Routine not found");
-  const userId = await getUserId(req.headers);
+  const userId = await getUserIdOrSharedLocal(req.headers);
   if (routine.user_id && routine.user_id !== userId) {
     // No valid session against an owned routine → 401 (re-login); a real
     // cross-user mismatch still 403s.
