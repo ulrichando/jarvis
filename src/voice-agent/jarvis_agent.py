@@ -1418,6 +1418,7 @@ from pipeline.voice_commands import (
     MUTE_SELF_EVIDENT_PATTERNS as _MUTE_SELF_EVIDENT_PATTERNS,
     WAKE_PATTERNS as _WAKE_PATTERNS,
     WAKE_STRICT_PATTERNS as _WAKE_STRICT_PATTERNS,
+    UNMUTE_PATTERNS as _UNMUTE_PATTERNS,
     MEDIA_OBJECT_RE as _MEDIA_OBJECT_RE,
     SENTENCE_SPLIT_RE as _SENTENCE_SPLIT_RE,
     COMMAND_MAX_WORDS as _COMMAND_MAX_WORDS,
@@ -4467,11 +4468,14 @@ class JarvisAgent(Agent):
             raise StopResponse()
 
         if _is_silent():
-            # Silent mode: only the wake-up family unblocks JARVIS.
-            # Use _is_command (length-bounded) instead of bare substring
-            # matching so "you don't have to wake up" — a topical
-            # mention in a long sentence — doesn't count as a wake.
-            if _is_command(text, _WAKE_PATTERNS):
+            # Silent mode: ONLY a deliberate un-mute phrase unblocks JARVIS
+            # (_UNMUTE_PATTERNS) — NOT the broad wake/address family. A mute is
+            # intentional, so un-muting must be too; using _WAKE_PATTERNS here
+            # meant a plain "hey Jarvis" (the user's normal address, or a TV /
+            # other person saying it) silently un-muted him, which is exactly
+            # why "go on mute" didn't stay muted. Length-bounded via _is_command
+            # so a topical mention in a long sentence doesn't count.
+            if _is_command(text, _UNMUTE_PATTERNS):
                 _set_silent(False)
                 logger.info(
                     f"[silent-mode] wake phrase detected → exiting silent mode "

@@ -25,6 +25,7 @@ __all__ = [
     "MUTE_SELF_EVIDENT_PATTERNS",
     "WAKE_PATTERNS",
     "WAKE_STRICT_PATTERNS",
+    "UNMUTE_PATTERNS",
     "MEDIA_OBJECT_RE",
     "SENTENCE_SPLIT_RE",
     "COMMAND_MAX_WORDS",
@@ -126,6 +127,29 @@ WAKE_STRICT_PATTERNS = tuple(re.compile(r"\b" + p + r"\b") for p in (
     r"talk again",
     r"you can talk",
     r"come back",  # common as "come back here, kid" — needs vocative
+))
+
+
+# Deliberate UN-MUTE phrases — the ONLY things that exit silent mode by
+# voice (2026-07-09, mute-stickiness fix). Deliberately a SUBSET of
+# WAKE_PATTERNS: a mute is intentional, so un-muting must be intentional
+# too. Greeting/address phrases ("hey jarvis", "hello jarvis") and
+# attention-checks ("are you there") are EXCLUDED — they used to un-mute,
+# which is exactly why "go on mute" didn't stay muted (the user's normal
+# "hey Jarvis…" silently woke him). The strict members (come back / talk
+# again / you can talk) still require the "Jarvis," vocative via is_command's
+# WAKE_STRICT_PATTERNS check; the unambiguous ones stay permissive.
+UNMUTE_PATTERNS = tuple(re.compile(r"\b" + p + r"\b") for p in (
+    r"wake up",
+    r"un[\s-]?mute",
+    r"start listening",
+    r"resume listening",
+    r"you can speak",
+    r"you can talk( again)?",   # WAKE_STRICT "you can talk" → needs vocative
+    r"talk again",              # WAKE_STRICT → needs vocative
+    r"come back",               # WAKE_STRICT → needs vocative
+    r"exit silent mode",
+    r"stop being (quiet|silent)",
 ))
 
 

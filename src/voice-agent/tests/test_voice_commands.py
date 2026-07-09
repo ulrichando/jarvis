@@ -14,8 +14,41 @@ import pytest
 
 from pipeline.voice_commands import (
     is_command, is_wake, is_mute, WAKE_PATTERNS, MUTE_PATTERNS,
-    MUTE_SELF_EVIDENT_PATTERNS,
+    MUTE_SELF_EVIDENT_PATTERNS, UNMUTE_PATTERNS,
 )
+
+
+# ── Deliberate un-mute set (mute-stickiness fix, 2026-07-09) ───────────
+# When muted, ONLY a deliberate un-mute phrase should bring JARVIS back —
+# a plain greeting ("hey Jarvis") must NOT, so mute stays sticky.
+
+@pytest.mark.parametrize("text", [
+    "wake up",
+    "unmute",
+    "un-mute",
+    "start listening",
+    "you can speak",
+    "exit silent mode",
+    "jarvis come back",     # deliberate + vocative (strict phrase)
+    "jarvis you can talk again",
+])
+def test_unmute_deliberate_phrases_match(text):
+    assert is_command(text, UNMUTE_PATTERNS) is True
+
+
+@pytest.mark.parametrize("text", [
+    "hey jarvis",            # THE bug — a greeting used to un-mute
+    "hello jarvis",
+    "are you there",
+    "you there",
+    "answer me",
+    "jarvis what time is it",   # addressing him ≠ un-muting
+    "the weather is nice",
+    "come back",            # strict phrase without a vocative
+    "talk again",           # strict phrase without a vocative
+])
+def test_unmute_greetings_and_checks_do_not_match(text):
+    assert is_command(text, UNMUTE_PATTERNS) is False
 
 
 @pytest.mark.parametrize("text", [
