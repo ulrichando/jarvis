@@ -362,6 +362,18 @@ export function createBridgeLogger(options: {
         chalk.dim(`[${timestamp()}]`) +
           ` ${chalk.green('Reconnected')} after ${formatDuration(disconnectedMs)}\n`,
       )
+      // Exit the 'reconnecting' state — it has no other exit on the
+      // reconnect-success path. renderStatusLine refuses to draw during
+      // 'reconnecting' (to protect the spinner), so without this the status
+      // block (title/activity/footer/QR) stays blank for the rest of the
+      // session after any transient poll blip: the printLog above erased the
+      // tracked block and every later repaint early-returns.
+      if (currentState === 'reconnecting') {
+        currentState = sessionDisplayInfo.size > 0 ? 'attached' : 'idle'
+        currentStateText =
+          currentState === 'attached' ? 'Connected' : 'Ready'
+        renderStatusLine()
+      }
     },
 
     setRepoInfo(repo: string, branchName: string): void {
