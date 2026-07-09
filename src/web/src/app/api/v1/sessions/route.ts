@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { getStore } from '@/lib/bridge/db'
 import {
+  appendInbound,
   appendSessionEvent,
   findEnvironment,
   getOrCreateSession,
@@ -13,12 +14,62 @@ import {
 } from '@/lib/bridge/store'
 import { extractBearer, isSharedLocalToken } from '@/lib/bridge/auth'
 import { apiBaseFromRequest, dispatchSessionWork } from '@/lib/bridge/dispatch'
+import { launchContainerSession, validRepoFullName } from '@/lib/bridge/containers'
 import { bridgeError } from '@/lib/bridge/errors'
 import { ccrSessionStatus } from '@/lib/bridge/ccrCompat'
 
 // CCR-compat session create/list — see ./environment_providers/route.ts header.
 
 type SessionContext = Record<string, unknown>
+
+// Pull the plan-mode task + permission mode out of the CCR client's initial
+// `events` (teleport wraps each payload as { type:'event', data:{...} }). The
+// ultraplan client sends a set_permission_mode control_request (mode 'plan')
+// plus a user message.
+function parseCcrInitialEvents(
+  events: Array<{ type?: string; [k: string]: unknown }> | undefined,
+): { prompt: string; mode: string | null } {
+  let prompt = ''
+  let mode: string | null = null
+  for (const ev of events ?? []) {
+    const data = (ev && typeof ev === 'object' && 'data' in ev
+      ? (ev as { data?: unknown }).data
+      : ev) as Record<string, unknown> | undefined
+    if (!data || typeof data !== 'object') continue
+    const request = data.request as Record<string, unknown> | undefined
+    if (
+      data.type === 'control_request' &&
+      request?.subtype === 'set_permission_mode' &&
+      typeof request.mode === 'string'
+    ) {
+      mode = request.mode
+    }
+    if (data.type === 'user') {
+      const content = (data.message as { content?: unknown } | undefined)?.content
+      if (typeof content === 'string') prompt = content || prompt
+      else if (Array.isArray(content)) {
+        const text = content
+          .map((b) =>
+            b && typeof b === 'object' && 'text' in b
+              ? String((b as { text?: unknown }).text ?? '')
+              : '',
+          )
+          .join('')
+          .trim()
+        if (text) prompt = text
+      }
+    }
+  }
+  return { prompt, mode }
+}
+
+// owner/name from a git_repository source URL, or '' for a no-repo session.
+function repoFromContext(ctx: Record<string, unknown> | undefined): string {
+  const sources = (ctx?.sources as Array<{ url?: string }> | undefined) ?? []
+  const url = sources.find((s) => typeof s?.url === 'string')?.url
+  const m = url?.match(/github\.com[/:]([^/]+)\/([^/.]+)/)
+  return m && validRepoFullName(`${m[1]}/${m[2]}`) ? `${m[1]}/${m[2]}` : ''
+}
 
 // POST /api/v1/sessions — the teleport/ultraplan client creates a remote
 // session. Body: { title?, events?, session_context?, environment_id? }. The
@@ -77,13 +128,64 @@ export async function POST(req: Request): Promise<NextResponse> {
         ? body.title.trim()
         : null
     getOrCreateSession(store, sessionId, envId, title)
-    if (Array.isArray(body.events)) {
-      for (const event of body.events) {
-        if (typeof event?.type !== 'string') continue
-        appendSessionEvent(store, sessionId, { type: event.type, payload: event })
+
+    if (env?.worker_type === 'container') {
+      // Container env (the /code engine): run the agent in a per-session
+      // container instead of a polling bridge worker (which nothing leases on a
+      // container-only deploy). This is what makes /ultraplan actually execute
+      // on jarvis-web. Seed the task + plan mode into session_inbound exactly
+      // like the /code + gh-app dispatch paths, then launch. Repo-clone is
+      // OPTIONAL — a git_repository source clones that repo; ultraplan/research/
+      // remote tasks with no source run in a scratch container (no clone).
+      const { prompt, mode } = parseCcrInitialEvents(body.events)
+      const repo = repoFromContext(body.session_context as Record<string, unknown> | undefined)
+      const model =
+        typeof (body.session_context as { model?: unknown } | undefined)?.model === 'string'
+          ? ((body.session_context as { model?: string }).model as string)
+          : undefined
+      const promptUuid = randomUUID()
+      appendSessionEvent(store, sessionId, {
+        type: 'user_prompt',
+        payload: { type: 'user_prompt', prompt, uuid: promptUuid },
+      })
+      const modeUuid = randomUUID()
+      appendInbound(store, sessionId, {
+        type: 'control_request',
+        uuid: modeUuid,
+        request_id: modeUuid,
+        // Ultraplan/teleport always sends 'plan'; default to it so the agent
+        // plans (ExitPlanMode) rather than editing.
+        request: { subtype: 'set_permission_mode', mode: mode || 'plan' },
+      })
+      appendInbound(store, sessionId, {
+        type: 'user',
+        uuid: promptUuid,
+        session_id: sessionId,
+        parent_tool_use_id: null,
+        message: { role: 'user', content: [{ type: 'text', text: prompt }] },
+      })
+      const origin = new URL(req.url).origin
+      void launchContainerSession(store, {
+        sessionId,
+        repoFullName: repo, // '' → no-repo scratch container
+        baseUrl: origin,
+        internalBaseUrl:
+          process.env.JARVIS_CODE_INTERNAL_ORIGIN || process.env.GH_APP_WEB_URL,
+        model,
+      }).catch(() => {
+        /* failure surfaces as a ✗ status event; container reaped */
+      })
+    } else {
+      // Bridge-worker env: original path — persist events to the transcript and
+      // enqueue work for the polling bin/jarvis worker on the registered machine.
+      if (Array.isArray(body.events)) {
+        for (const event of body.events) {
+          if (typeof event?.type !== 'string') continue
+          appendSessionEvent(store, sessionId, { type: event.type, payload: event })
+        }
       }
+      dispatchSessionWork(store, envId, sessionId, apiBaseFromRequest(req))
     }
-    dispatchSessionWork(store, envId, sessionId, apiBaseFromRequest(req))
     const now = new Date().toISOString()
     return NextResponse.json(
       {
