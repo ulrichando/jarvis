@@ -1,10 +1,8 @@
 import axios from 'axios'
 import { getOauthConfig } from 'src/constants/oauth.js'
-import { getOrganizationUUID } from 'src/services/oauth/client.js'
-import { getClaudeAIOAuthTokens } from '../auth.js'
 import { toError } from '../errors.js'
 import { logError } from '../log.js'
-import { getOAuthHeaders, getTeleportAuthMessage } from './api.js'
+import { getOAuthHeaders, prepareApiRequest } from './api.js'
 
 export type EnvironmentKind = 'anthropic_cloud' | 'byoc' | 'bridge'
 export type EnvironmentState = 'active'
@@ -30,15 +28,13 @@ export type EnvironmentListResponse = {
  * @throws Error if the API request fails or no access token is available
  */
 export async function fetchEnvironments(): Promise<EnvironmentResource[]> {
-  const accessToken = getClaudeAIOAuthTokens()?.accessToken
-  if (!accessToken) {
-    throw new Error(getTeleportAuthMessage())
-  }
-
-  const orgUUID = await getOrganizationUUID()
-  if (!orgUUID) {
-    throw new Error('Unable to get organization UUID')
-  }
+  // JARVIS-aware auth: in JARVIS mode there is no claude.ai OAuth token — the
+  // CCR backend authenticates with the bridge bearer and ignores the org uuid.
+  // prepareApiRequest returns { JARVIS_CCR_TOKEN||'local', orgUUID:'local' }
+  // there, and the claude.ai OAuth token + real org uuid otherwise. (Using the
+  // raw claude.ai token here made fetchEnvironments throw in JARVIS mode, so
+  // teleport bailed before ever creating a session — 2026-07-09.)
+  const { accessToken, orgUUID } = await prepareApiRequest()
 
   const url = `${getOauthConfig().BASE_API_URL}/v1/environment_providers`
 
