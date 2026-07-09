@@ -1,7 +1,11 @@
 # JARVIS web app review (`src/web`) — findings + fix plan
 
 **Written against commit:** `77b6e21a` (review run 2026-07-06).
-**Status:** 4 of 14 fixed on this branch (#1, #6, #7, #9) plus the settings-tab half of #13; the rest are self-contained specs to resume.
+**Status (updated 2026-07-08):** all 14 findings addressed on branch `web-review-remediation`.
+#1–#12 and #14 are **DONE** (fix + regression tests, full `tsc`/`vitest`/`build` green: 83 test
+files, 672 tests). #13 is DONE for the settings-tab split; the chat.tsx hook extraction landed
+its characterization tests (Step 1) but the full `useChatStream`/`useActionRunner` extraction
+(Step 2) is deliberately deferred as a follow-up — see #13 below.
 
 This is the resume artifact for a `src/web` advisor review. Each finding below has
 file:line evidence, a fix sketch, effort, and risk — enough for a fresh session (or a
@@ -24,19 +28,19 @@ weaker executor) to pick up with zero prior context. Verify each cite still matc
 | # | Finding | Cat | Eff | Conf | Status |
 |---|---------|-----|-----|------|--------|
 | 1 | Workspace file routes follow symlinks out of the sandbox | SEC | S-M | HIGH | **DONE** |
-| 2 | Session events GET has no ownership check | SEC | S | HIGH | TODO |
-| 3 | `admin/enqueue` unauthenticated + stale loopback comment | SEC | S | HIGH | TODO |
-| 4 | PTY websocket falls open on loopback + host-shell fallback | SEC | S | HIGH | TODO |
-| 5 | Chat stage-progression fires on a stale `submit` closure | BUG | S | HIGH | TODO |
+| 2 | Session events GET has no ownership check | SEC | S | HIGH | **DONE** |
+| 3 | `admin/enqueue` unauthenticated + stale loopback comment | SEC | S | HIGH | **DONE** |
+| 4 | PTY websocket falls open on loopback + host-shell fallback | SEC | S | HIGH | **DONE** |
+| 5 | Chat stage-progression fires on a stale `submit` closure | BUG | S | HIGH | **DONE** |
 | 6 | Settings write non-atomic + defaults-fallback wipes keys | BUG | S | HIGH | **DONE** |
 | 7 | Sidebar reads every session's full transcript per 6s poll | PERF | S | HIGH | **DONE** |
-| 8 | MCP client connections leak on forced-image / error paths | BUG | S | HIGH | TODO |
+| 8 | MCP client connections leak on forced-image / error paths | BUG | S | HIGH | **DONE** |
 | 9 | Failed container launch leaks egress-proxy container + net | BUG | S | HIGH | **DONE** |
-| 10 | Bridge auth hand-rolled per route + drifted (2 is one case) | DEBT | M | HIGH | TODO |
-| 11 | No `typecheck` script; CI `tsc` job non-blocking (clean today) | DX | S | HIGH | TODO |
-| 12 | `db:migrate` trap + `dotenv` phantom dep on `shadcn` | DX/DEP | S | HIGH | TODO |
-| 13 | God-components: settings-tab (3046) + chat.tsx (1925-L fn) | DEBT | M-L | HIGH | TODO — settings-tab split **DONE**; chat.tsx extraction remains (needs char tests) |
-| 14 | Per-viewer `docker exec` + git diff every 5s per session | PERF | M | HIGH | TODO |
+| 10 | Bridge auth hand-rolled per route + drifted (2 is one case) | DEBT | M | HIGH | **DONE** (session route group) |
+| 11 | No `typecheck` script; CI `tsc` job non-blocking (clean today) | DX | S | HIGH | **DONE** |
+| 12 | `db:migrate` trap + `dotenv` phantom dep on `shadcn` | DX/DEP | S | HIGH | **DONE** |
+| 13 | God-components: settings-tab (3046) + chat.tsx (1925-L fn) | DEBT | M-L | HIGH | **DONE** (settings-tab) / char tests DONE, chat.tsx hook extraction deferred |
+| 14 | Per-viewer `docker exec` + git diff every 5s per session | PERF | M | HIGH | **DONE** |
 
 Direction (options, not bugs): Kimi K2 modes (built+tested, flag off 2mo — ship or
 shelve); workspace app-user mgmt (scaffold `authorize()` accepts any creds); AI SDK
