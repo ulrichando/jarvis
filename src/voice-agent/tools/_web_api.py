@@ -33,12 +33,19 @@ def web_url() -> str:
 
 
 def auth_headers() -> dict[str, str]:
-    """Bearer header from the shared local API token, read at CALL time.
+    """Bearer header for the target web, read at CALL time.
 
-    Read-at-call (not import) so a token provisioned after the module loaded
-    still takes effect — matches kiosk_tool / the bridge tools.
+    ``JARVIS_WEB_TOKEN`` wins when set — use it to point at a REMOTE web whose
+    shared token differs from this box's (e.g. the VPS at 0wlan.com, whose
+    ``JARVIS_LOCAL_API_TOKEN`` is its own value). Otherwise fall back to this
+    box's ``JARVIS_LOCAL_API_TOKEN`` (the right key for a LOCAL web on
+    127.0.0.1). Read-at-call (not import) so a token provisioned after the
+    module loaded still takes effect — matches kiosk_tool / the bridge tools.
     """
-    tok = os.environ.get("JARVIS_LOCAL_API_TOKEN", "").strip()
+    tok = (
+        os.environ.get("JARVIS_WEB_TOKEN", "").strip()
+        or os.environ.get("JARVIS_LOCAL_API_TOKEN", "").strip()
+    )
     return {"Authorization": f"Bearer {tok}"} if tok else {}
 
 
