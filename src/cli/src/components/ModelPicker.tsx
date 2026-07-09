@@ -8,7 +8,7 @@ import { FAST_MODE_MODEL_DISPLAY, isFastModeAvailable, isFastModeCooldown, isFas
 import { Box, Text } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import { useAppState, useSetAppState } from '../state/AppState.js';
-import { clampEffortToModel, convertEffortValueToLevel, type EffortLevel, getDefaultEffortForModel, isUltracodeActive, modelSupportsEffort, modelSupportsMaxEffort, resolvePickerEffortPersistence, toPersistableEffort } from '../utils/effort.js';
+import { clampEffortToModel, convertEffortValueToLevel, type EffortLevel, getDefaultEffortForModel, isUltracodeActive, modelSupportsEffort, modelSupportsMaxEffort, modelSupportsXhighEffort, resolvePickerEffortPersistence, toPersistableEffort } from '../utils/effort.js';
 import { getDefaultMainLoopModel, type ModelSetting, modelDisplayString, parseUserSpecifiedModel } from '../utils/model/model.js';
 import { isJarvisModelRegistryEnabled } from '../utils/model/jarvisModelRegistry.js';
 import { getModelOptions } from '../utils/model/modelOptions.js';
@@ -159,7 +159,11 @@ export function ModelPicker(t0) {
   if ($[20] !== focusedValue) {
     const focusedModel = resolveOptionModel(focusedValue);
     focusedSupportsEffort = focusedModel ? modelSupportsEffort(focusedModel) : false;
-    t8 = focusedModel ? modelSupportsMaxEffort(focusedModel) : false;
+    // Packed [max, xhigh] tuple: one memo slot, stable identity per focusedValue
+    // (the compiler-numbered $[n] slots can't grow without renumbering the file).
+    t8 = focusedModel
+      ? [modelSupportsMaxEffort(focusedModel), modelSupportsXhighEffort(focusedModel)]
+      : [false, false];
     $[20] = focusedValue;
     $[21] = focusedSupportsEffort;
     $[22] = t8;
@@ -167,7 +171,8 @@ export function ModelPicker(t0) {
     focusedSupportsEffort = $[21];
     t8 = $[22];
   }
-  const focusedSupportsMax = t8;
+  const focusedSupportsMax = t8[0];
+  const focusedSupportsXhigh = t8[1];
   let t9;
   if ($[23] !== focusedValue) {
     t9 = getDefaultEffortLevelForOption(focusedValue);
@@ -204,17 +209,19 @@ export function ModelPicker(t0) {
   }
   const handleFocus = t10;
   let t11;
-  if ($[28] !== focusedDefaultEffort || $[29] !== focusedSupportsEffort || $[30] !== focusedSupportsMax) {
+  // Dep is the packed t8 tuple (covers both max + xhigh; identity changes only
+  // with focusedValue) — same invalidation behavior as the old boolean dep.
+  if ($[28] !== focusedDefaultEffort || $[29] !== focusedSupportsEffort || $[30] !== t8) {
     t11 = direction => {
       if (!focusedSupportsEffort) {
         return;
       }
-      setEffort(prev => cycleEffortLevel(prev ?? focusedDefaultEffort, direction, focusedSupportsMax));
+      setEffort(prev => cycleEffortLevel(prev ?? focusedDefaultEffort, direction, focusedSupportsMax, focusedSupportsXhigh));
       setHasToggledEffort(true);
     };
     $[28] = focusedDefaultEffort;
     $[29] = focusedSupportsEffort;
-    $[30] = focusedSupportsMax;
+    $[30] = t8;
     $[31] = t11;
   } else {
     t11 = $[31];
@@ -454,14 +461,15 @@ function EffortLevelIndicator(t0) {
   }
   return t4;
 }
-function cycleEffortLevel(current: EffortLevel, direction: 'left' | 'right', includeMax: boolean): EffortLevel {
-  // `xhigh` ships in every cycle because Anthropic's API accepts it on
-  // Opus 4.x / Sonnet 4.6 without the same Opus-only gate as `max`.
-  // The `includeMax` switch still controls whether the cycle terminates
-  // at `max` (Opus-only) or stops one rung earlier.
-  const levels: EffortLevel[] = includeMax
-    ? ['low', 'medium', 'high', 'xhigh', 'max']
-    : ['low', 'medium', 'high', 'xhigh'];
+export function cycleEffortLevel(current: EffortLevel, direction: 'left' | 'right', includeMax: boolean, includeXhigh: boolean = true): EffortLevel {
+  // Ladder is per-model (modelSupportsMaxEffort / modelSupportsXhighEffort):
+  // e.g. Opus gets …xhigh,max; DeepSeek v4 gets …xhigh; OpenAI GPT-5 / gpt-oss
+  // stop at high. Offering a rung the wire clamps away (clampEffortToModel)
+  // would show ◉ xhigh in the picker while the request carries high.
+  // max implies xhigh (see modelSupportsXhighEffort), so includeMax forces it.
+  const levels: EffortLevel[] = ['low', 'medium', 'high'];
+  if (includeXhigh || includeMax) levels.push('xhigh');
+  if (includeMax) levels.push('max');
   // If the current level isn't in the cycle (e.g. 'max' after switching to a
   // non-Opus model), clamp to 'high'.
   const idx = levels.indexOf(current);
