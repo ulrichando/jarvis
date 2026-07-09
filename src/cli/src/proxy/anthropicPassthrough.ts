@@ -184,6 +184,7 @@ export async function forwardAnthropicNative(
     let cacheReadTokens: number | null = null
     let stopReason: string | null = null
     let buffer = ''
+    let streamError: { error_type: string; error_message: string } | null = null
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -225,10 +226,14 @@ export async function forwardAnthropicNative(
           }
         } catch (e: any) {
           console.error(`[jarvis-proxy] [${requestId.slice(0, 8)}] anthropic stream error:`, e)
-          onFinish({
-            error_type: 'stream_error',
-            error_message: e?.message ?? String(e),
-          })
+          // Record — do NOT log here. onFinish → logRequest appends one row per
+          // call and is NOT idempotent; a separate finish in both catch AND the
+          // finally would write TWO rows for one request, the finally's (which
+          // omits error_type) masking the error as a status-200 success. Fold
+          // the error into the single finally finish instead (mirrors the
+          // OpenAI streaming path's one-finish guarantee, but also keeps the
+          // partial usage we accumulated before the drop).
+          streamError = { error_type: 'stream_error', error_message: e?.message ?? String(e) }
         } finally {
           controller.close()
           onFinish({
@@ -237,6 +242,7 @@ export async function forwardAnthropicNative(
             cache_read_tokens: cacheReadTokens,
             stop_reason: stopReason,
             ttfb_ms: ttfbMs,
+            ...(streamError ?? {}),
           })
         }
       },
