@@ -1694,6 +1694,14 @@ function onSessionTimeout(
   )
   timedOutSessions.add(sessionId)
   handle.kill()
+  // SIGTERM alone can't reap the child this watchdog exists for (a blocked
+  // event loop never processes the signal) — handle.done would then never
+  // resolve and the session's capacity slot leaks forever. Escalate like the
+  // shutdown path does: grace period, then SIGKILL. forceKill is idempotent
+  // (sigkillSent flag) and a no-op on an already-exited child, so no teardown
+  // coordination is needed.
+  const graceTimer = setTimeout(() => handle.forceKill(), 30_000)
+  graceTimer.unref?.()
 }
 
 export type ParsedArgs = {
