@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getStore } from "@/lib/bridge/db";
 import { findRoutine, type RoutineTrigger } from "@/lib/bridge/store";
 import { runRoutine } from "@/lib/bridge/routines-run";
-import { getUserId } from "@/lib/auth-helpers";
+import { getUserIdOrSharedLocal } from "@/lib/auth-helpers";
 import { bridgeError } from "@/lib/bridge/errors";
 
 // POST /api/bridge/v1/routines/{id}/run — fire a routine now.
@@ -35,7 +35,7 @@ export async function POST(
         return bridgeError(401, "unauthorized", "Invalid routine token");
       }
     } else {
-      const userId = await getUserId(req.headers);
+      const userId = await getUserIdOrSharedLocal(req.headers);
       if (routine.user_id && routine.user_id !== userId) {
         // No valid session against an owned routine → 401 (re-login); a real
         // cross-user mismatch still 403s.
