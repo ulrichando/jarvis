@@ -43,6 +43,15 @@ import { TaskPanel } from "./task-panel";
 import { useChatStore } from "@/stores/chat";
 import { useVoiceMode } from "@/lib/chat/use-voice-mode";
 import { appendImageMarkdown } from "@/lib/chat/image-markdown";
+import {
+  splitSseBuffer,
+  parseSseLine,
+  isTextDelta,
+  isReasoningDelta,
+  extractGeneratedImage,
+  accumulateUsage,
+  decideStreamCompletion,
+} from "@/lib/chat/sse-stream";
 import { useEditedFiles } from "@/stores/edited-files";
 import { useSettings } from "@/hooks/use-settings";
 import { useSkills, expandSkill } from "@/hooks/use-skills";
@@ -117,12 +126,39 @@ function makeId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// Builds the message history sent to /api/chat for a turn. The server
+// derives the model's entire context from this array (api/chat/route.ts),
+// so it MUST include every prior turn — nothing is reconstructed
+// server-side.
+//
+// Normal user-initiated turns pass `priorMessages` = the current `messages`
+// render-closure snapshot, which is fresh (the closure was just created).
+//
+// Autonomous stage-progression continuations are different: they fire via
+// `queueMicrotask(() => submit(...))` after a turn finishes, re-entering the
+// SAME render-closure `submit`. That closure's `messages` predates the just-
+// completed stage's user prompt + assistant reply (those landed via
+// `setMessages` / `startTransition`, which may not have committed a new
+// render yet). Reading it would send stage 2 WITHOUT stage 1's plan, so the
+// model restarts / invents a fresh plan. To avoid that the continuation
+// threads the finalized history explicitly (like the auto-continue loop) via
+// `continuationHistory`; when present it replaces the stale `priorMessages`
+// base. The turn's own `userMessage` (the progress prompt) is always appended.
+export function buildTurnHistory(
+  priorMessages: UIMessage[],
+  userMessage: UIMessage,
+  continuationHistory?: UIMessage[],
+): UIMessage[] {
+  const base = continuationHistory ?? priorMessages;
+  return [...base, userMessage];
+}
+
 // Truncate huge output blobs so a runaway log doesn't blow the model's
 // context. We keep the head (where the failing line + stack typically
 // is) and a tail. 6KB/stream/action is enough for a build error +
 // stack trace; bigger outputs probably mean the model should run a
 // more targeted command.
-function clipOutput(s: string, maxBytes = 6_000): string {
+export function clipOutput(s: string, maxBytes = 6_000): string {
   if (!s) return "";
   if (s.length <= maxBytes) return s;
   const head = s.slice(0, Math.floor(maxBytes * 0.7));
@@ -130,7 +166,7 @@ function clipOutput(s: string, maxBytes = 6_000): string {
   return `${head}\n…[clipped ${s.length - maxBytes} bytes]…\n${tail}`;
 }
 
-type CapturedResultLite = {
+export type CapturedResultLite = {
   actionId: string;
   type: "shell" | "start";
   command: string;
@@ -147,7 +183,7 @@ import type { VerifyOutcome } from "@/lib/verify/types";
 // Renders a synthetic block summarizing the verify pass — gets appended
 // to the assistant message text just like <boltActionResults>, so the
 // next turn's request includes the actual tsc / curl output.
-function renderVerifyBlock(v: VerifyOutcome): string {
+export function renderVerifyBlock(v: VerifyOutcome): string {
   const lines: string[] = [];
   lines.push(`<jarvisVerify ok="${v.ok}" durationMs="${v.durationMs}">`);
   if (v.fixers.length > 0) {
@@ -227,7 +263,7 @@ const DIAGNOSTIC_PREFIXES = [
   "false",
 ];
 
-function isDiagnosticCommand(rawCommand: string): boolean {
+export function isDiagnosticCommand(rawCommand: string): boolean {
   // Strip env-var prefixes (FOO=bar baz) and `cd … &&` shells, then
   // grab the head token. We only care about the FIRST real binary —
   // chained pipelines after that don't matter for the heuristic.
@@ -250,7 +286,7 @@ function isDiagnosticCommand(rawCommand: string): boolean {
 // by the auto-continue trigger to recover the same way it does on
 // an explicit length finish: "continue exactly where you stopped"
 // gets the model to emit the closer.
-function hasOpenArtifactTag(text: string): boolean {
+export function hasOpenArtifactTag(text: string): boolean {
   // Lowercase + count opens vs closes for each tag. Conservative: a
   // tag is considered "open" only when there are MORE opens than
   // closes; equal counts means everything balanced even if the order
@@ -264,7 +300,7 @@ function hasOpenArtifactTag(text: string): boolean {
   );
 }
 
-function detectStageCount(assistantText: string): number | null {
+export function detectStageCount(assistantText: string): number | null {
   const m = assistantText.match(/<jarvisplan\b[^>]*\bstages\s*=\s*["'](\d+)["']/i);
   if (!m) return null;
   const n = parseInt(m[1], 10);
@@ -275,7 +311,7 @@ function detectStageCount(assistantText: string): number | null {
 // Continuation prompt the runtime auto-fires after a successful stage
 // completes — moves the model on to the next stage without needing the
 // user to type "continue".
-function renderStageProgressPrompt(
+export function renderStageProgressPrompt(
   totalStages: number,
   nextStage: number,
 ): string {
@@ -310,7 +346,7 @@ function renderStageProgressPrompt(
 // read on its NEXT turn. This is what every Bolt-style coding agent
 // does: actions are NOT fire-and-forget — their output gets fed back
 // so the model can verify, diagnose, and self-correct.
-function renderActionResultsBlock(results: CapturedResultLite[]): string {
+export function renderActionResultsBlock(results: CapturedResultLite[]): string {
   const lines: string[] = ["<boltActionResults>"];
   for (const r of results) {
     lines.push(`  <result actionId="${r.actionId}" type="${r.type}" exitCode="${r.exitCode}">`);
@@ -647,6 +683,13 @@ export function Chat({
       images?: { id: string; dataUrl: string; name: string }[];
       // DeepSeek composer toggles for this turn (DeepThink / Search).
       toggles?: Record<string, boolean>;
+      // Finalized prior history for an autonomous continuation (e.g. multi-
+      // stage progression). When set it REPLACES the render-closure `messages`
+      // snapshot as the base for this turn's request, because that snapshot
+      // is stale for a queueMicrotask-deferred re-entry (it predates the just-
+      // completed stage's turns). See buildTurnHistory + the stage-progression
+      // trigger below.
+      continuationHistory?: UIMessage[];
     } = {},
   ) => {
     turnTogglesRef.current = {
@@ -743,7 +786,11 @@ export function Chat({
     setStatus("submitted");
     setPreviewPort(null);
     previewPollRef.current?.cancel();
-    const historyForApi = [...messages, userMessage];
+    const historyForApi = buildTurnHistory(
+      messages,
+      userMessage,
+      opts.continuationHistory,
+    );
     setMessages([...historyForApi, assistantPlaceholder]);
 
     // Fire-and-forget checkpoint snapshot. Doesn't block the network
@@ -1152,25 +1199,23 @@ export function Chat({
         const { done, value } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop() ?? "";
+        const { lines, rest } = splitSseBuffer(buf);
+        buf = rest;
         for (const line of lines) {
           if (ctrl.signal.aborted) return "abort";
-          if (!line.startsWith("data: ")) continue;
-          const raw = line.slice(6);
-          if (raw === "[DONE]") continue;
-          let evt: { type?: string; delta?: string };
-          try {
-            evt = JSON.parse(raw);
-          } catch {
-            continue;
-          }
+          // parseSseLine classifies the raw line: non-`data:` lines,
+          // the `[DONE]` sentinel, and unparseable payloads are all
+          // skipped; only a parsed `event` gets dispatched below. See
+          // src/lib/chat/sse-stream.ts for the pure classification.
+          const parsed = parseSseLine(line);
+          if (parsed.kind !== "event") continue;
+          const evt = parsed.event;
           // text-delta = visible reply tokens. reasoning-delta =
           // hidden chain-of-thought (DeepSeek V4/R1, gpt-oss-120b,
           // o-series). Both arrive as { delta: string }; we render
           // text into the message body and reasoning into a
           // collapsible "Thoughts" block above it.
-          if (evt.type === "text-delta" && typeof evt.delta === "string") {
+          if (isTextDelta(evt)) {
             assistantText += evt.delta;
             // The parser is stateful per messageId. Across continuations
             // we keep the SAME assistantId, so passing the cumulative
@@ -1190,10 +1235,7 @@ export function Chat({
             // per-token flush — text accumulates and is committed once at
             // finalize, so the reply appears all at once. Default on.
             if (settings?.capabilities?.streaming !== false) scheduleFlush();
-          } else if (
-            evt.type === "reasoning-delta" &&
-            typeof evt.delta === "string"
-          ) {
+          } else if (isReasoningDelta(evt)) {
             reasoningText += evt.delta;
             reasoningPending.current = { id: assistantId, text: reasoningText };
             scheduleReasoningFlush();
@@ -1202,17 +1244,12 @@ export function Chat({
             // them at `finish` (below) so they land AFTER the model's text,
             // matching the server's persisted order. Errors flow through the
             // model's own text (it sees the error in the tool output).
-            const out = (
-              evt as unknown as {
-                output?: { status?: string; url?: string; prompt?: string };
-              }
-            ).output;
-            if (out?.status === "ok" && typeof out.url === "string") {
-              pendingImages.push({ url: out.url, prompt: out.prompt });
+            const img = extractGeneratedImage(evt);
+            if (img) {
+              pendingImages.push(img);
             }
           } else if (evt.type === "finish") {
-            finishReason = (evt as unknown as { finishReason?: string })
-              .finishReason;
+            finishReason = evt.finishReason;
             // Reconcile generated images. appendImageMarkdown ALSO strips any
             // /api/media markdown the model wrote in its own text — including a
             // HALLUCINATED fake url (no tool call) that would otherwise render
@@ -1230,31 +1267,11 @@ export function Chat({
             // Server-forwarded per-step usage. We accumulate input +
             // output across multi-step turns (auto-continuations etc.)
             // so the chip reflects total cost of the assistant message.
-            const meta = (evt as unknown as {
-              messageMetadata?: {
-                usage?: {
-                  inputTokens?: number;
-                  outputTokens?: number;
-                  reasoningTokens?: number;
-                };
-                model?: string;
-              };
-            }).messageMetadata;
+            const meta = evt.messageMetadata;
             if (meta?.usage) {
-              const incoming = meta.usage;
               setUsageById((prev) => {
                 const next = new Map(prev);
-                const cur = next.get(assistantId);
-                next.set(assistantId, {
-                  inputTokens:
-                    (cur?.inputTokens ?? 0) + (incoming.inputTokens ?? 0),
-                  outputTokens:
-                    (cur?.outputTokens ?? 0) + (incoming.outputTokens ?? 0),
-                  reasoningTokens:
-                    (cur?.reasoningTokens ?? 0) +
-                    (incoming.reasoningTokens ?? 0),
-                  model: meta.model ?? cur?.model,
-                });
+                next.set(assistantId, accumulateUsage(next.get(assistantId), meta));
                 return next;
               });
             }
@@ -1269,10 +1286,10 @@ export function Chat({
       // close the artifact properly. This is a CONTINUATION of the
       // same turn ("finish what you started"), not a synthetic
       // retry — Cursor / Bolt / Claude Code all do this.
-      if (finishReason !== "length" && hasOpenArtifactTag(assistantText)) {
-        return "length";
-      }
-      return finishReason === "length" ? "length" : "complete";
+      return decideStreamCompletion(
+        finishReason,
+        hasOpenArtifactTag(assistantText),
+      );
     };
 
     try {
@@ -1608,8 +1625,27 @@ export function Chat({
             const total = stagePlanRef.current.totalStages;
             stagePlanRef.current.currentStage = next;
             const progressPrompt = renderStageProgressPrompt(total, next);
+            // Freeze THIS stage's finalized history — the request messages we
+            // sent (`historyForApi`: prior turns + this stage's user prompt)
+            // plus this stage's assistant reply (raw `assistantText`, which by
+            // now carries the plan + any boltActionResults/verify blocks). We
+            // thread it into the continuation because the deferred `submit`
+            // re-enters this same render-closure, whose `messages` snapshot is
+            // stale (it predates these two turns). Same shape the auto-continue
+            // loop builds above.
+            const continuationHistory: UIMessage[] = [
+              ...historyForApi,
+              {
+                id: assistantId,
+                role: "assistant",
+                parts: [{ type: "text", text: assistantText }],
+              } as UIMessage,
+            ];
             queueMicrotask(() => {
-              void submit(progressPrompt, { isAutoRetry: true });
+              void submit(progressPrompt, {
+                isAutoRetry: true,
+                continuationHistory,
+              });
             });
             // If this is the LAST stage, clear the ref so the next user
             // turn starts fresh (otherwise a new multi-stage plan would
