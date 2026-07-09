@@ -1,7 +1,18 @@
 // src/cli/src/gh-agent/cursor.ts
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { GH_AGENT_DIR } from './config.js'
+
+// Crash-safe write: a SIGKILL mid-writeFileSync (e.g. systemd TimeoutStartSec)
+// could truncate the .handled file — the REAL no-replay guarantee — and a
+// half-written store re-executes tasks → duplicate PRs. Write to a temp file
+// then renameSync (atomic on the same filesystem) so a reader ever sees only
+// the complete old or complete new contents.
+function atomicWrite(path: string, data: string): void {
+  const tmp = `${path}.tmp`
+  writeFileSync(tmp, data)
+  renameSync(tmp, path)
+}
 
 // owner/name → owner__name (filesystem-safe, unambiguous: '/' is the only
 // reserved char in a GitHub owner/name and becomes '__').
@@ -40,8 +51,7 @@ export function advanceCursor(repo: string, iso: string, dir: string = GH_AGENT_
     /* no cursor yet */
   }
   if (existing && !Number.isNaN(new Date(existing).getTime()) && iso <= existing) return
-  // ponytail: single-user; tmp+rename/lock if this ever runs concurrently
-  writeFileSync(cursorPath(repo, dir), iso)
+  atomicWrite(cursorPath(repo, dir), iso)
 }
 
 // Handled comment-id store — the REAL no-replay guarantee. ?since= is
@@ -75,6 +85,5 @@ export function addHandledIds(repo: string, ids: number[], dir: string = GH_AGEN
   }
   // Sets preserve insertion order: file order = oldest→newest, keep the tail.
   const bounded = [...merged].slice(-HANDLED_IDS_MAX)
-  // ponytail: single-user; tmp+rename/lock if this ever runs concurrently
-  writeFileSync(handledPath(repo, dir), bounded.join('\n') + (bounded.length > 0 ? '\n' : ''))
+  atomicWrite(handledPath(repo, dir), bounded.join('\n') + (bounded.length > 0 ? '\n' : ''))
 }
