@@ -71,17 +71,57 @@ export async function requireUserId(reqHeaders?: Headers): Promise<string> {
  * as privileged as the box it lives on; do NOT adopt this helper on a
  * multi-user deployment. Imports are lazy so this stays out of any module cycle.
  */
-export async function requireUserIdOrSharedLocal(
+export async function getUserIdOrSharedLocal(
   reqHeaders?: Headers,
-): Promise<string> {
+): Promise<string | null> {
   const id = await getUserId(reqHeaders);
   if (id) return id;
   const { extractBearer, isSharedLocalToken } = await import("./bridge/auth");
   const token = extractBearer(reqHeaders?.get("authorization") ?? null);
   if (token && isSharedLocalToken(token)) {
-    const { LOCAL_USER_ID, ensureLocalUser } = await import("./chat/persist");
+    return resolveSharedLocalOwnerId();
+  }
+  return null;
+}
+
+/** Throwing variant of {@link getUserIdOrSharedLocal} for try/catch handlers. */
+export async function requireUserIdOrSharedLocal(
+  reqHeaders?: Headers,
+): Promise<string> {
+  const id = await getUserIdOrSharedLocal(reqHeaders);
+  if (!id) throw new Unauthenticated();
+  return id;
+}
+
+/**
+ * The box owner's user id for a shared-token (service) caller — the identity
+ * whose data the browser UI actually shows.
+ *
+ * The web app migrates `LOCAL_USER_ID` data to the FIRST real login (see the
+ * databaseHooks.user.create.after migration in `auth.ts`), so the live owner is
+ * the single real (non-local) user once anyone has logged in, and the synthetic
+ * `LOCAL_USER_ID` only in the pre-login state. Resolving to `LOCAL_USER_ID`
+ * unconditionally would point a service caller at an empty/stale silo on a
+ * logged-in box — so pick the real user when there is exactly one.
+ *
+ * A genuinely multi-user box (2+ real users) makes the single shared token
+ * ambiguous — it can't name which user — so return null (→ 401) rather than
+ * guess. Single-user personal boxes (the JARVIS target) never hit that.
+ */
+async function resolveSharedLocalOwnerId(): Promise<string | null> {
+  const { LOCAL_USER_ID, ensureLocalUser } = await import("./chat/persist");
+  const { db, schema } = await import("./db");
+  if (!db) return LOCAL_USER_ID;
+  const { ne } = await import("drizzle-orm");
+  const realUsers = await db
+    .select({ id: schema.users.id })
+    .from(schema.users)
+    .where(ne(schema.users.id, LOCAL_USER_ID))
+    .limit(2);
+  if (realUsers.length === 1) return realUsers[0]!.id;
+  if (realUsers.length === 0) {
     await ensureLocalUser();
     return LOCAL_USER_ID;
   }
-  throw new Unauthenticated();
+  return null; // ambiguous multi-user box → caller treats as unauthenticated
 }
