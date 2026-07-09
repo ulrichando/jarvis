@@ -78,10 +78,19 @@ export async function getUserIdOrSharedLocal(
   if (id) return id;
   const { extractBearer, isSharedLocalToken } = await import("./bridge/auth");
   const token = extractBearer(reqHeaders?.get("authorization") ?? null);
-  if (token && isSharedLocalToken(token)) {
+  if (!token) return null;
+  if (isSharedLocalToken(token)) {
     return resolveSharedLocalOwnerId();
   }
-  return null;
+  // Per-user API / bridge token — the `jbr_` tokens minted at Settings → API
+  // Tokens (and `jarvis auth login --token`) are bridge_tokens rows, so they
+  // resolve to their owning user. Lets a service caller (the voice agent's
+  // web_* tools driving a remote web) authenticate as that user with a token
+  // they hold, scoped to their OWN data. Requires the route to sit on proxy.ts
+  // SELF_AUTH so the token reaches this handler — same shape as the CCR routes.
+  const { getStore } = await import("./bridge/db");
+  const { resolveBridgeToken } = await import("./bridge/store");
+  return resolveBridgeToken(getStore(), token) ?? null;
 }
 
 /** Throwing variant of {@link getUserIdOrSharedLocal} for try/catch handlers. */

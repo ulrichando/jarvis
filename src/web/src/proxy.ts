@@ -110,6 +110,24 @@ const SELF_AUTH_PATTERNS: RegExp[] = [
   /^\/api\/bridge\/v1\/environments\/[^/]+\/bridge\/reconnect$/,
   /^\/api\/bridge\/v1\/environments\/[^/]+\/work\/poll$/,
   /^\/api\/bridge\/v1\/environments\/[^/]+\/work\/[^/]+\/(ack|heartbeat|stop)$/,
+  // ── Voice→web control surface ────────────────────────────────────────────
+  // The voice agent's web_* tools drive these with a per-user API/bridge token
+  // (jbr_*, Settings → API Tokens) that the shared-token gate can't see. Each
+  // handler self-authenticates: projects/routines/tasks/environments/sessions
+  // resolve the token to its owning user (getUserIdOrSharedLocal) and scope to
+  // THAT user's data; workspace routes (single-user filesystem) do a credential
+  // CHECK (authOr401). Anchored with `$` so ONLY these exact routes are exempt —
+  // the high-risk workspace sub-routes (exec/file/deploy/bundle/…) keep more
+  // path segments and stay behind the gate.
+  /^\/api\/workspace$/, //                       list / create workspaces
+  /^\/api\/workspace\/[^/]+$/, //                get / patch / delete a workspace
+  /^\/api\/projects$/, //                        list / create projects
+  /^\/api\/projects\/[^/]+$/, //                 get / patch / delete a project
+  /^\/api\/bridge\/v1\/routines$/, //            list / create routines
+  /^\/api\/bridge\/v1\/routines\/[^/]+$/, //     patch / delete a routine
+  /^\/api\/bridge\/v1\/routines\/[^/]+\/run$/, // run a routine now
+  /^\/api\/bridge\/v1\/tasks$/, //               dispatch a code task (POST)
+  /^\/api\/bridge\/v1\/environments$/, //        list environments (GET)
 ]
 
 // POST-only self-auth: worker session lifecycle (event append + shutdown
@@ -149,6 +167,11 @@ const SELF_AUTH_GET_PATTERNS: RegExp[] = [
   /^\/api\/v1\/sessions$/, //                 list your sessions
   /^\/api\/v1\/sessions\/[^/]+$/, //          fetchSession metadata
   /^\/api\/v1\/sessions\/[^/]+\/events$/, //  conversation events
+  // /code session list for the voice agent's web_code tool. GET-only (the same
+  // path's POST is the REPL-bridge session create, already in the POST list).
+  // Now self-authing (getUserIdOrSharedLocal → the caller's own sessions), so a
+  // per-user API token reads its owner's sessions; the cookie'd UI still works.
+  /^\/api\/bridge\/v1\/sessions$/,
 ]
 
 // Host header allowlist (DNS-rebinding defense, parallel to the bridge
