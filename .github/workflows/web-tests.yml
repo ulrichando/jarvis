@@ -1,9 +1,11 @@
 name: web-tests
 
 # Runs the Next.js web app build + test suite on every push/PR that
-# touches src/web/**. The reliable gate is `bun run build` — it catches
-# import errors, missing types, and broken pages. `bun test` is kept
-# non-blocking while native bindings are verified in CI.
+# touches src/web/**. Both gates are blocking: `bun run build` catches
+# import errors, missing types, and broken pages, and the vitest suite
+# (run under Node — see the test step) must pass. The suite is hermetic
+# (no live Redis / AI APIs / ~/.jarvis files), so a failing web test
+# fails CI.
 
 on:
   push:

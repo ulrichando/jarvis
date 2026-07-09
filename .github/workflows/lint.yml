@@ -100,8 +100,11 @@ jobs:
   tsc:
     name: tsc --noEmit (web)
     runs-on: ubuntu-latest
-    # Non-blocking: type errors may exist today; ratchet to required once clean.
-    continue-on-error: true
+    # Blocking: `next typegen && tsc --noEmit` is clean today (ratcheted
+    # from non-blocking 2026-07-07). typegen MUST run before tsc — Next 16
+    # emits the global RouteContext/PageProps types into .next/types, and a
+    # bare tsc without them fails with ~49 phantom TS2304 errors. The
+    # `next typegen` step below preserves that ordering.
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
