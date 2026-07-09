@@ -55,6 +55,22 @@ export async function checkBackgroundRemoteSessionEligibility({
     return errors
   }
 
+  // JARVIS mode (JARVIS_CCR_BASE_URL): the self-hosted jarvis-web CCR backend
+  // provides the environment and seeds each session from a local git bundle —
+  // teleport.tsx uploads `git bundle --all` and the container clones from it
+  // (see the `!JARVIS_CCR_BASE_URL` gate there). So the Anthropic-cloud
+  // preconditions don't apply: auth is the bridge token (not a claude.ai
+  // login), the environment comes from jarvis-web (not Anthropic's API), and no
+  // Claude GitHub app is involved. Only a git repo is required, as the bundle
+  // source. Without this, /ultraplan failed on jarvis-web with "No cloud
+  // environment / install the Claude GitHub app" (2026-07-09).
+  if (process.env.JARVIS_CCR_BASE_URL) {
+    if (!checkIsInGitRepo()) {
+      errors.push({ type: 'not_in_git_repo' })
+    }
+    return errors
+  }
+
   const [needsLogin, hasRemoteEnv, repository] = await Promise.all([
     checkNeedsClaudeAiLogin(),
     checkHasRemoteEnvironment(),
