@@ -20,11 +20,32 @@ prune, OpenAI CU-adapter empty-`tool_calls` 400, schedule `confirm` action, ACP
 negation regex, two sanitizer-state leaks, config import-crash, session_search
 connection leak, tolerant cost-pricing lookup.
 
-## MEDIUM — verify then fix (highest value first)
+## DONE in the 2026-07-08 tail batch (same branch, after the service restart)
+
+Fixed + tested (commits after this plan's first commit): terminal orphan-kill
+(process group) + bg-registry reap/cap; strong refs for 4 fire-and-forget tasks
+(memory_provider:125, dsml:263, dispatch_agent:361, jarvis_agent:7655 cron+bg
+watchers); voice_client_http_api /mute + /mode blocking probes → to_thread;
+**cache-read discount applied** in cost_usd (cached tokens were full-costed);
+person_tracker:240 stop() now stops + :196 atomic frame JPEG; discord:63 path-
+injection guard.
+
+Investigated + deliberately NOT changed (verdict recorded):
+- **turn_telemetry.py:602 / conversation_store.py:181** — the VACUUM/5s-stall
+  claim was overstated: `log_turn` does one fast INSERT (no VACUUM). A sub-ms
+  write on the loop isn't worth refactoring the sync post-turn path.
+- **command_safety.py:176** — the whole-command secret+network scan is
+  intentional; it catches cross-segment exfil (`cat .env >/tmp/x; curl -d @/tmp/x`).
+  The "segment-aware" fix would WEAKEN security to cut false positives. Not a bug.
+- **honcho:115** — subtle in JARVIS's one-loop-per-process model; needs a repro on
+  the real async-client/loop lifecycle before touching. Left for follow-up.
+
+## MEDIUM — still to verify then fix (highest value first)
 
 Each: confirm the path is live + reachable, then fix. Prefer `asyncio.to_thread`
 for blocking I/O on the event loop; a strong ref (`self._bg_tasks.add(t)`) for
-fire-and-forget `create_task`.
+fire-and-forget `create_task`. NOTE: **bargein_tap.py:226/258 is barge-in path —
+heavily load-bearing per CLAUDE.md; careful review, not a blind fix.**
 
 - **pipeline/turn_telemetry.py:602** — `log_turn` does blocking sqlite (+ a
   retention-prune VACUUM) on the event loop; can stall the voice loop up to the
