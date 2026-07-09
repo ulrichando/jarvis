@@ -14,6 +14,11 @@ export async function GET() {
  * PATCH — deep-merged update. Provider apiKey is updated only when a non-empty
  * string is supplied, so the client can safely omit it to keep the stored one.
  * Pass `null` to explicitly clear a key.
+ *
+ * settings.json is SHARED with the jarvis CLI + voice-agent: keys the web
+ * schema doesn't know (enabledPlugins, effortLevel, voiceNoticeSeen, …) are
+ * preserved by saveSettings' unknown-key graft — a web save must never delete
+ * another tool's settings.
  */
 const providerPatchSchema = z
   .object({
@@ -205,7 +210,9 @@ export async function PATCH(req: Request) {
 /**
  * DELETE — reset settings to defaults. Preserves secrets (provider API keys +
  * integration tokens) so the Account → Reset action matches its copy
- * ("API keys and conversations are unaffected").
+ * ("API keys and conversations are unaffected"). Only WEB-owned keys reset:
+ * CLI/voice-agent keys in the shared settings.json survive via saveSettings'
+ * unknown-key graft.
  */
 export async function DELETE() {
   const current = await loadSettings();
