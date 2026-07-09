@@ -51,7 +51,10 @@ export JARVIS_DISPATCH_DISABLED JARVIS_ROUTER_ENABLED JARVIS_ROUTER_TIMEOUT_MS \
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DESKTOP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-PROJECT_ROOT="$(cd "$DESKTOP_DIR/../.." && pwd)"
+# desktop-tauri is 3 levels below the repo root (src/voice-agent/desktop-tauri),
+# so go up 3 - not 2 (../.. landed on .../src, doubling the `src` in the paths
+# below -> CLI_DIR=.../src/src/cli, a nonexistent bun -> bridge fallback never ran).
+PROJECT_ROOT="$(cd "$DESKTOP_DIR/../../.." && pwd)"
 CLI_DIR="$PROJECT_ROOT/src/cli"
 BUN="$CLI_DIR/vendor/bun/linux-x64/bun"
 BIN="$DESKTOP_DIR/src-tauri/target/release/jarvis-desktop"
