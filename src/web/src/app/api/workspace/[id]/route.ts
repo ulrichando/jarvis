@@ -8,8 +8,20 @@ import {
   type Workspace,
 } from "@/lib/workspace/storage";
 import { destroyRuntime, dockerStatus } from "@/lib/workspace/docker";
+import { requireUserIdOrSharedLocal, Unauthenticated } from "@/lib/auth-helpers";
 
 export const runtime = "nodejs";
+
+async function authOr401(req: Request): Promise<Response | null> {
+  try {
+    await requireUserIdOrSharedLocal(req.headers);
+    return null;
+  } catch (e) {
+    if (e instanceof Unauthenticated)
+      return new Response("Unauthorized", { status: 401 });
+    throw e;
+  }
+}
 
 // Strip secret-class env values out of GET responses by default.
 // The Settings UI explicitly opts in to revealing a value via
@@ -27,6 +39,8 @@ function publicShape(ws: Workspace, revealEnvKeys?: string[]) {
 }
 
 export async function GET(req: Request, ctx: RouteContext<"/api/workspace/[id]">) {
+  const denied = await authOr401(req);
+  if (denied) return denied;
   const { id } = await ctx.params;
   const ws = await getWorkspace(id);
   if (!ws) return NextResponse.json({ error: "not_found" }, { status: 404 });
@@ -36,6 +50,8 @@ export async function GET(req: Request, ctx: RouteContext<"/api/workspace/[id]">
 }
 
 export async function PATCH(req: Request, ctx: RouteContext<"/api/workspace/[id]">) {
+  const denied = await authOr401(req);
+  if (denied) return denied;
   const { id } = await ctx.params;
   const body = (await req.json().catch(() => ({}))) as {
     name?: unknown;
@@ -140,6 +156,8 @@ export async function PATCH(req: Request, ctx: RouteContext<"/api/workspace/[id]
 }
 
 export async function DELETE(_req: Request, ctx: RouteContext<"/api/workspace/[id]">) {
+  const denied = await authOr401(req);
+  if (denied) return denied;
   const { id } = await ctx.params;
   // Tear down the sandbox container first so we don't orphan it. A failed
   // teardown is non-fatal for the on-disk delete (if docker isn't running
