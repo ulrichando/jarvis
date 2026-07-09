@@ -477,7 +477,11 @@ class VoiceClientHttpApi:
         # Is a direct voice (Gemini/OpenAI) ACTUALLY live right now? Liveness-
         # checked, not just the active-mode file — a stale file (backend died
         # without `jarvis-mode jarvis`) must not wedge the mic.
-        live_direct = _direct_mode_active()
+        # Off-loop: _direct_mode_active() can spawn a `systemctl is-active`
+        # subprocess (2 s timeout) on a cache miss — blocking it here would
+        # stall the voice-client event loop + /status heartbeat on the /mute
+        # hot path.
+        live_direct = await asyncio.to_thread(_direct_mode_active)
         if user_toggle:
             if live_direct:
                 # A live direct voice owns Claude's mic (the watchdog drives
@@ -1020,7 +1024,7 @@ class VoiceClientHttpApi:
         if (
             _target is not None
             and _target.get("voice_mode") == "local"
-            and not _ollama_has_models()
+            and not await asyncio.to_thread(_ollama_has_models)
         ):
             return web.json_response(
                 {"error": "Local mode needs an installed Ollama model — "
