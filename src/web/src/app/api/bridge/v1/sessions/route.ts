@@ -11,7 +11,7 @@ import {
   resolveBridgeToken,
   type EnvironmentRow,
 } from '@/lib/bridge/store'
-import { getUserId } from '@/lib/auth-helpers'
+import { getUserIdOrSharedLocal } from '@/lib/auth-helpers'
 import { extractBearer, isSharedLocalToken } from '@/lib/bridge/auth'
 import { validateEnvSecret } from '@/lib/bridge/store'
 import { apiBaseFromRequest, dispatchSessionWork } from '@/lib/bridge/dispatch'
@@ -32,7 +32,7 @@ function repoLabel(env: EnvironmentRow | null): string | null {
 export async function GET(req: Request): Promise<NextResponse> {
   try {
     const store = getStore()
-    const userId = await getUserId(req.headers)
+    const userId = await getUserIdOrSharedLocal(req.headers)
     if (!userId) return bridgeError(401, 'unauthenticated', 'Sign in required')
     const groupName = new Map(listGroups(store, userId).map((g) => [g.group_id, g.name]))
     const sessions = listSessions(store, userId)

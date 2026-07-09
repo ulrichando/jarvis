@@ -7,7 +7,7 @@ import {
   appendSessionEvent,
   appendInbound,
 } from '@/lib/bridge/store'
-import { getUserId } from '@/lib/auth-helpers'
+import { getUserIdOrSharedLocal } from '@/lib/auth-helpers'
 import { apiBaseFromRequest, dispatchSessionWork } from '@/lib/bridge/dispatch'
 import { launchContainerSession } from '@/lib/bridge/containers'
 import { bridgeError } from '@/lib/bridge/errors'
@@ -54,7 +54,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       return bridgeError(404, 'not_found', 'Environment not found')
     }
     // Ownership: you can only dispatch to your own machines.
-    const userId = await getUserId(req.headers)
+    const userId = await getUserIdOrSharedLocal(req.headers)
     if (env.user_id && env.user_id !== userId) {
       // No valid session against an owned machine → 401 (re-login); a real
       // cross-user mismatch still 403s.
