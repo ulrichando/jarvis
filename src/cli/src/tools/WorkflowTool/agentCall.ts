@@ -75,7 +75,7 @@ export function makeAgentFn(deps: AgentFnDeps) {
       }
 
       const value = 'structured' in result ? result.structured : result.text
-      deps.journal.record(prompt, opts, value)
+      deps.journal.record(index, prompt, opts, value)
       deps.onProgress({
         type: 'workflow_agent',
         agentId: result.agentId ?? agentIdRef,

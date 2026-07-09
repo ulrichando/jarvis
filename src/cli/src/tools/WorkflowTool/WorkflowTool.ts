@@ -382,14 +382,17 @@ export const WorkflowTool = buildTool({
 
       // Resume: replay the prior journal so unchanged agent() calls return
       // cached results instead of re-running (prefix semantics in WorkflowJournal).
-      let priorJournal: JournalEntry[] | undefined
+      let priorJournal: (JournalEntry | null)[] | undefined
       if (input.resumeFromRunId) {
         try {
           const raw = await readFile(join(sessionDir, 'journal.jsonl'), 'utf-8')
+          // Non-empty string lines only (drops trailing blank from the join);
+          // a hole serializes as the literal "null" (truthy string) so it is
+          // preserved and parses back to null, keeping the index alignment.
           priorJournal = raw
             .split('\n')
             .filter(Boolean)
-            .map(l => JSON.parse(l) as JournalEntry)
+            .map(l => JSON.parse(l) as JournalEntry | null)
         } catch {
           // No prior journal on disk → full re-run.
         }
