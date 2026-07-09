@@ -9,6 +9,20 @@
 # Runbook: docs/runbook/deploy-online.md ("Continuous deploy").
 set -euo pipefail
 
+# Self-update hazard: the ff-only merge below rewrites THIS script mid-run, and
+# bash reads a script by byte offset as it executes — a size change past the
+# merge point makes it resume at a wrong offset and run garbage. Re-exec once
+# from an immutable snapshot so the running bytes never change under us. Only the
+# deploy that actually ships a deploy-poll.sh change is exposed; every other
+# deploy leaves this file untouched. The next run purges the previous snapshot
+# (unlinking a still-open snapshot is safe on Linux, so a stuck run is unharmed).
+if [ -z "${JARVIS_DEPLOY_REEXEC:-}" ]; then
+  rm -f /tmp/.jarvis-deploy-poll.*.sh 2>/dev/null || true
+  _snap=$(mktemp /tmp/.jarvis-deploy-poll.XXXXXX.sh)
+  cp -- "$0" "$_snap"
+  JARVIS_DEPLOY_REEXEC=1 exec bash "$_snap"
+fi
+
 REPO=/opt/jarvis
 WEB="$REPO/src/web"
 LOG=/var/log/jarvis-deploy.log
@@ -30,16 +44,31 @@ notify() {
   fi
 }
 
+# Set by healthy() to the specific failing check so a rollback records WHY the
+# gate failed, instead of the old blind `>/dev/null` (which left the 2026-07-09
+# spurious rollback of #166 un-diagnosable). Read by gate() before rollback.
+HEALTH_REASON=""
 healthy() {
+  HEALTH_REASON=""
   # hub answers on the host loopback (cloudflared's target for proxy.0wlan.com)…
-  curl -sf -m 10 http://127.0.0.1:4000/health >/dev/null || return 1
+  if ! curl -sf -m 10 http://127.0.0.1:4000/health >/dev/null; then
+    HEALTH_REASON="hub :4000/health unreachable"
+    return 1
+  fi
   # …the Next app serves HTTP (any status <500 proves the process is up —
   # /api/health may 401 behind the bearer gate, which still proves liveness)…
-  (cd "$WEB" && "${COMPOSE[@]}" exec -T web node -e \
-    'fetch("http://127.0.0.1:3000/api/health").then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))') \
-    || return 1
+  local _st _rc
+  _st=$( (cd "$WEB" && "${COMPOSE[@]}" exec -T web node -e \
+    'fetch("http://127.0.0.1:3000/api/health").then(r=>{console.log(r.status);process.exit(r.status<500?0:1)}).catch(e=>{console.log("fetch-error:"+e.message);process.exit(1)})') 2>&1 ) && _rc=0 || _rc=$?
+  if [ "$_rc" -ne 0 ]; then
+    HEALTH_REASON="web /api/health not <500 (exec rc=$_rc, out=${_st//$'\n'/ })"
+    return 1
+  fi
   # …and nothing in the stack is exited/restarting.
-  if (cd "$WEB" && "${COMPOSE[@]}" ps --format '{{.Name}} {{.State}}' | grep -v ' running$' | grep -q .); then
+  local _bad
+  _bad=$( (cd "$WEB" && "${COMPOSE[@]}" ps --format '{{.Name}} {{.State}}' | grep -v ' running$') || true )
+  if [ -n "$_bad" ]; then
+    HEALTH_REASON="container(s) not running: ${_bad//$'\n'/, }"
     return 1
   fi
   return 0
@@ -86,6 +115,22 @@ rollback() {
   exit 1
 }
 
+# Poll healthy() until it passes or the budget runs out, then roll back with the
+# captured reason. Both build paths (full stack / computer-use-only) share this
+# so the retry budget and the failure diagnostics stay identical. 6×15s ≈ 90s of
+# settle: a genuinely broken deploy still fails every attempt and rolls back; the
+# wider budget only buys a slow/racy multi-container recreate more time to become
+# ready (the old 3×15s budget spuriously rolled back a healthy #166 on 2026-07-09
+# — web was ✓Ready in 192ms yet the gate still failed, un-logged).
+gate() {
+  for _ in 1 2 3 4 5 6; do
+    sleep 15
+    if healthy; then return 0; fi
+  done
+  log "health gate failed after 6 attempts — ${HEALTH_REASON:-unknown}"
+  rollback
+}
+
 if git -C "$REPO" diff --name-only "$OLD..$NEW" -- src/web src/cli src/gh-app | grep -q .; then
   cd "$WEB"
   "${COMPOSE[@]}" build >>"$LOG" 2>&1 || rollback
@@ -99,12 +144,7 @@ if git -C "$REPO" diff --name-only "$OLD..$NEW" -- src/web src/cli src/gh-app | 
     # (up -d won't recreate on a mounted-file change alone).
     "${COMPOSE[@]}" restart searxng >>"$LOG" 2>&1 || rollback
   fi
-  ok=0
-  for _ in 1 2 3; do
-    sleep 15
-    if healthy; then ok=1; break; fi
-  done
-  [ "$ok" = 1 ] || rollback
+  gate
   docker image prune -f >/dev/null 2>&1 || true
 elif git -C "$REPO" diff --name-only "$OLD..$NEW" -- src/voice-agent | grep -q .; then
   # computer-use's build context is ../voice-agent (blind spot found 2026-07-06:
@@ -115,12 +155,7 @@ elif git -C "$REPO" diff --name-only "$OLD..$NEW" -- src/voice-agent | grep -q .
   cd "$WEB"
   "${COMPOSE[@]}" build computer-use >>"$LOG" 2>&1 || rollback
   "${COMPOSE[@]}" up -d computer-use >>"$LOG" 2>&1 || rollback
-  ok=0
-  for _ in 1 2 3; do
-    sleep 15
-    if healthy; then ok=1; break; fi
-  done
-  [ "$ok" = 1 ] || rollback
+  gate
   docker image prune -f >/dev/null 2>&1 || true
 fi
 
