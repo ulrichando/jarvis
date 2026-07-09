@@ -5,9 +5,17 @@ name: release-please
 # merge of that PR it tags + creates a GitHub Release. Nothing auto-releases —
 # the release happens only when you merge the PR.
 #
-# Note: the release PR is opened by GITHUB_TOKEN, which (by GitHub design) does
-# not trigger the other CI workflows, so the required checks won't run on it.
-# Merge it via owner/admin bypass, or switch to a PAT to get CI on release PRs.
+# Token: prefers RELEASE_PLEASE_TOKEN (a PAT, 5,000 req/hr) over the default
+# GITHUB_TOKEN (an installation token capped at 1,000 req/hr per repo). A burst
+# of merges fires this + every other workflow on each push and can exhaust the
+# 1,000/hr bucket → the run 429s with "API rate limit exceeded for installation"
+# (observed 2026-07-09 after ~30 rapid merges). The PAT gives 5x headroom and,
+# unlike GITHUB_TOKEN, lets the release PR trigger the other CI workflows so the
+# required checks actually run on it (GITHUB_TOKEN, by GitHub design, does not —
+# so today the release PR must be merged via owner/admin bypass).
+# Inert until the secret is set: the `|| GITHUB_TOKEN` fallback preserves today's
+# behavior when RELEASE_PLEASE_TOKEN is empty. To activate: create a classic PAT
+# with `repo` + `workflow` scope and add it as the RELEASE_PLEASE_TOKEN secret.
 on:
   push:
     branches: [master]
@@ -22,3 +30,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
