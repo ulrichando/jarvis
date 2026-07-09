@@ -151,6 +151,11 @@ export async function createBridgeSession({
     response = await axios.post(url, requestBody, {
       headers,
       signal,
+      // Bridge startup awaits this before the poll loop; without a timeout a
+      // server that accepts the connection but never responds hangs the whole
+      // bridge silently until Ctrl-C. Pre-creation is documented non-fatal
+      // (returns null), so timing out degrades to the no-initial-session path.
+      timeout: 10_000,
       validateStatus: s => s < 500,
     })
   } catch (err: unknown) {
