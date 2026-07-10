@@ -21,8 +21,8 @@ one image. (Streaming at fixed FPS like Gemini would blow up the
 context window since OpenAI Realtime doesn't have a streaming video
 channel.)
 
-Tools: pulled from the voice-agent's registry, same allowlist as
-jarvis-gemini-tools. OpenAI function-calling shape:
+Tools: pulled from the voice-agent's registry, same full tool surface
+as jarvis-gemini-tools. OpenAI function-calling shape:
   - Declare via `session.update` with `tools: [{type:"function",...}]`
   - Model emits `response.function_call_arguments.done` with call_id
   - We run the tool, then send `conversation.item.create` of
@@ -147,26 +147,16 @@ SPK_SAMPLE_RATE = 24000
 VOICE_NAME = os.environ.get("JARVIS_GPT_TOOLS_VOICE", "cedar")
 WS_URL = f"wss://api.openai.com/v1/realtime?model={MODEL}"
 
-# Same broad allowlist as jarvis-gemini-tools — uniform tool surface
-# across providers. Keep the two scripts in sync.
-ALLOWED_TOOLS = {
-    "read_file", "write_file", "patch", "search_files",
-    "code_search", "find_definitions", "execute_code",
-    "terminal", "computer_use",
-    # browser_control = live visible browser (keystroke); browser_task = headless.
-    "browser_control", "browser_task", "web_search", "web_fetch",
-    "memory", "todo", "schedule",
-    "skills_list", "skill_view", "skill_manage",
-    "dispatch_agent",
-    "vuln_check", "clarify",
-    # Shared camera tools (2026-06-11): `webcam` = one-frame scene answer with
-    # IR dark-room fallback + tracker/face-ID enrichment (needs ANTHROPIC_API_KEY
-    # in this service's env or it self-gates); `face_recognition` = local
-    # enroll/identify/forget (YuNet+SFace, no API key). Native frame injection
-    # (WEBCAM_REGEX above) stays the primary "see" path — these add identity
-    # + night vision.
-    "webcam", "face_recognition",
-}
+# Full registry surface, uniform with jarvis-gemini-tools. Registry
+# handlers take just a dict, so none need the live AgentSession; each
+# tool's check_fn self-gates the ones whose backend isn't configured.
+# That self-gating is what lets a single-provider-key user reach every
+# capability that key can drive. Add a name to DENY_TOOLS if a tool can't
+# work run out-of-process. voice_style is denied: the realtime voice is
+# fixed at session config (JARVIS_GPT_TOOLS_VOICE) and has no runtime
+# swap, so exposing it would let the model claim a voice change that
+# never lands. Keep in sync with the gemini script.
+DENY_TOOLS: set[str] = {"voice_style"}
 
 # Vision-trigger heuristic — only inject a screen frame when the
 # user's transcribed speech mentions visual content. Conservative to
@@ -350,11 +340,14 @@ def _strip_unsupported_schema_fields(schema: dict) -> dict:
 
 
 def build_openai_tool_list() -> list[dict]:
-    """Snapshot registry → OpenAI function-tool list."""
+    """Snapshot registry → OpenAI function-tool list.
+
+    Every registered tool except DENY_TOOLS, skipping any whose check_fn
+    says it's unavailable."""
     registry.discover_builtin_tools()
     tools: list[dict] = []
     for entry in registry.registry.all_entries():
-        if entry.name not in ALLOWED_TOOLS:
+        if entry.name in DENY_TOOLS:
             continue
         if entry.check_fn is not None and not _check_fn_cached(entry.check_fn):
             log.info(f"[gpt-tools] skipping {entry.name} (check_fn negative)")
