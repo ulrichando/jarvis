@@ -23,6 +23,17 @@ livekit-plugins-deepgram~=1.5
 # adapter hasn't been re-validated against.
 agent-client-protocol==0.9.0
 
+# faster-whisper — the on-device STT (providers/faster_whisper_stt.py).
+# LIVE PRIMARY since 2026-06-21 (JARVIS_STT_LOCAL_ONLY=1, large-v3-turbo
+# on GPU) yet was NEVER in this file — dev boxes only worked because it
+# was pip-installed by hand, and a fresh venv came up with NO STT rung at
+# all (build_stt_chain raises "no STT available" without a Deepgram key).
+# Added 2026-07-10. Pure-wheel (ctranslate2 backend, no torch). GPU boxes
+# additionally need nvidia-cublas-cu12 + nvidia-cudnn-cu12 — those are
+# GPU-conditional and installed by install.sh (install_local_stt), NOT
+# here, so CPU-only boxes / CI don't pull ~700 MB of CUDA wheels.
+faster-whisper~=1.2
+
 # Microsoft Edge-TTS — neural voices reachable without auth/quota.
 # Wrapped in providers/edge_tts.py as a livekit-agents TTS adapter.
 # Imported at the top of jarvis_agent.py, so a missing dep crashes the
