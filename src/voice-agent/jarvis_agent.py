@@ -136,6 +136,25 @@ def _apply_voice_mode() -> None:
         except Exception:
             return _default
 
+    # Local LLM: AUTO-DISCOVER an installed Ollama model rather than hardcoding
+    # a tag. The old hardcode (qwen3:30b-a3b) silently 404'd when it wasn't
+    # pulled — a box with only qwen2.5:7b + llama3.1:8b went mute in local mode
+    # even though those models work. Prefer the validated qwen3:30b-a3b voice
+    # pick WHEN it's actually pulled, else pick the best model this box has —
+    # the same `ollama list` discovery the web app and CLI already use. Honour
+    # an explicit JARVIS_LOCAL_LLM_MODEL if the user set one; treat unset/"auto"
+    # as "prefer the validated pick, else best installed". Fall back to the
+    # preferred tag only when discovery finds nothing, so a box that HAS the
+    # model behaves exactly as before.
+    _pref = (os.environ.get("JARVIS_LOCAL_LLM_MODEL", "") or "").strip()
+    if not _pref or _pref.lower() == "auto":
+        _pref = "qwen3:30b-a3b"
+    try:
+        from providers.local_model_picker import resolve_installed_model_tag
+        _local_llm = resolve_installed_model_tag(_pref) or _pref
+    except Exception:
+        _local_llm = _pref
+
     for _k, _v in {
         "JARVIS_LOCAL_STT_ENABLED": "1",
         "JARVIS_LOCAL_STT_PRIMARY": "1",
@@ -149,11 +168,11 @@ def _apply_voice_mode() -> None:
         "JARVIS_LOCAL_TTS_PRIMARY": "1",
         "JARVIS_LOCAL_LLM_ENABLED": "1",
         "JARVIS_LOCAL_LLM_URL":     "http://127.0.0.1:11434/v1",
-        "JARVIS_LOCAL_LLM_MODEL":   "qwen3:30b-a3b",
+        "JARVIS_LOCAL_LLM_MODEL":   _local_llm,
     }.items():
         os.environ[_k] = _v
     logging.getLogger("jarvis.config").info(
-        "[voice-mode] LOCAL - STT=faster-whisper, LLM=qwen3:30b-a3b, TTS=kokoro"
+        "[voice-mode] LOCAL - STT=faster-whisper, LLM=%s, TTS=kokoro", _local_llm
     )
 
 
