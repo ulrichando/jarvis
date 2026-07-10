@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertCircle,
@@ -74,6 +74,15 @@ export function OllamaConnection() {
       setDetecting(false);
     }
   }, [url]);
+
+  // Detect the connection on mount — otherwise the section shows no
+  // Connected/Not-connected status or model list until the user clicks
+  // refresh, even with a URL already configured. Runs once (StrictMode
+  // double-invoke is harmless — it's an idempotent GET).
+  useEffect(() => {
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const save = useCallback(async () => {
     const trimmed = url.trim();
@@ -183,11 +192,12 @@ export function OllamaConnection() {
           placeholder="http://127.0.0.1:11434"
           className="flex-1"
           spellCheck={false}
+          aria-label="Ollama server URL"
         />
         <Button onClick={save} disabled={update.isPending} size="sm">
           {update.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
         </Button>
-        <Button onClick={refresh} disabled={detecting} variant="outline" size="sm">
+        <Button onClick={refresh} disabled={detecting} variant="outline" size="sm" aria-label="Refresh models">
           {detecting ? (
             <Loader2 className="h-4 w-4 animate-spin" />
           ) : (
@@ -263,6 +273,7 @@ export function OllamaConnection() {
           placeholder="Pull a model, e.g. llama3.2:3b or qwen2.5-coder:7b"
           className="flex-1"
           spellCheck={false}
+          aria-label="Model to pull"
           disabled={pulling}
         />
         <Button onClick={pull} disabled={pulling || !pullName.trim()} size="sm">

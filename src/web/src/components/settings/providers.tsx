@@ -134,7 +134,7 @@ function ProviderRow({
     <div className="rounded-md border border-border/60 bg-background/40 p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <ProviderDot provider={provider.id} />
+          <ProviderDot provider={provider.id} muted={!hasKey} />
           <span className="text-sm font-medium">
             {PROVIDER_LABEL[provider.id]}
           </span>
@@ -149,6 +149,11 @@ function ProviderRow({
                 isEnvKey
                   ? "Shared from ~/.jarvis/keys.env"
                   : "Stored in this web app"
+              }
+              aria-label={
+                isEnvKey
+                  ? "Key shared from ~/.jarvis/keys.env"
+                  : "Key stored in this web app"
               }
             >
               <Check className="size-2.5" />
@@ -185,6 +190,7 @@ function ProviderRow({
                   : provider.help
             }
             className="pr-9 font-mono text-xs"
+            aria-label={`${PROVIDER_LABEL[provider.id]} API key`}
           />
           <button
             type="button"
@@ -242,13 +248,6 @@ function ProviderRow({
         </div>
       )}
 
-      {isEnvKey && (
-        <p className="mt-2 text-[11px] text-muted-foreground">
-          Shared from{" "}
-          <code className="font-mono">~/.jarvis/keys.env</code> (set on the
-          desktop). Saving a key here overrides it for the web only.
-        </p>
-      )}
     </div>
   );
 }

@@ -108,19 +108,26 @@ export function useUpdateSettings() {
 
 export function useTestProvider() {
   return useMutation({
-    mutationFn: (provider: Provider) =>
-      fetchJson<{
-        ok: boolean;
-        latencyMs?: number;
-        reply?: string;
-        error?: string;
-      }>("/api/settings/test-provider", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider }),
-      }).catch((e: Error) => ({
-        ok: false as const,
-        error: e.message,
-      })),
+    mutationFn: async (provider: Provider) => {
+      // The test-provider route always returns a well-formed { ok, error }
+      // body — even on 4xx/5xx. Parse it directly instead of routing through
+      // fetchJson, whose `throw new Error(await res.text())` surfaced the raw
+      // JSON body (`{"ok":false,"error":"No API key set."}`) in the toast.
+      try {
+        const res = await fetch("/api/settings/test-provider", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider }),
+        });
+        return (await res.json()) as {
+          ok: boolean;
+          latencyMs?: number;
+          reply?: string;
+          error?: string;
+        };
+      } catch (e) {
+        return { ok: false as const, error: (e as Error).message };
+      }
+    },
   });
 }
