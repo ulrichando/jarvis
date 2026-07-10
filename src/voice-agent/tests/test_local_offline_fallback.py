@@ -99,6 +99,142 @@ def test_llm_tray_entries_present_and_build(monkeypatch):
 
 
 # ─────────────────────────────────────────────────────────────────────
+# LLM last-resort failover tail (JARVIS_LOCAL_LLM_FAILOVER — Stage 1
+# offline parity, 2026-07-10). Contract: the local model is the FINAL
+# FallbackAdapter rung, never the first; with the cloud up, the chain
+# tried first and the telemetry label are byte-identical to a flag-off
+# build. Distinct from the JARVIS_LOCAL_LLM_ENABLED rung-0 PREPEND
+# tested above (that one makes local the primary).
+# ─────────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def failover_on(monkeypatch):
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_FAILOVER", "1")
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_ASSUME_AVAILABLE", "1")
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_MODEL", "qwen2.5:7b")
+    monkeypatch.delenv("JARVIS_LOCAL_LLM_ENABLED", raising=False)
+
+
+def test_failover_off_by_default(monkeypatch):
+    monkeypatch.delenv("JARVIS_LOCAL_LLM_FAILOVER", raising=False)
+    from providers.llm import build_local_failover_llm
+    assert build_local_failover_llm() is None
+
+
+def test_failover_builds_probed_local(failover_on):
+    from providers.llm import build_local_failover_llm
+    tail = build_local_failover_llm()
+    assert tail is not None
+    assert tail._jarvis_label == "local:qwen2.5:7b"
+
+
+def test_failover_skipped_when_endpoint_down(monkeypatch):
+    """A stale flag must not add a dead rung (mirror of the rung-0 rule)."""
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_FAILOVER", "1")
+    monkeypatch.delenv("JARVIS_LOCAL_LLM_ASSUME_AVAILABLE", raising=False)
+    import providers.llm as llm
+    monkeypatch.setattr(llm, "_probe_local_llm", lambda *a, **kw: (False, "down"))
+    assert llm.build_local_failover_llm() is None
+
+
+def test_wrap_local_failover_local_is_last_label_preserved(failover_on):
+    from livekit.agents.llm import FallbackAdapter
+    import providers.llm as llm
+    primary = llm._make_local_speech_llm("cloud-model")  # any LLM instance
+    primary._jarvis_label = "deepseek:deepseek-v4-flash"
+    wrapped = llm.wrap_local_failover(primary)
+    assert isinstance(wrapped, FallbackAdapter)
+    rungs = wrapped._llm_instances
+    assert rungs[0] is primary                                # cloud chain still FIRST
+    assert rungs[-1]._jarvis_label == "local:qwen2.5:7b"      # local strictly LAST
+    assert wrapped._jarvis_label == "deepseek:deepseek-v4-flash"  # telemetry unchanged
+
+
+def test_wrap_local_failover_noop_when_off(monkeypatch):
+    monkeypatch.delenv("JARVIS_LOCAL_LLM_FAILOVER", raising=False)
+    import providers.llm as llm
+    primary = llm._make_local_speech_llm("cloud-model")
+    assert llm.wrap_local_failover(primary) is primary
+
+
+def test_wrap_local_failover_never_wraps_local_chain(failover_on):
+    """rung-0 local-only boot path: nesting would double the local model."""
+    import providers.llm as llm
+    local_primary = llm._make_local_speech_llm("m")
+    local_primary._jarvis_label = "local:m"
+    assert llm.wrap_local_failover(local_primary) is local_primary
+
+
+def test_dispatcher_failover_tail_last_on_all_routes(cloud_keys, failover_on):
+    from livekit.agents.llm import FallbackAdapter
+    from providers.llm import build_dispatching_llm
+    disp = build_dispatching_llm()
+    for route, chain in disp.inners.items():
+        assert isinstance(chain, FallbackAdapter), route
+        rungs = chain._llm_instances
+        assert rungs[-1]._jarvis_label == "local:qwen2.5:7b", route
+        assert not getattr(rungs[0], "_jarvis_label", "").startswith("local:"), route
+        assert not chain._jarvis_label.startswith("local:"), route
+
+
+def test_dispatcher_online_first_rung_identical_with_failover(cloud_keys, monkeypatch):
+    """PROOF the online path is unchanged: per route, the flag-on build's
+    rung 0 (what's tried first) and outer label must equal the flag-off
+    build's chain label exactly."""
+    from providers.llm import build_dispatching_llm
+    monkeypatch.delenv("JARVIS_LOCAL_LLM_ENABLED", raising=False)
+    monkeypatch.delenv("JARVIS_LOCAL_LLM_FAILOVER", raising=False)
+    off = build_dispatching_llm()
+    off_labels = {r: getattr(l, "_jarvis_label", "") for r, l in off.inners.items()}
+
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_FAILOVER", "1")
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_ASSUME_AVAILABLE", "1")
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_MODEL", "qwen2.5:7b")
+    on = build_dispatching_llm()
+    for r, chain in on.inners.items():
+        assert chain._jarvis_label == off_labels[r], r
+        first = chain._llm_instances[0]
+        assert getattr(first, "_jarvis_label", "") == off_labels[r], r
+
+
+def test_failover_tail_not_doubled_with_rung0(cloud_keys, monkeypatch):
+    """Both flags on: rung-0 routes must NOT get a second local rung, while
+    routes the rung-0 filter left uncovered still get the tail."""
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_ENABLED", "1")
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_FAILOVER", "1")
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_ASSUME_AVAILABLE", "1")
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_MODEL", "m")
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_ROUTES", "REASONING")
+    from providers.llm import build_dispatching_llm
+    disp = build_dispatching_llm()
+    reasoning = disp.inners["REASONING"]
+    assert reasoning._jarvis_label == "local:m"   # rung-0 prepend, unchanged
+    labels = [getattr(x, "_jarvis_label", "") for x in reasoning._llm_instances]
+    assert labels.count("local:m") == 1           # no doubled local rung
+    banter = disp.inners["BANTER"]
+    assert not banter._jarvis_label.startswith("local:")
+    assert banter._llm_instances[-1]._jarvis_label == "local:m"
+
+
+def test_pin_path_failover_wraps_pin_chain(failover_on, monkeypatch):
+    """The LIVE config path: wrap_pin_fallback([pin, kimi]) nested as rung 0
+    with local last — pin chain untouched inside, label preserved."""
+    from livekit.agents.llm import FallbackAdapter
+    import providers.llm as llm
+    pinned = llm._make_local_speech_llm("pin-model")
+    pinned._jarvis_label = "deepseek-v4-flash"
+    fb = llm._make_local_speech_llm("fb-model")
+    inner = FallbackAdapter([pinned, fb], attempt_timeout=6)
+    inner._jarvis_label = "deepseek-v4-flash"
+    wrapped = llm.wrap_local_failover(inner)
+    assert isinstance(wrapped, FallbackAdapter)
+    assert wrapped._llm_instances[0] is inner     # pin chain = rung 0, untouched
+    assert inner._llm_instances == [pinned, fb]   # inner order unchanged
+    assert wrapped._llm_instances[-1]._jarvis_label == "local:qwen2.5:7b"
+    assert wrapped._jarvis_label == "deepseek-v4-flash"
+
+
+# ─────────────────────────────────────────────────────────────────────
 # STT rung (faster-whisper)
 # ─────────────────────────────────────────────────────────────────────
 
