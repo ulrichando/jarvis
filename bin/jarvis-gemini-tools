@@ -13,16 +13,11 @@ Architecture:
     voice-agent's tool registry → return function_response → Gemini
     incorporates the result into its spoken reply.
 
-Tool surface is a curated subset of the voice-agent's registry —
-the ones that DO things you'd want a voice assistant to do without
-needing a LiveKit AgentSession context:
-
-  terminal, computer_use, browser_task, read_file, write_file, patch,
-  code_search, find_definitions, execute_code, web_search, web_fetch.
-
-Skipped: tools that need the AgentSession (clarify, screenshot,
-set_screen_share), or that don't make sense outside JARVIS's
-conversation context (memory, schedule, todo).
+Tool surface is the FULL voice-agent registry (minus DENY_TOOLS, empty
+today). Registry handlers take only a dict, so none need the live
+AgentSession; each tool's own check_fn self-gates the ones whose
+backend isn't configured. This is what lets a single-provider-key user
+reach every capability that key can drive.
 
 Lifecycle:
   - Launch via `bin/jarvis-mode tools` (auto-mutes JARVIS-Claude).
@@ -164,36 +159,17 @@ FRAME_INTERVAL_S = float(
 # Umbriel, Vindemiatrix, Zephyr, Zubenelgenubi.
 VOICE_NAME = os.environ.get("JARVIS_GEMINI_TOOLS_VOICE", "Iapetus")
 
-# Broad tool allowlist — every JARVIS tool that doesn't need explicit
-# LiveKit AgentSession plumbing. Mirrors what JARVIS-Claude has in the
-# supervisor's surface so the experience is uniform across modes.
-ALLOWED_TOOLS = {
-    # Files & code
-    "read_file", "write_file", "patch", "search_files",
-    "code_search", "find_definitions", "execute_code",
-    # Desktop / shell / GUI
-    "terminal", "computer_use",
-    # Browser / web — browser_control drives the user's LIVE/visible browser by
-    # keystroke (new tab, navigate, close, switch, scroll, find, read tab);
-    # browser_task is headless background. check_fn gates browser_control on X11.
-    "browser_control", "browser_task", "web_search", "web_fetch",
-    # Long-running memory / state
-    "memory", "todo", "schedule",
-    # Skills (read-only registry + view + manage)
-    "skills_list", "skill_view", "skill_manage",
-    # Dispatch (planner-style sub-task)
-    "dispatch_agent",
-    # Specialty
-    "vuln_check", "clarify",
-    # Webcam — live feed on demand (start/stop, camera only active between calls)
-    "webcam_start", "webcam_stop",
-    # Shared camera tools (2026-06-11): `webcam` = one-frame scene answer with
-    # IR dark-room fallback + tracker/face-ID enrichment (needs ANTHROPIC_API_KEY
-    # in this service's env or it self-gates); `face_recognition` = local
-    # enroll/identify/forget (YuNet+SFace, no API key). Native frame injection
-    # above stays the primary "see" path — these add identity + night vision.
-    "webcam", "face_recognition",
-}
+# Tool surface = the FULL registry. Every registered tool takes just a
+# dict (execute_tool calls handler(args)), so none depend on the live
+# voice-client AgentSession — the check_fn each tool carries already
+# self-gates the ones whose backend isn't configured (discord/feishu/ha/
+# x/media-gen/browser/webcam/…). That self-gating is what lets a user
+# with a single provider key still reach every capability that key can
+# drive. Add a name to DENY_TOOLS if a tool can't work run out-of-process.
+# voice_style is denied: the realtime voice is fixed at session config
+# (JARVIS_GEMINI_TOOLS_VOICE) and has no runtime swap, so exposing it
+# would let the model claim a voice change that never lands.
+DENY_TOOLS: set[str] = {"voice_style"}
 
 # Operations block — kept tight on purpose. The SOUL prompt (slot #1)
 # carries the identity, voice texture, register, and few-shot
@@ -365,16 +341,15 @@ def _strip_unsupported_schema_fields(schema: dict) -> dict:
 def build_gemini_function_declarations() -> list[types.FunctionDeclaration]:
     """Snapshot the registry → Gemini FunctionDeclaration list.
 
-    Filters by:
-      * ALLOWED_TOOLS allowlist (skip everything else).
-      * check_fn (skip tools whose external probe says they're unavailable).
+    Includes every registered tool except DENY_TOOLS, skipping any whose
+    check_fn (external availability probe) says it's unavailable.
     """
     # Trigger discovery of all tool modules so registry is populated.
     registry.discover_builtin_tools()
 
     decls: list[types.FunctionDeclaration] = []
     for entry in registry.registry.all_entries():
-        if entry.name not in ALLOWED_TOOLS:
+        if entry.name in DENY_TOOLS:
             continue
         if entry.check_fn is not None and not _check_fn_cached(entry.check_fn):
             log.info(f"[gemini-tools] skipping {entry.name} (check_fn negative)")
@@ -394,8 +369,9 @@ def build_gemini_function_declarations() -> list[types.FunctionDeclaration]:
         ))
         log.info(f"[gemini-tools] registered tool: {entry.name}")
 
-    # Built-in tools (not in the registry, handled inline in drain_replies)
-    if "webcam_start" in ALLOWED_TOOLS:
+    # Built-in tools (not in the registry, handled inline in drain_replies).
+    # Gemini-native live-feed toggles — always declared in this mode.
+    if not {"webcam_start", "webcam_stop"} & DENY_TOOLS:
         decls.append(types.FunctionDeclaration(
             name="webcam_start",
             description=(
