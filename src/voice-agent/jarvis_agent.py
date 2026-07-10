@@ -120,9 +120,16 @@ def _apply_voice_mode() -> None:
     overrides any global default (e.g. .env's JARVIS_LOCAL_LLM_MODEL=auto, which
     resolves to a weaker model than the qwen3 voice pick)."""
     try:
-        mode = (Path.home() / ".jarvis" / "voice-mode").read_text(
-            encoding="utf-8"
-        ).strip().lower()
+        # JARVIS_VOICE_MODE_PATH override = suite hermeticity: tests/
+        # conftest.py points it at a nonexistent path so a dev box that IS
+        # in local mode doesn't have this import-time hook force
+        # JARVIS_LOCAL_* env into the pytest process (which flips every
+        # dispatcher/pin assertion). Same pattern as JARVIS_SOUL_OVERRIDE_PATH.
+        _vm_path = Path(
+            os.environ.get("JARVIS_VOICE_MODE_PATH", "").strip()
+            or str(Path.home() / ".jarvis" / "voice-mode")
+        )
+        mode = _vm_path.read_text(encoding="utf-8").strip().lower()
     except Exception:
         return
     if mode != "local":
@@ -155,6 +162,26 @@ def _apply_voice_mode() -> None:
     except Exception:
         _local_llm = _pref
 
+    # NOTE: the SUPERVISOR pin itself happens in providers.llm.
+    # read_speech_model() — voice-mode=local makes it return
+    # `ollama/<JARVIS_LOCAL_LLM_MODEL>` (auto-registered in SPEECH_MODELS),
+    # overriding the cloud pin in ~/.jarvis/voice-model WITHOUT rewriting
+    # the file. Setting JARVIS_LOCAL_LLM_ENABLED alone was NOT enough:
+    # with JARVIS_PIN_ALL_ROUTES=1 the dispatcher (and its local rung-0
+    # prepend) never runs, so the pinned cloud model stayed the brain
+    # (live 2026-07-10: voice-mode=local still ran claude-haiku-4-5).
+    #
+    # JARVIS_PIN_FALLBACK_TIMEOUT: wrap_pin_fallback applies its
+    # attempt_timeout (default 6s) to EVERY rung — a cold Ollama model
+    # load routinely exceeds 6s, which would bounce every first local
+    # turn to the cloud fallback. Bound the local rung by the local
+    # timeout instead; a DOWN endpoint still fails fast (connect error,
+    # not timeout), so the cloud fallback is reached immediately when
+    # Ollama isn't running.
+    _local_timeout = (
+        os.environ.get("JARVIS_LOCAL_LLM_TIMEOUT", "") or ""
+    ).strip() or "60"
+
     for _k, _v in {
         "JARVIS_LOCAL_STT_ENABLED": "1",
         "JARVIS_LOCAL_STT_PRIMARY": "1",
@@ -169,10 +196,12 @@ def _apply_voice_mode() -> None:
         "JARVIS_LOCAL_LLM_ENABLED": "1",
         "JARVIS_LOCAL_LLM_URL":     "http://127.0.0.1:11434/v1",
         "JARVIS_LOCAL_LLM_MODEL":   _local_llm,
+        "JARVIS_PIN_FALLBACK_TIMEOUT": _local_timeout,
     }.items():
         os.environ[_k] = _v
     logging.getLogger("jarvis.config").info(
-        "[voice-mode] LOCAL - STT=faster-whisper, LLM=%s, TTS=kokoro", _local_llm
+        "[voice-mode] LOCAL - STT=faster-whisper, LLM=%s (speech supervisor "
+        "pinned to ollama/%s), TTS=kokoro", _local_llm, _local_llm
     )
 
 

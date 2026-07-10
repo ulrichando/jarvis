@@ -95,3 +95,18 @@ def pytest_configure(config) -> None:
         "JARVIS_TELEMETRY_PATH",
         str(Path(tempfile.mkdtemp(prefix="jarvis-test-tele-")) / "turn_telemetry.db"),
     )
+
+    # Same hermeticity rule for the conversation mode: a dev box whose
+    # ~/.jarvis/voice-mode is "local" would otherwise (a) have
+    # jarvis_agent._apply_voice_mode() force JARVIS_LOCAL_* env into the
+    # pytest process at import (arming the dispatcher's local rung-0 —
+    # live ollama makes the probe PASS — flipping every dispatcher-label
+    # assertion), and (b) have providers.llm.read_speech_model() pin the
+    # ollama supervisor in pin-path tests. Point at a nonexistent path;
+    # tests that exercise local mode patch VOICE_MODE_FILE explicitly.
+    # (Live 2026-07-10: suite went 19-red the day the box switched to
+    # local mode.)
+    os.environ.setdefault(
+        "JARVIS_VOICE_MODE_PATH",
+        str(Path(tempfile.gettempdir()) / "jarvis-test-no-voice-mode" / "voice-mode"),
+    )

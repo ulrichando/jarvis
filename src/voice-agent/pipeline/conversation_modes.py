@@ -35,6 +35,12 @@ _BUILTINS: list[dict[str, Any]] = [
     },
     {
         "id": "local", "label": "Local (on-device)", "voice_mode": "local",
+        # voice_model None is deliberate: the cloud pin in
+        # ~/.jarvis/voice-model stays untouched. providers/llm.py::
+        # read_speech_model() sees voice-mode=local and pins the speech
+        # supervisor to the resolved installed Ollama tag at read time
+        # (2026-07-10 fix), so switching back to a cloud mode restores
+        # the previous cloud pin exactly.
         "voice_model": None, "cli_model": "ollama-qwen3-30b-a3b",
         "tts_provider": "kokoro:af_heart", "tts_voice": "af_heart",
         "allowed_tools": None,

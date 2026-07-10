@@ -558,13 +558,27 @@ def _make_local_speech_llm(model_id: str):
         "JARVIS_LOCAL_LLM_URL", "http://127.0.0.1:11434/v1"
     ).strip() or "http://127.0.0.1:11434/v1"
     key = os.environ.get("JARVIS_LOCAL_LLM_API_KEY", "ollama").strip() or "ollama"
-    return lk_openai.LLM(
+    # Cold Ollama loads routinely exceed the 5s cloud profile; a DOWN
+    # endpoint still fails fast (connect error, not timeout). Same knob
+    # as the dispatcher's rung-0 local (JARVIS_LOCAL_LLM_TIMEOUT).
+    try:
+        timeout = float(os.environ.get("JARVIS_LOCAL_LLM_TIMEOUT", "60").strip() or 60)
+    except (TypeError, ValueError):
+        timeout = 60.0
+    inst = lk_openai.LLM(
         model=model_id,
         base_url=url,
         api_key=key,
         temperature=0.6,
+        timeout=timeout,
+        max_retries=0,  # fail over fast; any FallbackAdapter wrap handles the hop
         _strict_tool_schema=False,
     )
+    # Same label convention as the dispatcher's rung-0 local rung
+    # (`local:<tag>`) so telemetry's model column is consistent and any
+    # outer local-failover wrap can recognize an already-local chain.
+    inst._jarvis_label = f"local:{model_id}"
+    return inst
 
 
 SPEECH_MODELS["ollama/auto"] = {
@@ -599,13 +613,108 @@ SPEECH_MODELS["ollama/gpt-oss:120b"] = {
 }
 
 
+# The desktop tray's Local/Cloud toggle (and the "Local (on-device)"
+# conversation mode) write this file; read_speech_model() consults it so
+# local mode pins the speech SUPERVISOR itself to the on-device model.
+# JARVIS_VOICE_MODE_PATH override = suite hermeticity (tests/conftest.py
+# points it at a nonexistent path so a dev box that IS in local mode
+# doesn't flip every dispatcher/pin assertion — same pattern as
+# JARVIS_SOUL_OVERRIDE_PATH).
+VOICE_MODE_FILE: Path = Path(
+    os.environ.get("JARVIS_VOICE_MODE_PATH", "").strip()
+    or str(Path.home() / ".jarvis" / "voice-mode")
+)
+
+
+def _register_ollama_speech_model(name: str) -> bool:
+    """Additively register an ``ollama/<tag>`` SPEECH_MODELS entry for any
+    tag not in the fixed catalog above (e.g. ``ollama/qwen2.5:7b``).
+
+    The static entries only cover 4 hand-validated tags, so a box whose
+    pulled models don't intersect that list couldn't pin ANY local model —
+    read_speech_model() rejected the id and silently fell back to the cloud
+    default (the 2026-07-10 "local mode still runs Claude Haiku" bug). Same
+    build path as the static entries (`_make_local_speech_llm`, which keeps
+    the MANDATORY `_strict_tool_schema=False`). Deliberately does NOT check
+    `ollama list` — JARVIS_LOCAL_LLM_URL may point at a remote GPU box whose
+    pull set is invisible locally, matching the static entries' semantics.
+    Cloud model ids never hit this (gated on the ``ollama/`` prefix)."""
+    if not isinstance(name, str) or not name.startswith("ollama/"):
+        return False
+    if name in SPEECH_MODELS:
+        return True
+    tag = name[len("ollama/"):].strip()
+    if not tag:
+        return False
+    SPEECH_MODELS[name] = {
+        "label": f"Local · {tag} (Ollama)",
+        "build": lambda _tag=tag: _make_local_speech_llm(_tag),
+    }
+    logger.info(f"[local] auto-registered speech model {name!r}")
+    return True
+
+
+def _local_mode_speech_model(pinned: str | None) -> str | None:
+    """When ``~/.jarvis/voice-mode`` is ``local``, return the ``ollama/<tag>``
+    id the speech SUPERVISOR must run, else None (leave the normal pin).
+
+    This is THE local-mode brain switch (2026-07-10). Before it, local mode
+    only set JARVIS_LOCAL_LLM_ENABLED=1 — with JARVIS_PIN_ALL_ROUTES=1 and a
+    cloud model in ~/.jarvis/voice-model the dispatcher (and its local
+    rung-0 prepend) never ran, so the pinned CLOUD model stayed the brain
+    and local was at best a failover rung (live log: "speech LLM:
+    claude-haiku-4-5" with voice-mode=local). Resolution order:
+      1. an explicit ``ollama/*`` pin in voice-model wins (user picked a
+         specific local model) → None, the pin flows through unchanged;
+      2. JARVIS_LOCAL_LLM_MODEL env — in the agent process
+         _apply_voice_mode() has already resolved it to an INSTALLED tag;
+      3. `resolve_installed_model_tag()` discovery (`ollama list`);
+      4. nothing local resolvable → None: keep the cloud pin rather than
+         pinning a dead endpoint (degrades like today instead of muting).
+    The voice-model FILE is never rewritten, so flipping voice-mode back to
+    cloud restores the previous cloud pin exactly."""
+    try:
+        mode = (read_unified_setting("voice-mode", VOICE_MODE_FILE) or "").strip().lower()
+    except Exception:
+        return None
+    if mode != "local":
+        return None
+    if pinned and pinned.startswith("ollama/"):
+        return None
+    tag = (os.environ.get("JARVIS_LOCAL_LLM_MODEL", "") or "").strip()
+    if tag.lower() == "auto":
+        tag = ""
+    if not tag:
+        try:
+            from providers.local_model_picker import resolve_installed_model_tag
+            tag = resolve_installed_model_tag() or ""
+        except Exception:
+            tag = ""
+    if not tag:
+        logger.warning(
+            "[local] voice-mode=local but no local model resolvable "
+            "(JARVIS_LOCAL_LLM_MODEL unset and Ollama discovery empty); "
+            "leaving the cloud speech pin in place"
+        )
+        return None
+    return f"ollama/{tag}"
+
+
 def read_speech_model() -> str:
     """Return the active speech model ID, or the default if unset/invalid.
 
     Reads the flat file written by the tray UI under `~/.jarvis/`
     (the unified-settings SDK is a thin wrapper over that file —
-    there is no SQLite settings store)."""
+    there is no SQLite settings store). When ``~/.jarvis/voice-mode`` is
+    ``local``, the on-device model OVERRIDES the file pin (without
+    rewriting it) so the local mode's brain is actually local — see
+    `_local_mode_speech_model`."""
     name = read_unified_setting("voice-model", SPEECH_MODEL_FILE)
+    local_pin = _local_mode_speech_model(name)
+    if local_pin:
+        name = local_pin
+    if name and name.startswith("ollama/"):
+        _register_ollama_speech_model(name)
     if name in SPEECH_MODELS:
         return name
     if name:
