@@ -6021,6 +6021,20 @@ async function run(): Promise<CommanderCommand> {
       await jarvisKeysPull({ url });
       process.exit(0);
     });
+  keysCmd
+    .command("push")
+    .description(
+      "Write local ~/.jarvis/keys.env provider keys UP to the server so they're web-managed (masked preview + delete in Settings → Providers)",
+    )
+    .option(
+      "--url <url>",
+      "JARVIS server URL (default: $JARVIS_BRIDGE_BASE_URL or saved value)",
+    )
+    .action(async ({ url }: { url?: string }) => {
+      const { jarvisKeysPush } = await import("./cli/handlers/jarvisKeys.js");
+      await jarvisKeysPush({ url });
+      process.exit(0);
+    });
 
   // jarvis gh-agent — poll a GitHub repo for @jarvis mentions by allowlisted
   // authors and (P1) acknowledge them. Reuses the machine's authed gh CLI.

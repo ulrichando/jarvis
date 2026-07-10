@@ -3,7 +3,7 @@ import { getStore } from "@/lib/bridge/db";
 import { resolveBridgeToken } from "@/lib/bridge/store";
 import { extractBearer } from "@/lib/bridge/auth";
 import { bridgeError } from "@/lib/bridge/errors";
-import { loadSettings } from "@/lib/settings/store";
+import { loadSettings, saveSettings } from "@/lib/settings/store";
 import { providerEnvKey } from "@/lib/ai/provider-keys";
 import type { Provider } from "@/lib/ai/models-meta";
 
@@ -62,4 +62,62 @@ export async function GET(req: Request): Promise<NextResponse> {
     if (effective) keys[envName] = effective;
   }
   return NextResponse.json({ keys });
+}
+
+// env-var name → provider, the inverse of ENV_NAME (for POST).
+const PROVIDER_BY_ENV: Record<string, Exclude<Provider, "ollama">> =
+  Object.fromEntries(
+    (Object.entries(ENV_NAME) as [Exclude<Provider, "ollama">, string][]).map(
+      ([p, env]) => [env, p],
+    ),
+  );
+
+/**
+ * POST /api/bridge/v1/keys — write provider API keys INTO the server's web
+ * store (settings.json), for `jarvis keys push`. This is what makes a key
+ * managed by the web Providers UI: once in settings.json it shows the masked
+ * preview + delete affordance (keySource "settings"), instead of the opaque
+ * "set · keys.env" an env-sourced key gets. Complements the GET (pull).
+ *
+ * Body: { keys: { ANTHROPIC_API_KEY: "...", GOOGLE_API_KEY: "...", ... } } —
+ * the same canonical env-name shape the GET returns, so push/pull are
+ * symmetric. Only the keys present are written (upsert); unknown env names and
+ * empty values are ignored. Provider keys already in settings.json are
+ * overwritten.
+ *
+ * SECURITY: same strict Remote-Control-token gate as the GET (it writes
+ * secrets, not just reads them). The same latent multi-user caveat applies —
+ * see the GET; safe today on the single-user, signup-disabled deploy.
+ */
+export async function POST(req: Request): Promise<NextResponse> {
+  const token = extractBearer(req.headers.get("authorization"));
+  if (!token) return bridgeError(401, "unauthorized", "Missing bearer");
+  const userId = resolveBridgeToken(getStore(), token);
+  if (!userId) return bridgeError(401, "unauthorized", "Invalid token");
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return bridgeError(400, "bad_request", "Body must be JSON");
+  }
+  const incoming = (body as { keys?: unknown })?.keys;
+  if (typeof incoming !== "object" || incoming === null) {
+    return bridgeError(400, "bad_request", "Expected { keys: { ENV_NAME: value } }");
+  }
+
+  const settings = await loadSettings();
+  const providers = { ...settings.providers };
+  const updated: string[] = [];
+  for (const [envName, value] of Object.entries(incoming as Record<string, unknown>)) {
+    const provider = PROVIDER_BY_ENV[envName];
+    if (!provider) continue; // unknown env var — ignore
+    if (typeof value !== "string" || !value.trim()) continue; // empty — ignore
+    providers[provider] = { ...providers[provider], apiKey: value.trim() };
+    updated.push(envName);
+  }
+  if (updated.length > 0) {
+    await saveSettings({ ...settings, providers });
+  }
+  return NextResponse.json({ updated });
 }
