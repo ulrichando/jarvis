@@ -87,3 +87,81 @@ export async function jarvisKeysPull(
     )
   }
 }
+
+// Canonical provider key names in ~/.jarvis/keys.env — must match the server
+// route's ENV_NAME map (src/web/.../bridge/v1/keys/route.ts).
+const PROVIDER_KEY_NAMES = [
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'GOOGLE_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'KIMI_API_KEY',
+] as const
+
+/**
+ * `jarvis keys push` — write the local provider keys UP into the server's web
+ * store (settings.json), the inverse of `pull`. Once a key is in settings.json
+ * the web Providers UI shows it as a managed key (masked preview + delete)
+ * instead of the opaque "set · keys.env" an env-sourced key gets — so `push`
+ * is how you make every provider manageable from the website like the rest.
+ *
+ * POSTs the same { keys: { NAME: value } } shape `pull` receives. Values are
+ * never printed — only which names were sent.
+ */
+export async function jarvisKeysPush(
+  opts: { url?: string } = {},
+): Promise<void> {
+  const root = resolveServerRoot(opts.url)
+  const token = process.env[TOKEN_KEY] ?? readKeysEnvValue(TOKEN_KEY)
+  if (!token) {
+    fail('Not logged in — run `jarvis auth login` first.')
+  }
+
+  const keys: Record<string, string> = {}
+  for (const name of PROVIDER_KEY_NAMES) {
+    const val = (process.env[name] ?? readKeysEnvValue(name) ?? '').trim()
+    if (val) keys[name] = val
+  }
+  const names = Object.keys(keys).sort()
+  if (names.length === 0) {
+    fail(
+      `No provider keys found in ${keysEnvPath()} — nothing to push. Add them locally or run \`jarvis keys pull\` first.`,
+    )
+  }
+
+  let res: Response
+  try {
+    res = await fetch(`${root}/api/bridge/v1/keys`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ keys }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    })
+  } catch (e) {
+    fail(
+      `Could not reach ${root}: ${e instanceof Error ? e.message : String(e)}`,
+    )
+  }
+  if (res.status === 401) {
+    fail('Server rejected the token — run `jarvis auth login` again.')
+  }
+  if (!res.ok) {
+    fail(`Server error: HTTP ${res.status}`)
+  }
+
+  const body = (await res.json().catch(() => null)) as {
+    updated?: string[]
+  } | null
+  const updated = body?.updated ?? []
+  process.stdout.write(
+    `Pushed ${updated.length} provider key(s) to ${root} (now web-managed in Settings → Providers).\n`,
+  )
+  for (const n of names) {
+    process.stdout.write(
+      `  ${updated.includes(n) ? 'pushed   ' : 'skipped  '} ${n}\n`,
+    )
+  }
+}
