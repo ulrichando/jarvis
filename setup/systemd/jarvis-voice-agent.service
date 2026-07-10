@@ -70,6 +70,13 @@ Environment=JARVIS_RECALL_TRIGGER_LIVE=1
 # revert to =0 (or unset) and restart.
 # Spec: docs/superpowers/specs/2026-05-24-jarvis-memory-and-procedure-loop-design.md
 Environment=JARVIS_SKILL_REVIEW_APPLY=1
+# Refresh provider API keys from the JARVIS server (0wlan.com) before the
+# agent boots and loads ~/.jarvis/keys.env into os.environ — the server is
+# the source of truth, so a key added/rotated on the website reaches this box
+# on the next (re)start without a manual `jarvis keys pull`. Leading `-`:
+# ignore failures (offline / server down → boot with the existing cached
+# keys). `timeout` caps the network wait so a hung server can't stall boot.
+ExecStartPre=-/usr/bin/timeout 30 %h/Documents/Projects/jarvis/bin/jarvis keys pull
 # `start` (not `dev`) — production mode, no file-watch, JSON logs.
 # Uses the venv's interpreter directly so we don't need `source
 # .venv/bin/activate` in the ExecStart.
