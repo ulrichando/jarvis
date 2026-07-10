@@ -66,6 +66,16 @@ struct ToolItems(Mutex<Vec<(&'static str, &'static str, MenuItem<Wry>)>>);
 /// voice-client is publishing, "Start Screen Share" when not.
 struct ShareLabel(Mutex<Option<MenuItem<Wry>>>);
 
+/// Handle to the tray "Sign in / Sign out of JARVIS Server" item, plus a
+/// last-known signed-in flag. The 3 s mode-refresh tick repaints the label
+/// from bridge_login_status (JARVIS_BRIDGE_TOKEN in keys.env), so signing in
+/// or out — from the panel, a terminal, or this item — updates the tray
+/// without a restart. The click handler reads the flag to decide sign-in
+/// (spawn `jarvis auth login`) vs sign-out (drop the token). Before this the
+/// item was a static "Sign in to JARVIS Server…" that never reflected state.
+struct SignInItem(Mutex<Option<MenuItem<Wry>>>);
+struct SignedInFlag(std::sync::atomic::AtomicBool);
+
 /// Handle to the "Active: …" header line inside the Conversation
 /// mode submenu. Refreshed every 3 s by a background task that
 /// checks systemd --user state of the gemini/gpt direct-mode units.
@@ -1741,6 +1751,42 @@ fn refresh_mode_menu(app: &tauri::AppHandle) {
     }
 }
 
+/// Repaint the tray "Sign in / Sign out of JARVIS Server" item from the live
+/// login state (bridge_login_status → keys.env JARVIS_BRIDGE_TOKEN) and stash
+/// the signed-in flag so the click handler knows which action to take. Runs on
+/// the same 3 s tick as refresh_mode_menu, so logging in/out from the panel or
+/// a terminal updates the tray without a restart.
+fn refresh_signin_menu(app: &tauri::AppHandle) {
+    let status = bridge_login_status();
+    let logged_in = status.get("loggedIn").and_then(|v| v.as_bool()).unwrap_or(false);
+    let base = status.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("");
+    // baseUrl → bare host for the label (mirrors the panel's serverHost).
+    let host = base
+        .strip_prefix("https://")
+        .or_else(|| base.strip_prefix("http://"))
+        .unwrap_or(base);
+    let host = host.split('/').next().unwrap_or(host);
+    let text = if logged_in {
+        if host.is_empty() {
+            "Sign out of JARVIS Server".to_string()
+        } else {
+            format!("Sign out of JARVIS ({host})")
+        }
+    } else {
+        "Sign in to JARVIS Server…".to_string()
+    };
+    if let Some(flag) = app.try_state::<SignedInFlag>() {
+        flag.0.store(logged_in, std::sync::atomic::Ordering::Relaxed);
+    }
+    if let Some(item_state) = app.try_state::<SignInItem>() {
+        if let Ok(guard) = item_state.0.lock() {
+            if let Some(item) = guard.as_ref() {
+                let _ = item.set_text(text);
+            }
+        }
+    }
+}
+
 // ── Audio device picker (Microphone ▸ / Speaker ▸) ──────────────────────────
 //
 // The voice-client (:8767) enumerates mic/speaker devices via sounddevice
@@ -2587,6 +2633,8 @@ fn main() {
         .manage(RateItems(Mutex::new(Vec::new())))
         .manage(ToolItems(Mutex::new(Vec::new())))
         .manage(ShareLabel(Mutex::new(None)))
+        .manage(SignInItem(Mutex::new(None)))
+        .manage(SignedInFlag(std::sync::atomic::AtomicBool::new(false)))
         .manage(ModeLabel(Mutex::new(None)))
         .manage(ModeItems(Mutex::new(Vec::new())))
         .manage(AudioItems(Mutex::new(AudioItemsInner::default())))
@@ -2909,6 +2957,12 @@ fn main() {
             // both spawn a terminal via spawn_cli_terminal.
             let open_cli_item = MenuItemBuilder::with_id("open_cli", "Open jarvis CLI").build(app)?;
             let sign_in_item  = MenuItemBuilder::with_id("sign_in",  "Sign in to JARVIS Server…").build(app)?;
+            {
+                // Stash the item so the 3 s tick can flip its label between
+                // Sign in / Sign out; refreshed once below after setup.
+                let s: State<SignInItem> = app.state();
+                *s.0.lock().unwrap() = Some(sign_in_item.clone());
+            }
             let sep_prov     = PredefinedMenuItem::separator(app)?;
 
             // ── Models submenu ──
@@ -3501,7 +3555,20 @@ fn main() {
                             }
                         }
                         "sign_in" => {
-                            if let Err(e) = spawn_cli_terminal(true) {
+                            // Same item toggles: signed in → sign out (drop the
+                            // token, same as the panel's Sign out); signed out →
+                            // open the `jarvis auth login` terminal. The 3 s tick
+                            // repaints the label right after either.
+                            let logged_in = app
+                                .try_state::<SignedInFlag>()
+                                .map(|f| f.0.load(std::sync::atomic::Ordering::Relaxed))
+                                .unwrap_or(false);
+                            if logged_in {
+                                if let Err(e) = bridge_logout() {
+                                    eprintln!("[JARVIS] sign_out failed: {e}");
+                                }
+                                refresh_signin_menu(app);
+                            } else if let Err(e) = spawn_cli_terminal(true) {
                                 eprintln!("[JARVIS] sign_in failed: {e}");
                             }
                         }
@@ -3741,9 +3808,11 @@ fn main() {
             {
                 let app_handle = app.handle().clone();
                 refresh_mode_menu(&app_handle);
+                refresh_signin_menu(&app_handle);
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_secs(3));
                     refresh_mode_menu(&app_handle);
+                    refresh_signin_menu(&app_handle);
                 });
             }
 
