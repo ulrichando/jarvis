@@ -5,6 +5,10 @@ import { toast } from "sonner";
 import { ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useConversations } from "@/hooks/use-conversations";
+import {
+  fetchConversationsForExport,
+  triggerJsonDownload,
+} from "@/lib/export-conversations";
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
@@ -26,23 +30,22 @@ export function PrivacySection() {
     }
     setExporting(true);
     try {
-      const full = await Promise.all(
-        conversations.map((c) =>
-          fetch(`/api/conversations/${c.id}`)
-            .then((r) => r.json())
-            .catch(() => null),
-        ),
+      const { data, requested, failed } = await fetchConversationsForExport(
+        conversations.map((c) => c.id),
       );
-      const blob = new Blob([JSON.stringify(full, null, 2)], {
-        type: "application/json",
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `jarvis-export-${new Date().toISOString().split("T")[0]}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-      toast.success(`Exported ${conversations.length} chats`);
+      if (data.length === 0) {
+        toast.error("Export failed — no conversations could be fetched");
+        return;
+      }
+      triggerJsonDownload(
+        data,
+        `jarvis-export-${new Date().toISOString().split("T")[0]}.json`,
+      );
+      if (failed > 0) {
+        toast.warning(`Exported ${data.length} of ${requested} chats — ${failed} could not be fetched`);
+      } else {
+        toast.success(`Exported ${data.length} chats`);
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Export failed");
     } finally {

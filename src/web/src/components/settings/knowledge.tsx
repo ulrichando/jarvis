@@ -22,6 +22,13 @@ type KnowledgeDoc = {
 };
 
 const ACCEPT = ".md,.txt,.json,.yaml,.yml,.csv";
+const ACCEPT_EXTS = ACCEPT.split(",");
+const MAX_BYTES = 1024 * 1024; // 1MB — matches the UI copy; the `accept` attr only filters the picker, not drag-drop.
+
+function isAcceptedFile(name: string): boolean {
+  const lower = name.toLowerCase();
+  return ACCEPT_EXTS.some((ext) => lower.endsWith(ext));
+}
 
 function fmtSize(bytes: number): string {
   if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
@@ -97,6 +104,16 @@ export function KnowledgeSection() {
   const handleFiles = async (files: FileList | null) => {
     if (!files) return;
     for (const f of Array.from(files)) {
+      // The `accept` attr only filters the OS picker — drag-drop bypasses it,
+      // so re-validate type + size here (both paths route through handleFiles).
+      if (!isAcceptedFile(f.name)) {
+        toast.error(`${f.name}: unsupported type (allowed: ${ACCEPT})`);
+        continue;
+      }
+      if (f.size > MAX_BYTES) {
+        toast.error(`${f.name}: exceeds 1MB (${fmtSize(f.size)})`);
+        continue;
+      }
       const text = await f.text();
       upload.mutate({ name: f.name, content: text });
     }
@@ -194,9 +211,17 @@ export function KnowledgeSection() {
                 toast.error("Name and content required");
                 return;
               }
-              upload.mutate({ name: newName, content: newContent });
-              setNewName("");
-              setNewContent("");
+              // Clear only after the upload succeeds — clearing optimistically
+              // lost the user's pasted text on any failure.
+              upload.mutate(
+                { name: newName, content: newContent },
+                {
+                  onSuccess: () => {
+                    setNewName("");
+                    setNewContent("");
+                  },
+                },
+              );
             }}
           >
             {upload.isPending ? "Saving…" : "Save"}
@@ -237,7 +262,11 @@ export function KnowledgeSection() {
                 </span>
                 <button
                   type="button"
-                  onClick={() => remove.mutate(d.name)}
+                  onClick={() => {
+                    if (window.confirm(`Remove "${d.name}"? This can't be undone.`)) {
+                      remove.mutate(d.name);
+                    }
+                  }}
                   disabled={remove.isPending}
                   className="shrink-0 text-muted-foreground hover:text-destructive"
                   aria-label={`Remove ${d.name}`}
