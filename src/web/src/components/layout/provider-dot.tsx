@@ -13,15 +13,22 @@ const COLORS: Record<Provider, string> = {
 export function ProviderDot({
   provider,
   className,
+  muted = false,
 }: {
   provider: Provider;
   className?: string;
+  // When true, render a dim neutral dot instead of the brand color — the
+  // settings list uses this to encode "not configured", so the dot means
+  // something rather than reading as a false amber/green status signal.
+  // Decorative in both cases (sits beside the provider name) → aria-hidden.
+  muted?: boolean;
 }) {
   return (
     <span
+      aria-hidden="true"
       className={cn(
         "inline-block size-1.5 shrink-0 rounded-full",
-        COLORS[provider],
+        muted ? "bg-muted-foreground/30" : COLORS[provider],
         className,
       )}
     />
