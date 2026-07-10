@@ -3329,7 +3329,13 @@ fn main() {
                             // Claude/DeepSeek also set the supervisor Tool LLM.
                             // switch_cli_model writes ~/.jarvis/cli-model + repaints
                             // the Tool-model ✓ — no restart (it's read per-turn).
-                            // Default Claude = Sonnet 4.6 (the supervisor default).
+                            // Each mode picks its provider's most capable TOOLS
+                            // variant (per voice_client_tray_config.py curation):
+                            //   Claude   → Sonnet 4.6 (τ-bench 87.5% multi-turn
+                            //              tool-use leader; Opus is reserved for
+                            //              the hardest work via the Tools picker)
+                            //   DeepSeek → v4-pro (the strongest tool-capable
+                            //              DeepSeek in the picker)
                             match id {
                                 "mode_claude"   => switch_cli_model(app, "claude-sonnet-4-6"),
                                 "mode_deepseek" => switch_cli_model(app, "deepseek-v4-pro"),
@@ -3359,20 +3365,20 @@ fn main() {
                             // (verified live). Local keeps its on-device model.
                             let speech_switched = match id {
                                 "mode_claude" => {
-                                    // Don't stomp an explicit cloud speech pick.
-                                    // Live 2026-07-01: user picked DeepSeek in the
-                                    // Voice submenu; every mode_claude click (his
-                                    // "restart" path) rewrote voice-model to Haiku.
-                                    // Claude mode only asserts a Claude voice when
-                                    // the current pick can't serve the cloud
-                                    // pipeline (unset / on-device ollama model).
-                                    let cur = read_picker_current("voice-model");
-                                    if cur.is_empty() || cur.starts_with("ollama/") {
-                                        switch_speech_model(app, "claude-haiku-4-5");
-                                        true
-                                    } else {
-                                        false
-                                    }
+                                    // Claude mode is a deterministic preset: Haiku 4.5
+                                    // for voice (fastest Claude — best TTFT/tool-quality
+                                    // balance per the speech-picker curation, ~0.7s
+                                    // TTFT) + Sonnet 4.6 for tools (set above), ALWAYS —
+                                    // picking the mode IS choosing the model pair, so
+                                    // it always asserts the mode's voice model (Ulrich
+                                    // 2026-07-10). This intentionally replaces the
+                                    // 2026-07-01 "don't stomp an explicit voice pick"
+                                    // guard: the conversation mode is now the single
+                                    // deterministic control, so switching to Claude
+                                    // always gives the Claude voice regardless of the
+                                    // prior pick.
+                                    switch_speech_model(app, "claude-haiku-4-5");
+                                    true
                                 }
                                 // V3-chat, not v4-flash (2026-07-01): same pinned
                                 // bypass mechanics (tool_choice stays "auto"), but
