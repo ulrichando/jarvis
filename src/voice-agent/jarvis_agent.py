@@ -1339,6 +1339,13 @@ _ASSISTANT_MUTE_ACKS = (
     "going quiet", "going silent", "muting myself",
     "going to sleep", "i'll be quiet", "be quiet now",
     "got it, quiet now", "muting now", "going on mute",
+    # Verbose mute requests ("Jarvis, I ask you to go on mute" — >6 words)
+    # skip the deterministic command gate, so this reply-side net is the
+    # only catch. The LLM's actual compliance phrasing is usually "I'll
+    # stay quiet" / "staying quiet", which the list above missed → silent
+    # mode never engaged and JARVIS kept talking (live 2026-07-10).
+    "stay quiet", "staying quiet", "stay silent", "keep quiet",
+    "i'll stay quiet", "i'll be silent",
 )
 
 
