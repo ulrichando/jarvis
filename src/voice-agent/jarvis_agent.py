@@ -185,9 +185,12 @@ def _apply_voice_mode() -> None:
     for _k, _v in {
         "JARVIS_LOCAL_STT_ENABLED": "1",
         "JARVIS_LOCAL_STT_PRIMARY": "1",
-        # Fixed to faster-whisper large-v3 (the user's pick — most accurate).
-        # No size option anymore; the tray STT-model picker was removed.
-        "JARVIS_LOCAL_STT_MODEL":   "large-v3",
+        # faster-whisper large-v3-turbo (~1.6 GB, the CLAUDE.md-documented STT
+        # model): fits on the GPU alongside a co-resident local LLM (qwen3:4b,
+        # ~3.2 GB) on a 6 GB card — the full large-v3 (~3 GB) OOMs next to it in
+        # local voice mode. Turbo is ~as fast + near-large-v3 accuracy. No size
+        # option; the tray STT-model picker was removed.
+        "JARVIS_LOCAL_STT_MODEL":   "large-v3-turbo",
         "JARVIS_LOCAL_TTS_ENABLED": "1",
         "JARVIS_LOCAL_TTS_ENGINE":  "kokoro",
         "JARVIS_LOCAL_TTS_URL":     "http://127.0.0.1:8880/v1",
