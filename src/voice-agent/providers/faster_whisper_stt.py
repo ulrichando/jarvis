@@ -23,6 +23,7 @@ import asyncio
 import io
 import logging
 import os
+import re
 
 from livekit import rtc
 from livekit.agents import APIConnectionError, APIConnectOptions, stt
@@ -30,6 +31,30 @@ from livekit.agents.types import NOT_GIVEN, NotGivenOr
 from livekit.agents.utils import AudioBuffer, is_given
 
 logger = logging.getLogger("jarvis.stt.local")
+
+
+# Transient GPU failure markers. ctranslate2 raises RuntimeError shapes like
+# "parallel_for failed: cudaErrorInvalidDevice: invalid device ordinal" when a
+# kernel launch loses a race against the local LLM sharing the card (live
+# incident 2026-07-10: qwen2.5:7b on ollama + large-v3-turbo on the same 6 GB
+# RTX 2060 — VRAM FITS, the failure is compute/launch contention, not OOM).
+# Without in-rung retries a single blip cascades: the framework's outer
+# recognize() retries share the same contention window, exhaust, mark the
+# session unrecoverable, and the watchdog tears the whole AgentSession down.
+_TRANSIENT_GPU_ERR_RE = re.compile(
+    r"parallel_for failed|\bcuda|cublas|cudnn", re.I
+)
+
+
+def _gpu_retries() -> int:
+    """Bounded in-rung retry count for transient GPU errors (default 2 —
+    i.e. up to 3 attempts per recognize; the framework's outer retry loop
+    multiplies this, so a genuinely dead GPU still surfaces in seconds,
+    not forever). Env-tunable via JARVIS_LOCAL_STT_GPU_RETRIES."""
+    try:
+        return max(0, int(os.environ.get("JARVIS_LOCAL_STT_GPU_RETRIES", "2")))
+    except ValueError:
+        return 2
 
 
 class FasterWhisperSTT(stt.STT):
@@ -87,22 +112,54 @@ class FasterWhisperSTT(stt.STT):
         # WAV bytes at the source sample rate; faster-whisper decodes +
         # resamples to 16k internally, so no manual resampling is needed.
         wav = rtc.combine_audio_frames(buffer).to_wav_bytes()
-        try:
-            model = await self._ensure_model()
+        # Transient-GPU retry loop (2026-07-10): on a CUDA kernel-launch blip
+        # (see _TRANSIENT_GPU_ERR_RE) retry the SAME audio a bounded number of
+        # times with a small backoff instead of surfacing immediately — the
+        # backoff lets the concurrent local-LLM burst clear the card. Before
+        # the FINAL attempt the model is dropped + lazily reloaded, rebuilding
+        # the ctranslate2 CUDA context (cudaErrorInvalidDevice can wedge the
+        # existing one, in which case in-context retries never recover).
+        # Non-GPU errors and exhausted retries surface exactly as before: an
+        # APIConnectionError the chain/framework can cascade on.
+        retries = _gpu_retries()
+        attempt = 0
+        while True:
+            try:
+                model = await self._ensure_model()
 
-            def _transcribe():
-                segments, info = model.transcribe(
-                    io.BytesIO(wav),
-                    language=lang,
-                    beam_size=1,        # fast; this is a last-resort rung
-                    vad_filter=False,   # the chain's Silero VAD already gated this audio
+                def _transcribe():
+                    segments, info = model.transcribe(
+                        io.BytesIO(wav),
+                        language=lang,
+                        beam_size=1,        # fast; this is a last-resort rung
+                        vad_filter=False,   # the chain's Silero VAD already gated this audio
+                    )
+                    text = "".join(seg.text for seg in segments).strip()
+                    return text, getattr(info, "language", None)
+
+                text, detected = await asyncio.to_thread(_transcribe)
+                break
+            except Exception as e:  # surface as a chain-cascadable error
+                blob = f"{type(e).__name__} {e}"
+                if attempt >= retries or not _TRANSIENT_GPU_ERR_RE.search(blob):
+                    raise APIConnectionError(
+                        f"faster-whisper local STT failed: {e}"
+                    ) from e
+                attempt += 1
+                delay = 0.4 * (2 ** (attempt - 1))
+                if attempt >= retries:
+                    # Last chance: rebuild the model → fresh CUDA context.
+                    logger.warning(
+                        "[stt.local] transient GPU error persists — dropping the "
+                        "model for a fresh CUDA context before the final retry"
+                    )
+                    self._model = None
+                logger.warning(
+                    "[stt.local] transient GPU error (attempt %d/%d), retrying "
+                    "in %.1fs: %s",
+                    attempt, retries, delay, str(e)[:200],
                 )
-                text = "".join(seg.text for seg in segments).strip()
-                return text, getattr(info, "language", None)
-
-            text, detected = await asyncio.to_thread(_transcribe)
-        except Exception as e:  # surface as a chain-cascadable error
-            raise APIConnectionError(f"faster-whisper local STT failed: {e}") from e
+                await asyncio.sleep(delay)
 
         return stt.SpeechEvent(
             type=stt.SpeechEventType.FINAL_TRANSCRIPT,

@@ -928,14 +928,31 @@ def inject_handoff_refused_marker(session, chat_ctx) -> None:
 
 
 def _active_voice_model() -> "str | None":
-    """Best-effort read of the pinned voice model (``~/.jarvis/voice-model``),
-    used to sharpen provider detection in error messages. None if unreadable."""
+    """Best-effort read of the ACTIVE voice model, used to sharpen provider
+    detection in error messages. Reads the tray pin (``~/.jarvis/voice-model``),
+    then applies the local-mode override: when ``~/.jarvis/voice-mode`` is
+    ``local``, the live brain is the ``ollama/<tag>`` on-device model — NOT the
+    (possibly stale) cloud pin. Before this (2026-07-10) a local-mode error was
+    classified against a stale ``deepseek-chat-v3`` pin and announced as "I
+    can't reach DeepSeek" while DeepSeek was never in play. Cloud/routed modes
+    are untouched: ``_local_mode_speech_model`` returns None unless
+    voice-mode==local, so the raw pin flows through exactly as before.
+    None if unreadable."""
+    pinned = None
     try:
-        return (Path.home() / ".jarvis" / "voice-model").read_text(
+        pinned = (Path.home() / ".jarvis" / "voice-model").read_text(
             encoding="utf-8"
         ).strip() or None
     except Exception:
-        return None
+        pass
+    try:
+        from providers.llm import _local_mode_speech_model
+        local = _local_mode_speech_model(pinned)
+        if local:
+            return local
+    except Exception:
+        pass  # best-effort — fall back to the raw pin
+    return pinned
 
 
 _ERR_NOTIFY_TS = [0.0]  # boxed: throttle provider-error desktop notifications
