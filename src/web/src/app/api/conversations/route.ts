@@ -1,11 +1,15 @@
 import { desc, eq, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
+import { ensureWebSchema } from "@/lib/db/ensure-schema";
 import { requireUserId, Unauthenticated } from "@/lib/auth-helpers";
 
 export const runtime = "nodejs";
 
 export async function GET(req: Request) {
   if (!db) return Response.json({ conversations: [] });
+  // Ensure the `kind` column exists before selecting it — an existing prod DB
+  // has no migration flow (see ensure-schema.ts). No-op after the first call.
+  await ensureWebSchema();
   let userId: string;
   try {
     userId = await requireUserId(req.headers);
