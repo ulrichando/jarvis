@@ -133,6 +133,18 @@ def test_persistent_cuda_error_surfaces_after_bounded_retries(stt_with):
     # never swallowed forever.
     assert fake.calls == 3
     assert "parallel_for failed" in str(ei.value)
+    # The model MUST be dropped for a fresh CUDA context before the final
+    # (surfaced) attempt — else a wedged context outlives the AgentSession.
+    assert getattr(fake, "reloaded", False) is True
+
+
+def test_retries_one_reloads_on_first_retry(stt_with):
+    # Boundary: retries=1 → the reload fires on the very first (and only) retry.
+    inst, fake = stt_with([RuntimeError(_CUDA_ERR)] * 10, retries="1")
+    with pytest.raises(APIConnectionError):
+        _recognize(inst)
+    assert fake.calls == 2
+    assert getattr(fake, "reloaded", False) is True
 
 
 def test_non_gpu_error_is_not_retried(stt_with):
@@ -167,6 +179,10 @@ def voice_files(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ja, "Path", _Home)
     monkeypatch.setattr(llm_mod, "VOICE_MODE_FILE", tmp_path / "voice-mode")
+    # Also point the documented hermeticity env at the same file, so the
+    # override can't be steered by a leaked JARVIS_VOICE_MODE_PATH from a
+    # sibling test even if _local_mode_speech_model is refactored to re-read it.
+    monkeypatch.setenv("JARVIS_VOICE_MODE_PATH", str(tmp_path / "voice-mode"))
     monkeypatch.delenv("JARVIS_LOCAL_LLM_MODEL", raising=False)
     # never shell out to real `ollama list`
     monkeypatch.setattr(
@@ -198,6 +214,18 @@ def test_local_mode_overrides_stale_cloud_pin(voice_files, monkeypatch):
     vmode.write_text("local\n")
     monkeypatch.setenv("JARVIS_LOCAL_LLM_MODEL", "qwen2.5:7b")
     assert ja._active_voice_model() == "ollama/qwen2.5:7b"
+
+
+def test_local_mode_speech_model_direct_bypasses_swallow(voice_files, monkeypatch):
+    """Assert the override function DIRECTLY, not through _active_voice_model —
+    the latter wraps it in `except Exception: pass` and would silently fall
+    back to the stale pin, so a real bug in the override could pass as a
+    'cloud-mode' result. This test fails loudly if the override raises."""
+    import providers.llm as llm_mod
+    _, jdir, vmode = voice_files
+    vmode.write_text("local\n")
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_MODEL", "qwen2.5:7b")
+    assert llm_mod._local_mode_speech_model("deepseek-chat-v3") == "ollama/qwen2.5:7b"
 
 
 def test_local_mode_keeps_explicit_ollama_pin(voice_files, monkeypatch):

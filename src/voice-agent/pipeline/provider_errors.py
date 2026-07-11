@@ -73,6 +73,14 @@ def _detect_stt_provider(text: str) -> str:
     return "the speech engine"
 
 
+# Names the ON-DEVICE STT engine in an error repr that carries NO structured
+# component tag. FasterWhisperSTT._recognize_impl raises a bare
+# ``APIConnectionError("faster-whisper local STT failed: …")`` (no ``.type``,
+# no "stt_error" substring); that shape reaches the close-watchdog call site,
+# which passes NO component — see ``_infer_component``.
+_STT_TEXT_RE = re.compile(r"faster.?whisper|ctranslate|local STT", re.I)
+
+
 # Transient GPU markers (kept in sync with providers/faster_whisper_stt.py's
 # in-rung retry regex): ctranslate2 kernel-launch failures under compute
 # contention with a local LLM sharing the card.
@@ -94,6 +102,12 @@ def _infer_component(err: object, text: str, default: str) -> str:
         return "stt"
     if "tts_error" in text:
         return "tts"
+    # Bare local-STT rung failure (no .type / no "stt_error" tag) — the shape
+    # FasterWhisperSTT actually raises, which reaches the close-watchdog with
+    # no component. Without this it defaults to "llm" and the GPU blip is
+    # voiced against the stale cloud pin ("I can't reach DeepSeek — network").
+    if _STT_TEXT_RE.search(text):
+        return "stt"
     return default
 
 

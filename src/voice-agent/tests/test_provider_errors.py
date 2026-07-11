@@ -199,6 +199,36 @@ def test_cuda_wording_in_llm_error_does_not_hit_stt_gpu():
     assert c.provider == "Qwen"
 
 
+def test_raw_untagged_faster_whisper_error_is_stt_gpu():
+    # REGRESSION (residual mislabel): the shape FasterWhisperSTT actually
+    # raises is a BARE APIConnectionError — no `.type`, no "stt_error" tag —
+    # which reaches the close-watchdog with NO component + a stale cloud pin.
+    # The tagged-STTError path (_CUDA_STT above) was fixed first; this untagged
+    # rung shape still classified as 'network' → "I can't reach DeepSeek".
+    from livekit.agents import APIConnectionError
+    err = APIConnectionError(
+        "faster-whisper local STT failed: parallel_for failed: "
+        "cudaErrorInvalidDevice: invalid device ordinal"
+    )
+    assert getattr(err, "type", None) != "stt_error"  # genuinely untagged
+    c = classify_provider_error(err, model="deepseek-chat-v3")  # no component
+    assert c.category == "stt_gpu"
+    assert c.recoverable is True
+    for field in (c.provider, c.spoken, c.notify_title):
+        assert "DeepSeek" not in field
+
+
+@pytest.mark.parametrize("marker", ["parallel_for failed", "cuda", "cublas", "cudnn"])
+def test_all_gpu_markers_route_untagged_stt_error_to_stt_gpu(marker):
+    # Pin the full transient-GPU marker set on the untagged rung shape — a
+    # regex edit dropping cublas/cudnn (real ctranslate2/cuDNN failures) would
+    # silently regress attribution back to the cloud pin.
+    from livekit.agents import APIConnectionError
+    err = APIConnectionError(f"faster-whisper local STT failed: {marker} error")
+    c = classify_provider_error(err, model="deepseek-chat-v3")
+    assert c.category == "stt_gpu"
+
+
 # ── HARD constraint: the cloud/online path is byte-identical ─────────────────
 
 def test_cloud_deepseek_out_of_credits_still_says_deepseek():
