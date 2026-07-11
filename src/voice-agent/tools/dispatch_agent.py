@@ -23,6 +23,19 @@ Two delivery modes:
     docs/superpowers/specs/2026-05-30-direct-mode-nonblocking-tools-design.md
     (companion fix — supervisor side).
 
+Model + env (2026-07-11): every spawn resolves the ACTIVE CLI model via
+``jarvis_agent.read_cli_model()`` (voice-mode=local → ``ollama:<tag>``) and
+runs the subprocess under ``jarvis_agent._clean_env_for_cli()``'s sanitized
+env — the §P0-SEC-8 secret stripping + proxy routing run_jarvis_cli already
+uses. Before this, the subprocess inherited the agent's FULL environment
+(every provider key + JARVIS_PG_DSN) and resolved its model from the CLOUD
+pin in ~/.jarvis/cli-model even in local mode. In local mode the argv
+additionally pins ``ollama`` (provider argv, consumed by start-env.sh) and
+``--model ollama:<tag>`` (beats a built-in agent definition's own model pin —
+Explore pins 'haiku', which resolves to a cloud fast-tier model otherwise).
+If the sanitized env cannot be built, dispatch REFUSES to spawn rather than
+leak the inherited environment.
+
 Environment overrides (operator tuning):
   JARVIS_DISPATCH_AGENT_TIMEOUT_EXPLORE_S       (default 30)
   JARVIS_DISPATCH_AGENT_TIMEOUT_RESEARCHER_S    (default 90)
@@ -37,6 +50,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -50,6 +64,60 @@ logger = logging.getLogger("jarvis.dispatch_agent")
 # bin/jarvis path is resolved relative to this file:
 # tools/ -> voice-agent/ -> src/ -> project root -> bin/jarvis
 _BIN_JARVIS = Path(__file__).resolve().parents[3] / "bin" / "jarvis"
+
+# Local-mode CLI model ids are `ollama:<tag>` — the dynamic-id shape the CLI's
+# jarvisModelRegistry.ts resolves STATELESSLY (mirrors jarvis_agent's
+# _OLLAMA_CLI_PREFIX; duplicated here so this module stays importable without
+# pulling in the heavy jarvis_agent module at import time).
+_OLLAMA_ID_PREFIX = "ollama:"
+
+
+def _agent_module():
+    """Return the LOADED jarvis_agent module, whatever name it booted under.
+
+    The worker entrypoint module is ``jarvis_agent`` when imported normally,
+    ``__main__`` when run as a script, and ``__mp_main__`` inside a
+    multiprocessing spawn child (LiveKit job processes) — probe sys.modules
+    before falling back to a fresh import so we never re-execute the heavy,
+    monkey-patching module a second time.
+    """
+    for name in ("jarvis_agent", "__mp_main__", "__main__"):
+        mod = sys.modules.get(name)
+        if (
+            mod is not None
+            and callable(getattr(mod, "read_cli_model", None))
+            and callable(getattr(mod, "_clean_env_for_cli", None))
+        ):
+            return mod
+    import jarvis_agent  # tests / standalone harnesses
+
+    return jarvis_agent
+
+
+def _cli_model_and_env() -> Tuple[Optional[str], Optional[Dict[str, str]]]:
+    """Resolve ``(cli_model_id, sanitized_env)`` for the bin/jarvis subprocess.
+
+    Reuses the EXACT machinery run_jarvis_cli uses —
+    ``jarvis_agent.read_cli_model()`` (voice-mode=local resolves to the
+    on-device ``ollama:<tag>`` model WITHOUT rewriting the cli-model file) +
+    ``jarvis_agent._clean_env_for_cli()`` (§P0-SEC-8 secret stripping + local
+    proxy routing) — so the subprocess never inherits raw provider keys or
+    DSNs from the agent process.
+
+    Returns ``(None, None)`` when the sanitizer is unavailable; callers must
+    then REFUSE to spawn (fail closed — never fall back to the inherited,
+    secret-bearing environment).
+    """
+    try:
+        mod = _agent_module()
+        model_id = mod.read_cli_model()
+        return model_id, mod._clean_env_for_cli(model_id)
+    except Exception as e:  # noqa: BLE001 — any failure here must fail closed
+        logger.error(
+            f"[dispatch_agent] could not build sanitized CLI env "
+            f"({type(e).__name__}: {e}); refusing to spawn bin/jarvis"
+        )
+        return None, None
 
 # Where a background task's FULL result is stashed when it's too long to voice
 # in one breath (the spoken announcement carries a summary + a pointer here).
@@ -171,10 +239,34 @@ def _bg_timeout() -> float:
     return 600.0
 
 
-def _build_argv(subagent_type: str, task: str) -> list[str]:
+def _build_argv(
+    subagent_type: str, task: str, cli_model_id: Optional[str] = None
+) -> list[str]:
     pol = _resolve_policy(subagent_type)
     cli_agent = pol["cli_agent"] if pol else subagent_type
-    return [str(_BIN_JARVIS), "--print", "--agent", cli_agent, task]
+    argv = [str(_BIN_JARVIS)]
+    local = bool(cli_model_id) and cli_model_id.startswith(_OLLAMA_ID_PREFIX)
+    if local:
+        # Local (on-device) mode — two pins, both load-bearing:
+        #   - argv[1] "ollama": start-env.sh consumes a provider name here
+        #     (case deepseek|openai|gemini|ollama) and SKIPS its
+        #     ~/.jarvis/cli-model mapping, which would otherwise re-export
+        #     JARVIS_PROVIDER/JARVIS_MODEL back to the CLOUD pin inside the
+        #     subprocess (the cli-model file is deliberately never rewritten
+        #     in local mode).
+        #   - --model ollama:<tag>: the CLI's --model flag beats a built-in
+        #     agent definition's own model pin. Explore pins model:'haiku'
+        #     (src/cli/src/tools/AgentTool/built-in/exploreAgent.ts), which
+        #     resolves through the registry's 'fast' tier to a CLOUD model
+        #     even with JARVIS_PROVIDER=ollama — so the ANTHROPIC_MODEL env
+        #     set by _clean_env_for_cli covers 'inherit'/unset agents
+        #     (Plan, researcher, code-reviewer, custom) but NOT Explore.
+        argv.append("ollama")
+    argv += ["--print", "--agent", cli_agent]
+    if local:
+        argv += ["--model", cli_model_id]
+    argv.append(task)
+    return argv
 
 
 async def _reap(proc) -> None:
@@ -188,9 +280,13 @@ async def _reap(proc) -> None:
 
 
 async def _run_subagent_proc(
-    argv: list[str], timeout_s: float
+    argv: list[str], timeout_s: float, env: Optional[Dict[str, str]] = None
 ) -> Tuple[str, bytes, bytes, Optional[int], str]:
     """Spawn bin/jarvis and wait up to ``timeout_s``.
+
+    ``env`` is the sanitized subprocess environment from
+    :func:`_cli_model_and_env` — production callers ALWAYS pass it (None
+    inherits os.environ and exists only for tests that mock the spawn).
 
     Returns ``(outcome, stdout, stderr, returncode, detail)`` where
     ``outcome`` is one of ``ok`` / ``spawn_failed`` / ``timeout`` / ``crashed``.
@@ -207,6 +303,7 @@ async def _run_subagent_proc(
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
     except OSError as e:
         return ("spawn_failed", b"", b"", None, f"{type(e).__name__}: {e}")
@@ -271,19 +368,33 @@ async def handle_dispatch_agent(args: Dict[str, Any]) -> str:
     # time the subprocess finishes, the turn was abandoned and we discard.
     dispatch_token = _active_session_token[0]
 
-    argv = _build_argv(subagent_type, task)
+    # Sanitized env + active model (voice-mode aware). Fail CLOSED: a
+    # subprocess must never inherit the agent's raw (secret-bearing) env.
+    cli_model_id, cli_env = _cli_model_and_env()
+    if cli_env is None:
+        _last_dispatch.update(
+            {"type": subagent_type, "ms": 0, "status": "spawn_failed"}
+        )
+        return tool_error(
+            "could not build the sanitized environment for bin/jarvis; "
+            "refusing to spawn with the inherited env"
+        )
+
+    argv = _build_argv(subagent_type, task, cli_model_id)
     timeout_s = _timeout_for(subagent_type)
     started = time.monotonic()
 
     logger.info(
-        f"[dispatch_agent] spawn type={subagent_type} timeout={timeout_s}s "
-        f"description={description!r} task_chars={len(task)}"
+        f"[dispatch_agent] spawn type={subagent_type} model={cli_model_id} "
+        f"timeout={timeout_s}s description={description!r} task_chars={len(task)}"
     )
 
     final_status = "unknown"
     try:
         try:
-            outcome, stdout, stderr, rc, detail = await _run_subagent_proc(argv, timeout_s)
+            outcome, stdout, stderr, rc, detail = await _run_subagent_proc(
+                argv, timeout_s, env=cli_env
+            )
         except asyncio.CancelledError:
             final_status = "cancelled"
             raise  # re-raise so livekit-agents knows the task was cancelled
@@ -385,7 +496,6 @@ async def _run_background(
     session-drift abort — a background task is meant to outlive its turn) and
     hands a spoken announcement to ``background_tasks`` for the watcher to voice.
     """
-    argv = _build_argv(subagent_type, task)
     timeout_s = _bg_timeout()
     started = time.monotonic()
     status = "unknown"
@@ -395,8 +505,18 @@ async def _run_background(
         f"timeout={timeout_s}s task_chars={len(task)}"
     )
     try:
+        # Same sanitized env + model resolution as the foreground path —
+        # fail CLOSED rather than spawn with the inherited env.
+        cli_model_id, cli_env = _cli_model_and_env()
+        if cli_env is None:
+            status = "spawn_failed"
+            announcement = f"I couldn't start the background task ({label})."
+            return
+        argv = _build_argv(subagent_type, task, cli_model_id)
         try:
-            outcome, stdout, stderr, rc, detail = await _run_subagent_proc(argv, timeout_s)
+            outcome, stdout, stderr, rc, detail = await _run_subagent_proc(
+                argv, timeout_s, env=cli_env
+            )
         except asyncio.CancelledError:
             status = "cancelled"
             raise
