@@ -1,0 +1,31 @@
+# Codecov config (must live at repo root — Codecov ignores src/web/codecov.yml).
+#
+# Only src/web is measured: coverage is uploaded from
+# .github/workflows/web-tests.yml (flags: web, src/web/coverage/lcov.info).
+# voice-agent (Python), cli (Bun/TS) and desktop-tauri (Rust) are NOT tracked.
+#
+# Intent: keep Codecov INFORMATIONAL (it already never fails CI —
+# fail_ci_if_error:false), and stop it flagging coverage on page-level /
+# settings React components, where unit tests are low-value churn. It keeps
+# reporting on lib/ + api routes, where the real logic lives.
+
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
+
+ignore:
+  - "src/web/src/app/**/page.tsx"
+  - "src/web/src/app/**/layout.tsx"
+  - "src/web/src/components/settings/**"
+  - "src/web/**/*.test.ts"
+  - "src/web/**/*.test.tsx"
+  - "**/*.d.ts"
+
+comment:
+  layout: "condensed_header, files, footer"
+  require_changes: true   # only comment when coverage actually moves
