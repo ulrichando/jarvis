@@ -285,7 +285,7 @@ LOCAL_LLM_ROUTES: str     = _str("JARVIS_LOCAL_LLM_ROUTES", "")  # csv; empty = 
 
 # STT — faster-whisper (on-device Whisper), local last rung.
 LOCAL_STT_ENABLED: bool   = _bool("JARVIS_LOCAL_STT_ENABLED", False)
-LOCAL_STT_MODEL: str      = _str("JARVIS_LOCAL_STT_MODEL", "large-v3")
+LOCAL_STT_MODEL: str      = _str("JARVIS_LOCAL_STT_MODEL", "large-v3-turbo")
 LOCAL_STT_DEVICE: str     = _str("JARVIS_LOCAL_STT_DEVICE", "auto")     # auto|cpu|cuda
 LOCAL_STT_COMPUTE: str    = _str("JARVIS_LOCAL_STT_COMPUTE", "default") # e.g. int8, float16
 
