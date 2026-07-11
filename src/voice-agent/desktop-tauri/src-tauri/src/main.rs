@@ -2303,12 +2303,24 @@ fn find_bun_executable() -> Option<std::path::PathBuf> {
     None
 }
 
-/// Spawn `bun run dev` in src/web as a detached background process.
+/// Spawn the local JARVIS web in src/web as a detached background process.
 /// Fire-and-forget — no PID tracking. Matches the launch.sh pattern
 /// where backend services (proxy, bridge, voice) survive tray exits.
 /// Returns true if the spawn was attempted (bun + web dir present),
 /// false otherwise so the caller can fall through to the diagnostic
 /// window instead of waiting on a no-op.
+///
+/// Only reached from `handle_open_browser` AFTER `probe_jarvis_web`
+/// found neither a reachable `JARVIS_WEB_URL` (0wlan.com health check
+/// failed) nor a live local web — i.e. this is the on-demand OFFLINE
+/// fallback, never an always-on standby (that was retired 2026-07-10:
+/// `next dev` at boot burned ~1-2 cores; see ~/.jarvis/desktop.env).
+///
+/// Prefers the PROD server (`bun run start` → prebuilt `next start`,
+/// near-zero idle cost, ~2 s boot) when a `next build` output exists
+/// (.next/BUILD_ID). Falls back to `bun run dev` only when no build
+/// has ever been made (fresh clone) — dev compiles on demand and costs
+/// cores, but a heavy fallback beats no web at all when offline.
 fn try_spawn_web() -> bool {
     let Some(root) = find_project_root() else {
         eprintln!("[JARVIS] try_spawn_web: project root not found");
@@ -2349,8 +2361,19 @@ fn try_spawn_web() -> bool {
         );
         return false;
     };
+    // Prefer prod (`next start` from a prior `next build`) over dev — the
+    // whole reason the always-on standby was retired is `next dev`'s
+    // Turbopack watcher cost. BUILD_ID is written last by `next build`,
+    // so its presence means a complete, servable build.
+    let has_prod_build = web_dir.join(".next").join("BUILD_ID").is_file();
+    let script = if has_prod_build { "start" } else { "dev" };
+    if !has_prod_build {
+        eprintln!(
+            "[JARVIS] try_spawn_web: no .next/BUILD_ID — falling back to `bun run dev` (heavier); run `bun run build` in src/web to enable the light prod fallback"
+        );
+    }
     let mut cmd = hidden_command(&bun);
-    cmd.arg("run").arg("dev")
+    cmd.arg("run").arg(script)
         .current_dir(&web_dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(log))
@@ -2358,8 +2381,9 @@ fn try_spawn_web() -> bool {
     match cmd.spawn() {
         Ok(child) => {
             eprintln!(
-                "[JARVIS] try_spawn_web: spawned {} run dev (pid={}) in {} — log {}",
+                "[JARVIS] try_spawn_web: spawned {} run {} (pid={}) in {} — log {}",
                 bun.display(),
+                script,
                 child.id(),
                 web_dir.display(),
                 log_path.display(),
@@ -2384,7 +2408,10 @@ fn try_spawn_web() -> bool {
 /// VS Code Server / Docker Desktop): the click ALWAYS leads to the
 /// web opening, even if it wasn't running. Flow:
 ///   1. Probe — if a JARVIS web is up, open it. (Fast path, no spawn.)
-///   2. Otherwise: spawn `bun run dev` in src/web (idempotent —
+///      "Up" includes the deployed JARVIS_WEB_URL (0wlan.com) when its
+///      health check passes — so while online, NOTHING is ever spawned.
+///   2. Otherwise: spawn the local web in src/web — prod `next start`
+///      when a build exists, else `next dev` (idempotent —
 ///      duplicate spawn is harmless, port-collision fail is silent).
 ///   3. Poll the port for up to 30 s waiting for readiness.
 ///   4. On readiness: open the browser. On timeout: show the
