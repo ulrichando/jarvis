@@ -166,11 +166,13 @@ SPEECH_MODELS_AVAILABLE: tuple[str, ...] = (
     # V3-chat, tray "Models" header showed Haiku). Any new id added to
     # providers/llm.py SPEECH_MODELS that users can pin MUST be mirrored here.
     "deepseek-chat-v3",
-    # Local (Ollama) — on-device voice brain; the tray offers these when the
-    # model is pulled. Listed here so /status reports the active local pick
-    # instead of falling back to the Haiku default.
-    "ollama/qwen3:30b-a3b",
-    "ollama/gpt-oss:120b",
+    # Local (Ollama) — on-device voice brain; the installer pulls qwen3:4b by
+    # default (fits a 6-8 GB consumer GPU; measured 2026-07-11). Listed here so
+    # /status reports the active local pick instead of falling back to the Haiku
+    # default. Dropped qwen3:30b-a3b / gpt-oss:120b (20 GB / 65 GB, don't fit a
+    # consumer GPU).
+    "ollama/qwen3:4b-instruct-2507-q4_K_M",
+    "ollama/qwen2.5:7b",
     # Kimi — K2.7 code model (Moonshot), added 2026-06-23 per user request for
     # voice tool-calling. CAVEAT: K2.6 broke the voice path (spontaneous
     # built-in web_search tool-call → Moonshot 400 → supervisor wedge → silent).

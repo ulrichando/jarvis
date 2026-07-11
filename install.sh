@@ -920,7 +920,7 @@ pull_local_llm() {
   if ! have ollama; then return 0; fi   # install_ollama already warned
   local tag
   tag="$(_env_get "$INSTALL_DIR/src/voice-agent/.env" JARVIS_LOCAL_LLM_MODEL)"
-  tag="${tag:-qwen2.5:7b}"
+  tag="${tag:-qwen3:4b-instruct-2507-q4_K_M}"
   if [ "$tag" = "auto" ] || [ "$tag" = "AUTO" ]; then
     # 'auto' is resolved by the voice agent's hwfit picker at runtime; use
     # the same picker here when the venv exists, else the safe default.
@@ -928,7 +928,7 @@ pull_local_llm() {
     if [ -x "$py" ]; then
       tag="$(cd "$INSTALL_DIR/src/voice-agent" && "$py" -c "from providers.local_model_picker import resolve_model_tag; print(resolve_model_tag('auto'))" 2>/dev/null)"
     fi
-    tag="${tag:-qwen2.5:7b}"
+    tag="${tag:-qwen3:4b-instruct-2507-q4_K_M}"
   fi
   if ! _ollama_api_up; then
     warn "ollama API not reachable — can't check/pull '$tag' (offline LLM failover stays dormant; later: ollama pull $tag)"
@@ -942,7 +942,7 @@ pull_local_llm() {
     warn "skipping local LLM pull (JARVIS_SKIP_MODELS=1) — offline failover stays dormant until: ollama pull $tag"
     return 0
   fi
-  section "Pulling local LLM '$tag' (~4.7 GB for qwen2.5:7b; skip with JARVIS_SKIP_MODELS=1)"
+  section "Pulling local LLM '$tag' (~2.5 GB for qwen3:4b-instruct-2507; skip with JARVIS_SKIP_MODELS=1)"
   if ollama pull "$tag"; then
     ok "local LLM '$tag' pulled"
   else
@@ -1048,7 +1048,7 @@ verify_voice_stack() {
   # Local LLM failover (ollama + model) — the offline-parity tail rung
   local ollama_base llm_tag
   ollama_base="$(_ollama_base_url)"
-  llm_tag="$(_env_get "$va/.env" JARVIS_LOCAL_LLM_MODEL)"; llm_tag="${llm_tag:-qwen2.5:7b}"
+  llm_tag="$(_env_get "$va/.env" JARVIS_LOCAL_LLM_MODEL)"; llm_tag="${llm_tag:-qwen3:4b-instruct-2507-q4_K_M}"
   if curl -fsS --max-time 3 "$ollama_base/api/tags" 2>/dev/null | grep -qF "\"$llm_tag\""; then
     ok "local LLM failover ready: ollama serving '$llm_tag' at $ollama_base"
   elif _ollama_api_up; then
