@@ -6,7 +6,9 @@
 //        gpt-4o-mini-transcribe; JARVIS_STT_URL swaps providers). It was dead
 //        2026-06-29 → 2026-07-09 after the provider-eradication pass removed
 //        the old route's only backend. 503 = no key configured server-side —
-//        `transcribe` toasts that once instead of failing silently.
+//        `transcribe` toasts that once instead of failing silently. When no
+//        server key is configured, falls back to the browser's
+//        SpeechRecognition (Web Speech API) where available (Chrome/Edge).
 //   TTS: Kokoro via /api/tts (local, natural voice — same engine the voice
 //        agent uses), with a browser speechSynthesis fallback. The gray→white
 //        highlight rides the real audio.currentTime (exact) or a time estimate
@@ -36,6 +38,47 @@ function pickMimeType(): string {
     if (MediaRecorder.isTypeSupported(c)) return c;
   }
   return "";
+}
+
+// Minimal Web Speech API shape (lib.dom omits SpeechRecognition types).
+// Enough to run a continuous recognizer and read final transcripts.
+type SpeechRecognitionLike = {
+  lang: string;
+  interimResults: boolean;
+  continuous: boolean;
+  start: () => void;
+  stop: () => void;
+  onresult:
+    | ((e: {
+        resultIndex: number;
+        results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>;
+      }) => void)
+    | null;
+  onerror: ((e: { error: string }) => void) | null;
+  onend: (() => void) | null;
+};
+
+function browserSpeechRecognition(): (new () => SpeechRecognitionLike) | null {
+  const w = window as unknown as {
+    SpeechRecognition?: new () => SpeechRecognitionLike;
+    webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+  };
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
+}
+
+// Is server-side STT (/api/stt) unavailable? A key-less server answers its key
+// check with 503 before it parses a body, so a bodyless POST is a safe probe:
+// 503 = no server STT, anything else = it's there.
+// ponytail: relies on the route checking the key before the body; if that
+// order changes the probe over-reports "available" and we keep the server path
+// (whose own 503 toast still fires). Safe failure direction.
+async function serverSttUnavailable(): Promise<boolean> {
+  try {
+    const r = await fetch("/api/stt", { method: "POST" });
+    return r.status === 503;
+  } catch {
+    return false; // network hiccup — don't preempt the server path
+  }
 }
 
 export function useVoiceMode(opts: {
@@ -134,6 +177,81 @@ export function useVoiceMode(opts: {
     }
   }, []);
 
+  // --- STT fallback: browser SpeechRecognition -----------------------------
+  // Used when /api/stt is unavailable (no server transcription key). Runs its
+  // own capture + endpointing, so it REPLACES the getUserMedia/MediaRecorder
+  // path rather than layering on it. Real on Chrome/Edge; unavailable
+  // elsewhere (we probe support before choosing this path).
+  const sttFallbackRef = useRef(false);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const startBrowserSttRef = useRef<() => void>(() => {});
+
+  const startBrowserStt = useCallback(() => {
+    if (recognitionRef.current || !activeRef.current) return;
+    const SR = browserSpeechRecognition();
+    if (!SR) return;
+    let rec: SpeechRecognitionLike;
+    try {
+      rec = new SR();
+    } catch {
+      return;
+    }
+    rec.lang = navigator.language || "en-US";
+    rec.interimResults = false;
+    rec.continuous = true;
+    rec.onresult = (e) => {
+      let text = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) text += r[0]?.transcript ?? "";
+      }
+      text = text.trim();
+      if (text && activeRef.current && phaseRef.current === "listening") {
+        onUtteranceRef.current(text);
+      }
+    };
+    rec.onerror = (e) => {
+      // aborted (our stop) + no-speech are normal; anything else (e.g.
+      // "network"/"not-allowed" on de-Googled Chromium) means Web Speech can't
+      // serve here — say so once.
+      if (e.error !== "aborted" && e.error !== "no-speech" && !sttWarnedRef.current) {
+        sttWarnedRef.current = true;
+        toast.error("Voice input isn't available in this browser.");
+      }
+    };
+    rec.onend = () => {
+      // Continuous recognition still ends on long silence / transient errors —
+      // reopen while we're meant to be listening.
+      recognitionRef.current = null;
+      if (activeRef.current && phaseRef.current === "listening" && sttFallbackRef.current) {
+        startBrowserSttRef.current();
+      }
+    };
+    recognitionRef.current = rec;
+    try {
+      rec.start();
+    } catch {
+      recognitionRef.current = null;
+    }
+  }, []);
+  useEffect(() => {
+    startBrowserSttRef.current = startBrowserStt;
+  }, [startBrowserStt]);
+
+  const stopBrowserStt = useCallback(() => {
+    const rec = recognitionRef.current;
+    recognitionRef.current = null;
+    if (rec) {
+      rec.onend = null; // don't auto-restart
+      rec.onresult = null;
+      try {
+        rec.stop();
+      } catch {
+        /* already stopped */
+      }
+    }
+  }, []);
+
   // Open a fresh recording segment. We stop+restart the recorder per utterance
   // so each posted blob is a self-contained file with a valid header.
   const beginSegment = useCallback(() => {
@@ -206,12 +324,17 @@ export function useVoiceMode(opts: {
   const startListening = useCallback(() => {
     setPhase("listening");
     phaseRef.current = "listening";
+    if (sttFallbackRef.current) {
+      startBrowserStt(); // browser SpeechRecognition — its own capture loop
+      return;
+    }
     lastTickTsRef.current = 0;
     beginSegment();
     if (rafRef.current == null) rafRef.current = requestAnimationFrame(tick);
-  }, [beginSegment, tick]);
+  }, [beginSegment, tick, startBrowserStt]);
 
   const pauseListening = useCallback(() => {
+    stopBrowserStt();
     if (rafRef.current != null) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
@@ -226,7 +349,7 @@ export function useVoiceMode(opts: {
         /* already stopped */
       }
     }
-  }, []);
+  }, [stopBrowserStt]);
 
   const teardown = useCallback(() => {
     pauseListening();
@@ -243,17 +366,34 @@ export function useVoiceMode(opts: {
 
   const start = useCallback(async () => {
     if (activeRef.current) return;
-    const md = navigator.mediaDevices;
-    if (!md?.getUserMedia || typeof MediaRecorder === "undefined") {
-      toast.error("This browser can't capture microphone audio.");
-      onUnsupported?.();
-      return;
-    }
     activeRef.current = true;
     setActive(true);
     setPhase("connecting");
     phaseRef.current = "connecting";
     sttWarnedRef.current = false; // fresh session → fresh failure feedback
+
+    // Pick the capture path once, up front: server STT if configured, else the
+    // browser's SpeechRecognition where it exists — so we never open a mic
+    // pipeline we won't use.
+    sttFallbackRef.current =
+      (await serverSttUnavailable()) && !!browserSpeechRecognition();
+    if (!activeRef.current) return; // stopped during the probe
+
+    if (sttFallbackRef.current) {
+      startListening(); // browser SpeechRecognition owns capture + permission
+      return;
+    }
+
+    const md = navigator.mediaDevices;
+    if (!md?.getUserMedia || typeof MediaRecorder === "undefined") {
+      activeRef.current = false;
+      setActive(false);
+      setPhase("idle");
+      phaseRef.current = "idle";
+      toast.error("This browser can't capture microphone audio.");
+      onUnsupported?.();
+      return;
+    }
     let stream: MediaStream;
     try {
       stream = await md.getUserMedia({
@@ -456,6 +596,14 @@ export function useVoiceMode(opts: {
         rec.onstop = null;
         try {
           rec.stop();
+        } catch {
+          /* already stopped */
+        }
+      }
+      if (recognitionRef.current) {
+        recognitionRef.current.onend = null;
+        try {
+          recognitionRef.current.stop();
         } catch {
           /* already stopped */
         }
