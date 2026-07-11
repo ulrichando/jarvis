@@ -15,6 +15,7 @@ import {
   attemptLocalFailover,
   cloudFailureAllowsLocal,
 } from './localFailover.js'
+import { ensureOllamaNumCtx } from './ollamaContext.js'
 
 export type AttemptOutcome = {
   response: Response | null
@@ -73,7 +74,18 @@ export async function executeWithFallback(
   // pressure must surface, not silently reroute to the local model.
   let localEligible = true
   for (let i = 0; i < chain.length; i++) {
-    const provider = chain[i]
+    let provider = chain[i]
+    // Ollama rungs (any position — user-selected primary, fallback rung, or
+    // the anthropic-outage reroute) run against a context-bumped derived
+    // model: Ollama's /v1 endpoint ignores num_ctx in the body, so without
+    // this every real CLI request 400s at the daemon-default 4096 context.
+    // CLI-request-specific by design — the voice-agent shares this daemon
+    // and must keep the base tag at the default context (VRAM budget).
+    // No-ops for cloud providers; falls back to the base tag on any failure.
+    // See ollamaContext.ts for the full mechanism + JARVIS_OLLAMA_NUM_CTX.
+    if (provider.name === 'ollama') {
+      provider = await ensureOllamaNumCtx(provider, deps.localFetch, deps.env)
+    }
     // Re-shape the request for this provider: clamp max_tokens to its cap,
     // truncate tools to its maxTools, and use the correct token-field name
     // for its family. Without this, a primary-shaped body (e.g. deepseek

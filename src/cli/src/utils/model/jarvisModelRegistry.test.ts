@@ -117,3 +117,72 @@ describe('jarvisModelRegistry — thinking capability override', () => {
     expect(getJarvisModel('claude-opus-4-7')).toBeUndefined()
   })
 })
+
+// ── Local Ollama model usability (2026-07-11) ──────────────────────────────
+// P1-a: compact /model labels for pulled tags; P0-a: derived num_ctx variant
+// plumbing; P1-b: effort capability for reasoning-capable local tags.
+import {
+  isJarvisCtxDerivedTag,
+  ollamaTagSupportsGradedEffort,
+  shortenOllamaTagForDisplay,
+} from './jarvisModelRegistry.js'
+
+describe('jarvisModelRegistry — ollama display labels', () => {
+  test.each([
+    ['qwen3:4b-instruct-2507-q4_K_M', 'qwen3:4b'],
+    ['qwen3:4b-instruct-2507', 'qwen3:4b'],
+    ['qwen3:4b-thinking-2507-q4_K_M', 'qwen3:4b-thinking'],
+    ['qwen3:30b-a3b', 'qwen3:30b-a3b'], // distinguishing variant survives
+    ['gpt-oss:120b', 'gpt-oss:120b'],
+    ['llama3.1:8b-instruct-q8_0', 'llama3.1:8b'],
+    ['llama3:latest', 'llama3'],
+    ['mymodel', 'mymodel'], // no tag → untouched
+  ])('shortens %s → %s', (tag, expected) => {
+    expect(shortenOllamaTagForDisplay(tag)).toBe(expected)
+  })
+
+  test('synthesized definition: short label, FULL tag in id/upstreamModel', () => {
+    const def = getJarvisModel('ollama:qwen3:4b-instruct-2507-q4_K_M')
+    expect(def).toBeDefined()
+    expect(def!.label).toBe('Ollama qwen3:4b')
+    expect(def!.id).toBe('ollama:qwen3:4b-instruct-2507-q4_K_M')
+    expect(def!.upstreamModel).toBe('qwen3:4b-instruct-2507-q4_K_M')
+    // Full tag stays visible in the description for disambiguation.
+    expect(def!.description).toContain('qwen3:4b-instruct-2507-q4_K_M')
+  })
+})
+
+describe('jarvisModelRegistry — ollama graded effort', () => {
+  test('gpt-oss and qwen3-thinking tags support graded effort; instruct does not', () => {
+    expect(ollamaTagSupportsGradedEffort('gpt-oss:120b')).toBe(true)
+    expect(ollamaTagSupportsGradedEffort('qwen3:4b-thinking-2507-q4_K_M')).toBe(
+      true,
+    )
+    expect(ollamaTagSupportsGradedEffort('qwen3:4b-instruct-2507-q4_K_M')).toBe(
+      false,
+    )
+    expect(ollamaTagSupportsGradedEffort('qwen2.5:7b')).toBe(false)
+  })
+
+  test('capability lands on the synthesized definitions', () => {
+    expect(
+      getJarvisModel('ollama:qwen3:4b-thinking-2507-q4_K_M')!.capabilities,
+    ).toContain('effort')
+    expect(
+      getJarvisModel('ollama:qwen3:4b-instruct-2507-q4_K_M')!.capabilities,
+    ).not.toContain('effort')
+    expect(getJarvisModel('ollama:gpt-oss:20b')!.capabilities).toContain(
+      'effort',
+    )
+  })
+})
+
+describe('jarvisModelRegistry — derived num_ctx variant tags', () => {
+  test('derived tags are recognized; real tags are not', () => {
+    expect(
+      isJarvisCtxDerivedTag('qwen3-4b-instruct-2507-q4_K_M-jarvis-ctx:32768'),
+    ).toBe(true)
+    expect(isJarvisCtxDerivedTag('qwen3:4b-instruct-2507-q4_K_M')).toBe(false)
+    expect(isJarvisCtxDerivedTag('gpt-oss:120b')).toBe(false)
+  })
+})

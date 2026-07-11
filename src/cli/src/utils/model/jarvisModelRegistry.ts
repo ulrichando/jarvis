@@ -530,16 +530,71 @@ export function isJarvisModelRegistryEnabled(): boolean {
 //      discovered model selected in the picker.
 const OLLAMA_DYNAMIC_ID_PREFIX = 'ollama:'
 
+// Marker embedded in the names of the context-bumped model variants the
+// proxy derives on demand (see src/proxy/ollamaContext.ts) — e.g.
+// "qwen3-4b-instruct-2507-q4_K_M-jarvis-ctx:32768". Lives here (not in the
+// proxy module) so discovery below can hide the variants from the /model
+// picker without importing proxy code into the registry.
+export const OLLAMA_JARVIS_CTX_MARKER = '-jarvis-ctx'
+
+/** True for the proxy's derived num_ctx variants — internal plumbing that
+ *  must not surface in the picker or be re-derived (no variant-of-variant). */
+export function isJarvisCtxDerivedTag(tag: string): boolean {
+  return (
+    tag.includes(`${OLLAMA_JARVIS_CTX_MARKER}:`) ||
+    tag.endsWith(OLLAMA_JARVIS_CTX_MARKER)
+  )
+}
+
+/**
+ * Which local Ollama tags accept graded reasoning effort over the
+ * OpenAI-compat `reasoning_effort` field. Shared by the registry (drives the
+ * /effort UI via the 'effort' capability) and convert.ts (drives the wire
+ * param) so the two can never drift into a dial that renders but sends
+ * nothing.
+ *   - gpt-oss (any size): native graded think levels (low/medium/high).
+ *   - qwen3 *thinking* tags (e.g. qwen3:4b-thinking-2507): think-capable;
+ *     Ollama maps reasoning_effort onto its think control. Instruct tags
+ *     stay excluded — they genuinely have no reasoning dial. (Verified live
+ *     2026-07-11 on Ollama 0.30.9 that the field is accepted-or-ignored,
+ *     never a 400, so this cannot break a request.)
+ */
+export function ollamaTagSupportsGradedEffort(tag: string): boolean {
+  const t = tag.toLowerCase()
+  return t.includes('gpt-oss') || (t.includes('qwen3') && t.includes('thinking'))
+}
+
+/**
+ * Compact display form of an Ollama tag for /model labels: strips trailing
+ * quantization ("-q4_K_M" / "-q8_0" / "-fp16"…), date builds ("-2507"), the
+ * "-instruct" infix, and a bare ":latest" — e.g.
+ *   qwen3:4b-instruct-2507-q4_K_M → qwen3:4b
+ *   llama3:latest                 → llama3
+ * Distinguishing variant parts survive (qwen3:30b-a3b stays as-is), and tags
+ * without any known suffix pass through unchanged. Display-only — ids and
+ * upstreamModel always keep the full tag (the API needs it).
+ */
+export function shortenOllamaTagForDisplay(tag: string): string {
+  const colon = tag.indexOf(':')
+  if (colon === -1) return tag
+  const name = tag.slice(0, colon)
+  let variant = tag.slice(colon + 1)
+  variant = variant.replace(/-(?:q\d[\w]*|fp16|f16|bf16|f32)$/i, '')
+  variant = variant.replace(/-\d{4}$/, '')
+  variant = variant.replace(/-instruct$/i, '')
+  if (!variant || variant === 'latest') return name
+  return `${name}:${variant}`
+}
+
 function makeOllamaModelDefinition(tag: string): JarvisModelDefinition {
-  // gpt-oss tags (any size) support graded reasoning effort over Ollama's
-  // OpenAI-compat `reasoning_effort` field — surface /effort for them too, so
-  // a freshly-pulled gpt-oss model gets the same control as the curated entry.
-  const capabilities: readonly JarvisModelCapability[] = tag.includes('gpt-oss')
-    ? ['effort']
-    : []
+  // gpt-oss + qwen3-thinking tags support graded reasoning effort over
+  // Ollama's OpenAI-compat `reasoning_effort` field — surface /effort for
+  // them (see ollamaTagSupportsGradedEffort). Instruct tags get no dial.
+  const capabilities: readonly JarvisModelCapability[] =
+    ollamaTagSupportsGradedEffort(tag) ? ['effort'] : []
   return {
     id: `${OLLAMA_DYNAMIC_ID_PREFIX}${tag}`,
-    label: `Ollama ${tag}`,
+    label: `Ollama ${shortenOllamaTagForDisplay(tag)}`,
     description: `Local · ${tag} (on-device via Ollama)`,
     provider: 'ollama',
     upstreamModel: tag,
@@ -596,11 +651,26 @@ export function refreshInstalledOllamaModels(): Promise<void> {
         const discovered: JarvisModelDefinition[] = []
         for (const m of data.models ?? []) {
           const tag = (m.model ?? m.name ?? '').trim()
+          // Skip the proxy's derived num_ctx variants (-jarvis-ctx:N) —
+          // internal plumbing, not a model the user pulled.
           if (!tag || covered.has(tag) || seen.has(tag)) continue
+          if (isJarvisCtxDerivedTag(tag)) continue
           seen.add(tag)
           discovered.push(makeOllamaModelDefinition(tag))
         }
-        dynamicOllamaModels = discovered
+        // Shortened display labels can collide when two pulled tags differ
+        // only by a stripped suffix (e.g. qwen3:4b vs
+        // qwen3:4b-instruct-2507-q4_K_M). Fall back to the full tag for the
+        // colliding entries so the picker stays unambiguous.
+        const labelCounts = new Map<string, number>()
+        for (const d of discovered) {
+          labelCounts.set(d.label, (labelCounts.get(d.label) ?? 0) + 1)
+        }
+        dynamicOllamaModels = discovered.map(d =>
+          (labelCounts.get(d.label) ?? 0) > 1
+            ? { ...d, label: `Ollama ${d.upstreamModel}` }
+            : d,
+        )
       } finally {
         clearTimeout(timeout)
       }

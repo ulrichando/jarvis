@@ -75,10 +75,10 @@ function getJarvisEffortAvailabilityMessage(model: string): string | undefined {
   const currentModel = modelDisplayString(model);
 
   if (!supportedModels) {
-    return `${currentModel} does not support effort.`;
+    return `${currentModel} runs at a fixed effort — the /effort dial doesn't apply to it.`;
   }
 
-  return `${currentModel} does not support effort. Use ${supportedModels}.`;
+  return `${currentModel} runs at a fixed effort — the /effort dial doesn't apply to it. Models with an adjustable effort dial: ${supportedModels}.`;
 }
 
 export function showCurrentEffort(appStateEffort: EffortValue | undefined, model: string): EffortCommandResult {

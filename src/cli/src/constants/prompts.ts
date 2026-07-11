@@ -44,6 +44,7 @@ import {
   getScratchpadDir,
 } from '../utils/permissions/filesystem.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
+import { isLeanLocalModel } from '../utils/localModelLean.js'
 import { isReplModeEnabled } from '../tools/REPLTool/constants.js'
 import { feature } from 'bun:bundle'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
@@ -463,6 +464,25 @@ export async function getSystemPrompt(
   if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
     return [
       `You are Jarvis, Ulrich's AI coding CLI.\n\nCWD: ${getCwd()}\nDate: ${getSessionStartDate()}`,
+    ]
+  }
+
+  // Local Ollama models: the full multi-section prompt is thousands of
+  // tokens a small on-device model can't use — it eats the local num_ctx
+  // budget (P0-b of the local-model-usable fix, 2026-07-11) and drowns the
+  // instructions that matter. Serve a compact identity + tool-discipline
+  // prompt instead. Pairs with the request-time lean tool gate in
+  // services/api/claude.ts; same kill-switch (JARVIS_OLLAMA_LEAN=0). Cloud
+  // models never hit this branch.
+  if (isLeanLocalModel(model)) {
+    return [
+      `You are Jarvis, Ulrich's AI coding CLI, running on a small local model.
+
+Be direct and concise. Use the available tools when the task needs file access, code search, or shell commands; answer directly otherwise. Emit real tool calls only — never write a tool call out as prose or JSON text. Prefer one tool call at a time and keep going until the task is done, then summarize in one or two short sentences.
+
+CWD: ${getCwd()}
+Date: ${getSessionStartDate()}
+OS: ${getUnameSR()}`,
     ]
   }
 
