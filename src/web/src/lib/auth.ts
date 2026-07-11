@@ -114,12 +114,16 @@ export const auth = betterAuth({
     },
   },
   session: {
-    // Single-user personal box: long windows so working sessions aren't
-    // interrupted (the old 30-min idle / 8-h absolute logged the user out
-    // constantly). 24-hour sliding IDLE, refreshed at most every 5 min while
-    // active; the 30-day ABSOLUTE cap lives in auth-helpers.ts. Tighten both
-    // back down if this box ever goes multi-user or is exposed beyond localhost.
-    expiresIn: 60 * 60 * 24, // 24-hour idle window
+    // Single-user personal box, tuned so it actually times out without being
+    // annoying. The 24h/30d windows before this felt like "never logs out"
+    // (a daily user never idles a full 24h, so the sliding window never
+    // lapsed); the 30-min/8-h windows before THAT logged the user out
+    // constantly. This is the middle: 8-hour sliding IDLE (survives a
+    // workday, logs out overnight → fresh login each morning), refreshed at
+    // most every 5 min while active; a 7-day ABSOLUTE cap lives in
+    // auth-helpers.ts. Tighten both if this box ever goes multi-user or is
+    // exposed beyond localhost.
+    expiresIn: 60 * 60 * 8,  // 8-hour sliding idle window
     updateAge: 60 * 5,       // refresh the expiry at most every 5 min of activity
   },
 });

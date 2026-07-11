@@ -2,15 +2,17 @@ import "server-only";
 import { headers as nextHeaders } from "next/headers";
 import { auth } from "./auth";
 
-// Absolute cap, measured from session CREATION (never renews). 30 days for this
-// single-user personal box so working sessions aren't interrupted — the user
-// reported being logged out constantly under the old 8-hour cap. Tighten this
-// back down (e.g. 8h) if the box ever goes multi-user or is exposed beyond
-// localhost.
-const ABSOLUTE_CAP_MS = 30 * 24 * 60 * 60 * 1000;
+// Absolute cap, measured from session CREATION (never renews). 7 days: even a
+// continuously-active session (which slides the 8-hour idle window forward
+// indefinitely) is force-expired weekly, bounding a hijacked/stolen cookie.
+// Paired with the 8-hour idle window in auth.ts. The old 30-day cap made the
+// login feel like it never expired; the old 8-hour cap logged the user out
+// constantly — 7 days is the middle. Tighten if the box ever goes multi-user
+// or is exposed beyond localhost.
+const ABSOLUTE_CAP_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * Returns true if the session's creation time is within the absolute cap (30d).
+ * Returns true if the session's creation time is within the absolute cap (7d).
  * Used to force re-login only past the cap, regardless of activity.
  */
 export function isSessionWithinAbsoluteCap(createdAt: Date): boolean {
