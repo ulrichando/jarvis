@@ -1,6 +1,7 @@
 import { convertToModelMessages, streamText, stepCountIs, type UIMessage, type ToolSet } from "ai";
 import { eq } from "drizzle-orm";
-import { getModel, MissingApiKeyError } from "@/lib/ai/models";
+import { MissingApiKeyError } from "@/lib/ai/models";
+import { getModelWithLocalFailover } from "@/lib/ai/local-failover";
 import { MODELS_META } from "@/lib/ai/models-meta";
 import { loadSettings } from "@/lib/settings/store";
 import {
@@ -323,7 +324,12 @@ export async function POST(req: Request) {
 
   let selected;
   try {
-    selected = await getModel(modelId);
+    // Stage 2 offline parity: same resolution as getModel(), but a genuine
+    // cloud outage (no key / conn error / 5xx — never auth/quota 4xx) retries
+    // once against local Ollama when it's reachable. Healthy cloud path is
+    // unchanged; a deployed instance without Ollama surfaces errors exactly
+    // as before (the MissingApiKeyError catch below still fires there).
+    selected = await getModelWithLocalFailover(modelId);
   } catch (err) {
     if (err instanceof MissingApiKeyError) {
       return Response.json(

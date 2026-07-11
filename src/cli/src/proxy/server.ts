@@ -1,7 +1,8 @@
-import { convertRequest, convertResponse, clampRequestForProvider } from './convert.js'
+import { convertRequest, convertResponse } from './convert.js'
 import { convertOpenAIStreamToAnthropic, type StreamStats } from './stream.js'
 import { getProvider, getProviderForModel, type Provider } from './providers.js'
-import { fetchWithRetry } from './retry.js'
+import { executeWithFallback } from './execute.js'
+import { buildLocalFailoverProvider } from './localFailover.js'
 import { forwardAnthropicNative } from './anthropicPassthrough.js'
 import { logDeepseekCacheStats, logRequest, newRequestId, type RequestLog } from './logger.js'
 import { classifyChatCompletionsRequest, buildHubConfig } from './hubGateway.js'
@@ -34,122 +35,9 @@ process.on('unhandledRejection', (reason) => {
   console.error('[jarvis-proxy] unhandledRejection (kept alive):', reason)
 })
 
-type AttemptOutcome = {
-  response: Response | null
-  errorMessage: string | null
-  retriesUsed: number
-  ttfbMs: number | null
-  provider: Provider
-  fallbackUsed: boolean
-  primaryError: string | null
-  // The upstream HTTP status when the failure was a definitive (non-transient)
-  // provider response — 400/401/403/404/429/402 etc. Lets the caller relay the
-  // REAL status to the CLI (e.g. "out of credits" 429, "bad key" 401) instead
-  // of masking every failure as a generic 502 upstream_unreachable. Null when
-  // the failure was a connection/transport error (no HTTP status).
-  upstreamStatus?: number | null
-}
-
-async function executeWithFallback(
-  primary: Provider,
-  openaiReq: any,
-): Promise<AttemptOutcome> {
-  const chain: Provider[] = [primary]
-  for (const fallbackId of primary.fallback) {
-    // getProviderForModel THROWS when the fallback provider's API key env is
-    // missing (the Provider builder validates the key). A broken fallback must
-    // NOT block a healthy primary — skip it instead of letting the throw abort
-    // the whole request before the primary is even attempted.
-    try {
-      const fp = getProviderForModel(fallbackId)
-      if (fp) chain.push(fp)
-    } catch (e) {
-      console.warn(
-        `[jarvis-proxy] fallback ${fallbackId} unavailable (${(e as Error).message}); skipping`,
-      )
-    }
-  }
-
-  let primaryError: string | null = null
-  for (let i = 0; i < chain.length; i++) {
-    const provider = chain[i]
-    // Re-shape the request for this provider: clamp max_tokens to its cap,
-    // truncate tools to its maxTools, and use the correct token-field name
-    // for its family. Without this, a primary-shaped body (e.g. deepseek
-    // max_tokens=65536, 25+ tools) sent verbatim to a fallback with a lower
-    // cap (e.g. kimi max_tokens=32768, maxTools=16) would 400 immediately,
-    // defeating the fallback chain exactly when it needs to fire.
-    const reqForThisProvider = clampRequestForProvider(
-      { ...openaiReq, model: provider.model },
-      provider,
-    )
-    const result = await fetchWithRetry(`${provider.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${provider.apiKey}`,
-      },
-      body: JSON.stringify(reqForThisProvider),
-    })
-
-    if (result.response && result.response.ok) {
-      return {
-        response: result.response,
-        errorMessage: null,
-        retriesUsed: result.retriesUsed,
-        ttfbMs: result.ttfbMs,
-        provider,
-        fallbackUsed: i > 0,
-        primaryError,
-      }
-    }
-
-    // Capture this provider's failure reason for logging/decision-making.
-    let thisErr: string
-    if (result.response) {
-      // Non-OK status: read body for error text, then decide whether
-      // to fall back. Only fall back for transient failures (5xx/429),
-      // not for 4xx (the request itself is the problem).
-      const status = result.response.status
-      let body = ''
-      try { body = await result.response.text() } catch {}
-      thisErr = `HTTP ${status}: ${body.slice(0, 500)}`
-      const transient = status === 408 || status === 429 || (status >= 500 && status <= 599)
-      if (!transient) {
-        // Fail fast — no fallback, return the error to caller. Carry the real
-        // upstream status so the caller relays it (400/401/403/404/402) rather
-        // than masking it as a generic 502.
-        return {
-          response: null,
-          errorMessage: thisErr,
-          retriesUsed: result.retriesUsed,
-          ttfbMs: result.ttfbMs,
-          provider,
-          fallbackUsed: i > 0,
-          primaryError,
-          upstreamStatus: status,
-        }
-      }
-    } else {
-      thisErr = result.error?.message ?? 'unknown fetch error'
-    }
-    if (i === 0) primaryError = thisErr
-    console.warn(
-      `[jarvis-proxy] ${provider.name}/${provider.model} failed (${thisErr}); ` +
-      (i + 1 < chain.length ? `falling back to ${chain[i + 1].name}/${chain[i + 1].model}` : 'no more fallbacks'),
-    )
-  }
-
-  return {
-    response: null,
-    errorMessage: primaryError ?? 'all providers exhausted',
-    retriesUsed: 0,
-    ttfbMs: null,
-    provider: chain[chain.length - 1],
-    fallbackUsed: chain.length > 1,
-    primaryError,
-  }
-}
+// executeWithFallback + AttemptOutcome moved to execute.ts (2026-07-10,
+// Stage 2 offline parity) so the chain — including its new local last-resort
+// tail — is unit-testable without booting Bun.serve. Same behavior online.
 
 // Safety guard: refuse to bind on a non-loopback interface unless the operator
 // has explicitly opted in. Inbound auth is OFF by default (see AUTH_REQUIRED
@@ -429,8 +317,18 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
   // full implementation. No cross-provider fallback on this path —
   // if Anthropic is down we surface the error rather than translate
   // mid-request (the registry's fallback chain assumes shape parity).
+  //
+  // ONE exception (Stage 2 offline parity, 2026-07-10): on a genuine
+  // OUTAGE (fetch threw / upstream 5xx — never 4xx/429, those pass
+  // through verbatim), when the local failover is armed, the passthrough
+  // returns an outage signal instead of the error and we re-route the
+  // SAME request through the standard convert path against local Ollama.
+  // With the failover disabled (or Anthropic healthy) this branch is
+  // byte-identical to the pre-Stage-2 passthrough.
+  let anthropicOutageError: string | null = null
   if (primaryProvider.name === 'anthropic') {
-    return forwardAnthropicNative({
+    const localProvider = buildLocalFailoverProvider()
+    const passthrough = await forwardAnthropicNative({
       provider: primaryProvider,
       anthropicReq,
       incomingHeaders: req.headers,
@@ -438,7 +336,17 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
       requestId,
       onFinish: finish,
       baseLog,
+      signalOutage: localProvider != null,
     })
+    if (passthrough instanceof Response) return passthrough
+    anthropicOutageError = passthrough.outage.errMsg
+    console.warn(
+      `[jarvis-proxy] [${requestId.slice(0, 8)}] anthropic outage (${anthropicOutageError}); ` +
+      `attempting LOCAL failover via ${localProvider!.model}`,
+    )
+    primaryProvider = localProvider!
+    baseLog.provider = primaryProvider.name
+    baseLog.upstream_model = primaryProvider.model
   }
 
   let openaiReq: any
@@ -461,6 +369,14 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
   const outcome = await executeWithFallback(primaryProvider, openaiReq)
 
   if (!outcome.response) {
+    // Anthropic-outage reroute where the local rung ALSO failed: surface the
+    // ORIGINAL cloud failure (the user's provider) with the local failure as
+    // context, instead of a bare confusing ollama error.
+    if (anthropicOutageError) {
+      outcome.errorMessage =
+        `anthropic unreachable (${anthropicOutageError}); ` +
+        `local failover also failed: ${outcome.errorMessage ?? 'unknown'}`
+    }
     const errMsg = outcome.errorMessage ?? 'upstream unreachable'
     // Relay the REAL upstream status when the failure was a definitive provider
     // response (out-of-credits/bad-key/bad-request), so the CLI's error
