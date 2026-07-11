@@ -55,8 +55,8 @@ training, answer directly without searching.`,
       providerOptions: {
         kimi: {
           // $web_search builtin and `thinking` are mutually exclusive
-          // per Moonshot K2.6 docs; we use webSearchTool (DuckDuckGo)
-          // and keep thinking disabled.
+          // per Moonshot K2.6 docs; we use webSearchTool (SearXNG, DDG
+          // fallback) and keep thinking disabled.
           thinking: { type: "disabled" },
         },
       },

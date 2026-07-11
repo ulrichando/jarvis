@@ -64,6 +64,10 @@ services:
       # the 0.0.0.0 bind above; set explicitly so a bind change can't silently
       # open an unauthenticated shell. Fails closed if the JWT secret is absent.
       JARVIS_PTY_REQUIRE_AUTH: "1"
+      # In-network SearXNG for the chat web-search tool (the DuckDuckGo scraper
+      # CAPTCHA-blocks the VPS IP → "Search unavailable"). Same host the CLI
+      # proxy uses; unset in local dev falls back to the DDG scraper.
+      SEARXNG_URL: "http://searxng:8080"
       # Cloud computer-use desktop (separate container on cu-net).
       JARVIS_COMPUTER_USE_WEB_URL: "http://computer-use:8771"
       JARVIS_CU_VNC_WS_URL: "${JARVIS_CU_VNC_WS_URL:-wss://0wlan.com/cu-vnc}"
