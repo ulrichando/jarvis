@@ -30,6 +30,15 @@ export async function register(): Promise<void> {
         // broken tick isn't silently dead forever.
         console.error("[code-loops] tick failed:", err instanceof Error ? err.stack || err.message : err);
       }
+      // Scheduled chats (Home feature, separate from the code routines
+      // above) — own try so one loop's failure can't starve the other.
+      try {
+        const { runScheduledChatsTick } = await import("@/lib/scheduled/run");
+        const ran = await runScheduledChatsTick();
+        if (ran) console.log(`[scheduled-chats] tick: ran=${ran}`);
+      } catch (err) {
+        console.error("[scheduled-chats] tick failed:", err instanceof Error ? err.stack || err.message : err);
+      }
     })();
   }, 90_000);
 }

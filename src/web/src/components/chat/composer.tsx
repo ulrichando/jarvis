@@ -62,6 +62,11 @@ type ComposerProps = {
   // image-gen feature to gate the Image toggle; accepted here so the prop
   // type-checks (the gating itself is wired by that feature).
   imageAvailable?: boolean;
+  // Chat | Cowork segmented toggle (claude.ai parity). When the handler is
+  // provided the pill renders next to the plus menu; in Cowork mode the
+  // parent routes the prompt into a watchable /code session instead of chat.
+  coworkMode?: boolean;
+  onCoworkModeChange?: (v: boolean) => void;
 };
 
 export function Composer({
@@ -75,6 +80,8 @@ export function Composer({
   voicePhase,
   onToggleVoice,
   unifiedUX = false,
+  coworkMode = false,
+  onCoworkModeChange,
 }: ComposerProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const isBusy = status === "streaming" || status === "submitted";
@@ -334,7 +341,9 @@ export function Composer({
                 : voicePhase === "connecting"
                   ? "Connecting…"
                   : "Listening…"
-              : (placeholder ?? ux.placeholder)
+              : coworkMode
+                ? "Describe a task — Jarvis will work on it in a session"
+                : (placeholder ?? ux.placeholder)
           }
           // 16px base prevents iOS Safari from auto-zooming the page
           // when the textarea takes focus — anything under 16px triggers
@@ -364,6 +373,28 @@ export function Composer({
                 return false;
               }}
             />
+            {onCoworkModeChange && (
+              <div className="flex items-center rounded-full border border-border/60 bg-background/40 p-0.5 text-[12px] font-medium">
+                {(["Chat", "Cowork"] as const).map((m) => {
+                  const on = (m === "Cowork") === coworkMode;
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => onCoworkModeChange(m === "Cowork")}
+                      className={cn(
+                        "rounded-full px-2.5 py-0.5 transition-colors",
+                        on
+                          ? "bg-card text-foreground shadow-[0_0_0_1px_oklch(1_0_0/8%)]"
+                          : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {m}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
           <div className="flex min-w-0 flex-1 items-center justify-end gap-1">
             <Button

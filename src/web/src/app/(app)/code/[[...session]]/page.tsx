@@ -72,6 +72,11 @@ const STATUS_META: Record<SessionSummary["status"], { dot: string; label: string
   done: { dot: "bg-muted-foreground/40", label: "Done", text: "text-muted-foreground" },
 };
 
+// Fixed px on BOTH shells (Home sidebar uses the same 288px) so the
+// Home|Code switch keeps the left column perfectly still at any
+// Settings → font size.
+const SIDEBAR_W = 288;
+
 export default function CodePage() {
   const [input, setInput] = useState("");
   // Permission mode for dispatch + live switching (ExternalPermissionMode).
@@ -151,8 +156,9 @@ export default function CodePage() {
   // Bumped on each send to the open session so CodeSession shows the thinking
   // indicator + fast-polls immediately (no "nothing, then sudden" dead window).
   const [sendNonce, setSendNonce] = useState(0);
-  // Draggable width of the left sidebar (px). Persisted across reloads.
-  const [sidebarWidth, setSidebarWidth] = useState(260);
+  // Sidebar width pinned to the Home sidebar's 18rem so switching Home↔Code
+  // keeps the same left-column geometry. The drag-resizer was removed for the
+  // same reason: a saved custom width made the two shells visibly mismatch.
   // Collapse the session sidebar (like the main app's "Jarvis" sidebar).
   const [codeSidebarOpen, setCodeSidebarOpen] = useState(true);
   // Inline review comments queued from the diff panel — bundled into the next
@@ -472,16 +478,6 @@ export default function CodePage() {
     }
   };
 
-  // Restore the saved sidebar width (post-mount, to avoid an SSR hydration
-  // mismatch from reading localStorage during render).
-  useEffect(() => {
-    try {
-      const saved = Number(localStorage.getItem("jarvis.code.sidebarWidth"));
-      if (saved >= 200 && saved <= 480) setSidebarWidth(saved);
-    } catch {
-      /* no localStorage */
-    }
-  }, []);
 
   // URL prefill (claude.ai/code parity): ?prompt= / ?q= seeds the input and
   // ?repositories= / ?repo= preselects a repo, so an issue tracker can
@@ -493,6 +489,12 @@ export default function CodePage() {
       if (prompt) setInput((cur) => cur || prompt);
       const repo = (q.get("repositories") ?? q.get("repo") ?? "").split(",")[0]?.trim();
       if (repo) setCloudRepo(repo);
+      // Cowork handoff carries the approval policy picked on the home
+      // composer (Manual/Auto/Bypass → Claude Code permission modes).
+      const pm = q.get("permission_mode");
+      if (pm && ["default", "acceptEdits", "bypassPermissions", "plan"].includes(pm)) {
+        setMode(pm);
+      }
     } catch {
       /* ignore */
     }
@@ -524,32 +526,6 @@ export default function CodePage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [sessionId, running, shortcutsOpen]);
-
-  // Drag the divider between the sidebar and the chat. Width clamps to
-  // [200, 480]px and persists. clientX works because the sidebar starts at x=0.
-  const startResize = (e: React.MouseEvent) => {
-    e.preventDefault();
-    let w = sidebarWidth;
-    const onMove = (ev: MouseEvent) => {
-      w = Math.min(480, Math.max(200, ev.clientX));
-      setSidebarWidth(w);
-    };
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      document.body.style.userSelect = "";
-      document.body.style.cursor = "";
-      try {
-        localStorage.setItem("jarvis.code.sidebarWidth", String(w));
-      } catch {
-        /* ignore */
-      }
-    };
-    document.body.style.userSelect = "none";
-    document.body.style.cursor = "col-resize";
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  };
 
   // Archived sessions are read-only (the messages route 409s on archived), so
   // the composer is replaced by an "Unarchive" banner, like claude.ai/code.
@@ -687,21 +663,9 @@ export default function CodePage() {
             onShareSession={(id) => { setSessionId(id); setShowRoutines(false); setShareOpen(true); }}
             routinesActive={showRoutines}
             onOpenRoutines={() => { setShowRoutines(true); setSessionId(null); }}
-            width={sidebarWidth}
+            width={SIDEBAR_W}
             onCollapse={() => setCodeSidebarOpen(false)}
           />
-
-          {/* Draggable divider — a 1px hairline. Only the line tints on hover; the
-              wider span is an invisible grab zone (no fill) so it stays easy to hit. */}
-          <div
-            onMouseDown={startResize}
-            role="separator"
-            aria-orientation="vertical"
-            title="Drag to resize"
-            className="relative w-px shrink-0 cursor-col-resize bg-border/50 transition-colors hover:bg-border active:bg-border"
-          >
-            <span className="absolute inset-y-0 -left-1.5 -right-1.5" />
-          </div>
         </>
       )}
 

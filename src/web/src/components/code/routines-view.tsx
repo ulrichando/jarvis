@@ -13,7 +13,7 @@ type Trigger =
   | { type: "api"; token: string }
   | { type: "github"; events: string[] };
 
-type Routine = {
+export type Routine = {
   routine_id: string;
   name: string;
   instructions: string;
@@ -76,7 +76,7 @@ function buildScheduleTrigger(
 }
 const hh = (h: number) => `${String(h % 12 || 12)}:00 ${h < 12 ? "AM" : "PM"}`;
 
-function triggerLabel(t: Trigger): string {
+export function triggerLabel(t: Trigger): string {
   if (t.type === "schedule") return t.label || `cron: ${t.cron}`;
   if (t.type === "github") return `GitHub: ${t.events.join(", ")}`;
   return "API / webhook";
@@ -293,7 +293,7 @@ function CalendarView({ routines }: { routines: Routine[] }) {
 }
 
 // ── New routine form (matches the reference: trigger cards + tabs) ──────────
-function NewRoutineForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: (webhook: string | null) => void }) {
+export function NewRoutineForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: (webhook: string | null) => void }) {
   const [name, setName] = useState("");
   const [instructions, setInstructions] = useState("");
   const [repo, setRepo] = useState("");
