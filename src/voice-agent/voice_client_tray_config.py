@@ -299,6 +299,47 @@ AGENT_THINKING_MAX_AGE: float = 60.0  # seconds
 
 # ── Readers ─────────────────────────────────────────────────────────
 
+# Local (on-device) conversation mode — tray display parity (2026-07-11).
+# When ~/.jarvis/voice-mode is "local", run_jarvis_cli overrides the
+# cli-model file pin at read time and runs `ollama:<installed tag>`
+# (jarvis_agent._local_mode_cli_model). The tray's "Tool model" line must
+# agree, or it shows the cloud pin while tool calls actually run locally.
+# Same JARVIS_VOICE_MODE_PATH hermeticity override as providers/llm.py.
+_VOICE_MODE_FILE: Path = Path(
+    os.environ.get("JARVIS_VOICE_MODE_PATH", "").strip()
+    or str(Path.home() / ".jarvis" / "voice-mode")
+)
+
+# /status polls call read_cli_model() on every hit; tag discovery shells
+# `ollama list` (up to 5 s) — cache the resolution briefly so the status
+# endpoint stays cheap. (ts, tag-or-None).
+_LOCAL_CLI_TAG_TTL_S: float = 20.0
+_local_cli_tag_cache: tuple[float, str | None] = (0.0, None)
+
+
+def _resolve_local_cli_tag() -> str | None:
+    """Installed Ollama tag the local mode's tool path runs, or None.
+    Mirrors jarvis_agent._local_mode_cli_model's resolution order
+    (explicit JARVIS_LOCAL_LLM_MODEL env, then `ollama list` discovery),
+    TTL-cached for the /status poll loop."""
+    global _local_cli_tag_cache
+    ts, cached = _local_cli_tag_cache
+    now = time.time()
+    if now - ts < _LOCAL_CLI_TAG_TTL_S:
+        return cached
+    tag = (os.environ.get("JARVIS_LOCAL_LLM_MODEL", "") or "").strip()
+    if tag.lower() == "auto":
+        tag = ""
+    if not tag:
+        try:
+            from providers.local_model_picker import resolve_installed_model_tag
+            tag = resolve_installed_model_tag() or ""
+        except Exception:
+            tag = ""
+    _local_cli_tag_cache = (now, tag or None)
+    return tag or None
+
+
 def read_speech_model() -> str:
     """Read the active speech-LLM id from the tray file, or the
     default if missing / unrecognized."""
@@ -315,7 +356,20 @@ def read_speech_model() -> str:
 
 def read_cli_model() -> str:
     """Read the active CLI model id from the tray file, or the
-    default if missing / unrecognized."""
+    default if missing / unrecognized.
+
+    In local voice mode the agent overrides the file pin at read time
+    and runs `ollama:<installed tag>` (never rewriting the file) — report
+    THAT, so the tray "Tool model" display and run_jarvis_cli agree."""
+    try:
+        if _VOICE_MODE_FILE.read_text(encoding="utf-8").strip().lower() == "local":
+            tag = _resolve_local_cli_tag()
+            if tag:
+                return f"ollama:{tag}"
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.warning(f"could not read {_VOICE_MODE_FILE}: {e}")
     try:
         name = CLI_MODEL_FILE.read_text(encoding="utf-8").strip()
         if name in CLI_MODELS_AVAILABLE:

@@ -41,7 +41,14 @@ _BUILTINS: list[dict[str, Any]] = [
         # supervisor to the resolved installed Ollama tag at read time
         # (2026-07-10 fix), so switching back to a cloud mode restores
         # the previous cloud pin exactly.
-        "voice_model": None, "cli_model": "ollama-qwen3-30b-a3b",
+        # cli_model None mirrors that for the TOOL path (2026-07-11 fix):
+        # jarvis_agent.read_cli_model() sees voice-mode=local and pins
+        # run_jarvis_cli to `ollama:<resolved installed tag>` at read
+        # time, leaving ~/.jarvis/cli-model untouched. The previous value
+        # here ("ollama-qwen3-30b-a3b") wasn't a CLI_MODELS id at all, so
+        # local mode silently fell back to DEFAULT_CLI_MODEL — a CLOUD
+        # model — for every tool call.
+        "voice_model": None, "cli_model": None,
         "tts_provider": "kokoro:af_heart", "tts_voice": "af_heart",
         "allowed_tools": None,
     },
