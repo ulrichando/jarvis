@@ -136,6 +136,11 @@ const SELF_AUTH_PATTERNS: RegExp[] = [
 // events path's GET (transcript read for the web UI) has no in-handler
 // bearer auth and must stay behind the gate.
 const SELF_AUTH_POST_PATTERNS: RegExp[] = [
+  // Cross-surface "sign out everywhere": the desktop/CLI POST here with their
+  // Remote Control bridge token to revoke all the user's web sessions + the
+  // bridge token server-side. Self-auths in-handler (resolveBridgeToken), so it
+  // must bypass the shared-token gate like the other bridge self-auth routes.
+  /^\/api\/bridge\/logout$/,
   /^\/api\/bridge\/v1\/sessions\/[^/]+\/(archive|events)$/,
   // REPL bridge (/remote-control) CCR session lifecycle: create + archive.
   // Handlers validate per-user bridge tokens / session credentials / the
