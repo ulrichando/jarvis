@@ -67,11 +67,12 @@ function buildProvider(
     model:
       name === 'ollama' && upstreamModel === 'ollama'
         // Bare 'ollama' placeholder (the provider default when no model is
-        // pinned). OLLAMA_MODEL wins if set; otherwise fall back to a model
-        // that's actually a sane default — 'llama3' was a tag most boxes don't
-        // have pulled (→ 404 on first message). qwen3:30b-a3b is the CPU sweet
-        // spot and is the curated default pull.
-        ? (process.env.OLLAMA_MODEL ?? 'qwen3:30b-a3b')
+        // pinned). OLLAMA_MODEL wins if set; otherwise fall back to what the
+        // installer pulls by default (qwen3:4b-instruct-2507 — see install.sh
+        // pull_local_llm). The old default 'qwen3:30b-a3b' both 404'd (never
+        // pulled) and is a 20 GB model that won't fit a typical consumer GPU;
+        // qwen3:4b (~2.5 GB) is the safe, GPU-resident, actually-present pick.
+        ? (process.env.OLLAMA_MODEL ?? 'qwen3:4b-instruct-2507-q4_K_M')
         : upstreamModel,
     supportsToolChoice: config.supportsToolChoice,
     maxTools: config.maxTools,
