@@ -27,7 +27,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from typing import Any, List
+import os
+from typing import Any, List, Optional
 
 from livekit.agents.llm import RawFunctionTool, function_tool
 
@@ -39,7 +40,55 @@ __all__ = [
     "to_livekit_tool",
     "load_all_livekit_tools",
     "sanitize_schema",
+    "LOCAL_VOICE_CORE_TOOLS",
+    "local_voice_tool_allowlist",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Local-mode core tool surface (2026-07-11)
+#
+# In local voice mode (~/.jarvis/voice-mode == "local") the supervisor runs a
+# small on-device model (qwen3-4b class) whose context window is 12288 tokens
+# — the FULL registry surface (~50 tools, ~24k tokens of schema alone, with
+# computer_use's SOM schema the largest single item) cannot fit. The
+# supervisor tool list is therefore trimmed to this deliberately minimal,
+# small-schema core (~3.4k tokens): shell + file read/write + memory +
+# web_search + clarify. Everything else (computer_use / browser_task /
+# dispatch_agent / webcam / face_recognition / skills / agent authoring /
+# the web_* project tools / …) is dropped from the LOCAL surface only.
+#
+# Tune by editing this tuple, or per-box via the JARVIS_LOCAL_VOICE_TOOLS
+# env (comma-separated tool names, replaces the default set entirely).
+# CLOUD MODE IS UNTOUCHED: the filter is inert unless the local-mode
+# predicate (providers.llm.is_local_voice_mode) is True.
+# ---------------------------------------------------------------------------
+LOCAL_VOICE_CORE_TOOLS: tuple = (
+    "terminal",
+    "read_file",
+    "write_file",
+    "memory",
+    "web_search",
+    "clarify",
+)
+
+
+def local_voice_tool_allowlist() -> Optional[frozenset]:
+    """The local-mode tool allowlist, or None when local mode is off (no
+    restriction — the full registry surface loads exactly as before).
+    Fails toward None (full surface) on any predicate error."""
+    try:
+        from providers.llm import is_local_voice_mode  # lazy — avoids import cycle
+        if not is_local_voice_mode():
+            return None
+    except Exception:  # noqa: BLE001 — predicate failure must not trim cloud
+        return None
+    raw = (os.environ.get("JARVIS_LOCAL_VOICE_TOOLS", "") or "").strip()
+    if raw:
+        names = frozenset(p.strip() for p in raw.split(",") if p.strip())
+        if names:
+            return names
+    return frozenset(LOCAL_VOICE_CORE_TOOLS)
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +277,13 @@ def load_all_livekit_tools(tools_dir=None) -> List[RawFunctionTool]:
     except Exception as exc:  # noqa: BLE001 — MCP failure must not break tools
         logger.warning("MCP discovery failed (built-in tools unaffected): %s", exc)
 
+    # Local-mode core subset (2026-07-11): computed ONCE per load. None in
+    # cloud mode → the loop below is byte-identical to the pre-filter code.
+    local_allow = local_voice_tool_allowlist()
+    local_dropped: List[str] = []
+
     tools: List[RawFunctionTool] = []
+    kept_names: List[str] = []
     for entry in registry.all_entries():
         if entry.check_fn is not None and not registry.is_available(entry.name):
             logger.warning("Skipping tool %s — check_fn returned False (unavailable)", entry.name)
@@ -240,9 +295,20 @@ def load_all_livekit_tools(tools_dir=None) -> List[RawFunctionTool]:
         if not tool_is_mode_allowed(entry.name):
             logger.info("Skipping tool %s — not in the active conversation mode's allowlist", entry.name)
             continue
+        if local_allow is not None and entry.name not in local_allow:
+            local_dropped.append(entry.name)
+            continue
         try:
             tools.append(to_livekit_tool(entry))
+            kept_names.append(entry.name)
         except Exception as exc:  # noqa: BLE001 — one bad tool must not break the surface
             logger.warning("Skipping tool %s — failed to adapt: %s", entry.name, exc)
             continue
+    if local_allow is not None:
+        logger.info(
+            "[local] voice-mode=local trimmed the supervisor tool surface to "
+            "%d core tools: %s (dropped %d big-schema tools; tune via "
+            "JARVIS_LOCAL_VOICE_TOOLS or tools/_adapter.py::LOCAL_VOICE_CORE_TOOLS)",
+            len(kept_names), ", ".join(sorted(kept_names)), len(local_dropped),
+        )
     return tools

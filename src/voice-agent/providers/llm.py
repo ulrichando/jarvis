@@ -78,6 +78,14 @@ __all__ = [
     # Local last-resort failover tail (Stage 1 offline parity)
     "build_local_failover_llm",
     "wrap_local_failover",
+    # Local-mode context window (num_ctx variant + prune budget)
+    "is_local_voice_mode",
+    "local_llm_num_ctx",
+    "local_ctx_prune_target",
+    "ensure_ollama_ctx_variant",
+    "derived_ollama_ctx_tag",
+    "LOCAL_LLM_NUM_CTX_DEFAULT",
+    "LOCAL_LLM_NUM_CTX_MAX",
 ]
 
 
@@ -561,6 +569,19 @@ def _make_local_speech_llm(model_id: str):
         "JARVIS_LOCAL_LLM_URL", "http://127.0.0.1:11434/v1"
     ).strip() or "http://127.0.0.1:11434/v1"
     key = os.environ.get("JARVIS_LOCAL_LLM_API_KEY", "ollama").strip() or "ollama"
+    # Local mode only (2026-07-11): route via a derived `-jarvis-ctx:<N>`
+    # variant so the model loads with a real context window — Ollama's /v1
+    # ignores request-body num_ctx and the daemon default (4096) 400s every
+    # supervisor turn. See the "Local-mode context window" section below.
+    # Cloud mode (including an explicit ollama/* pin with voice-mode=cloud)
+    # is untouched: predicate False → base tag, exactly as before.
+    # `is_local_voice_mode` / `ensure_ollama_ctx_variant` are defined later
+    # in this module — resolved at call time, and best-effort on any error.
+    try:
+        if is_local_voice_mode():
+            model_id = ensure_ollama_ctx_variant(model_id, local_llm_num_ctx(), base_url=url)
+    except Exception as e:  # noqa: BLE001 — never break LLM construction
+        logger.warning("[local] ctx-variant routing skipped: %s", e)
     # Cold Ollama loads routinely exceed the 5s cloud profile; a DOWN
     # endpoint still fails fast (connect error, not timeout). Same knob
     # as the dispatcher's rung-0 local (JARVIS_LOCAL_LLM_TIMEOUT).
@@ -701,6 +722,172 @@ def _local_mode_speech_model(pinned: str | None) -> str | None:
         )
         return None
     return f"ollama/{tag}"
+
+
+def is_local_voice_mode() -> bool:
+    """THE canonical local-mode predicate: True iff ``~/.jarvis/voice-mode``
+    reads ``local``. Same file + same read helper as
+    ``_local_mode_speech_model`` (the 2026-07-10 brain switch) so every
+    local-mode gate in the tree flips together. Reads the module-level
+    ``VOICE_MODE_FILE`` dynamically (tests monkeypatch that attribute; the
+    JARVIS_VOICE_MODE_PATH env override in conftest keeps the suite hermetic
+    on a dev box that IS in local mode). Any read failure → False (cloud
+    behavior — fail toward the full untouched stack)."""
+    try:
+        mode = (read_unified_setting("voice-mode", VOICE_MODE_FILE) or "").strip().lower()
+    except Exception:
+        return False
+    return mode == "local"
+
+
+# ── Local-mode context window (num_ctx) ──────────────────────────────
+# Ollama's OpenAI-compat /v1 endpoint IGNORES num_ctx in the request body
+# (verified live on Ollama 0.30.9 — only native /api/chat honors it), so a
+# local model loads at the daemon default (OLLAMA_CONTEXT_LENGTH, 4096
+# unless overridden) and any real supervisor turn 400s with "request (N
+# tokens) exceeds the available context size". Fix (ported from the CLI's
+# src/cli/src/proxy/ollamaContext.ts, 2026-07-11): lazily POST /api/create
+# a derived manifest from the base tag with `num_ctx` baked in — e.g.
+#   qwen3:4b-instruct-2507  →  qwen3-4b-instruct-2507-jarvis-ctx:12288
+# (manifest-only; weights are shared blobs — no disk/VRAM duplication) and
+# point the speech LLM at the derived name. Gated on is_local_voice_mode()
+# so cloud mode — including an explicit ollama/* tray pin while
+# voice-mode=cloud — is byte-identical to before.
+#
+# VRAM calibration (6 GB RTX 2060 + on-device STT resident, q8 KV cache +
+# flash attention on the daemon, measured 2026-07-11): 12288 ctx ≈ 3.5 GB /
+# 100% GPU; 16384 spills to CPU. So 12288 is the ceiling — larger values
+# are clamped with a warning rather than honored (a spilled KV cache also
+# OOMs the STT encode, re-creating the "JARVIS silent" failure the dynamic
+# job_memory cap fixed).
+LOCAL_LLM_NUM_CTX_DEFAULT: int = 12288
+LOCAL_LLM_NUM_CTX_MAX: int = 12288
+# Marker must match the CLI's OLLAMA_JARVIS_CTX_MARKER so both trees share
+# derived variants for the same (base, num_ctx) instead of minting parallel
+# manifests.
+OLLAMA_CTX_MARKER: str = "-jarvis-ctx"
+
+# Reply + tool-schema headroom subtracted from num_ctx to get the prompt-side
+# prune budget: ~1.5k tokens of core-tool schemas + framing and ~1.5k of
+# generation room.
+LOCAL_CTX_OUTPUT_HEADROOM_TOKENS: int = 3072
+
+
+def local_llm_num_ctx() -> int:
+    """The context window to bake into the local model's derived variant.
+    ``JARVIS_LOCAL_LLM_NUM_CTX`` overrides the 12288 default; values over
+    LOCAL_LLM_NUM_CTX_MAX are clamped (they spill to CPU on the 6 GB box —
+    see the calibration note above), unparseable / sub-2048 values fall
+    back to the default (a sub-2048 window can't fit even the lean local
+    prompt plus a reply)."""
+    raw = (os.environ.get("JARVIS_LOCAL_LLM_NUM_CTX", "") or "").strip()
+    if not raw:
+        return LOCAL_LLM_NUM_CTX_DEFAULT
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "[local] JARVIS_LOCAL_LLM_NUM_CTX=%r unparseable; using %d",
+            raw, LOCAL_LLM_NUM_CTX_DEFAULT,
+        )
+        return LOCAL_LLM_NUM_CTX_DEFAULT
+    if n < 2048:
+        logger.warning(
+            "[local] JARVIS_LOCAL_LLM_NUM_CTX=%d too small (<2048); using %d",
+            n, LOCAL_LLM_NUM_CTX_DEFAULT,
+        )
+        return LOCAL_LLM_NUM_CTX_DEFAULT
+    if n > LOCAL_LLM_NUM_CTX_MAX:
+        logger.warning(
+            "[local] JARVIS_LOCAL_LLM_NUM_CTX=%d exceeds the %d VRAM ceiling "
+            "(measured: >12288 spills the KV cache to CPU on the 6 GB GPU "
+            "alongside the STT model); clamping to %d",
+            n, LOCAL_LLM_NUM_CTX_MAX, LOCAL_LLM_NUM_CTX_MAX,
+        )
+        return LOCAL_LLM_NUM_CTX_MAX
+    return n
+
+
+def local_ctx_prune_target() -> "int | None":
+    """Prompt-token budget the local-mode chat_ctx must fit in, or None in
+    cloud mode (cloud keeps the 128k-window behavior untouched — the
+    token-aware pruner simply never engages there via this path)."""
+    if not is_local_voice_mode():
+        return None
+    return max(2048, local_llm_num_ctx() - LOCAL_CTX_OUTPUT_HEADROOM_TOKENS)
+
+
+def derived_ollama_ctx_tag(base_tag: str, num_ctx: int) -> str:
+    """``qwen3:4b-…`` → ``qwen3-4b-…-jarvis-ctx:<numCtx>`` (Ollama model
+    names allow [A-Za-z0-9._-]; ':' and '/' in the base tag flatten to '-').
+    Mirrors the CLI's derivedOllamaModelName so both trees share variants."""
+    sanitized = base_tag.replace(":", "-").replace("/", "-")
+    return f"{sanitized}{OLLAMA_CTX_MARKER}:{num_ctx}"
+
+
+# Memoized per (daemon root, base tag, num_ctx). Success memoizes for the
+# process lifetime (the manifest exists on the daemon); failures are NOT
+# cached so a transiently-down daemon retries on the next build instead of
+# pinning the degraded base tag.
+_ENSURED_CTX_VARIANTS: dict[str, str] = {}
+
+
+def _ollama_api_create(root: str, payload: dict) -> None:
+    """POST /api/create on the Ollama daemon. Raises on any failure —
+    the caller treats every error as 'fall back to the base tag'.
+    Split out so tests can monkeypatch the HTTP hop without a live daemon."""
+    req = urllib.request.Request(
+        f"{root}/api/create",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 — local daemon
+        if resp.status >= 400:  # urlopen normally raises, but belt-and-suspenders
+            raise urllib.error.HTTPError(
+                req.full_url, resp.status, "create failed", resp.headers, None
+            )
+
+
+def ensure_ollama_ctx_variant(base_tag: str, num_ctx: int, base_url: str | None = None) -> str:
+    """Best-effort: make sure a ``<base>-jarvis-ctx:<num_ctx>`` derived model
+    exists on the Ollama daemon and return its tag; on ANY failure log and
+    return ``base_tag`` unchanged (the request then runs exactly as before
+    this mechanism existed — daemon-default context)."""
+    if not base_tag or f"{OLLAMA_CTX_MARKER}:" in base_tag:
+        return base_tag  # already a derived variant (or nothing to derive)
+    url = (base_url or os.environ.get(
+        "JARVIS_LOCAL_LLM_URL", "http://127.0.0.1:11434/v1"
+    )).strip() or "http://127.0.0.1:11434/v1"
+    root = url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[: -len("/v1")]
+    key = f"{root}|{base_tag}|{num_ctx}"
+    cached = _ENSURED_CTX_VARIANTS.get(key)
+    if cached:
+        return cached
+    derived = derived_ollama_ctx_tag(base_tag, num_ctx)
+    try:
+        _ollama_api_create(root, {
+            "model": derived,
+            "from": base_tag,
+            "parameters": {"num_ctx": num_ctx},
+            "stream": False,
+        })
+    except Exception as e:  # noqa: BLE001 — variant creation must never break boot
+        logger.warning(
+            "[local] could not create num_ctx=%d variant of %r (%s: %s) — "
+            "falling back to the base tag at the daemon-default context "
+            "(likely 4096; long prompts may 400)",
+            num_ctx, base_tag, type(e).__name__, e,
+        )
+        return base_tag
+    _ENSURED_CTX_VARIANTS[key] = derived
+    logger.info(
+        "[local] routing %r via %r (num_ctx=%d, JARVIS_LOCAL_LLM_NUM_CTX)",
+        base_tag, derived, num_ctx,
+    )
+    return derived
 
 
 def read_speech_model() -> str:

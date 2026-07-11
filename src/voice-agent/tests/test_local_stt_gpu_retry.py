@@ -5,12 +5,14 @@ Two stacked bugs made a transient CUDA blip spam Ulrich with "can't reach
 DeepSeek (network)" notifications in Local mode:
 
   1. A single transient ``parallel_for failed: cudaError...`` from
-     ctranslate2 (compute contention: qwen on ollama + large-v3 whisper on
-     the same 6 GB card) surfaced immediately as APIConnectionError; the
+     ctranslate2 (qwen on ollama + large-v3 whisper on the same 6 GB card;
+     2026-07-11 follow-up pinned the real cause as a genuine CUDA OOM, not
+     compute contention) surfaced immediately as APIConnectionError; the
      framework's outer retries land in the same contention window, exhaust,
      and the whole AgentSession dies. Fix: bounded in-rung retries with
      backoff (+ a model reload before the final attempt to rebuild a wedged
-     CUDA context) in ``FasterWhisperSTT._recognize_impl``.
+     CUDA context) in ``FasterWhisperSTT._recognize_impl``, plus (2026-07-11)
+     a one-shot per-clip CPU fallback when exhaustion hits an OOM.
 
   2. ``jarvis_agent._active_voice_model()`` read the RAW ``~/.jarvis/
      voice-model`` pin (stale ``deepseek-chat-v3``) even in voice-mode=local,
@@ -95,6 +97,11 @@ def stt_with(monkeypatch):
             return inst._model
 
         monkeypatch.setattr(inst, "_ensure_model", _fake_ensure)
+        # OOM CPU fallback path (2026-07-11): hand back a fake "cpu model"
+        # too, so the fallback never loads a real WhisperModel in tests.
+        cpu_fake = _FakeModel([])
+        inst._cpu_fake = cpu_fake        # test handle
+        monkeypatch.setattr(inst, "_ensure_cpu_model", lambda: cpu_fake)
         return inst, fake
 
     yield make
@@ -159,6 +166,63 @@ def test_retry_knob_zero_disables_retries(stt_with):
     with pytest.raises(APIConnectionError):
         _recognize(inst)
     assert fake.calls == 1
+
+
+# ── GPU OOM → one-shot CPU degrade (2026-07-11 live incident) ────────────────
+# The real failure was a genuine CUDA OOM (ollama holds ~3 GB of the 6 GB
+# card; the whisper encode's activation spike exceeds the remainder). GPU
+# retries re-allocate the same VRAM and OOM again, so exhaustion must fall
+# back to a CPU transcription of THIS clip instead of killing the session.
+
+_OOM_ERR = "CUDA failed with error out of memory"
+
+
+def test_persistent_oom_falls_back_to_cpu_not_fatal(stt_with):
+    # Exactly 3 OOMs = the full GPU budget (1 initial + 2 retries) so the
+    # queue is empty for the follow-up clip below.
+    inst, fake = stt_with([RuntimeError(_OOM_ERR)] * 3)
+    ev = _recognize(inst)
+    assert ev.alternatives[0].text == "hello world"
+    assert fake.calls == 3            # GPU attempts stayed bounded
+    assert inst._cpu_fake.calls == 1  # exactly one CPU transcription
+    # NOT a permanent switch: device unchanged → the NEXT clip retries the
+    # GPU (VRAM may have freed) and never touches the CPU model again.
+    assert inst._device == "cuda"
+    ev2 = _recognize(inst)
+    assert ev2.alternatives[0].text == "hello world"
+    assert fake.calls == 4
+    assert inst._cpu_fake.calls == 1
+
+
+def test_persistent_non_oom_error_still_surfaces_no_cpu_fallback(stt_with):
+    # Part B triggers ONLY for OOM: cudaErrorInvalidDevice does not match
+    # _OOM_ERR_RE, so exhaustion surfaces as APIConnectionError as before.
+    inst, fake = stt_with([RuntimeError(_CUDA_ERR)] * 10)
+    with pytest.raises(APIConnectionError):
+        _recognize(inst)
+    assert fake.calls == 3
+    assert inst._cpu_fake.calls == 0
+
+
+def test_oom_on_cpu_device_surfaces_no_self_fallback(stt_with, monkeypatch):
+    # Already on CPU → nothing to degrade to; surface honestly.
+    inst, fake = stt_with([RuntimeError(_OOM_ERR)] * 10)
+    inst._device = "cpu"
+    with pytest.raises(APIConnectionError):
+        _recognize(inst)
+    assert inst._cpu_fake.calls == 0
+
+
+# ── Part A: default local STT model is large-v3-turbo ────────────────────────
+
+def test_default_local_stt_model_is_large_v3_turbo(monkeypatch):
+    # 2026-07-11 OOM fix Part A: large-v3-turbo is the documented live model
+    # (CLAUDE.md / .env / tray); the bigger large-v3 default OOM'd the 6 GB
+    # card next to the local LLM. Construction is lazy — no model loads.
+    monkeypatch.setenv("JARVIS_LOCAL_STT_ENABLED", "1")
+    monkeypatch.delenv("JARVIS_LOCAL_STT_MODEL", raising=False)
+    assert FasterWhisperSTT()._model_size == "large-v3-turbo"
+    assert fw.build_local_stt()._model_size == "large-v3-turbo"
 
 
 # ── 2. _active_voice_model is local-mode aware ───────────────────────────────

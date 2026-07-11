@@ -253,3 +253,130 @@ def test_cloud_llm_network_error_unchanged():
     assert c.category == "network"
     assert c.provider == "DeepSeek"
     assert "can't reach DeepSeek" in c.spoken
+
+
+# ── local-LLM (Ollama) attribution (2026-07-11 "can't reach OpenAI" mislabel) ─
+#
+# The live bug: LOCAL voice mode, supervisor = qwen3-4b via Ollama through
+# livekit's OpenAI-COMPATIBLE plugin (lk_openai.LLM(base_url=<ollama>)). A
+# context overflow came back as
+#   APIStatusError: Error code: 400 - request (39648 tokens) exceeds the
+#   available context size (4096 tokens), try increasing it ...
+#   "type":"exceed_context_size_error"
+# and JARVIS spoke "I can't reach OpenAI — looks like a network issue" —
+# wrong provider (the "openai" token is the plugin class path, not the
+# vendor) AND wrong category (context overflow, not connectivity).
+
+class APIStatusError(Exception):
+    """Named like the openai-SDK error the livekit plugin re-raises, so the
+    type-name lands in the classifier haystack exactly as live."""
+
+    def __init__(self, msg: str, status_code: int = 400):
+        super().__init__(msg)
+        self.status_code = status_code
+
+
+# The exact live wording (Ollama's /v1 chat endpoint).
+_OLLAMA_CTX_MSG = (
+    'Error code: 400 - {"error":{"message":"request (39648 tokens) exceeds '
+    'the available context size (4096 tokens), try increasing it",'
+    '"type":"exceed_context_size_error","param":null,"code":null}}'
+)
+
+
+class _LkLlmErr:
+    """Shape of livekit.agents.voice.events LLMError as seen by the close
+    watchdog: type='llm_error', str() carries the plugin label
+    ('livekit.plugins.openai.llm.LLM') + the wrapped exception repr."""
+
+    type = "llm_error"
+
+    def __init__(self, inner: str):
+        self._inner = inner
+
+    def __str__(self):
+        return (
+            "type='llm_error' timestamp=1760000000.0 "
+            "label='livekit.plugins.openai.llm.LLM' "
+            f"error=APIStatusError('{self._inner}') recoverable=False"
+        )
+
+
+def _assert_no_mislabel_words(c):
+    """Neither the provider nor any user-facing string may claim OpenAI, a
+    network problem, or a billing problem for a local context overflow."""
+    assert c.provider != "OpenAI"
+    for field in (c.spoken, c.notify_title, c.notify_body):
+        low = field.lower()
+        assert "openai" not in low, field
+        assert "network" not in low, field
+        assert "credit" not in low, field
+
+
+def test_local_ollama_context_overflow_is_context_too_long_not_network():
+    # The exact live shape: local mode passes model="ollama/<tag>".
+    c = classify_provider_error(
+        APIStatusError(_OLLAMA_CTX_MSG),
+        model="ollama/qwen3:4b-instruct-2507",
+    )
+    assert c.category == "context_too_long"
+    assert c.recoverable is True  # a restart / prune clears the context
+    _assert_no_mislabel_words(c)
+    # Family-named from the local tag, never from the plugin token.
+    assert c.provider == "Qwen"
+
+
+def test_local_overflow_wrapped_llm_error_with_no_model_names_local():
+    # Close-watchdog shape: the pydantic LLMError repr carries the
+    # 'livekit.plugins.openai' plugin path; the pin is unreadable (model=None).
+    c = classify_provider_error(_LkLlmErr(_OLLAMA_CTX_MSG), model=None)
+    assert c.category == "context_too_long"
+    assert c.provider == "the local model"
+    _assert_no_mislabel_words(c)
+    assert "too long" in c.spoken
+
+
+def test_local_overflow_with_stale_cloud_pin_never_names_cloud():
+    # Text says Ollama (exceed_context_size_error) but the pin is a stale
+    # cloud id — same stale-pin trap the 2026-07-10 STT fix closed. The
+    # ollama-specific wording is authoritative: never blame DeepSeek/OpenAI.
+    c = classify_provider_error(APIStatusError(_OLLAMA_CTX_MSG), model="deepseek-chat-v3")
+    assert c.category == "context_too_long"
+    assert c.provider == "the local model"
+    for field in (c.provider, c.spoken, c.notify_title, c.notify_body):
+        assert "DeepSeek" not in field
+    _assert_no_mislabel_words(c)
+
+
+def test_local_ollama_server_down_never_names_openai():
+    # Ollama genuinely unreachable → still 'network', but named after the
+    # local model — the OpenAI-compatible base_url must not flip the vendor.
+    c = classify_provider_error(
+        _Err("APIConnectionError: Connection refused: http://127.0.0.1:11434/v1"),
+        model="ollama/qwen3:14b",
+    )
+    assert c.category == "network"
+    assert c.provider == "Qwen"
+    assert "OpenAI" not in c.spoken and "openai" not in c.notify_body.lower()
+
+
+# ── HARD constraint: real cloud-OpenAI classification is byte-identical ──────
+
+def test_real_openai_network_error_still_network_openai():
+    c = classify_provider_error(
+        _Err("Connection error: [Errno 111] Connection refused (api.openai.com)"),
+        model="gpt-4o",
+    )
+    assert c.category == "network"
+    assert c.provider == "OpenAI"
+    assert "can't reach OpenAI" in c.spoken
+
+
+def test_real_openai_context_overflow_still_names_openai():
+    c = classify_provider_error(
+        _Err("This model's maximum context length is 128000 tokens, however you requested 200000 tokens.", 400),
+        model="gpt-4o",
+    )
+    assert c.category == "context_too_long"
+    assert c.provider == "OpenAI"
+    assert "OpenAI" in c.spoken
