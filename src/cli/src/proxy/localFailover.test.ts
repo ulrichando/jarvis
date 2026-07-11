@@ -286,17 +286,24 @@ describe('executeWithFallback + local tail (end-to-end chain semantics)', () => 
   })
 
   test('primary already ollama → no recursive local tail', async () => {
-    let localCalls = 0
+    // An ollama RUNG now legitimately produces localFetch traffic against the
+    // daemon's native API (/api/create + /api/tags — the num_ctx ensure, see
+    // ollamaContext.ts). What must NEVER happen here is the recursive local
+    // TAIL, i.e. a /chat/completions attempt through the failover path.
+    let tailCalls = 0
     const outcome = await executeWithFallback(
       cloudProvider({ name: 'ollama', model: 'qwen2.5:7b', baseUrl: 'http://127.0.0.1:11434/v1' }),
       { messages: [] },
       {
         fetcher: fetcherReturning(connFailure),
-        localFetch: (async () => { localCalls++; return new Response(okBody) }) as any,
+        localFetch: (async (url: any) => {
+          if (String(url).includes('/chat/completions')) tailCalls++
+          return new Response(okBody)
+        }) as any,
         env: ENV_ON,
       },
     )
     expect(outcome.response).toBeNull()
-    expect(localCalls).toBe(0)
+    expect(tailCalls).toBe(0)
   })
 })

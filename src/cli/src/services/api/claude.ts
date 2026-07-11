@@ -70,6 +70,7 @@ import {
 import { resolveAppliedEffort } from '../../utils/effort.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
+import { filterToolsForLeanLocalModel } from '../../utils/localModelLean.js'
 import { computeFingerprintFromMessages } from '../../utils/fingerprint.js'
 import { captureAPIRequest, logError } from '../../utils/log.js'
 import {
@@ -1170,6 +1171,15 @@ async function* queryModel(
       t => !toolMatchesName(t, TOOL_SEARCH_TOOL_NAME),
     )
   }
+
+  // Local Ollama models: gate the toolset down to the lean core (Bash/Read/
+  // Edit/Write/Glob/Grep). A small on-device model can't attend to 25+ tool
+  // schemas, and every schema costs prompt tokens the local num_ctx budget
+  // can't spare. Applied at request time so /model switches take effect
+  // immediately; cloud-model requests are byte-identical (the helper no-ops
+  // unless options.model resolves to provider 'ollama' in the jarvis
+  // registry). Kill-switch: JARVIS_OLLAMA_LEAN=0. See utils/localModelLean.ts.
+  filteredTools = filterToolsForLeanLocalModel(filteredTools, options.model)
 
   // Add tool search beta header if enabled - required for defer_loading to be accepted
   // Header differs by provider: 1P/Foundry use advanced-tool-use, Vertex/Bedrock use tool-search-tool

@@ -1,5 +1,6 @@
 import type { Provider } from './providers.js'
 import { getReasoning, setReasoning, REASONING_PLACEHOLDER } from './reasoning-cache.js'
+import { ollamaTagSupportsGradedEffort } from '../utils/model/jarvisModelRegistry.js'
 
 // ── Reasoning-content round-trip ────────────────────────────────────────────
 //
@@ -578,13 +579,20 @@ function applyProviderSpecificParams(out: any, req: any, provider: Provider): vo
     out.temperature = 1
   }
 
-  if (provider.name === 'ollama' && provider.model.includes('gpt-oss')) {
-    // Local gpt-oss on Ollama accepts the SAME top-level `reasoning_effort`
-    // (low/medium/high) over the OpenAI-compat endpoint, mapped to its native
-    // `think` level (default 'medium'). Ollama VALIDATES this field — a bad,
-    // boolean, or absent-as-false value 400s — so emit it ONLY when /effort
-    // resolved a concrete tier, and ONLY for gpt-oss (other Ollama models 400
-    // on the field). Omitting it falls back to gpt-oss's default reasoning.
+  if (
+    provider.name === 'ollama' &&
+    ollamaTagSupportsGradedEffort(provider.model)
+  ) {
+    // Local reasoning-capable models on Ollama accept the SAME top-level
+    // `reasoning_effort` (low/medium/high) over the OpenAI-compat endpoint,
+    // mapped to the native `think` control: graded levels on gpt-oss, the
+    // think switch on qwen3-thinking tags. Emit it ONLY when /effort resolved
+    // a concrete tier, and ONLY for tags the shared registry predicate marks
+    // reasoning-capable — same predicate that grants the 'effort' capability,
+    // so the UI dial and the wire param can't drift. (Ollama 0.30.9 verified
+    // live 2026-07-11: unsupported models now IGNORE the field rather than
+    // 400ing, so the gate is about honesty, not crash-safety.) Omitting it
+    // falls back to the model's default reasoning.
     const reasoningEffort = resolveReasoningEffort(req)
     if (reasoningEffort) {
       out.reasoning_effort = reasoningEffort
@@ -697,7 +705,9 @@ export function clampRequestForProvider(openaiReq: any, provider: Provider): any
   // and capabilities differ across the chain by design).
   if (provider.name !== 'deepseek') delete out.thinking
   const usesReasoningEffort =
-    gpt5 || (provider.name === 'ollama' && provider.model.includes('gpt-oss'))
+    gpt5 ||
+    (provider.name === 'ollama' &&
+      ollamaTagSupportsGradedEffort(provider.model))
   if (!usesReasoningEffort) delete out.reasoning_effort
 
   // No current provider sets service_tier (the provider that used it was
