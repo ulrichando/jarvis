@@ -78,6 +78,7 @@ llm/
 jarvis-cli/
 .superpowers/
 .worktrees/
+.claude/worktrees/
 .gstack/
 .pytest_cache/
 .remember/
