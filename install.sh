@@ -946,6 +946,13 @@ pull_local_llm() {
     warn "ollama API not reachable — can't check/pull '$pull_tag' (offline LLM failover stays dormant; later: ollama pull $pull_tag)"
     return 0
   fi
+  # Short-alias end state: pull the canonical, cp it to the alias, then REMOVE
+  # the canonical (below) so the model picker shows ONE tag. If the alias is
+  # already here, we're done — don't re-pull the (removed) canonical.
+  if [ "$pin" = "$alias" ] && ollama list 2>/dev/null | awk '{print $1}' | grep -qxF "${alias}:latest"; then
+    ok "local LLM '$alias' already present"
+    return 0
+  fi
   if ollama list 2>/dev/null | awk '{print $1}' | grep -qxF "$pull_tag"; then
     ok "local LLM '$pull_tag' already pulled"
   elif [ "${JARVIS_SKIP_MODELS:-0}" = "1" ]; then
@@ -960,11 +967,17 @@ pull_local_llm() {
       return 0
     fi
   fi
-  # Create the short alias (idempotent) so the pin 'qwen3-4b' resolves.
+  # Create the short alias, then REMOVE the canonical so only 'qwen3-4b' remains
+  # (one tag in the model picker, not a canonical+alias duplicate). The alias
+  # shares the same blobs, so removing the canonical is safe — ollama GC only
+  # drops blobs no manifest references.
   if [ "$pin" = "$alias" ] \
      && ollama list 2>/dev/null | awk '{print $1}' | grep -qxF "$pull_tag" \
      && ! ollama list 2>/dev/null | awk '{print $1}' | grep -qxF "${alias}:latest"; then
-    ollama cp "$pull_tag" "$alias" 2>/dev/null && ok "aliased $pull_tag → $alias (short name for /status)"
+    if ollama cp "$pull_tag" "$alias" 2>/dev/null; then
+      ok "aliased $pull_tag → $alias (short name)"
+      ollama rm "$pull_tag" 2>/dev/null && ok "removed the long canonical tag (keeping only $alias)"
+    fi
   fi
 }
 
