@@ -79,11 +79,28 @@ export type AnthropicPassthroughArgs = {
   requestId: string
   onFinish: (entry: Partial<RequestLog>) => void
   baseLog: RequestLog
+  /**
+   * Stage 2 offline parity (2026-07-10): when true, a genuine OUTAGE
+   * (fetch threw, or upstream 5xx) returns an AnthropicOutageSignal
+   * instead of an error Response, WITHOUT logging via onFinish — the
+   * caller re-routes the request to the local failover and owns the
+   * (single) log entry for the request. Definitive 4xx/429 responses
+   * still pass through verbatim regardless of this flag: auth/quota/
+   * bad-request errors must surface, never reroute. Default (absent /
+   * false) preserves the exact pre-Stage-2 behavior.
+   */
+  signalOutage?: boolean
+}
+
+/** Returned in place of an error Response when signalOutage is set and the
+ *  failure was outage-shaped (transport error or upstream 5xx). */
+export type AnthropicOutageSignal = {
+  outage: { errMsg: string; status: number | null }
 }
 
 export async function forwardAnthropicNative(
   args: AnthropicPassthroughArgs,
-): Promise<Response> {
+): Promise<Response | AnthropicOutageSignal> {
   const {
     provider,
     anthropicReq,
@@ -91,6 +108,7 @@ export async function forwardAnthropicNative(
     isStream,
     requestId,
     onFinish,
+    signalOutage,
   } = args
 
   // Re-target the request to the upstream model id resolved from the
@@ -115,6 +133,12 @@ export async function forwardAnthropicNative(
     })
   } catch (e: any) {
     const errMsg = `anthropic unreachable: ${e?.message ?? e}`
+    if (signalOutage) {
+      // Transport-level failure = the clearest outage there is. Hand the
+      // decision back to the caller (local failover); skip onFinish so the
+      // request logs exactly once, from the caller's re-routed attempt.
+      return { outage: { errMsg, status: null } }
+    }
     onFinish({
       status: 502,
       error_type: 'upstream_unreachable',
@@ -151,6 +175,18 @@ export async function forwardAnthropicNative(
   if (!upstreamResp.ok) {
     let body = ''
     try { body = await upstreamResp.text() } catch {}
+    if (signalOutage && upstreamResp.status >= 500) {
+      // Upstream-side failure (500/502/503/529 overloaded…) with a local
+      // failover armed → signal instead of surfacing. 4xx/429 never take
+      // this branch: those are definitive answers from a REACHABLE cloud
+      // (bad key, quota, bad request) and pass through verbatim below.
+      return {
+        outage: {
+          errMsg: `HTTP ${upstreamResp.status}: ${body.slice(0, 500)}`,
+          status: upstreamResp.status,
+        },
+      }
+    }
     onFinish({
       status: upstreamResp.status,
       error_type: upstreamResp.status >= 500 ? 'upstream_error' : 'upstream_4xx',
