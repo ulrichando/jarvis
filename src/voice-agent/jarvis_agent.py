@@ -1002,6 +1002,7 @@ TTS_PROVIDER_FILE = Path.home() / ".jarvis" / "tts-provider"
 # in-file caller (entrypoint() at ~line 4630) is untouched.
 from providers.llm import build_dispatching_llm as _build_dispatching_llm
 from providers.llm import wrap_pin_fallback as _wrap_pin_fallback
+from providers.llm import wrap_local_failover as _wrap_local_failover
 
 # Extracted to providers/tts.py 2026-05-10 (Step 6 of the 10/10
 # refactor). The chain builder takes the TTS_PROVIDER_FILE path as
@@ -5100,7 +5101,16 @@ def _build_llm_stack() -> dict:
         # JARVIS_PIN_FALLBACK_MODEL rung HERE so it survives to the
         # session — wrapping only at the pin branch above was a no-op
         # because this line reset it (2026-07-02 audit).
-        llm_arg = _wrap_pin_fallback(active_speech_llm, active_speech_id)
+        # wrap_local_failover (JARVIS_LOCAL_LLM_FAILOVER=1, Stage 1
+        # offline parity) then nests the whole pin chain as rung 0 of
+        # [chain, local] so the local model is reached ONLY after every
+        # cloud rung failed — online the pinned primary + its fallback
+        # behave byte-identically (label preserved; probe runs once at
+        # build, not per turn). No-op when the flag is off or the local
+        # endpoint/model isn't actually available.
+        llm_arg = _wrap_local_failover(
+            _wrap_pin_fallback(active_speech_llm, active_speech_id)
+        )
         tts_arg = tts.FallbackAdapter(_build_tts_chain())
 
     return {

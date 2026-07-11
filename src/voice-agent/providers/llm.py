@@ -75,6 +75,9 @@ __all__ = [
     "BreakeredLLMStream",
     # Per-route dispatcher build
     "build_dispatching_llm",
+    # Local last-resort failover tail (Stage 1 offline parity)
+    "build_local_failover_llm",
+    "wrap_local_failover",
 ]
 
 
@@ -674,6 +677,129 @@ def wrap_pin_fallback(primary, primary_id: str):
         return primary
 
 
+# ── Local LAST-RESORT failover tail (JARVIS_LOCAL_LLM_FAILOVER) ──────
+# Stage 1 of full offline parity (2026-07-10). DISTINCT from the
+# JARVIS_LOCAL_LLM_ENABLED rung-0 path above build_dispatching_llm —
+# that one PREPENDS local as the first-tried rung (local becomes the
+# primary). This one never changes what is tried first: it nests the
+# fully-assembled cloud chain as rung 0 of a new outer FallbackAdapter
+# with the local model as the ONLY other rung, so local is reached
+# strictly AFTER every cloud rung has failed (no internet / providers
+# down). When the cloud is up the outer adapter is a pure pass-through:
+# FallbackLLMStream tries rungs in order and never constructs a request
+# to a later rung unless an earlier one raised/timed out, and the probe
+# below runs ONCE at build time (not per turn), so the online path is
+# unchanged.
+#
+# Timeout note (why nesting instead of appending to the existing flat
+# rung list): FallbackAdapter has a single attempt_timeout applied to
+# EVERY rung (fallback_adapter.py::_try_generate replaces
+# conn_options.timeout with it). Appending local to the pin chain would
+# cap the local rung at the pin's 6s — a cold Ollama model load can
+# exceed that. Nesting keeps the inner cloud chain's own attempt_timeout
+# per cloud rung (an inner FallbackAdapter re-applies its own value, so
+# the outer's is ignored for it) while the outer's generous timeout
+# governs only the local rung.
+def _local_failover_timeout_s() -> float:
+    """Outer-adapter attempt timeout — bounds the LOCAL rung's connect +
+    inter-chunk gap (cold model load). Ignored by an inner FallbackAdapter
+    rung (it re-applies its own attempt_timeout per cloud rung)."""
+    try:
+        return float(os.environ.get("JARVIS_LOCAL_LLM_FAILOVER_TIMEOUT", "45.0"))
+    except (TypeError, ValueError):
+        return 45.0
+
+
+def build_local_failover_llm():
+    """Build the LAST-resort local rung, or None.
+
+    None when JARVIS_LOCAL_LLM_FAILOVER != 1, the endpoint/model probe
+    fails (stale flag must not add a dead rung / lie in telemetry), or
+    construction raises. Reuses the rung-0 knobs for endpoint + model
+    (JARVIS_LOCAL_LLM_URL / _MODEL / _API_KEY / _TEMP) so there is ONE
+    local model config. Deliberately does NOT honor
+    JARVIS_LOCAL_LLM_ROUTES — that filter scopes the rung-0 local-primary
+    experiment; offline failover must cover every route or offline TASK
+    turns would be dead. `_strict_tool_schema=False` is MANDATORY (local
+    servers reject OpenAI strict schema → JARVIS's 20+ tools silently
+    break otherwise)."""
+    if os.environ.get("JARVIS_LOCAL_LLM_FAILOVER", "0") != "1":
+        return None
+    url = os.environ.get(
+        "JARVIS_LOCAL_LLM_URL", "http://127.0.0.1:11434/v1"
+    ).strip() or "http://127.0.0.1:11434/v1"
+    model = resolve_model_tag(
+        os.environ.get("JARVIS_LOCAL_LLM_MODEL", "qwen2.5:7b").strip() or "qwen2.5:7b"
+    )
+    key = os.environ.get("JARVIS_LOCAL_LLM_API_KEY", "ollama").strip() or "ollama"
+    ok, reason = _probe_local_llm(url, model, key, _local_failover_timeout_s())
+    if not ok:
+        logger.warning(
+            "[dispatch] local failover requested but unavailable: model=%s url=%s (%s); "
+            "no local tail rung (cloud chain unchanged)",
+            model, url, reason,
+        )
+        return None
+    try:
+        temp = float(os.environ.get("JARVIS_LOCAL_LLM_TEMP", "0.6") or 0.6)
+    except (TypeError, ValueError):
+        temp = 0.6
+    try:
+        inst = lk_openai.LLM(
+            model=model,
+            base_url=url,
+            api_key=key,
+            temperature=temp,
+            max_retries=0,
+            _strict_tool_schema=False,
+        )
+        inst._jarvis_label = f"local:{model}"
+        return inst
+    except Exception as e:
+        logger.warning(
+            f"[dispatch] local failover LLM construction failed: {e} "
+            "(no local tail rung; cloud chain unchanged)"
+        )
+        return None
+
+
+def wrap_local_failover(chain, tail=None):
+    """Nest `chain` as rung 0 of FallbackAdapter([chain, local-tail]).
+
+    The local model is the FINAL rung — reached only after every rung
+    inside `chain` has failed. Returns `chain` unchanged when the
+    failover flag is off, the probe fails, `chain` is None, or `chain`
+    is itself already local (label `local:*` — the rung-0 local-only
+    boot path; nesting would double it). Telemetry label is preserved
+    from `chain` so the online `model` column is byte-identical.
+
+    `tail`: pass a prebuilt rung (from build_local_failover_llm) to
+    share ONE probe + instance across the dispatcher's 9 routes."""
+    if chain is None:
+        return chain
+    label = getattr(chain, "_jarvis_label", "") or ""
+    if label.startswith("local:"):
+        return chain
+    if tail is None:
+        tail = build_local_failover_llm()
+    if tail is None:
+        return chain
+    try:
+        from livekit.agents.llm import FallbackAdapter as _LLMFallback
+        wrapped = _LLMFallback([chain, tail], attempt_timeout=_local_failover_timeout_s())
+        wrapped._jarvis_label = label or "?"
+        logger.info(
+            "[dispatch] local failover armed (LAST resort): %s → %s",
+            label or repr(chain), getattr(tail, "_jarvis_label", "local:?"),
+        )
+        return wrapped
+    except Exception as e:
+        logger.warning(
+            f"[dispatch] local failover wrap failed ({e}); cloud chain unchanged"
+        )
+        return chain
+
+
 # ── Pre-flight singleton ─────────────────────────────────────────────
 # Pre-flight estimate for the most recent supervisor LLM call.
 # Module-level dict (one voice session per worker process) so the
@@ -1192,6 +1318,14 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
             )
         _local_enabled = ok
 
+    # ── LAST-resort local failover tail (JARVIS_LOCAL_LLM_FAILOVER=1) ──
+    # Distinct from the rung-0 prepend above: NEVER changes what is tried
+    # first. One probe + one shared instance for all 9 routes (same
+    # pattern as ds_fallback). Per-route in _wrap_chain: skipped on any
+    # route where rung-0 already injected local (would double it); routes
+    # the rung-0 filter left uncovered still get the tail.
+    _failover_tail = build_local_failover_llm()
+
     def _make_local_llm(route: str):
         """Build the rung-0 local OpenAI-compat LLM for `route`. Returns
         None when disabled/unavailable, the route is filtered out by
@@ -1380,7 +1514,11 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
         LLM is prepended as rung 0 (tried first); the shared DeepSeek
         fallback is rung 2 (when available). Labels the
         chain by its FIRST rung for telemetry. Returns the primary
-        unwrapped when no other rungs are available."""
+        unwrapped when no other rungs are available. Finally, when the
+        JARVIS_LOCAL_LLM_FAILOVER tail is armed (and rung-0 local isn't
+        already in this route's chain), the whole chain is nested as
+        rung 0 of FallbackAdapter([chain, local]) — local strictly LAST,
+        online order untouched."""
         rungs: list[Any] = [primary]
         primary_label = getattr(primary, "_jarvis_label", "")
         # Rung 2: shared DeepSeek (cross-provider safety net). Skip when
@@ -1397,26 +1535,34 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
         local_rung = _make_local_llm(route)
         if local_rung is not None:
             rungs.insert(0, local_rung)
-        if len(rungs) == 1:
-            return primary
-        try:
-            from livekit.agents.llm import FallbackAdapter as _LLMFallback
-            wrapped = _LLMFallback(rungs)
-            # Label the chain by its FIRST rung (what's actually tried
-            # first): `local:<model>` when rung-0 is active, else the
-            # cloud primary's label — behavior-preserving when local is
-            # off (rungs[0] IS primary). dispatching_llm reads this for
-            # the telemetry `model` column.
-            wrapped._jarvis_label = (
-                getattr(rungs[0], "_jarvis_label", "") or primary_label or "?"
-            )
-            return wrapped
-        except Exception as e:
-            logger.warning(
-                f"[dispatch] {route} LLM FallbackAdapter wrap failed ({e}); "
-                "using primary alone"
-            )
-            return primary
+        chain = primary
+        if len(rungs) > 1:
+            try:
+                from livekit.agents.llm import FallbackAdapter as _LLMFallback
+                wrapped = _LLMFallback(rungs)
+                # Label the chain by its FIRST rung (what's actually tried
+                # first): `local:<model>` when rung-0 is active, else the
+                # cloud primary's label — behavior-preserving when local is
+                # off (rungs[0] IS primary). dispatching_llm reads this for
+                # the telemetry `model` column.
+                wrapped._jarvis_label = (
+                    getattr(rungs[0], "_jarvis_label", "") or primary_label or "?"
+                )
+                chain = wrapped
+            except Exception as e:
+                logger.warning(
+                    f"[dispatch] {route} LLM FallbackAdapter wrap failed ({e}); "
+                    "using primary alone"
+                )
+                chain = primary
+        # LAST-resort tail: only when rung-0 local is NOT already in this
+        # route's chain (it would be reached earlier anyway — nesting
+        # would double the local model). wrap_local_failover preserves
+        # the chain's label, so telemetry + the resolved-primary log stay
+        # byte-identical online.
+        if _failover_tail is not None and local_rung is None:
+            chain = wrap_local_failover(chain, tail=_failover_tail)
+        return chain
 
     def _build_route(route: str):
         """Build the full FallbackAdapter chain for `route`. Tries
@@ -1503,6 +1649,12 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
     # wins everywhere it could land. Per global review §P0-12 plus the
     # 2026-05-24 8-route expansion.
     if task_override is not None:
+        # Give the tray-pinned TASK override the same LAST-resort local
+        # tail as the built routes (one shared wrap for all 6 slots).
+        # No-op when the tail isn't armed; online the pinned model is
+        # still the first (and only cloud) rung, label preserved.
+        if _failover_tail is not None:
+            task_override = wrap_local_failover(task_override, tail=_failover_tail)
         task_inner   = task_override
         task_desktop = task_override
         task_browser = task_override

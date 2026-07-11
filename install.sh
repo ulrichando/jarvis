@@ -648,6 +648,15 @@ setup_voice_env() {
   _env_default "$va_env" JARVIS_LOCAL_TTS_VOICE   af_bella
   _env_default "$va_env" JARVIS_LOCAL_TTS_PRIMARY 1
   ok "local TTS (kokoro) configured — Edge-TTS stays as fallback"
+
+  # LLM offline failover (Stage 1, 2026-07-10): append the local model as the
+  # LAST FallbackAdapter rung so voice survives with no internet — reached ONLY
+  # after every cloud rung fails (providers/llm.py::wrap_local_failover). Seed
+  # ON by default so a fresh box has offline parity; _env_default never
+  # overrides a value the user already set. Distinct from JARVIS_LOCAL_LLM_ENABLED
+  # (that one makes local the rung-0 PRIMARY — leave it off).
+  _env_default "$va_env" JARVIS_LOCAL_LLM_FAILOVER 1
+  ok "local LLM offline-failover armed (last-resort rung; cloud stays primary)"
 }
 
 # livekit.yaml pins key_file at an ABSOLUTE /home/<user> path (committed).
@@ -831,6 +840,116 @@ fetch_vosk_model() {
   rm -rf "$tmp"
 }
 
+# ── Local LLM (Ollama) — offline-parity failover model ──────────────────
+# Stage 1 of full offline parity (2026-07-10): the voice cascade appends the
+# local model as its LAST FallbackAdapter rung (JARVIS_LOCAL_LLM_FAILOVER=1 in
+# src/voice-agent/.env; providers/llm.py::wrap_local_failover), reached only
+# when every cloud rung fails. These provision the engine + model that rung
+# needs. Idempotent, warn-not-abort: a missing ollama/model just means no
+# offline failover — cloud voice is unaffected.
+
+# _ollama_base_url — the native Ollama API base (strip the /v1 OpenAI-compat
+# suffix the voice .env carries).
+_ollama_base_url() {
+  local url
+  url="$(_env_get "$INSTALL_DIR/src/voice-agent/.env" JARVIS_LOCAL_LLM_URL)"
+  url="${url:-http://127.0.0.1:11434/v1}"
+  url="${url%/}"; url="${url%/v1}"
+  printf '%s' "$url"
+}
+
+_ollama_api_up() {
+  curl -fsS --max-time 3 -o /dev/null "$(_ollama_base_url)/api/tags" 2>/dev/null
+}
+
+install_ollama() {
+  if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then return 0; fi
+  section "Local LLM engine (Ollama)"
+  if have ollama; then
+    ok "ollama already installed ($(ollama --version 2>/dev/null | head -1))"
+  else
+    if [ "$(uname -s)" != "Linux" ]; then
+      warn "ollama auto-install is Linux-only — install manually from https://ollama.com/download (offline LLM failover stays dormant)"
+      return 0
+    fi
+    # The official installer escalates via sudo internally. Guard the
+    # non-interactive + no-NOPASSWD case so a curl-pipe install can't hang
+    # or die mid-script — warn and continue instead.
+    if ! sudo -n true 2>/dev/null && ! _interactive; then
+      warn "ollama not installed and sudo needs a password in a non-interactive run — skipping (later: curl -fsSL https://ollama.com/install.sh | sh)"
+      return 0
+    fi
+    sub "installing ollama (official installer, needs sudo)..."
+    if curl -fsSL https://ollama.com/install.sh | sh; then
+      ok "ollama installed"
+    else
+      warn "ollama install FAILED (non-fatal — no offline LLM failover; cloud voice unaffected). Retry: curl -fsSL https://ollama.com/install.sh | sh"
+      return 0
+    fi
+  fi
+
+  # Daemon reachable? The official installer enables a system ollama.service;
+  # start it when present, else point at `ollama serve`.
+  if _ollama_api_up; then
+    ok "ollama API answering at $(_ollama_base_url)"
+    return 0
+  fi
+  if have systemctl && systemctl list-unit-files ollama.service --no-legend 2>/dev/null | grep -q ollama; then
+    sub "starting ollama.service..."
+    if sudo -n systemctl enable --now ollama.service 2>/dev/null; then
+      local _i
+      for _i in 1 2 3 4 5; do
+        _ollama_api_up && break
+        sleep 1
+      done
+      if _ollama_api_up; then
+        ok "ollama.service running ($(_ollama_base_url))"
+      else
+        warn "ollama.service started but the API isn't answering yet at $(_ollama_base_url) — check 'journalctl -u ollama'"
+      fi
+    else
+      warn "could not start ollama.service (sudo not NOPASSWD?) — run: sudo systemctl enable --now ollama"
+    fi
+  else
+    warn "ollama installed but no daemon reachable at $(_ollama_base_url) — start it with 'ollama serve' (or install the systemd unit)"
+  fi
+}
+
+pull_local_llm() {
+  if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then return 0; fi
+  if ! have ollama; then return 0; fi   # install_ollama already warned
+  local tag
+  tag="$(_env_get "$INSTALL_DIR/src/voice-agent/.env" JARVIS_LOCAL_LLM_MODEL)"
+  tag="${tag:-qwen2.5:7b}"
+  if [ "$tag" = "auto" ] || [ "$tag" = "AUTO" ]; then
+    # 'auto' is resolved by the voice agent's hwfit picker at runtime; use
+    # the same picker here when the venv exists, else the safe default.
+    local py="$INSTALL_DIR/src/voice-agent/.venv/bin/python"
+    if [ -x "$py" ]; then
+      tag="$(cd "$INSTALL_DIR/src/voice-agent" && "$py" -c "from providers.local_model_picker import resolve_model_tag; print(resolve_model_tag('auto'))" 2>/dev/null)"
+    fi
+    tag="${tag:-qwen2.5:7b}"
+  fi
+  if ! _ollama_api_up; then
+    warn "ollama API not reachable — can't check/pull '$tag' (offline LLM failover stays dormant; later: ollama pull $tag)"
+    return 0
+  fi
+  if ollama list 2>/dev/null | awk '{print $1}' | grep -qxF "$tag"; then
+    ok "local LLM '$tag' already pulled"
+    return 0
+  fi
+  if [ "${JARVIS_SKIP_MODELS:-0}" = "1" ]; then
+    warn "skipping local LLM pull (JARVIS_SKIP_MODELS=1) — offline failover stays dormant until: ollama pull $tag"
+    return 0
+  fi
+  section "Pulling local LLM '$tag' (~4.7 GB for qwen2.5:7b; skip with JARVIS_SKIP_MODELS=1)"
+  if ollama pull "$tag"; then
+    ok "local LLM '$tag' pulled"
+  else
+    warn "ollama pull '$tag' failed (non-fatal — offline LLM failover stays dormant; retry: ollama pull $tag)"
+  fi
+}
+
 # ── Voice-stack readiness report (read-only; end of install) ─────────────
 verify_voice_stack() {
   if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then return 0; fi
@@ -923,6 +1042,20 @@ verify_voice_stack() {
     ok "edge-tts fallback importable"
   else
     warn "edge-tts NOT importable — no TTS fallback"
+    issues=$((issues+1))
+  fi
+
+  # Local LLM failover (ollama + model) — the offline-parity tail rung
+  local ollama_base llm_tag
+  ollama_base="$(_ollama_base_url)"
+  llm_tag="$(_env_get "$va/.env" JARVIS_LOCAL_LLM_MODEL)"; llm_tag="${llm_tag:-qwen2.5:7b}"
+  if curl -fsS --max-time 3 "$ollama_base/api/tags" 2>/dev/null | grep -qF "\"$llm_tag\""; then
+    ok "local LLM failover ready: ollama serving '$llm_tag' at $ollama_base"
+  elif _ollama_api_up; then
+    warn "ollama reachable at $ollama_base but model '$llm_tag' not pulled — offline LLM failover dormant (ollama pull $llm_tag)"
+    issues=$((issues+1))
+  else
+    warn "ollama not reachable at $ollama_base — no offline LLM failover (cloud voice unaffected)"
     issues=$((issues+1))
   fi
 
@@ -1470,6 +1603,8 @@ main() {
   prefetch_stt_model     # ~1.5 GB HF model (skip: JARVIS_SKIP_MODELS=1)
   install_kokoro_tts     # on-device TTS container (skip: JARVIS_SKIP_KOKORO=1)
   fetch_vosk_model       # ~40 MB partial-word barge-in model (skip: JARVIS_SKIP_MODELS=1)
+  install_ollama         # local LLM engine for the offline failover rung (warn-not-abort)
+  pull_local_llm         # ~4.7 GB failover model (skip: JARVIS_SKIP_MODELS=1)
   check_computer_use_deps  # optional probes for computer_use subagent
   install_audio_profile
   install_echo_cancel_aec
