@@ -1619,6 +1619,16 @@ JARVIS_CLI_VOICE_PROMPT = os.environ.get(
 # returning the tool result to the LLM.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
+# Any env VALUE shaped like a connection URL with INLINE CREDENTIALS
+# (scheme://user:password@host/…) is a secret regardless of the var's name —
+# catches DSN-shaped vars the name-based rules in _clean_env_for_cli miss.
+# Plain URLs without a `user:pass@` userinfo part (http://localhost:4000,
+# ws://127.0.0.1:7880) do NOT match, and neither do non-URL values like
+# DBUS_SESSION_BUS_ADDRESS's `unix:path=…` (no `://`).
+_CREDENTIAL_URL_RE = re.compile(
+    r"^[a-z][a-z0-9+.\-]*://[^/\s@]*:[^/\s@]+@", re.IGNORECASE
+)
+
 
 def _clean_env_for_cli(cli_model_id: str) -> dict[str, str]:
     """
@@ -1643,7 +1653,17 @@ def _clean_env_for_cli(cli_model_id: str) -> dict[str, str]:
     the same ANTHROPIC_BASE_URL=localhost:4000 + ANTHROPIC_API_KEY=
     'jarvis-proxy' stub it needs to talk to the proxy, but no real
     upstream keys. The proxy at :4000 holds the real keys and signs
-    the outbound requests.
+    the outbound requests. SHARED: tools/dispatch_agent.py builds its
+    bin/jarvis subprocess env through this same function (2026-07-11 —
+    it previously inherited the FULL raw environment). Broadened the
+    same day: _DSN/_ACCESS_KEY/_SECRET_KEY/_PRIVATE_KEY/… suffixes,
+    JARVIS_PG_DSN + PGPASSWORD-style names, and any VALUE shaped like
+    a credential-bearing connection URL (_CREDENTIAL_URL_RE).
+
+    KNOWN RESIDUAL (src/cli, out of scope here): the CLI's
+    scripts/start-env.sh re-sources repo .env + ~/.jarvis/keys.env
+    INSIDE the subprocess, re-importing keys this function stripped.
+    Fixing that belongs to the CLI tree.
 
     **Ollama / local mode (2026-07-11):** when the pick is an
     ``ollama:<tag>`` id, the same stripping applies (the local path
@@ -1658,7 +1678,17 @@ def _clean_env_for_cli(cli_model_id: str) -> dict[str, str]:
     # allowlist of stripping rules — keeps env vars the CLI legitimately
     # needs (PATH, HOME, USER, LANG, TZ, XDG_*, DISPLAY, JARVIS_*,
     # NODE_*, npm_*, etc.) untouched.
-    _SECRET_SUFFIXES = ("_API_KEY", "_SECRET", "_TOKEN", "_PASSWORD")
+    _SECRET_SUFFIXES = (
+        "_API_KEY", "_SECRET", "_TOKEN", "_PASSWORD",
+        # Broadened 2026-07-11 (dispatch_agent env fix): credential shapes
+        # the original suffix list let through — DSN / connection-string
+        # vars (JARVIS_PG_DSN carries the real Postgres password inline),
+        # cloud access keys (AWS_SECRET_ACCESS_KEY ends in _ACCESS_KEY,
+        # not _API_KEY), and *_SECRET_KEY / *_PRIVATE_KEY / *_CREDENTIALS
+        # shapes.
+        "_DSN", "_ACCESS_KEY", "_SECRET_KEY", "_PRIVATE_KEY",
+        "_PASSWD", "_CREDENTIALS", "_CONNECTION_STRING",
+    )
     _SECRET_NAMES = {
         # Explicit names that don't match the suffix pattern but are
         # still real upstream credentials.
@@ -1668,6 +1698,9 @@ def _clean_env_for_cli(cli_model_id: str) -> dict[str, str]:
         "DATABASE_URL", "POSTGRES_PASSWORD",     # database creds
         "REDIS_URL",                              # Redis if password-protected
         "VERCEL_TOKEN", "VERCEL_OIDC_TOKEN",     # deploy creds
+        "JARVIS_PG_DSN",                          # real PG DSN (password inline)
+        "PGPASSWORD", "MYSQL_PWD",                # libpq / mysql client creds
+        "SECRET_KEY", "PRIVATE_KEY", "CREDENTIALS",  # bare credential names
     }
 
     env: dict[str, str] = {}
@@ -1683,17 +1716,36 @@ def _clean_env_for_cli(cli_model_id: str) -> dict[str, str]:
         # `setdefault` calls below restore ANTHROPIC_BASE_URL +
         # ANTHROPIC_API_KEY with the proxy-stub values, so stripping
         # them here is safe — they'll come back as 'jarvis-proxy'.
-        if any(k.endswith(suffix) for suffix in _SECRET_SUFFIXES) or k in _SECRET_NAMES:
+        # _CREDENTIAL_URL_RE additionally catches any VALUE shaped like a
+        # connection URL with inline credentials (scheme://user:pass@host)
+        # regardless of the var's name.
+        if (
+            any(k.endswith(suffix) for suffix in _SECRET_SUFFIXES)
+            or k in _SECRET_NAMES
+            or _CREDENTIAL_URL_RE.match(v)
+        ):
             stripped.append(k)
             continue
         env[k] = v
     if stripped:
         logger.info(
-            f"[run_jarvis_cli] stripped {len(stripped)} secret env var(s) from CLI subprocess: "
+            f"[cli-env] stripped {len(stripped)} secret env var(s) from CLI subprocess: "
             f"{', '.join(sorted(stripped))}"
         )
     env.setdefault("ANTHROPIC_BASE_URL", "http://localhost:4000")
     env.setdefault("ANTHROPIC_API_KEY",  "jarvis-proxy")
+    # The CLI's non-interactive login gate (main.tsx::jarvisLoginRequired)
+    # aborts every --print run with "Authentication required: run `jarvis
+    # auth login`" when no JARVIS_BRIDGE_TOKEN is configured — its own docs
+    # designate JARVIS_REQUIRE_LOGIN=0 as the opt-out "for automation / CI /
+    # container sessions that authenticate by other means". A voice-spawned
+    # CLI subprocess is exactly that: it authenticates via the local proxy
+    # (stub key against 127.0.0.1:4000; when JARVIS_PROXY_AUTH_REQUIRED=1
+    # the proxy Bearer comes from keys.env via start-env.sh). Without this,
+    # run_jarvis_cli AND dispatch_agent fail on any box that never ran
+    # `jarvis auth login` (live 2026-07-11: every dispatch exited 1).
+    # setdefault — an explicit parent value still wins.
+    env.setdefault("JARVIS_REQUIRE_LOGIN", "0")
     # Bash, not zsh — zsh's NOMATCH would fail on URL-with-`?` args
     # the CLI passes to xdg-open / curl.
     env["SHELL"] = "/bin/bash"
