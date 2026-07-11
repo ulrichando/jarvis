@@ -1018,17 +1018,49 @@ fn bridge_login_status() -> serde_json::Value {
     serde_json::json!({ "loggedIn": logged_in, "baseUrl": base_url })
 }
 
-/// Sign this box out of its JARVIS server: drop the Remote Control token +
-/// base URL from ~/.jarvis/keys.env. Device-level sign-out — the bridge token
-/// IS the credential, so clearing it locally revokes this box's access. (Full
-/// server-session invalidation is `jarvis auth logout`; this is the instant
-/// in-UI action the voice panel's Sign-out uses.)
+/// Sign this box out of its JARVIS server — CROSS-SURFACE "sign out everywhere"
+/// (user decision 2026-07-11). Three steps, each best-effort so a failure in
+/// one still cuts this box off:
+///   1. Server revoke: POST /api/bridge/logout with the Remote Control token →
+///      deletes ALL the user's web sessions (every browser/device logs out) and
+///      revokes the reusable bridge token in the server DB. Skipped when offline
+///      (no token/base) — the local steps below still work.
+///   2. Local wipe: drop the bridge token + base + proxy token from keys.env so
+///      the CLI + voice agent on this box can't reach the server anymore.
+///   3. Hard-stop voice: stop + disable jarvis-voice-agent.service so the
+///      assistant actually goes silent AND a reboot won't silently resume it
+///      while signed out. The sign-in path (refresh_signin_menu, false→true)
+///      re-enables + starts it.
 #[tauri::command]
 fn bridge_logout() -> Result<(), String> {
-    let mut map = _keys_read_map();
+    let map = _keys_read_map();
+    let token = map.get("JARVIS_BRIDGE_TOKEN").cloned().unwrap_or_default();
+    let base = map.get("JARVIS_BRIDGE_BASE_URL").cloned().unwrap_or_default();
+    // 1. Best-effort server-side revoke (logs out every browser + kills the token).
+    if !token.is_empty() && !base.is_empty() {
+        let url = format!("{}/api/bridge/logout", base.trim_end_matches('/'));
+        let _ = hidden_command("curl")
+            .args([
+                "-s", "-X", "POST", "--max-time", "5",
+                "-H", &format!("Authorization: Bearer {token}"),
+                &url,
+            ])
+            .output();
+    }
+    // 2. Local credential wipe.
+    let mut map = map;
     map.remove("JARVIS_BRIDGE_TOKEN");
     map.remove("JARVIS_BRIDGE_BASE_URL");
-    _keys_write_map(&map)
+    map.remove("JARVIS_PROXY_TOKEN");
+    _keys_write_map(&map)?;
+    // 3. Hard-stop the voice agent (deliberate sign-out → the assistant stops).
+    let _ = hidden_command("systemctl")
+        .args(["--user", "stop", "jarvis-voice-agent.service"])
+        .output();
+    let _ = hidden_command("systemctl")
+        .args(["--user", "disable", "jarvis-voice-agent.service"])
+        .output();
+    Ok(())
 }
 
 /// Open a terminal running the jarvis CLI (login=false) or the JARVIS
@@ -1203,8 +1235,9 @@ fn speech_model_pretty(id: &str) -> Option<&'static str> {
         "claude-opus-4-7"                                => Some("Claude · Opus 4.7"),
         "gpt-5-mini"                                     => Some("OpenAI · GPT-5 mini"),
         "gpt-5.1"                                        => Some("OpenAI · GPT-5.1"),
-        "ollama/qwen3:30b-a3b"                           => Some("Local · Qwen3 30B-A3B"),
-        "ollama/gpt-oss:120b"                            => Some("Local · gpt-oss 120B"),
+        "ollama/qwen3:4b-instruct-2507-q4_K_M"           => Some("Local · Qwen3 4B"),
+        "ollama/qwen2.5:7b"                              => Some("Local · Qwen2.5 7B"),
+        "ollama/llama3.1:8b"                             => Some("Local · Llama 3.1 8B"),
         "deepseek-v4-flash"                              => Some("DeepSeek · V4 Flash"),
         "deepseek-chat-v3"                               => Some("DeepSeek · V3 Chat"),
         _ => None,
@@ -1776,7 +1809,20 @@ fn refresh_signin_menu(app: &tauri::AppHandle) {
         "Sign in to JARVIS Server…".to_string()
     };
     if let Some(flag) = app.try_state::<SignedInFlag>() {
-        flag.0.store(logged_in, std::sync::atomic::Ordering::Relaxed);
+        // Resume the voice agent on a genuine signed-out → signed-in edge:
+        // bridge_logout stop+disabled it, so re-enable + start when a login
+        // (from the panel, tray, or the `jarvis auth login` terminal) lands.
+        // enable/start are idempotent no-ops when it's already up, so the
+        // false(init)→true tick at launch does nothing harmful.
+        let was_in = flag.0.swap(logged_in, std::sync::atomic::Ordering::Relaxed);
+        if logged_in && !was_in {
+            let _ = hidden_command("systemctl")
+                .args(["--user", "enable", "jarvis-voice-agent.service"])
+                .output();
+            let _ = hidden_command("systemctl")
+                .args(["--user", "start", "jarvis-voice-agent.service"])
+                .output();
+        }
     }
     if let Some(item_state) = app.try_state::<SignInItem>() {
         if let Ok(guard) = item_state.0.lock() {
@@ -3045,8 +3091,16 @@ fn main() {
             // pinned speech model bypasses the per-route dispatcher, so v4-flash gets
             // tool_choice="auto" (it 400s only on the dispatcher's "required"). Local (Ollama) entries
             // show only when actually pulled, after a separator.
-            let local_qwen3_ok  = ollama_has(&ollama_models, "qwen3:30b-a3b");
-            let local_gptoss_ok = ollama_has(&ollama_models, "gpt-oss:120b");
+            // Local speech options = the pulled, device-fitting Ollama models
+            // (gated per-tag by ollama_has). Dropped the old hardcoded
+            // qwen3:30b-a3b / gpt-oss:120b — 20 GB / 65 GB models that don't fit
+            // a typical consumer GPU. qwen2.5:7b is the recommended fit for a
+            // 6-8 GB GPU (measured 2026-07-11: less CPU-offload than llama3.1:8b
+            // AND calls tools reliably); llama3.1:8b offered too when pulled.
+            // The default local pin stays JARVIS_LOCAL_LLM_MODEL=qwen2.5:7b.
+            let local_qwen3_4b_ok = ollama_has(&ollama_models, "qwen3:4b-instruct-2507-q4_K_M");
+            let local_qwen25_ok   = ollama_has(&ollama_models, "qwen2.5:7b");
+            let local_llama31_ok  = ollama_has(&ollama_models, "llama3.1:8b");
             let cur_speech = read_picker_current("voice-model");
             let speech_defs: &[(&'static str, &'static str, bool)] = &[
                 ("claude-haiku-4-5",     "Use Anthropic · Claude Haiku 4.5  (default, ~0.7s)",       have_anthropic),
@@ -3056,20 +3110,24 @@ fn main() {
                 ("gpt-5.1",              "Use OpenAI · GPT-5.1 (best OpenAI tools)",                 have_openai),
                 ("deepseek-v4-flash",    "Use DeepSeek · V4 Flash (fast)",                           have_deepseek),
                 ("deepseek-chat-v3",     "Use DeepSeek · V3 Chat (best DeepSeek conversation)",      have_deepseek),
-                ("ollama/qwen3:30b-a3b", "Use Local · Qwen3 30B-A3B (Ollama, on-device, fast)",      local_qwen3_ok),
-                ("ollama/gpt-oss:120b",  "Use Local · gpt-oss 120B (Ollama, heavy, slow on CPU)",    local_gptoss_ok),
+                ("ollama/qwen3:4b-instruct-2507-q4_K_M", "Use Local · Qwen3 4B-Instruct (Ollama · GPU-resident, recommended)", local_qwen3_4b_ok),
+                ("ollama/qwen2.5:7b",    "Use Local · Qwen2.5 7B (Ollama · heavier, ~34% CPU)",      local_qwen25_ok),
+                ("ollama/llama3.1:8b",   "Use Local · Llama 3.1 8B (Ollama · heaviest, ~45% CPU)",   local_llama31_ok),
             ];
             // Local conversation mode needs at least ONE actually-pulled Ollama
             // model (user rule 2026-07-02): with none installed the on-device
             // agent boots with no LLM and the mic goes dead. The agent now
             // AUTO-DISCOVERS whatever's pulled (jarvis_agent._apply_voice_mode →
-            // local_model_picker.resolve_installed_model_tag), so ANY installed
-            // model qualifies — not just qwen3:30b-a3b / gpt-oss:120b (that
-            // narrow check greyed out boxes that had e.g. llama3.1:8b). Grey the
-            // item out only when NOTHING is pulled — NOT hidden, so ModeItems
-            // indexes stay stable for refresh_mode_menu's positional repaint.
-            // Evaluated once at startup (same lifecycle as the audio-device
-            // list); pulling a model takes effect on the next tray launch.
+            // local_model_picker.resolve_installed_model_tag), which ranks by
+            // hardware fit (VRAM/RAM) and picks the best-FITTING installed tag —
+            // so ANY installed model qualifies, not just qwen3:30b-a3b /
+            // gpt-oss:120b (that narrow check greyed out boxes that had e.g.
+            // llama3.1:8b, which fits a 6 GB GPU where the two hardcoded models
+            // don't). Grey the item out only when NOTHING is pulled — NOT
+            // hidden, so ModeItems indexes stay stable for refresh_mode_menu's
+            // positional repaint. Evaluated once at startup (same lifecycle as
+            // the audio-device list); pulling a model takes effect on the next
+            // tray launch.
             if ollama_models.is_empty() {
                 let _ = mode_local_item.set_enabled(false);
                 let _ = mode_local_item.set_text("Local — install an Ollama model first");
