@@ -238,6 +238,8 @@ function stripBlocksByStateMachine(content: string): string {
     "jarvisplan",
     "jarvisverify",
     "jarvisartifact",
+    "jarvisquestion",
+    "jarviscreateschedule",
   ];
   const lower = content.toLowerCase();
   let out = "";
@@ -351,6 +353,13 @@ export function stripDesignTags(content: string): string {
     // persisted-history path the same way as the jarvisPlan block above.
     .replace(/<jarvisartifact\b[\s\S]*?<\/jarvisartifact>/gi, "")
     .replace(/<jarvisartifact\b[\s\S]*$/i, "")
+    // <jarvisQuestion> / <jarvisCreateSchedule> — the scheduled-task setup
+    // interview blocks. Rendered as interactive cards by renderJarvisCards,
+    // never shown as raw text (streaming strip above + this history path).
+    .replace(/<jarvisquestion\b[\s\S]*?<\/jarvisquestion>/gi, "")
+    .replace(/<jarvisquestion\b[\s\S]*$/i, "")
+    .replace(/<jarviscreateschedule\b[\s\S]*?<\/jarviscreateschedule>/gi, "")
+    .replace(/<jarviscreateschedule\b[\s\S]*$/i, "")
     // <preview>...</preview> — sometimes the model wraps its output
     // in a `preview` tag (likely a hallucinated leftover from
     // training data). It has no semantic meaning to the runtime and

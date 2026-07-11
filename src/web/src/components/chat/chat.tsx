@@ -29,7 +29,7 @@ import { type UIMessage } from "ai";
 import { useEffect, useMemo, useRef, useState, startTransition } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { PanelLeftOpen, Package } from "lucide-react";
+import { Ghost, PanelLeftOpen, Package, X } from "lucide-react";
 import { Thread } from "./thread";
 import { Composer } from "./composer";
 import { EmptyState } from "./empty-state";
@@ -39,6 +39,8 @@ import { useStickToBottom } from "@/hooks/use-stick-to-bottom";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useRouter } from "next/navigation";
 import { FunctionGrid } from "./function-grid";
+import { CoworkActive, CoworkOptionsRow } from "./cowork-active";
+import { ScheduleInterviewCards } from "./schedule-cards";
 import { TaskPanel } from "./task-panel";
 import { useChatStore } from "@/stores/chat";
 import { useVoiceMode } from "@/lib/chat/use-voice-mode";
@@ -104,6 +106,15 @@ type ChatProps = {
   // which provider is selected. Used by the Design tab so switching models
   // doesn't shift the composer's pre-block / inline toggles.
   unifiedUX?: boolean;
+  // Start in incognito (ghost) mode — nothing this chat sends is persisted.
+  // Set via /chat?incognito=1 (the ghost button routes there mid-conversation).
+  initialIncognito?: boolean;
+  // Start in scheduled-task SETUP mode — the request carries scheduleSetup:true
+  // so the model runs the interview flow. Set via /chat?schedule=<template>.
+  initialScheduleSetup?: boolean;
+  // Clean title for a template-launched task ("Daily brief") so the sidebar
+  // shows it instead of the long seed prompt.
+  initialTaskTitle?: string;
   // Fires when the server returns a conversation ID via the X-Conversation-Id
   // response header (i.e. on the first POST that creates the conversation,
   // or any subsequent POST). Lets a parent persist the id (e.g. localStorage
@@ -381,6 +392,9 @@ export function Chat({
   prefillPrompt,
   hideSidebarToggle,
   unifiedUX,
+  initialIncognito = false,
+  initialScheduleSetup = false,
+  initialTaskTitle,
 }: ChatProps) {
   const qc = useQueryClient();
   const [input, setInput] = useState("");
@@ -557,6 +571,51 @@ export function Chat({
   // Cmd/Ctrl+/ help modal state. Wired by useKeyboardShortcuts below.
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const router = useRouter();
+  // Chat | Cowork toggle (claude.ai parity). Cowork hands the prompt to the
+  // watchable /code session machinery via its ?prompt= deep link — the code
+  // page prefills, the user picks an environment and dispatches.
+  const [coworkMode, setCoworkMode] = useState(false);
+  // Cowork task options (claude.ai parity): attach a Project (its
+  // instructions ride along as task context) and pick the permission mode
+  // the session runs under. "Manual" (= Claude Code "default") approves
+  // each action; Auto/Bypass map to acceptEdits/bypassPermissions.
+  const [coworkProjectId, setCoworkProjectId] = useState<string | null>(null);
+  const [coworkPermission, setCoworkPermission] = useState("default");
+  const goCowork = async (text: string) => {
+    const t = text.trim();
+    if (!t) return;
+    let prefix = "";
+    if (coworkProjectId) {
+      try {
+        const r = await fetch(`/api/projects/${coworkProjectId}`);
+        if (r.ok) {
+          const { project } = (await r.json()) as {
+            project: { name: string; instructions?: string };
+          };
+          prefix =
+            `Project: ${project.name}\n${project.instructions ?? ""}`.trim() +
+            "\n\n";
+        }
+      } catch {
+        /* project context is best-effort */
+      }
+    }
+    router.push(
+      `/code?prompt=${encodeURIComponent(prefix + t)}&permission_mode=${coworkPermission}`,
+    );
+  };
+  // Incognito (ghost) mode — claude.ai parity. While on, POSTs carry
+  // incognito:true and the server never creates a conversation, so nothing
+  // lands in history. Ref mirrors state so the submit closure reads fresh.
+  const [incognito, setIncognito] = useState(initialIncognito);
+  const incognitoRef = useRef(incognito);
+  incognitoRef.current = incognito;
+  // Scheduled-task setup mode — stays on for the whole interview so every
+  // turn (the seed + each answer) carries the flag to the route.
+  const scheduleSetupRef = useRef(initialScheduleSetup);
+  // Sent only on the first turn so the task conversation gets a clean title;
+  // cleared after so follow-up turns don't re-title.
+  const taskTitleRef = useRef(initialTaskTitle);
   // rAF-based streaming flush: the hot loop writes here; a scheduled
   // animation-frame reads it and calls setMessages once per frame.
   // This never blocks the event loop (unlike flushSync).
@@ -1093,6 +1152,12 @@ export function Chat({
           // Image toggle → force server-side image generation (model-independent;
           // works with DeepSeek thinking models that can't reliably call tools).
           image: turnTogglesRef.current.image,
+          // Ghost mode — server skips conversation creation + persistence.
+          incognito: incognitoRef.current || undefined,
+          // Scheduled-task setup — server appends the interview instructions.
+          scheduleSetup: scheduleSetupRef.current || undefined,
+          // Clean task title on the first (creating) turn only.
+          taskTitle: taskTitleRef.current || undefined,
         }),
         signal: ctrl.signal,
       }).finally(() => clearTimeout(stuck));
@@ -1953,18 +2018,45 @@ export function Chat({
 
   const renderJarvisCards = (messageId: string) => {
     const cards = jarvisCardsByMessage.get(messageId);
-    if (!cards || cards.length === 0) return null;
-    return cards.map((c) => (
-      <ArtifactChatCard
-        key={c.slug}
-        title={c.title}
-        kind={c.kind}
-        onOpen={() => {
-          setActiveArtifactSlug(c.slug);
-          setArtifactPanelOpen(true);
-        }}
+    // Scheduled-task interview cards (<jarvisQuestion>/<jarvisCreateSchedule>).
+    // Self-identifying blocks in the message text — render whenever present,
+    // interactive only on the last assistant message while the chat is idle.
+    const msg = messages.find((m) => m.id === messageId);
+    const msgText = msg
+      ? msg.parts.map((p) => (p.type === "text" ? p.text : "")).join("")
+      : "";
+    const lastAssistant = [...messages]
+      .reverse()
+      .find((m) => m.role === "assistant");
+    const interview = msgText ? (
+      <ScheduleInterviewCards
+        key="interview"
+        text={msgText}
+        active={msg?.id === lastAssistant?.id && status === "ready"}
+        onAnswer={(t) => submit(t)}
       />
-    ));
+    ) : null;
+    const artifactCards =
+      cards && cards.length > 0
+        ? cards.map((c) => (
+            <ArtifactChatCard
+              key={c.slug}
+              title={c.title}
+              kind={c.kind}
+              onOpen={() => {
+                setActiveArtifactSlug(c.slug);
+                setArtifactPanelOpen(true);
+              }}
+            />
+          ))
+        : null;
+    if (!interview && !artifactCards) return null;
+    return (
+      <>
+        {artifactCards}
+        {interview}
+      </>
+    );
   };
 
   // Follow ASYNC height growth to the bottom while the user is stuck. Thread's
@@ -2061,16 +2153,75 @@ export function Chat({
   }, [status, voiceActive, voiceSpeak, messages]);
 
   // centered hero treatment.
+  // Incognito ghost button — top-right of the chat surface (claude.ai
+  // parity). On an empty chat it toggles ghost mode in place; mid-
+  // conversation it starts a fresh incognito chat.
+  const ghostButton = !embedded && (
+    <button
+      type="button"
+      onClick={() => {
+        if (isEmpty) setIncognito(true);
+        else router.push("/chat?incognito=1");
+      }}
+      aria-label={isEmpty ? "Incognito chat" : "New incognito chat"}
+      title="Incognito chat — won't appear in history"
+      className="absolute right-3 top-3 z-20 flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+    >
+      <Ghost className="size-4" />
+    </button>
+  );
+
+  // Full incognito treatment (claude.ai parity): a top bar replaces the
+  // ghost button — label on the left, X on the right. Closing discards the
+  // unsaved chat (nothing was persisted server-side) and returns to a
+  // normal empty chat.
+  const exitIncognito = () => {
+    setIncognito(false);
+    setMessages([]);
+    setInput("");
+  };
+  const incognitoBar = (
+    <div className="absolute inset-x-0 top-0 z-20 flex h-10 items-center justify-between border-b border-border/40 bg-card/40 px-3 backdrop-blur">
+      <div className="flex items-center gap-2 text-[13px] font-medium text-foreground/90">
+        <Ghost className="size-4" />
+        Incognito chat
+      </div>
+      <button
+        type="button"
+        onClick={exitIncognito}
+        aria-label="Close incognito chat"
+        title="Close incognito chat"
+        className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+      >
+        <X className="size-4" />
+      </button>
+    </div>
+  );
+
   if (isEmpty && !embedded) {
     return (
-      <div className="flex h-full flex-col items-center justify-center overflow-y-auto px-4 py-8">
+      <div className="relative flex h-full flex-col items-center justify-center overflow-y-auto px-4 py-8">
+        {incognito ? incognitoBar : ghostButton}
         <div className="flex w-full max-w-3xl flex-col">
-          <EmptyState name={settings?.user?.name} provider={provider} />
+          {incognito ? (
+            <div className="flex items-center justify-center gap-3">
+              <Ghost className="size-7 text-primary" />
+              <span className="font-serif text-[34px] font-semibold tracking-tight">
+                You&apos;re incognito
+              </span>
+            </div>
+          ) : (
+            <EmptyState name={settings?.user?.name} provider={provider} />
+          )}
           <div className="mt-8">
             <Composer
               value={input}
               onChange={setInput}
-              onSubmit={(o) => submit(undefined, o)}
+              onSubmit={(o) =>
+                coworkMode ? goCowork(input) : submit(undefined, o)
+              }
+              coworkMode={coworkMode}
+              onCoworkModeChange={setCoworkMode}
               onStop={stop}
               voicePhase={voice.phase}
               onToggleVoice={voice.toggle}
@@ -2081,23 +2232,45 @@ export function Chat({
               placeholder={composerPlaceholder}
               imageAvailable={imageAvailable && !targetWorkspaceId}
             />
-          </div>
-          <FunctionGrid
-            chips={ux.chips}
-            onPick={(p) => setInput(p)}
-            activeLabel={activeCategory}
-            onSetActive={setActiveCategory}
-          />
-          {(() => {
-            const activeChip = ux.chips.find((c) => c.label === activeCategory);
-            return activeChip ? (
-              <TaskPanel
-                chip={activeChip}
-                onPick={(p) => { setInput(p); setActiveCategory(null); }}
-                onClose={() => setActiveCategory(null)}
+            {coworkMode && !incognito && (
+              <CoworkOptionsRow
+                projectId={coworkProjectId}
+                onProjectChange={setCoworkProjectId}
+                permission={coworkPermission}
+                onPermissionChange={setCoworkPermission}
               />
-            ) : null;
-          })()}
+            )}
+          </div>
+          {incognito ? (
+            <p className="mt-4 text-center text-[12.5px] leading-5 text-muted-foreground">
+              Incognito chats aren&apos;t saved to your history or memory.
+              <br />
+              They disappear when you close them.
+            </p>
+          ) : coworkMode ? (
+            <CoworkActive onOpen={(id) => router.push(`/code/${id}`)} />
+          ) : (
+            <>
+              <FunctionGrid
+                chips={ux.chips}
+                onPick={(p) => setInput(p)}
+                activeLabel={activeCategory}
+                onSetActive={setActiveCategory}
+              />
+              {(() => {
+                const activeChip = ux.chips.find(
+                  (c) => c.label === activeCategory,
+                );
+                return activeChip ? (
+                  <TaskPanel
+                    chip={activeChip}
+                    onPick={(p) => { setInput(p); setActiveCategory(null); }}
+                    onClose={() => setActiveCategory(null)}
+                  />
+                ) : null;
+              })()}
+            </>
+          )}
         </div>
       </div>
     );
@@ -2159,6 +2332,7 @@ export function Chat({
       data-chat-font={settings?.appearance?.fontSize ?? "md"}
       data-chat-density={settings?.appearance?.density ?? "cozy"}
     >
+      {incognito ? incognitoBar : ghostButton}
       {embedded && !sidebarOpen && !hideSidebarToggle && (
         <div className="flex h-10 shrink-0 items-center px-2 border-b border-border/30">
           <button
@@ -2246,7 +2420,11 @@ export function Chat({
       <Composer
         value={input}
         onChange={setInput}
-        onSubmit={(o) => submit(undefined, o)}
+        onSubmit={(o) =>
+          coworkMode && !embedded ? goCowork(input) : submit(undefined, o)
+        }
+        coworkMode={coworkMode}
+        onCoworkModeChange={embedded ? undefined : setCoworkMode}
         onStop={stop}
         voicePhase={voice.phase}
         onToggleVoice={voice.toggle}
