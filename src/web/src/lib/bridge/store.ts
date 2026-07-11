@@ -406,6 +406,19 @@ export function revokeApiToken(store: Store, userId: string, name: string): bool
   return info.changes > 0
 }
 
+/** Revoke the user's UNNAMED Remote Control token(s) — the ones `jarvis auth
+ *  login` and the desktop tray mint. This is the cross-surface sign-out: once
+ *  gone, the CLI / desktop / voice agent can't authenticate to the bridge even
+ *  with a token still cached on disk. Named API tokens (Settings → API Tokens)
+ *  are deliberate long-lived creds and are left intact — revoke those there.
+ *  Returns the number of rows removed. */
+export function revokeRemoteControlToken(store: Store, userId: string): number {
+  const info = store.db
+    .prepare('DELETE FROM bridge_tokens WHERE user_id = ? AND name IS NULL')
+    .run(userId)
+  return info.changes
+}
+
 function genId(): string {
   return randomBytes(8).toString('hex')
 }
