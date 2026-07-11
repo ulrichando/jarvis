@@ -61,6 +61,8 @@ from voice_client_tray_config import (
     agent_is_thinking,
     read_cli_model,
     read_speech_model,
+    _resolve_local_cli_tag,
+    _VOICE_MODE_FILE,
 )
 
 
@@ -344,11 +346,22 @@ class VoiceClientHttpApi:
         # while Kokoro is actually speaking.
         _cfgdir = os.path.join(os.path.expanduser("~"), ".jarvis")
         try:
-            _vm = open(os.path.join(_cfgdir, "voice-mode"), encoding="utf-8").read().strip().lower()
+            # Shared constant (voice_client_tray_config) — same live path,
+            # but honours the JARVIS_VOICE_MODE_PATH hermeticity override so
+            # the suite doesn't flip behavior on a box that IS in local mode.
+            _vm = _VOICE_MODE_FILE.read_text(encoding="utf-8").strip().lower()
         except Exception:
             _vm = ""
         if _vm == "local":
-            self.state.speech_model = "ollama/qwen3:30b-a3b"
+            # Report the RESOLVED on-device model — same env-then-discovery
+            # resolution the agent's read_speech_model() applies. The old
+            # hardcode ("ollama/qwen3:30b-a3b") lied whenever that tag wasn't
+            # the installed pick (live 2026-07-11: agent ran ollama/qwen2.5:7b
+            # while /status showed qwen3:30b-a3b). When nothing resolves the
+            # agent keeps the CLOUD speech pin, so leave the file pin shown.
+            _tag = _resolve_local_cli_tag()
+            if _tag:
+                self.state.speech_model = f"ollama/{_tag}"
             try:
                 _kv = open(os.path.join(_cfgdir, "voice-tts-voice"), encoding="utf-8").read().strip()
             except Exception:
