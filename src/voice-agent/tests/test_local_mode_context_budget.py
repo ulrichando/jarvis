@@ -286,14 +286,18 @@ def test_loader_trims_surface_in_local_mode(local_mode, monkeypatch):
 
 
 def test_loader_full_surface_in_cloud_mode(cloud_mode, monkeypatch):
-    """CLOUD BYTE-IDENTITY: the full registry surface loads — including the
-    big-schema tools the local filter would drop."""
+    """CLOUD BYTE-IDENTITY: cloud loads the full, UNFILTERED registry surface.
+    Env-robust: headless CI gates out X11/hardware tools (computer_use, webcam,
+    …), so we can't assert specific names or a fixed count. Assert instead that
+    the local allowlist is not applied and the surface includes tools OUTSIDE
+    the local core set — i.e. tools the local filter would have dropped."""
     import pipeline.conversation_modes as modes
     monkeypatch.setattr(modes, "tool_is_mode_allowed", lambda n: True)
     from tools import _adapter
+    assert _adapter.local_voice_tool_allowlist() is None  # cloud: no filter
     names = {t.info.name for t in _adapter.load_all_livekit_tools()}
-    assert len(names) > 20
-    assert {"computer_use", "terminal", "memory", "dispatch_agent"} <= names
+    # Cloud is unfiltered → it loads tools beyond the 6-tool local core.
+    assert names - set(_adapter.LOCAL_VOICE_CORE_TOOLS)
 
 
 # ─────────────────────────────────────────────────────────────────────
