@@ -122,3 +122,104 @@ def test_generic_400_includes_raw_detail_for_debugging():
     c = classify_provider_error(_Err("400 - weird provider quirk xyz", 400), model="deepseek-chat")
     assert c.category == "bad_request"
     assert "xyz" in c.notify_body  # raw tail preserved for a human
+
+
+# ── STT-component attribution (2026-07-10 "can't reach DeepSeek" mislabel) ───
+#
+# The live bug: local faster-whisper raised a transient CUDA error, the
+# session died with a livekit STTError, and classify_provider_error attributed
+# it to the stale ~/.jarvis/voice-model pin ("deepseek-chat-v3") → the user
+# was told "I can't reach DeepSeek — looks like a network issue" for an
+# on-device GPU failure. STT errors must NEVER name a cloud LLM provider.
+
+class _LkSttErr:
+    """Shape of livekit.agents.voice.events.STTError as seen by the close
+    watchdog: a pydantic model with type='stt_error' whose str() carries the
+    rung label + the wrapped exception repr."""
+
+    type = "stt_error"
+
+    def __init__(self, inner: str):
+        self._inner = inner
+
+    def __str__(self):
+        return (
+            "type='stt_error' timestamp=1760000000.0 "
+            "label='providers.faster_whisper_stt.FasterWhisperSTT' "
+            f"error=APIConnectionError(\"{self._inner}\") recoverable=False"
+        )
+
+
+_CUDA_STT = _LkSttErr(
+    "faster-whisper local STT failed: parallel_for failed: "
+    "cudaErrorInvalidDevice: invalid device ordinal"
+)
+
+
+def test_stt_cuda_error_is_stt_gpu_not_network():
+    # The exact live shape: session-close watchdog passes NO component and the
+    # stale cloud pin as model. Must classify as a local STT GPU error.
+    c = classify_provider_error(_CUDA_STT, model="deepseek-chat-v3")
+    assert c.category == "stt_gpu"
+    assert c.recoverable is True  # a voice-client restart / retry heals it
+
+
+def test_stt_error_never_attributed_to_cloud_llm_provider():
+    c = classify_provider_error(_CUDA_STT, model="deepseek-chat-v3")
+    for field in (c.provider, c.spoken, c.notify_title, c.notify_body):
+        assert "DeepSeek" not in field
+        assert "Claude" not in field
+    assert "GPU" in c.notify_title or "GPU" in c.notify_body
+    assert "speech-to-text" in c.spoken
+
+
+def test_stt_component_explicit_still_ignores_llm_model():
+    # The on("error") handler passes component="stt" explicitly.
+    err = _Err("faster-whisper local STT failed: something broke")
+    c = classify_provider_error(err, model="deepseek-v4-flash", component="stt")
+    assert c.provider == "the local speech engine"
+    assert "DeepSeek" not in c.spoken
+
+
+def test_stt_non_cuda_error_keeps_normal_categories():
+    # A Deepgram (cloud STT) network failure: still 'network', still named
+    # after the STT provider — not the LLM pin, not stt_gpu.
+    err = _LkSttErr("deepgram websocket connection refused")
+    c = classify_provider_error(err, model="deepseek-v4-flash")
+    assert c.category == "network"
+    assert c.provider == "Deepgram"
+
+
+def test_cuda_wording_in_llm_error_does_not_hit_stt_gpu():
+    # stt_gpu is gated on the STT component — an LLM error mentioning cuda
+    # (e.g. an ollama server-side crash) keeps the normal rules.
+    err = _Err("ollama runner crashed: CUDA error: out of memory", 500)
+    c = classify_provider_error(err, model="ollama/qwen2.5:7b", component="llm")
+    assert c.category == "server_error"
+    assert c.provider == "Qwen"
+
+
+# ── HARD constraint: the cloud/online path is byte-identical ─────────────────
+
+def test_cloud_deepseek_out_of_credits_still_says_deepseek():
+    # A REAL DeepSeek billing failure (component=llm, deepseek pin) must
+    # still be attributed to DeepSeek, spoken as credits, non-recoverable —
+    # exactly as before the STT mislabel fix.
+    c = classify_provider_error(
+        _Err("Error code: 402 - Insufficient Balance", 402),
+        model="deepseek-v4-flash",
+    )
+    assert c.category == "out_of_credits"
+    assert c.provider == "DeepSeek"
+    assert "DeepSeek" in c.spoken and "credit" in c.spoken.lower()
+    assert c.recoverable is False
+
+
+def test_cloud_llm_network_error_unchanged():
+    c = classify_provider_error(
+        _Err("Connection error: [Errno 111] Connection refused"),
+        model="deepseek-v4-flash",
+    )
+    assert c.category == "network"
+    assert c.provider == "DeepSeek"
+    assert "can't reach DeepSeek" in c.spoken

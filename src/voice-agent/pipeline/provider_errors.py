@@ -52,6 +52,51 @@ def _detect_provider(model: str | None, text: str) -> str:
     return "the model provider"
 
 
+# ── STT-component attribution (2026-07-10 mislabel fix) ──────────────────────
+# An STT failure is NEVER the speech-LLM's fault. Before this, a local
+# faster-whisper CUDA blip was classified with model=~/.jarvis/voice-model
+# (a possibly STALE cloud pin like "deepseek-chat-v3") → _detect_provider
+# matched "deepseek" → the user was told "I can't reach DeepSeek — looks like
+# a network issue" for an on-device GPU error. For component=="stt" the
+# provider is detected from the ERROR TEXT ONLY (the livekit STTError repr
+# carries the rung label, e.g. "local:faster-whisper/large-v3-turbo").
+_STT_PROVIDER_PATS = (
+    (re.compile(r"deepgram", re.I), "Deepgram"),
+    (re.compile(r"faster.?whisper|ctranslate|local:", re.I), "the local speech engine"),
+)
+
+
+def _detect_stt_provider(text: str) -> str:
+    for pat, name in _STT_PROVIDER_PATS:
+        if pat.search(text):
+            return name
+    return "the speech engine"
+
+
+# Transient GPU markers (kept in sync with providers/faster_whisper_stt.py's
+# in-rung retry regex): ctranslate2 kernel-launch failures under compute
+# contention with a local LLM sharing the card.
+_STT_GPU_ERR_RE = re.compile(r"parallel_for failed|\bcuda|cublas|cudnn", re.I)
+
+
+def _infer_component(err: object, text: str, default: str) -> str:
+    """Sharpen the caller-supplied component from the error itself. livekit's
+    session ErrorEvent / CloseEvent carry pydantic STTError / TTSError /
+    LLMError models whose ``type`` field tags the failing component — the
+    close-watchdog call sites pass no component, which used to default an STT
+    session-death to "llm" and let the LLM pin name the provider."""
+    t = getattr(err, "type", None)
+    if isinstance(t, str):
+        for comp in ("stt", "tts", "llm"):
+            if t == f"{comp}_error":
+                return comp
+    if "stt_error" in text:
+        return "stt"
+    if "tts_error" in text:
+        return "tts"
+    return default
+
+
 # ── category detection (ORDERED: specific → generic; first match wins) ───────
 # Each entry: (category, status_codes, message_regex_or_None).
 _RULES: tuple[tuple[str, frozenset[int], "re.Pattern[str] | None"], ...] = (
@@ -141,6 +186,16 @@ def _spoken_and_notify(category: str, provider: str, component: str) -> tuple[st
             f"JARVIS — can't reach {provider}",
             f"Network error reaching {provider}{where_sfx} (connection refused / unreachable). Check connectivity; it retries automatically.",
         ),
+        "stt_gpu": (
+            "My local speech-to-text hit a GPU error. I'll keep retrying — "
+            "if I keep missing you, the GPU may need a recovery.",
+            "JARVIS — local speech-to-text GPU error",
+            "Local faster-whisper hit a transient CUDA error (GPU compute "
+            "contention with the local LLM sharing the card) — NOT a cloud "
+            "provider or network issue. It retries automatically; if it "
+            "persists, run bin/jarvis-cuda-recover or set "
+            "JARVIS_LOCAL_STT_DEVICE=cpu.",
+        ),
         "server_error": (
             f"{provider} is having server trouble. It should recover shortly.",
             f"JARVIS — {provider} server error",
@@ -180,21 +235,34 @@ def classify_provider_error(
     if not isinstance(status, int):
         status = None
 
-    provider = _detect_provider(model, haystack)
+    component = _infer_component(err, haystack, component)
+    if component == "stt":
+        # Never attribute an STT failure to the (possibly stale) LLM model
+        # pin — text-only detection so the alert names the actual speech
+        # engine, not a cloud LLM that was never in play.
+        provider = _detect_stt_provider(haystack)
+    else:
+        provider = _detect_provider(model, haystack)
 
     category = "unknown"
-    for cat, codes, pat in _RULES:
-        code_hit = status is not None and status in codes
-        msg_hit = pat is not None and pat.search(haystack) is not None
-        if code_hit or msg_hit:
-            category = cat
-            break
+    if component == "stt" and _STT_GPU_ERR_RE.search(haystack):
+        # Local STT GPU/CUDA error — report it as exactly that, not as a
+        # provider "network" failure ("apiconnection" in the wrapped repr
+        # used to win the category and read as "can't reach <provider>").
+        category = "stt_gpu"
     else:
-        # Type-name fallbacks for SDK errors whose repr lacks keywords.
-        if "Timeout" in type_name:
-            category = "timeout"
-        elif "Connection" in type_name:
-            category = "network"
+        for cat, codes, pat in _RULES:
+            code_hit = status is not None and status in codes
+            msg_hit = pat is not None and pat.search(haystack) is not None
+            if code_hit or msg_hit:
+                category = cat
+                break
+        else:
+            # Type-name fallbacks for SDK errors whose repr lacks keywords.
+            if "Timeout" in type_name:
+                category = "timeout"
+            elif "Connection" in type_name:
+                category = "network"
 
     spoken, title, body = _spoken_and_notify(category, provider, component)
     # Append a short raw tail to the notification body for the unclassified /
