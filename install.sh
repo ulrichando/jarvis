@@ -640,6 +640,11 @@ setup_voice_env() {
     sub "- a DEEPGRAM_API_KEY in $va_env (cloud STT primary; local stays as fallback)"
   fi
 
+  # Local LLM pin: the short alias 'qwen3-4b' (a local `ollama cp` of the
+  # canonical qwen3:4b-instruct-2507-q4_K_M, created by pull_local_llm) — keeps
+  # the model name short in /status + the desktop, not the 30-char tag.
+  _env_default "$va_env" JARVIS_LOCAL_LLM_MODEL qwen3-4b
+
   # Local TTS (Kokoro, HTTP service on :8880) — Edge-TTS remains the
   # auth-free cloud fallback, so voice output survives without Kokoro.
   _env_default "$va_env" JARVIS_LOCAL_TTS_ENABLED 1
@@ -918,35 +923,48 @@ install_ollama() {
 pull_local_llm() {
   if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then return 0; fi
   if ! have ollama; then return 0; fi   # install_ollama already warned
-  local tag
-  tag="$(_env_get "$INSTALL_DIR/src/voice-agent/.env" JARVIS_LOCAL_LLM_MODEL)"
-  tag="${tag:-qwen3:4b-instruct-2507-q4_K_M}"
-  if [ "$tag" = "auto" ] || [ "$tag" = "AUTO" ]; then
+  # The pin can be the short alias 'qwen3-4b' — a LOCAL rename of the canonical
+  # registry tag (ollama can't PULL 'qwen3-4b'; it isn't published). So resolve
+  # the pin, pull the CANONICAL behind it, then `ollama cp` it to the alias, so
+  # the pin resolves AND /status + the desktop read the short name (not the
+  # 30-char qwen3:4b-instruct-2507-q4_K_M).
+  local canonical="qwen3:4b-instruct-2507-q4_K_M" alias="qwen3-4b" pin
+  pin="$(_env_get "$INSTALL_DIR/src/voice-agent/.env" JARVIS_LOCAL_LLM_MODEL)"
+  pin="${pin:-$alias}"
+  if [ "$pin" = "auto" ] || [ "$pin" = "AUTO" ]; then
     # 'auto' is resolved by the voice agent's hwfit picker at runtime; use
     # the same picker here when the venv exists, else the safe default.
     local py="$INSTALL_DIR/src/voice-agent/.venv/bin/python"
     if [ -x "$py" ]; then
-      tag="$(cd "$INSTALL_DIR/src/voice-agent" && "$py" -c "from providers.local_model_picker import resolve_model_tag; print(resolve_model_tag('auto'))" 2>/dev/null)"
+      pin="$(cd "$INSTALL_DIR/src/voice-agent" && "$py" -c "from providers.local_model_picker import resolve_model_tag; print(resolve_model_tag('auto'))" 2>/dev/null)"
     fi
-    tag="${tag:-qwen3:4b-instruct-2507-q4_K_M}"
+    pin="${pin:-$alias}"
   fi
+  local pull_tag="$pin"
+  [ "$pin" = "$alias" ] && pull_tag="$canonical"
   if ! _ollama_api_up; then
-    warn "ollama API not reachable — can't check/pull '$tag' (offline LLM failover stays dormant; later: ollama pull $tag)"
+    warn "ollama API not reachable — can't check/pull '$pull_tag' (offline LLM failover stays dormant; later: ollama pull $pull_tag)"
     return 0
   fi
-  if ollama list 2>/dev/null | awk '{print $1}' | grep -qxF "$tag"; then
-    ok "local LLM '$tag' already pulled"
+  if ollama list 2>/dev/null | awk '{print $1}' | grep -qxF "$pull_tag"; then
+    ok "local LLM '$pull_tag' already pulled"
+  elif [ "${JARVIS_SKIP_MODELS:-0}" = "1" ]; then
+    warn "skipping local LLM pull (JARVIS_SKIP_MODELS=1) — offline failover stays dormant until: ollama pull $pull_tag"
     return 0
-  fi
-  if [ "${JARVIS_SKIP_MODELS:-0}" = "1" ]; then
-    warn "skipping local LLM pull (JARVIS_SKIP_MODELS=1) — offline failover stays dormant until: ollama pull $tag"
-    return 0
-  fi
-  section "Pulling local LLM '$tag' (~2.5 GB for qwen3:4b-instruct-2507; skip with JARVIS_SKIP_MODELS=1)"
-  if ollama pull "$tag"; then
-    ok "local LLM '$tag' pulled"
   else
-    warn "ollama pull '$tag' failed (non-fatal — offline LLM failover stays dormant; retry: ollama pull $tag)"
+    section "Pulling local LLM '$pull_tag' (~2.5 GB for qwen3:4b-instruct-2507; skip with JARVIS_SKIP_MODELS=1)"
+    if ollama pull "$pull_tag"; then
+      ok "local LLM '$pull_tag' pulled"
+    else
+      warn "ollama pull '$pull_tag' failed (non-fatal — offline LLM failover stays dormant; retry: ollama pull $pull_tag)"
+      return 0
+    fi
+  fi
+  # Create the short alias (idempotent) so the pin 'qwen3-4b' resolves.
+  if [ "$pin" = "$alias" ] \
+     && ollama list 2>/dev/null | awk '{print $1}' | grep -qxF "$pull_tag" \
+     && ! ollama list 2>/dev/null | awk '{print $1}' | grep -qxF "${alias}:latest"; then
+    ollama cp "$pull_tag" "$alias" 2>/dev/null && ok "aliased $pull_tag → $alias (short name for /status)"
   fi
 }
 
