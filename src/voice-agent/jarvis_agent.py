@@ -185,11 +185,12 @@ def _apply_voice_mode() -> None:
     for _k, _v in {
         "JARVIS_LOCAL_STT_ENABLED": "1",
         "JARVIS_LOCAL_STT_PRIMARY": "1",
-        # faster-whisper large-v3-turbo (~1.6 GB, the CLAUDE.md-documented STT
-        # model): fits on the GPU alongside a co-resident local LLM (qwen3:4b,
-        # ~3.2 GB) on a 6 GB card — the full large-v3 (~3 GB) OOMs next to it in
-        # local voice mode. Turbo is ~as fast + near-large-v3 accuracy. No size
-        # option; the tray STT-model picker was removed.
+        # Fixed to faster-whisper large-v3-turbo — the documented live model
+        # (CLAUDE.md, .env, tray label). Its smaller VRAM footprint leaves
+        # headroom alongside the local LLM on the 6 GB card; forcing the
+        # bigger large-v3 here OOM'd every encode while ollama held ~3 GB
+        # (live 2026-07-11 — sessions died on CUDA out-of-memory).
+        # No size option anymore; the tray STT-model picker was removed.
         "JARVIS_LOCAL_STT_MODEL":   "large-v3-turbo",
         "JARVIS_LOCAL_TTS_ENABLED": "1",
         "JARVIS_LOCAL_TTS_ENGINE":  "kokoro",
@@ -514,7 +515,19 @@ def _build_skill_catalog_block() -> str:
     Reads from the module-level SKILLS registry populated at import by
     pipeline.skills_loader. The caller (test or _build_initial_prompt_state)
     can monkeypatch this function to inject a sentinel block.
+
+    Local mode (2026-07-11) returns "": the skill tools (skills_list /
+    skill_view / skill_manage) are dropped from the local tool surface, so
+    a catalog telling the LLM to call them would only induce failed calls
+    — and every prompt char counts against the on-device 12288 window.
+    Cloud mode is byte-identical (predicate False → normal build).
     """
+    try:
+        from providers.llm import is_local_voice_mode
+        if is_local_voice_mode():
+            return ""
+    except Exception:  # noqa: BLE001 — predicate failure = cloud behavior
+        pass
     from pipeline.prompt_builder import build_skill_catalog_block
     from pipeline.skills_loader import SKILLS
     return build_skill_catalog_block(SKILLS)
@@ -4489,6 +4502,34 @@ class JarvisAgent(Agent):
         except Exception:
             logger.debug("[vision] ctx-image describe skipped", exc_info=True)
 
+        # Local-mode ctx-aware autocompact (2026-07-11): the token-aware
+        # pruner assumed a ~128k cloud window, so it never engaged for the
+        # on-device model's 12288 num_ctx — a long conversation 400s with
+        # "exceeds the available context size" and local-primary has no
+        # cloud rung to fall back to. When voice-mode==local, prune THIS
+        # generation's chat_ctx copy (system prompt + tool-call pairs
+        # preserved — same guarantees as the 2026-05-08 pruner) to
+        # num_ctx minus output/tool headroom. Ephemeral: session.history
+        # is untouched. Cloud mode: local_ctx_prune_target() is None →
+        # this block is a no-op and the request is byte-identical.
+        try:
+            from providers.llm import local_ctx_prune_target
+            _prune_target = local_ctx_prune_target()
+            if _prune_target is not None:
+                _before_n = len(getattr(chat_ctx, "items", []) or [])
+                _pruned_ctx = _prune_chat_ctx_for_budget(chat_ctx, _prune_target)
+                if _pruned_ctx is not chat_ctx:
+                    logger.info(
+                        "[local] pruned chat_ctx %d → %d items to fit the "
+                        "local num_ctx budget (%d tokens)",
+                        _before_n,
+                        len(getattr(_pruned_ctx, "items", []) or []),
+                        _prune_target,
+                    )
+                    chat_ctx = _pruned_ctx
+        except Exception:
+            logger.debug("[local] ctx-budget prune skipped", exc_info=True)
+
         async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
             yield chunk
 
@@ -6393,6 +6434,13 @@ def _build_runtime_id_block(active_speech_id: str) -> str:
     )
 
 
+# Local-mode cap on the injected memory snapshot (chars ≈ tokens*4). The
+# full USER+MEMORY snapshot is worth a few k tokens — fine for a 128k cloud
+# window, not for the on-device 12288. ~1200 chars keeps the head of the
+# user profile (identity/preferences lead the snapshot) at ~300 tokens.
+LOCAL_MEMORY_BLOCK_MAX_CHARS: int = 1200
+
+
 def _build_memory_block() -> str:
     """Build the memory section of the system prompt — the FROZEN
     MEMORY.md + USER.md snapshot captured at session start
@@ -6415,6 +6463,23 @@ def _build_memory_block() -> str:
         block = file_memory.snapshot_for_prompt()
         if not block:
             return ""
+        # Local mode (2026-07-11): hard-truncate the snapshot so it can't
+        # eat the on-device model's 12k window (the full USER+MEMORY
+        # snapshot is a few k tokens). Gated on the canonical local-mode
+        # predicate; cloud mode returns the block byte-identically. Lives
+        # HERE (not in _build_initial_prompt_state) because the dispatch
+        # handler also calls this per-turn for the refresh comparison —
+        # truncating in one place keeps both callers consistent.
+        try:
+            from providers.llm import is_local_voice_mode
+            if is_local_voice_mode() and len(block) > LOCAL_MEMORY_BLOCK_MAX_CHARS:
+                block = (
+                    block[:LOCAL_MEMORY_BLOCK_MAX_CHARS]
+                    + "\n[…memory snapshot truncated for local mode — "
+                    "use the memory tool to read the full stores]"
+                )
+        except Exception:  # noqa: BLE001 — predicate failure = cloud behavior
+            pass
         return "\n\n" + block
     except Exception as e:
         logger.warning(f"[memory] block render failed: {e}")
@@ -6447,6 +6512,39 @@ def _build_recent_sessions_block() -> str:
 # _build_pending_proposals_block — deleted 2026-05-12 alongside the
 # rest of the log_analyzer subsystem. Autonomous evolution doesn't
 # need a pending-review nag injected into the supervisor prompt.
+
+
+def _local_prompt_pair() -> "tuple[str, str] | None":
+    """Compact (soul, instructions) pair for LOCAL voice mode, else None.
+
+    The full persona (soul.md ~32KB + supervisor.md ~50KB ≈ 20k tokens)
+    cannot fit the on-device model's 12288-token window, so local mode
+    loads the hand-curated compact variants prompts/soul_local.md +
+    prompts/supervisor_local.md (~7.7KB ≈ 1.9k tokens — keeps the "Yes?"
+    persona, register bans, leak-guard, and STAY-IN-SUPERVISOR rule; drops
+    the verbose exemplars and the routing rules for tools that aren't in
+    the local surface). Missing/unreadable compact file → fall back to the
+    FULL corresponding prompt for that slot (a broken checkout degrades to
+    the pre-trim behavior, not to a gutted persona). Cloud mode returns
+    None — callers keep the module-level SOUL / JARVIS_INSTRUCTIONS
+    objects untouched, so the cloud prompt is byte-identical."""
+    try:
+        from providers.llm import is_local_voice_mode
+        if not is_local_voice_mode():
+            return None
+    except Exception:  # noqa: BLE001 — predicate failure = cloud behavior
+        return None
+    soul = ""
+    instr = ""
+    try:
+        soul = (_PROMPTS_DIR / "soul_local.md").read_text(encoding="utf-8").strip()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[local] soul_local.md unreadable ({e}); using full soul")
+    try:
+        instr = (_PROMPTS_DIR / "supervisor_local.md").read_text(encoding="utf-8").strip()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[local] supervisor_local.md unreadable ({e}); using full supervisor prompt")
+    return (soul or SOUL, instr or JARVIS_INSTRUCTIONS)
 
 
 def _build_initial_prompt_state(active_speech_id: str) -> dict:
@@ -6511,7 +6609,17 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
     # for backward compat with any readers still expecting that shape),
     # but for cache purposes runtime-id moves to the volatile suffix
     # because it's session-bound.
-    instructions_prefix = SOUL + "\n\n" + JARVIS_INSTRUCTIONS + runtime_id_block
+    #
+    # LOCAL mode (2026-07-11): swap in the compact soul/supervisor pair so
+    # the assembled prompt fits the on-device 12288-token window. Cloud
+    # mode: _local_prompt_pair() is None → the module-level SOUL /
+    # JARVIS_INSTRUCTIONS flow through untouched (byte-identical prompt).
+    _soul, _instructions = SOUL, JARVIS_INSTRUCTIONS
+    _local_pair = _local_prompt_pair()
+    if _local_pair is not None:
+        _soul, _instructions = _local_pair
+
+    instructions_prefix = _soul + "\n\n" + _instructions + runtime_id_block
 
     memory_block = _build_memory_block()
 
@@ -6541,9 +6649,9 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
     # speech-LLM label and the tool-model id (both potentially churn
     # across sessions or after a tray swap).
     stable_prefix = (
-        SOUL
+        _soul
         + "\n\n"
-        + JARVIS_INSTRUCTIONS
+        + _instructions
         + skill_catalog_block
     )
     volatile_suffix = runtime_id_block + memory_block + breaker_block + recent_sessions_block
@@ -6555,6 +6663,24 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
     from providers.prompt_cache import assemble_with_marker
 
     initial_instructions = assemble_with_marker(stable_prefix, volatile_suffix)
+
+    # Local mode: surface the assembled prompt's token estimate so the
+    # operator can verify it fits the on-device window (target ≤ ~10k of
+    # the 12288 num_ctx — headroom for tool schemas + conversation +
+    # output). Log-only; never blocks boot.
+    if _local_pair is not None:
+        try:
+            from tools.token_estimation import estimate_tokens
+            from providers.llm import local_llm_num_ctx
+            _est = estimate_tokens(initial_instructions)
+            logger.info(
+                "[local] compact supervisor prompt: ~%d tokens "
+                "(%d chars; num_ctx=%d — tool schemas + conversation ride "
+                "on top, target ≤ ~10k total)",
+                _est, len(initial_instructions), local_llm_num_ctx(),
+            )
+        except Exception:  # noqa: BLE001 — telemetry only
+            pass
 
     return {
         # Cache-aware keys (new in 2026-05-23 refactor).

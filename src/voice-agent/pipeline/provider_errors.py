@@ -45,7 +45,55 @@ _PROVIDER_PATS = (
 )
 
 
+# ── local-LLM attribution (2026-07-11 mislabel fix) ──────────────────────────
+# In LOCAL voice mode the supervisor LLM is an Ollama model served through
+# livekit's OpenAI-COMPATIBLE plugin (lk_openai.LLM(base_url=<ollama>)) — so
+# the error repr / rung label carries "openai" tokens that are the WIRE SHAPE,
+# not the vendor. Live bug: an Ollama context overflow
+# ("exceed_context_size_error") reached _detect_provider, the OpenAI pattern
+# matched the plugin path in the TEXT, and JARVIS spoke "I can't reach OpenAI —
+# looks like a network issue" for an on-device model that overflowed its
+# window. For the local case, provider is family-named from the MODEL ID ONLY
+# (never the text), and OpenAI is never named.
+#
+# Ollama/local signals in the ERROR TEXT — none of these appear in real
+# OpenAI / DeepSeek / Anthropic error bodies (the bare plugin path
+# "livekit.plugins.openai" alone is NOT a signal: the same plugin fronts the
+# real OpenAI API):
+_LOCAL_LLM_TEXT_RE = re.compile(
+    r"exceed_context_size_error|exceeds the available context size"
+    r"|\bollama\b|:11434\b|\bn_ctx\b|llama[._-]?cpp",
+    re.I,
+)
+# Local/ollama MODEL-ID shapes: an explicit ollama/local prefix, or the bare
+# ollama name:tag form (e.g. "qwen3:4b-instruct-2507" — no cloud id in
+# SPEECH_MODELS uses a colon; _active_voice_model returns "ollama/<tag>" in
+# local mode).
+_LOCAL_LLM_MODEL_RE = re.compile(
+    r"\bollama\b|^local[:/]|llama[._-]?cpp|^[\w.-]+:[\w.-]+$",
+    re.I,
+)
+
+
+def _is_local_llm(model: str | None, text: str) -> bool:
+    if model and _LOCAL_LLM_MODEL_RE.search(model):
+        return True
+    return _LOCAL_LLM_TEXT_RE.search(text) is not None
+
+
 def _detect_provider(model: str | None, text: str) -> str:
+    if _is_local_llm(model, text):
+        # Local (Ollama / llama.cpp) LLM behind the OpenAI-compatible plugin:
+        # family-name from the model TAG when it looks local (ollama/qwen3:14b
+        # → "Qwen"); with a stale/absent pin (text-signal detection) stay
+        # generic. NEVER name OpenAI here — the "openai" token in the repr is
+        # the plugin class name, and NEVER match the text (it carries that
+        # token).
+        if model and _LOCAL_LLM_MODEL_RE.search(model):
+            for pat, name in _PROVIDER_PATS:
+                if name != "OpenAI" and pat.search(model):
+                    return name
+        return "the local model"
     for pat, name in _PROVIDER_PATS:
         if (model and pat.search(model)) or pat.search(text):
             return name
@@ -120,8 +168,12 @@ _RULES: tuple[tuple[str, frozenset[int], "re.Pattern[str] | None"], ...] = (
     ("out_of_credits", frozenset({402}),
      re.compile(r"credit balance|insufficient(?!\s+permission)|billing|payment required|out of credit|not enough", re.I)),
     # Prompt too large for the window (a restart clears context, so recoverable).
+    # Ollama/llama.cpp phrase the overflow as "request (N tokens) exceeds the
+    # available context size (M tokens)" + type "exceed_context_size_error" —
+    # matched here (BEFORE the network rule) so a local overflow is never
+    # swallowed by the network regex via the APIConnection wrapper repr.
     ("context_too_long", frozenset(),
-     re.compile(r"context length|maximum context|context_length_exceeded|prompt is too long|too many tokens|reduce the length|maximum.{0,20}tokens", re.I)),
+     re.compile(r"context length|maximum context|context_length_exceeded|prompt is too long|too many tokens|reduce the length|maximum.{0,20}tokens|exceed_context_size_error|exceeds the available context size|available context size|context size", re.I)),
     # Bad / missing / unauthorized key — needs a real key, restart can't heal.
     ("auth_invalid", frozenset({401, 403}),
      re.compile(r"invalid.{0,15}api.?key|incorrect api key|no api key|missing.{0,10}api.?key|api.?key.{0,20}(missing|invalid|not)|authentication|unauthorized|permission denied|access denied|invalid x-api-key", re.I)),
