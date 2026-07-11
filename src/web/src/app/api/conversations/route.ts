@@ -20,6 +20,8 @@ export async function GET(req: Request) {
       title: schema.conversations.title,
       pinned: schema.conversations.pinned,
       model: schema.conversations.model,
+      // "task" → sidebar task icon; "chat" (default) → chat bubble.
+      kind: schema.conversations.kind,
       // `updated_at` is `timestamp` WITHOUT time zone, written as the PG
       // session's local wall-clock (America/New_York) but parsed by node-pg
       // as UTC → a multi-hour skew on every relative time. Re-interpret it in

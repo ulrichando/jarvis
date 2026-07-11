@@ -3,14 +3,17 @@
 import Link from "next/link";
 import { useState, useEffect } from "react";
 import { UserMenu } from "@/components/layout/user-menu";
+import { useUI } from "@/stores/ui";
 import {
   ChevronDown,
   ChevronRight,
   Briefcase,
+  Code2,
+  House,
   Plus,
   Zap,
   Search,
-  PanelLeft,
+  PanelLeftClose,
   ArrowDownUp,
   Send,
   MoreVertical,
@@ -77,7 +80,7 @@ export function CodeSidebar({
   onShareSession,
   routinesActive = false,
   onOpenRoutines,
-  width = 260,
+  width = 288,
   onCollapse,
 }: {
   onNewSession: () => void;
@@ -88,11 +91,13 @@ export function CodeSidebar({
   onShareSession?: (id: string) => void;
   routinesActive?: boolean;
   onOpenRoutines?: () => void;
-  /** Sidebar width in px (drag-resizable from the page). */
+  /** Sidebar width in px — fixed, and kept equal to the Home sidebar's 288
+   *  so switching shells never shifts the left column. */
   width?: number;
   /** Collapse the sidebar (hide it; a floating button on the page reopens it). */
   onCollapse?: () => void;
 }) {
+  const openSettings = useUI((s) => s.openSettings);
   // The menu is positioned fixed (computed from the kebab's rect) so it
   // escapes the Recents list's overflow-y-auto clip — left-full inside that
   // scroll container was cut off at the sidebar's right edge.
@@ -254,22 +259,52 @@ export function CodeSidebar({
       className="shrink-0 h-full flex flex-col bg-sidebar text-sidebar-foreground border-r border-border/40"
     >
       {/* Branding header */}
-      <div className="flex items-center justify-between px-3 pt-3 pb-2">
-        <div className="flex items-center gap-2">
-          <Link href="/chat" className="whitespace-nowrap font-serif text-[14px] font-bold leading-none text-sidebar-foreground">
-            Jarvis&nbsp;Code
-          </Link>
-          <span className="whitespace-nowrap rounded border border-border/60 px-1.5 py-0.5 text-[9.5px] leading-none text-sidebar-foreground/55">
-            Research preview
-          </span>
-        </div>
+      <div className="flex items-center justify-between px-4 py-3">
+        {/* Same brand as the Home sidebar — the Home|Code tabs below are
+            the mode indicator, so the wordmark stays just "Jarvis". */}
+        <Link
+          href="/chat"
+          className="font-serif text-[18px] font-semibold tracking-tight text-sidebar-foreground"
+        >
+          Jarvis
+        </Link>
+        {/* Same pair as the Home sidebar header: collapse + search, same
+            size and order, so the header doesn't shift when switching. */}
         <div className="flex items-center gap-0.5">
-          <button type="button" aria-label="Collapse sidebar" title="Collapse sidebar" onClick={onCollapse} className="flex size-6 items-center justify-center rounded text-sidebar-foreground/50 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground">
-            <PanelLeft className="size-4" />
+          <button
+            type="button"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar"
+            onClick={onCollapse}
+            className="flex size-7 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+          >
+            <PanelLeftClose className="size-3.5" />
           </button>
-          <button type="button" aria-label="Search" className="flex size-6 items-center justify-center rounded text-sidebar-foreground/50 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground">
-            <Search className="size-4" />
-          </button>
+          <Link
+            href="/search"
+            aria-label="Search"
+            className="flex size-7 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+          >
+            <Search className="size-3.5" />
+          </Link>
+        </div>
+      </div>
+
+      {/* Home | Code segmented tabs — mirror of the main sidebar's pair,
+          with Code as the active lobe. Home returns to the chat shell. */}
+      <div className="px-2 pb-1">
+        <div className="grid grid-cols-2 gap-1 rounded-lg bg-card/50 p-1">
+          <Link
+            href="/chat"
+            className="flex items-center justify-center gap-1.5 rounded-md px-2 py-1 text-[12.5px] font-medium text-sidebar-foreground/60 transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+          >
+            <House className="size-3.5" />
+            Home
+          </Link>
+          <span className="flex items-center justify-center gap-1.5 rounded-md bg-sidebar-accent px-2 py-1 text-[12.5px] font-medium text-sidebar-accent-foreground">
+            <Code2 className="size-3.5" />
+            Code
+          </span>
         </div>
       </div>
 
@@ -294,7 +329,11 @@ export function CodeSidebar({
             Beta
           </span>
         </button>
-        <button type="button" className={NAV_BTN}>
+        <button
+          type="button"
+          onClick={() => openSettings("skills")}
+          className={NAV_BTN}
+        >
           <Briefcase className="size-4 shrink-0 text-sidebar-foreground/60" />
           Customize
         </button>

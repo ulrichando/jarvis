@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { Sidebar } from "@/components/layout/sidebar";
+import { SettingsDialog } from "@/components/settings/settings-dialog";
 import { useSettings } from "@/hooks/use-settings";
 
 // Font size → the <html> root font-size. Every rem-based Tailwind utility
@@ -45,6 +46,9 @@ export default function AppLayout({
     return (
       <div className="h-screen w-full overflow-hidden" {...appearanceAttrs}>
         {children}
+        {/* Settings/Customize modal — also reachable from the code shell's
+            own Customize button. */}
+        <SettingsDialog />
       </div>
     );
   }
@@ -57,6 +61,7 @@ export default function AppLayout({
       <div className="flex min-w-0 flex-1 flex-col">
         <main className="flex-1 overflow-hidden">{children}</main>
       </div>
+      <SettingsDialog />
     </div>
   );
 }

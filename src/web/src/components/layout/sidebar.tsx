@@ -5,18 +5,25 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AudioLines,
   ChevronDown,
   Code2,
+  Download,
   Folder,
   FolderPlus,
   GitPullRequest,
   Hammer,
+  House,
+  ListTodo,
+  MessageCircle,
+  Terminal,
   MessagesSquare,
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
   Plus,
+  Puzzle,
   Search,
   Star,
   Trash2,
@@ -51,10 +58,8 @@ import { PROVIDER_FEATURES, PROVIDER_SECTIONS } from "@/lib/ai/features";
 import { getProviderUX } from "@/lib/ai/provider-ux";
 
 const CORE_NAV = [
-  { href: "/chat", label: "New chat", icon: Plus },
-  { href: "/search", label: "Search", icon: Search },
-  { href: "/chats", label: "Chats", icon: MessagesSquare },
-  { href: "/code", label: "Code", icon: Code2 },
+  { href: "/chat", label: "New", icon: Plus },
+  { href: "/chats", label: "Chats and tasks", icon: MessagesSquare },
   { href: "/workbench", label: "Workbench", icon: Hammer },
 ] as const;
 
@@ -94,7 +99,7 @@ function initials(name?: string | null) {
 }
 
 export function Sidebar() {
-  const { sidebarOpen, toggleSidebar } = useUI();
+  const { sidebarOpen, toggleSidebar, openSettings } = useUI();
   const pathname = usePathname();
   const isMobile = useIsMobile();
 
@@ -148,7 +153,10 @@ export function Sidebar() {
           <motion.aside
             key="sidebar"
             initial={{ width: 0, opacity: 0 }}
-            animate={{ width: "16rem", opacity: 1 }}
+            // Fixed px (not rem): matches the code shell's 288px sidebar
+            // exactly at any Settings → font size, so Home|Code switching
+            // never shifts the left column.
+            animate={{ width: 288, opacity: 1 }}
             exit={{ width: 0, opacity: 0 }}
             transition={{ duration: 0.18, ease: "easeOut" }}
             className={cn(
@@ -156,7 +164,7 @@ export function Sidebar() {
               !mobileOpen && "max-md:hidden",
             )}
           >
-            <div className="flex h-full w-64 flex-col">
+            <div className="flex h-full w-[288px] flex-col">
               {/* Brand */}
               <div className="flex items-center justify-between px-4 py-3">
                 <Link
@@ -165,18 +173,49 @@ export function Sidebar() {
                 >
                   Jarvis
                 </Link>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={toggleOpen}
-                  aria-label="Close sidebar"
-                  className="size-7"
-                >
-                  <PanelLeftClose className="size-3.5" />
-                </Button>
+                {/* Keep these two visually identical to the code sidebar's
+                    header pair — same muted tint, same hover. */}
+                <div className="flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    onClick={toggleOpen}
+                    aria-label="Close sidebar"
+                    title="Close sidebar"
+                    className="flex size-7 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+                  >
+                    <PanelLeftClose className="size-3.5" />
+                  </button>
+                  <Link
+                    href="/search"
+                    aria-label="Search"
+                    className="flex size-7 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+                  >
+                    <Search className="size-3.5" />
+                  </Link>
+                </div>
               </div>
 
               <div className="px-2">
+                {/* Home | Code segmented tabs (claude.ai-style). /code
+                    presents standalone with its own sidebar, so within
+                    this sidebar Home is always the active lobe. */}
+                <div className="mb-2 grid grid-cols-2 gap-1 rounded-lg bg-card/50 p-1">
+                  <Link
+                    href="/chat"
+                    className="flex items-center justify-center gap-1.5 rounded-md bg-sidebar-accent px-2 py-1 text-[12.5px] font-medium text-sidebar-accent-foreground"
+                  >
+                    <House className="size-3.5" />
+                    Home
+                  </Link>
+                  <Link
+                    href="/code"
+                    className="flex items-center justify-center gap-1.5 rounded-md px-2 py-1 text-[12.5px] font-medium text-sidebar-foreground/60 transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                  >
+                    <Code2 className="size-3.5" />
+                    Code
+                  </Link>
+                </div>
+
                 {/* Core nav */}
                 <nav className="space-y-px">
                   {CORE_NAV.map((item) => {
@@ -209,17 +248,14 @@ export function Sidebar() {
                       const active = f.href
                         ? pathname.startsWith(f.href)
                         : pathname === href;
-                      return (
-                        <Link
-                          key={f.slug}
-                          href={href}
-                          className={cn(
-                            "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13.5px] transition-colors",
-                            active
-                              ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                              : "text-sidebar-foreground/90 hover:bg-sidebar-accent/60",
-                          )}
-                        >
+                      const rowClass = cn(
+                        "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13.5px] transition-colors",
+                        active
+                          ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                          : "text-sidebar-foreground/90 hover:bg-sidebar-accent/60",
+                      );
+                      const inner = (
+                        <>
                           <f.icon className="size-4 shrink-0 text-sidebar-foreground/70" />
                           <span className="flex-1 truncate">{f.label}</span>
                           {f.badge && (
@@ -227,6 +263,25 @@ export function Sidebar() {
                               {f.badge}
                             </span>
                           )}
+                        </>
+                      );
+                      // "Customize" opens the settings modal (claude.ai) instead
+                      // of navigating — land on the Customize group (Skills).
+                      if (f.slug === "customize") {
+                        return (
+                          <button
+                            key={f.slug}
+                            type="button"
+                            onClick={() => openSettings("skills")}
+                            className={cn(rowClass, "w-full text-left")}
+                          >
+                            {inner}
+                          </button>
+                        );
+                      }
+                      return (
+                        <Link key={f.slug} href={href} className={rowClass}>
+                          {inner}
                         </Link>
                       );
                     })}
@@ -342,9 +397,54 @@ export function Sidebar() {
                 label={recentsLabel}
               />
 
-              {/* User footer — avatar opens the account menu (Settings / Log out) */}
-              <div className="border-t border-border/50 px-2 py-2">
-                <UserMenu fallbackName={displayName} />
+              {/* User footer — avatar opens the account menu (Settings / Log out),
+                  plus the downloads menu (CLI / voice agent / extension). */}
+              <div className="flex items-center gap-1 border-t border-border/50 px-2 py-2">
+                <div className="min-w-0 flex-1">
+                  <UserMenu fallbackName={displayName} />
+                </div>
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    render={
+                      <button
+                        aria-label="Download Jarvis apps"
+                        title="Download Jarvis apps"
+                        className="flex size-7 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/60 transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+                      />
+                    }
+                  >
+                    <Download className="size-4" />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="min-w-52">
+                    <DropdownMenuItem
+                      onClick={() => {
+                        window.location.href = "/releases/jarvis-linux-x64";
+                      }}
+                      className="gap-2"
+                    >
+                      <Terminal className="size-3.5" /> Jarvis CLI
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() =>
+                        window.open(
+                          "https://github.com/ulrichando/jarvis",
+                          "_blank",
+                        )
+                      }
+                      className="gap-2"
+                    >
+                      <AudioLines className="size-3.5" /> Voice agent (desktop)
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        window.location.href = "/jarvis-in-chrome.zip";
+                      }}
+                      className="gap-2"
+                    >
+                      <Puzzle className="size-3.5" /> Chrome extension
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             </div>
           </motion.aside>
@@ -428,27 +528,26 @@ function RecentsList({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const filtered = useMemo(() => {
-    if (!conversations) return [];
-    const q = filter.trim().toLowerCase();
-    if (!q) return conversations;
-    return conversations.filter((c) => c.title.toLowerCase().includes(q));
-  }, [conversations, filter]);
-
   const grouped = useMemo(() => {
-    const out: Record<"pinned" | Bucket, ConversationSummary[]> = {
+    const q = filter.trim().toLowerCase();
+    const chats = (conversations ?? []).filter(
+      (c) => !q || c.title.toLowerCase().includes(q),
+    );
+    const out: {
+      pinned: ConversationSummary[];
+      buckets: Record<Bucket, ConversationSummary[]>;
+      count: number;
+    } = {
       pinned: [],
-      today: [],
-      yesterday: [],
-      week: [],
-      older: [],
+      buckets: { today: [], yesterday: [], week: [], older: [] },
+      count: chats.length,
     };
-    for (const c of filtered) {
+    for (const c of chats) {
       if (c.pinned) out.pinned.push(c);
-      else out[bucketOf(c.updatedAt)].push(c);
+      else out.buckets[bucketOf(c.updatedAt)].push(c);
     }
     return out;
-  }, [filtered]);
+  }, [conversations, filter]);
 
   return (
     <div className="mt-5 flex-1 overflow-y-auto px-2">
@@ -480,13 +579,9 @@ function RecentsList({
         <div className="px-2.5 py-1.5 text-xs text-sidebar-foreground/40">
           loading…
         </div>
-      ) : !conversations || conversations.length === 0 ? (
+      ) : grouped.count === 0 && grouped.pinned.length === 0 ? (
         <div className="px-2.5 py-1.5 text-xs text-sidebar-foreground/40">
-          no chats yet.
-        </div>
-      ) : filtered.length === 0 ? (
-        <div className="px-2.5 py-1.5 text-xs text-sidebar-foreground/40">
-          no matches.
+          {filter.trim() ? "no matches." : "no chats yet."}
         </div>
       ) : (
         <>
@@ -503,7 +598,7 @@ function RecentsList({
             </div>
           )}
           {(["today", "yesterday", "week", "older"] as Bucket[]).map((b) => {
-            const items = grouped[b];
+            const items = grouped.buckets[b];
             if (items.length === 0) return null;
             return (
               <div key={b} className="mb-2">
@@ -596,7 +691,7 @@ function RecentRow({
           setEditing(true);
         }}
         className={cn(
-          "block truncate rounded-md py-1 pl-2.5 pr-7 text-[13px] leading-6 transition-colors",
+          "flex items-center gap-2 rounded-md py-1 pl-2.5 pr-7 text-[13px] leading-6 transition-colors",
           "hover:bg-sidebar-accent/60",
           active
             ? "bg-sidebar-accent text-sidebar-accent-foreground"
@@ -606,7 +701,17 @@ function RecentRow({
         )}
         title="Double-click to rename"
       >
-        {isUntitled ? "Untitled" : c.title}
+        {c.kind === "task" ? (
+          // Task conversation — checklist glyph + amber status dot, like
+          // claude.ai's scheduled/cowork task rows.
+          <span className="relative shrink-0">
+            <ListTodo className="size-3.5 text-sidebar-foreground/40" />
+            <span className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-amber-400" />
+          </span>
+        ) : (
+          <MessageCircle className="size-3.5 shrink-0 text-sidebar-foreground/40" />
+        )}
+        <span className="truncate">{isUntitled ? "Untitled" : c.title}</span>
       </Link>
       <DropdownMenu>
         <DropdownMenuTrigger

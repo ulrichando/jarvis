@@ -8,6 +8,8 @@ export type ConversationSummary = {
   title: string;
   model: string;
   updatedAt: string;
+  // "task" (scheduled-task setup/run) → task icon in Recents; else chat bubble.
+  kind?: string;
   // Pinned (starred) chats float to the top of Recents. Optional so consumers
   // that don't select it (search) still typecheck.
   pinned?: boolean;
