@@ -120,9 +120,16 @@ def _apply_voice_mode() -> None:
     overrides any global default (e.g. .env's JARVIS_LOCAL_LLM_MODEL=auto, which
     resolves to a weaker model than the qwen3 voice pick)."""
     try:
-        mode = (Path.home() / ".jarvis" / "voice-mode").read_text(
-            encoding="utf-8"
-        ).strip().lower()
+        # JARVIS_VOICE_MODE_PATH override = suite hermeticity: tests/
+        # conftest.py points it at a nonexistent path so a dev box that IS
+        # in local mode doesn't have this import-time hook force
+        # JARVIS_LOCAL_* env into the pytest process (which flips every
+        # dispatcher/pin assertion). Same pattern as JARVIS_SOUL_OVERRIDE_PATH.
+        _vm_path = Path(
+            os.environ.get("JARVIS_VOICE_MODE_PATH", "").strip()
+            or str(Path.home() / ".jarvis" / "voice-mode")
+        )
+        mode = _vm_path.read_text(encoding="utf-8").strip().lower()
     except Exception:
         return
     if mode != "local":
@@ -135,6 +142,45 @@ def _apply_voice_mode() -> None:
             return _val or _default
         except Exception:
             return _default
+
+    # Local LLM: AUTO-DISCOVER an installed Ollama model rather than hardcoding
+    # a tag. The old hardcode (qwen3:30b-a3b) silently 404'd when it wasn't
+    # pulled — a box with only qwen2.5:7b + llama3.1:8b went mute in local mode
+    # even though those models work. Prefer the validated qwen3:30b-a3b voice
+    # pick WHEN it's actually pulled, else pick the best model this box has —
+    # the same `ollama list` discovery the web app and CLI already use. Honour
+    # an explicit JARVIS_LOCAL_LLM_MODEL if the user set one; treat unset/"auto"
+    # as "prefer the validated pick, else best installed". Fall back to the
+    # preferred tag only when discovery finds nothing, so a box that HAS the
+    # model behaves exactly as before.
+    _pref = (os.environ.get("JARVIS_LOCAL_LLM_MODEL", "") or "").strip()
+    if not _pref or _pref.lower() == "auto":
+        _pref = "qwen3:30b-a3b"
+    try:
+        from providers.local_model_picker import resolve_installed_model_tag
+        _local_llm = resolve_installed_model_tag(_pref) or _pref
+    except Exception:
+        _local_llm = _pref
+
+    # NOTE: the SUPERVISOR pin itself happens in providers.llm.
+    # read_speech_model() — voice-mode=local makes it return
+    # `ollama/<JARVIS_LOCAL_LLM_MODEL>` (auto-registered in SPEECH_MODELS),
+    # overriding the cloud pin in ~/.jarvis/voice-model WITHOUT rewriting
+    # the file. Setting JARVIS_LOCAL_LLM_ENABLED alone was NOT enough:
+    # with JARVIS_PIN_ALL_ROUTES=1 the dispatcher (and its local rung-0
+    # prepend) never runs, so the pinned cloud model stayed the brain
+    # (live 2026-07-10: voice-mode=local still ran claude-haiku-4-5).
+    #
+    # JARVIS_PIN_FALLBACK_TIMEOUT: wrap_pin_fallback applies its
+    # attempt_timeout (default 6s) to EVERY rung — a cold Ollama model
+    # load routinely exceeds 6s, which would bounce every first local
+    # turn to the cloud fallback. Bound the local rung by the local
+    # timeout instead; a DOWN endpoint still fails fast (connect error,
+    # not timeout), so the cloud fallback is reached immediately when
+    # Ollama isn't running.
+    _local_timeout = (
+        os.environ.get("JARVIS_LOCAL_LLM_TIMEOUT", "") or ""
+    ).strip() or "60"
 
     for _k, _v in {
         "JARVIS_LOCAL_STT_ENABLED": "1",
@@ -149,11 +195,13 @@ def _apply_voice_mode() -> None:
         "JARVIS_LOCAL_TTS_PRIMARY": "1",
         "JARVIS_LOCAL_LLM_ENABLED": "1",
         "JARVIS_LOCAL_LLM_URL":     "http://127.0.0.1:11434/v1",
-        "JARVIS_LOCAL_LLM_MODEL":   "qwen3:30b-a3b",
+        "JARVIS_LOCAL_LLM_MODEL":   _local_llm,
+        "JARVIS_PIN_FALLBACK_TIMEOUT": _local_timeout,
     }.items():
         os.environ[_k] = _v
     logging.getLogger("jarvis.config").info(
-        "[voice-mode] LOCAL - STT=faster-whisper, LLM=qwen3:30b-a3b, TTS=kokoro"
+        "[voice-mode] LOCAL - STT=faster-whisper, LLM=%s (speech supervisor "
+        "pinned to ollama/%s), TTS=kokoro", _local_llm, _local_llm
     )
 
 
@@ -1147,14 +1195,110 @@ CLI_MODELS: dict[str, dict] = {
 }
 
 
+# ── Local (Ollama) CLI models — dynamic registration ─────────────────
+# Mirrors providers/llm.py::_register_ollama_speech_model (the 2026-07-10
+# speech fix). CLI_MODELS is a fixed CLOUD catalog; local mode needs an
+# `ollama:<tag>` entry for whatever tag is actually installed. The id form
+# matches the CLI's own dynamic-discovery ids (jarvisModelRegistry.ts
+# OLLAMA_DYNAMIC_ID_PREFIX = 'ollama:'), which the proxy resolves
+# STATELESSLY — the tag rides inside the model id, so the already-running
+# proxy service routes it to the local Ollama daemon without needing any
+# env handoff into the proxy process.
+_OLLAMA_CLI_PREFIX = "ollama:"
+
+
+def _register_ollama_cli_model(name: str) -> bool:
+    """Additively register an ``ollama:<tag>`` CLI_MODELS entry for any
+    installed tag (e.g. ``ollama:qwen2.5:7b``). Same semantics as the
+    speech-side helper: no `ollama list` check here (JARVIS_LOCAL_LLM_URL
+    may point at a remote GPU box), cloud ids never hit this (gated on
+    the ``ollama:`` prefix), idempotent."""
+    if not isinstance(name, str) or not name.startswith(_OLLAMA_CLI_PREFIX):
+        return False
+    if name in CLI_MODELS:
+        return True
+    tag = name[len(_OLLAMA_CLI_PREFIX):].strip()
+    if not tag:
+        return False
+    CLI_MODELS[name] = {
+        "provider": "ollama",
+        "model":    tag,
+        "label":    f"Local · {tag} (Ollama)",
+    }
+    logger.info(f"[local] auto-registered CLI model {name!r}")
+    return True
+
+
+def _local_mode_cli_model(pinned: str | None) -> str | None:
+    """When ``~/.jarvis/voice-mode`` is ``local``, return the
+    ``ollama:<tag>`` CLI-model id run_jarvis_cli must use, else None
+    (leave the normal pin).
+
+    Mirrors providers/llm.py::_local_mode_speech_model (2026-07-10) for
+    the TOOL path: before this, local mode pinned the speech SUPERVISOR
+    to the on-device model but every run_jarvis_cli tool call still ran
+    the CLOUD cli-model pin (live: claude-sonnet-4-6) — "local mode"
+    tool calls were cloud calls. Resolution order:
+      1. an explicit ``ollama:*`` pin in ~/.jarvis/cli-model wins
+         (user picked a specific local model) → None, the pin flows
+         through unchanged;
+      2. JARVIS_LOCAL_LLM_MODEL env — in the agent process
+         _apply_voice_mode() has already resolved it to an INSTALLED tag;
+      3. `resolve_installed_model_tag()` discovery (`ollama list`);
+      4. nothing local resolvable → None: keep the cloud pin rather than
+         pointing the CLI at a dead endpoint.
+    The cli-model FILE is never rewritten, so flipping voice-mode back
+    to cloud restores the previous cloud pin exactly."""
+    try:
+        # Dynamic attribute read so tests (and the speech path) share ONE
+        # monkeypatchable VOICE_MODE_FILE — providers.llm resolves the
+        # JARVIS_VOICE_MODE_PATH hermeticity override at import.
+        from providers import llm as _llm_mod
+        mode = (
+            _read_unified_setting("voice-mode", _llm_mod.VOICE_MODE_FILE) or ""
+        ).strip().lower()
+    except Exception:
+        return None
+    if mode != "local":
+        return None
+    if pinned and pinned.startswith(_OLLAMA_CLI_PREFIX):
+        return None
+    tag = (os.environ.get("JARVIS_LOCAL_LLM_MODEL", "") or "").strip()
+    if tag.lower() == "auto":
+        tag = ""
+    if not tag:
+        try:
+            from providers.local_model_picker import resolve_installed_model_tag
+            tag = resolve_installed_model_tag() or ""
+        except Exception:
+            tag = ""
+    if not tag:
+        logger.warning(
+            "[local] voice-mode=local but no local model resolvable for the "
+            "CLI tool path (JARVIS_LOCAL_LLM_MODEL unset and Ollama "
+            "discovery empty); leaving the cloud cli-model pin in place"
+        )
+        return None
+    return f"{_OLLAMA_CLI_PREFIX}{tag}"
+
+
 def read_cli_model() -> str:
     """Return the active CLI model ID, or the default if unset/invalid.
 
     Reads the flat file written by the tray UI under `~/.jarvis/`
     (the unified-settings SDK is a thin wrapper over that file —
     there is no SQLite settings store). Runtime turn telemetry lives
-    separately in `~/.local/share/jarvis/turn_telemetry.db`."""
+    separately in `~/.local/share/jarvis/turn_telemetry.db`.
+
+    When ``~/.jarvis/voice-mode`` is ``local``, the on-device Ollama
+    model OVERRIDES the file pin (without rewriting it) so local mode's
+    tool calls actually run locally — see `_local_mode_cli_model`."""
     name = _read_unified_setting("cli-model", CLI_MODEL_FILE)
+    local_pin = _local_mode_cli_model(name)
+    if local_pin:
+        name = local_pin
+    if name and name.startswith(_OLLAMA_CLI_PREFIX):
+        _register_ollama_cli_model(name)
     if name in CLI_MODELS:
         return name
     if name:
@@ -1500,6 +1644,13 @@ def _clean_env_for_cli(cli_model_id: str) -> dict[str, str]:
     'jarvis-proxy' stub it needs to talk to the proxy, but no real
     upstream keys. The proxy at :4000 holds the real keys and signs
     the outbound requests.
+
+    **Ollama / local mode (2026-07-11):** when the pick is an
+    ``ollama:<tag>`` id, the same stripping applies (the local path
+    needs NO keys) and the subprocess additionally gets
+    ANTHROPIC_MODEL=ollama:<tag> + OLLAMA_MODEL/OLLAMA_BASE_URL so the
+    proxy routes the request to the LOCAL Ollama daemon instead of any
+    cloud provider.
     """
     cli_def = CLI_MODELS[cli_model_id]
 
@@ -1550,6 +1701,34 @@ def _clean_env_for_cli(cli_model_id: str) -> dict[str, str]:
     env["JARVIS_PROVIDER"]                = cli_def["provider"]
     env["JARVIS_MODEL"]                   = cli_def["model"]
     env["JARVIS_MODEL_REGISTRY_ENABLED"]  = "1"
+    if cli_def["provider"] == "ollama":
+        # Local (on-device) tool model — route to the LOCAL Ollama daemon.
+        # The CLI still talks to the proxy on :4000 (it only speaks the
+        # Anthropic wire shape; the proxy is a LOCAL translation process),
+        # but the request is routed to Ollama, not a cloud API:
+        #   - ANTHROPIC_MODEL pins the CLI's main-loop model to the
+        #     registry's dynamic `ollama:<tag>` id. The tag rides INSIDE
+        #     the model id, so the proxy resolves it STATELESSLY
+        #     (jarvisModelRegistry.ts::getJarvisModel) — load-bearing,
+        #     because the proxy is an already-running separate process
+        #     whose env we cannot set from here (OLLAMA_MODEL below only
+        #     reaches a proxy the CLI spawns itself).
+        #   - The registry's ollama provider needs NO API key (stub) and
+        #     routes to OLLAMA_BASE_URL + /v1.
+        # The §P0-SEC-8 secret stripping above applies UNCHANGED — the
+        # local path needs no upstream keys at all.
+        _tag = cli_def["model"]
+        env["ANTHROPIC_MODEL"] = f"{_OLLAMA_CLI_PREFIX}{_tag}"
+        env["OLLAMA_MODEL"]    = _tag
+        # One source of truth for the daemon URL: the voice-mode env
+        # (JARVIS_LOCAL_LLM_URL, e.g. http://127.0.0.1:11434/v1 — or a
+        # remote GPU box). The registry appends /v1 itself, so strip it.
+        _local_url = (os.environ.get("JARVIS_LOCAL_LLM_URL", "") or "").strip()
+        if _local_url:
+            _base = re.sub(r"/v1/?$", "", _local_url).rstrip("/")
+            env["OLLAMA_BASE_URL"] = _base or "http://127.0.0.1:11434"
+        else:
+            env.setdefault("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
     for k in (
         "DISABLE_TELEMETRY",
         "DISABLE_ERROR_REPORTING",

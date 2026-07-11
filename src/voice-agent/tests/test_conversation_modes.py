@@ -36,7 +36,11 @@ def test_local_builtin_is_on_device(modes_path):
     lo = next(m for m in cm.load()["modes"] if m["id"] == "local")
     assert lo["voice_mode"] == "local"
     assert lo["voice_model"] is None
-    assert lo["cli_model"] == "ollama-qwen3-30b-a3b"
+    # None = leave ~/.jarvis/cli-model untouched; jarvis_agent.
+    # read_cli_model() overrides to `ollama:<installed tag>` at read time
+    # (2026-07-11 fix — the old "ollama-qwen3-30b-a3b" value wasn't a
+    # CLI_MODELS id, so local-mode tool calls fell back to a CLOUD model).
+    assert lo["cli_model"] is None
 
 
 def test_apply_writes_all_setting_files(modes_path, tmp_path, monkeypatch):

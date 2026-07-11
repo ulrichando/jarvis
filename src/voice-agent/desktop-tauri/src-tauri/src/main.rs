@@ -3059,14 +3059,18 @@ fn main() {
                 ("ollama/qwen3:30b-a3b", "Use Local · Qwen3 30B-A3B (Ollama, on-device, fast)",      local_qwen3_ok),
                 ("ollama/gpt-oss:120b",  "Use Local · gpt-oss 120B (Ollama, heavy, slow on CPU)",    local_gptoss_ok),
             ];
-            // Local conversation mode needs an actually-pulled Ollama model
-            // (user rule 2026-07-02): with none installed the on-device agent
-            // boots with no LLM and the mic goes dead. Grey the item out and
-            // say why — NOT hidden, so ModeItems indexes stay stable for
-            // refresh_mode_menu's positional repaint. Evaluated once at
-            // startup (same lifecycle as the audio-device list); pulling a
-            // model takes effect on the next tray launch.
-            if !(local_qwen3_ok || local_gptoss_ok) {
+            // Local conversation mode needs at least ONE actually-pulled Ollama
+            // model (user rule 2026-07-02): with none installed the on-device
+            // agent boots with no LLM and the mic goes dead. The agent now
+            // AUTO-DISCOVERS whatever's pulled (jarvis_agent._apply_voice_mode →
+            // local_model_picker.resolve_installed_model_tag), so ANY installed
+            // model qualifies — not just qwen3:30b-a3b / gpt-oss:120b (that
+            // narrow check greyed out boxes that had e.g. llama3.1:8b). Grey the
+            // item out only when NOTHING is pulled — NOT hidden, so ModeItems
+            // indexes stay stable for refresh_mode_menu's positional repaint.
+            // Evaluated once at startup (same lifecycle as the audio-device
+            // list); pulling a model takes effect on the next tray launch.
+            if ollama_models.is_empty() {
                 let _ = mode_local_item.set_enabled(false);
                 let _ = mode_local_item.set_text("Local — install an Ollama model first");
             }

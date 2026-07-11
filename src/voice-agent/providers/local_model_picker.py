@@ -233,3 +233,49 @@ def _is_pulled(tag: str) -> bool | None:
         return any(line.split()[0].split(":")[0] == base for line in out.splitlines()[1:] if line.strip())
     except Exception:  # noqa: BLE001
         return None
+
+
+def list_installed_tags() -> list[str]:
+    """Exact tags currently pulled, from `ollama list` (e.g.
+    ``['qwen2.5:7b', 'llama3.1:8b']``). Empty list on any failure — callers
+    read that as 'discovery unavailable', not 'nothing installed'."""
+    ollama = shutil.which("ollama")
+    if not ollama:
+        return []
+    try:
+        out = subprocess.run(
+            [ollama, "list"], capture_output=True, text=True, timeout=5, check=True
+        ).stdout
+        return [ln.split()[0] for ln in out.splitlines()[1:] if ln.strip()]
+    except Exception:  # noqa: BLE001 — discovery must never break boot
+        return []
+
+
+def resolve_installed_model_tag(preferred: str = "") -> str | None:
+    """Best INSTALLED Ollama tag — the same `ollama list`-based discovery the
+    web app and CLI already do (the voice-agent used to hardcode a tag, which
+    silently 404s when it isn't pulled). Order:
+      1. `preferred` exact tag, if pulled (keeps a validated pick when the box
+         actually has it).
+      2. the hardware-ranked catalog model that is ALSO pulled (best fit).
+      3. the highest-quality catalog model that is pulled (ignore fit).
+      4. whatever is pulled first.
+    Returns None only when nothing is pulled / ollama is absent — the caller
+    decides the fallback. Never raises."""
+    try:
+        installed = list_installed_tags()
+        if not installed:
+            return None
+        have = set(installed)
+        if preferred and preferred in have:
+            return preferred
+        for p in analyze(detect_vram_gb(), detect_ram_gb()):
+            if p.tag in have:
+                return p.tag
+        for tag, *_ in _MODELS:
+            if tag in have:
+                return tag
+        return installed[0]
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[picker] installed-tag resolve failed (%s)", e)
+        return None
