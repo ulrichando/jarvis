@@ -17,7 +17,9 @@ export async function POST(
   const task = listScheduledChats().find((t) => t.id === id);
   if (!task) return Response.json({ error: "not found" }, { status: 404 });
   try {
-    const { conversationId, text } = await runScheduledChat(task, userId);
+    // Manual run-now: don't queue a voice reminder — the caller (voice tool /
+    // web UI) already surfaces the text, so a poller pull would double-speak.
+    const { conversationId, text } = await runScheduledChat(task, userId, false);
     return Response.json({ conversation_id: conversationId, text });
   } catch (err) {
     return Response.json(
