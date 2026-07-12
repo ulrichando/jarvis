@@ -8,6 +8,8 @@
 #
 # Idempotent: re-running skips channels that are already installed.
 # Skip a channel: JARVIS_SKIP_CLI=1 / JARVIS_SKIP_VOICE=1 / JARVIS_SKIP_DESKTOP=1 / JARVIS_SKIP_WEB=1
+# Skip big voice-model downloads (STT model ~1.5GB, vosk ~40MB): JARVIS_SKIP_MODELS=1
+# Skip the local Kokoro TTS container: JARVIS_SKIP_KOKORO=1
 # Custom install dir: JARVIS_INSTALL_DIR=/path/to/repo (default: ~/Documents/Projects/jarvis)
 
 set -euo pipefail
@@ -17,6 +19,14 @@ readonly REPO_URL="https://github.com/ulrichando/jarvis.git"
 readonly DEFAULT_INSTALL_DIR="$HOME/Documents/Projects/jarvis"
 readonly LOCAL_BIN="$HOME/.local/bin"
 readonly USER_SYSTEMD="$HOME/.config/systemd/user"
+readonly SYSTEM_SYSTEMD="/etc/systemd/system"
+# The local Ollama model tag — single source of truth for BOTH the .env seed
+# (setup_voice_env) and the pull (pull_local_llm), so they can never diverge.
+# Registry-pullable (verified tag; a bare 'qwen3-4b' 404s on `ollama pull`).
+readonly JARVIS_LOCAL_LLM_TAG="qwen3:4b-instruct-2507-q4_K_M"
+# Stable dummy NIC + IP that LiveKit pins WebRTC media to (jarvis-net.service).
+readonly JARVIS_NET_IF="jarvis0"
+readonly JARVIS_NET_IP="10.201.0.1"
 
 INSTALL_DIR="${JARVIS_INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
 
@@ -346,16 +356,16 @@ install_bubblewrap() {
   # and the network-namespace gate. apt + pacman covered; other distros
   # warn-only since the user-namespace approach is universal but
   # package names vary.
-  if have apt-get && [ "$JARVIS_DRY_RUN" != "1" ]; then
-    info "installing bubblewrap via apt..."
+  if have apt-get && [ "${JARVIS_DRY_RUN:-0}" != "1" ]; then
+    sub "installing bubblewrap via apt..."
     if sudo -n apt-get install -y bubblewrap >/dev/null 2>&1; then
       ok "bubblewrap installed"
     else
       warn "couldn't apt-install bubblewrap (sudo? offline?); the bash tool will run un-sandboxed."
       warn "to enable: sudo apt install bubblewrap"
     fi
-  elif have pacman && [ "$JARVIS_DRY_RUN" != "1" ]; then
-    info "installing bubblewrap via pacman..."
+  elif have pacman && [ "${JARVIS_DRY_RUN:-0}" != "1" ]; then
+    sub "installing bubblewrap via pacman..."
     if sudo -n pacman -S --noconfirm bubblewrap >/dev/null 2>&1; then
       ok "bubblewrap installed"
     else
@@ -409,7 +419,19 @@ ensure_livekit_binary() {
   fi
 
   local version="1.11.0"
-  local url="https://github.com/livekit/livekit/releases/download/v${version}/livekit_${version}_linux_amd64.tar.gz"
+  # Arch-aware release asset — the old hardcoded amd64 URL silently shipped
+  # an unrunnable binary to arm64 boxes.
+  local arch lk_arch
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64)  lk_arch="amd64" ;;
+    aarch64|arm64) lk_arch="arm64" ;;
+    *)
+      warn "unsupported arch '$arch' for livekit-server auto-download — voice needs the SFU."
+      sub "Fetch a build manually from https://github.com/livekit/livekit/releases and place it at $bin"
+      return 0 ;;
+  esac
+  local url="https://github.com/livekit/livekit/releases/download/v${version}/livekit_${version}_linux_${lk_arch}.tar.gz"
   local sha_file="$INSTALL_DIR/setup/livekit-server.bin.sha256"
 
   section "Fetching livekit-server binary v${version} (~50 MB)"
@@ -419,20 +441,32 @@ ensure_livekit_binary() {
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$tmp_dir"' EXIT RETURN
 
+  # Download / extract failures are WARN, not fatal — a network flake must
+  # not abort the rest of the install. verify_voice_stack() reports the
+  # missing binary at the end; re-run install.sh to retry.
   if ! curl -fL --progress-bar -o "$tmp_dir/livekit.tar.gz" "$url"; then
-    die "Failed to download livekit-server tarball from $url"
+    warn "failed to download livekit-server tarball from $url"
+    sub "voice needs the SFU — re-run ./install.sh once the network is back"
+    return 0
   fi
 
-  tar -xzf "$tmp_dir/livekit.tar.gz" -C "$tmp_dir"
+  if ! tar -xzf "$tmp_dir/livekit.tar.gz" -C "$tmp_dir"; then
+    warn "failed to extract livekit-server tarball — re-run ./install.sh to retry"
+    return 0
+  fi
 
   local extracted
   extracted=$(find "$tmp_dir" -maxdepth 2 -name 'livekit-server' -type f | head -1)
   if [ -z "$extracted" ]; then
-    die "livekit-server binary not found in tarball — expected 'livekit-server' entry"
+    warn "livekit-server binary not found in tarball — expected 'livekit-server' entry"
+    return 0
   fi
 
-  # Verify checksum against pinned hash.
-  if [ -f "$sha_file" ]; then
+  # Verify checksum against pinned hash. The pin is for the linux_amd64
+  # build only — other arches download unpinned (warned).
+  if [ "$lk_arch" != "amd64" ]; then
+    warn "no pinned SHA-256 for linux_${lk_arch} — skipping checksum verification"
+  elif [ -f "$sha_file" ]; then
     # sha256sum -c expects lines like "<hash>  <filename>".
     # Rewrite the entry so the path points at the extracted file.
     local pinned_hash
@@ -517,6 +551,618 @@ setup_livekit_keys() {
       echo "LIVEKIT_API_SECRET=$new_secret"
     } >> "$va_env"
     ok "appended LIVEKIT_API_KEY/SECRET to $va_env"
+  fi
+}
+
+# ── Local voice stack: GPU detect + STT + TTS + models ───────────────────
+# The voice agent is 100% on-device for speech (CLAUDE.md): STT is
+# faster-whisper (large-v3-turbo, GPU) with JARVIS_STT_LOCAL_ONLY=1, TTS
+# is Kokoro (local HTTP service, :8880) with Edge-TTS as cloud fallback.
+# None of that was previously installed here — a fresh box came up with
+# NO STT rung at all (build_stt_chain raises "no STT available") and the
+# voice-agent unit failed outright because its non-optional
+# EnvironmentFile= (src/voice-agent/.env) didn't exist. These functions
+# detect + install each piece; every failure is a WARN, never an abort.
+
+# True iff an NVIDIA GPU is visible via the driver. GPU is load-bearing
+# for STT: CPU transcription of large-v3-turbo is ~25 s per 3 s clip →
+# utterances drop → JARVIS goes intermittently silent.
+detect_nvidia_gpu() {
+  have nvidia-smi && nvidia-smi -L 2>/dev/null | grep -q '^GPU'
+}
+
+# _env_default <file> <VAR> <value> — set VAR only when unset/empty in
+# <file> (never clobbers an existing value; append-or-fill via _env_upsert).
+_env_default() {
+  local file="$1" var="$2" value="$3"
+  [ -n "$(_env_get "$file" "$var")" ] && return 0
+  _env_upsert "$file" "$var" "$value"
+}
+
+# True iff the faster-whisper model <$1> is already in the HuggingFace
+# cache (models--<org>--faster-whisper-<name> snapshot dir).
+_stt_model_cached() {
+  local model="$1" hub="${HF_HOME:-$HOME/.cache/huggingface}/hub"
+  compgen -G "$hub/models--*--faster-whisper-${model}" >/dev/null 2>&1
+}
+
+# pip-install into the voice venv, preferring uv when available (mirrors
+# install_voice_agent's package-manager choice).
+_venv_pip_install() {
+  local va="$INSTALL_DIR/src/voice-agent"
+  if have uv && [ "${JARVIS_NO_UV:-0}" != "1" ]; then
+    VIRTUAL_ENV="$va/.venv" UV_PROJECT_ENVIRONMENT="$va/.venv" uv pip install "$@"
+  else
+    "$va/.venv/bin/pip" install --quiet "$@"
+  fi
+}
+
+# Bootstrap src/voice-agent/.env — the systemd unit's FIRST EnvironmentFile=
+# is NON-optional, so a missing .env fails the unit at start. Seed from the
+# committed .env.example, then fill in the local-voice flags the example
+# doesn't carry (JARVIS_LOCAL_STT_* / JARVIS_LOCAL_TTS_*). Never overwrites
+# an existing file or an already-set var.
+setup_voice_env() {
+  if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then return 0; fi
+  section "Voice-agent .env (local STT + TTS config)"
+  local va="$INSTALL_DIR/src/voice-agent"
+  local va_env="$va/.env"
+  local fresh=0
+
+  if [ -f "$va_env" ]; then
+    ok ".env already exists at $va_env; keeping it"
+  elif [ -f "$va/.env.example" ]; then
+    # Localize the template's hardcoded /home/ulrich paths (XAUTHORITY).
+    sed "s|/home/ulrich|$HOME|g" "$va/.env.example" > "$va_env"
+    chmod 600 "$va_env"
+    fresh=1
+    ok "created $va_env from .env.example"
+  else
+    : > "$va_env"; chmod 600 "$va_env"
+    fresh=1
+    warn ".env.example missing — created empty $va_env"
+    _env_default "$va_env" LIVEKIT_URL "ws://127.0.0.1:7880"
+  fi
+
+  # Local STT (faster-whisper). Enabled everywhere; device follows the GPU.
+  local gpu=0
+  detect_nvidia_gpu && gpu=1
+  _env_default "$va_env" JARVIS_LOCAL_STT_ENABLED 1
+  _env_default "$va_env" JARVIS_LOCAL_STT_MODEL   large-v3-turbo
+  _env_default "$va_env" JARVIS_LOCAL_STT_PRIMARY 1
+  if [ "$gpu" = "1" ]; then
+    _env_default "$va_env" JARVIS_LOCAL_STT_DEVICE  cuda
+    _env_default "$va_env" JARVIS_LOCAL_STT_COMPUTE int8_float16
+    # Fresh install on a GPU box → the live architecture: 100% on-device STT.
+    # Only defaulted on a FRESH .env so we never strip a cloud rung someone
+    # deliberately configured on an existing box.
+    [ "$fresh" = "1" ] && _env_default "$va_env" JARVIS_STT_LOCAL_ONLY 1
+    ok "local STT configured for GPU (cuda / int8_float16)"
+  else
+    _env_default "$va_env" JARVIS_LOCAL_STT_DEVICE  cpu
+    _env_default "$va_env" JARVIS_LOCAL_STT_COMPUTE int8
+    warn "NO NVIDIA GPU DETECTED — STT will run on CPU."
+    warn "CPU transcription of large-v3-turbo is ~25 s per clip; most utterances"
+    warn "will be DROPPED and the assistant will seem silent/deaf. Strongly consider:"
+    sub "- an NVIDIA GPU + driver (nvidia-smi must work), then re-run ./install.sh, or"
+    sub "- a DEEPGRAM_API_KEY in $va_env (cloud STT primary; local stays as fallback)"
+  fi
+
+  # Local TTS (Kokoro, HTTP service on :8880) — Edge-TTS remains the
+  # auth-free cloud fallback, so voice output survives without Kokoro.
+  _env_default "$va_env" JARVIS_LOCAL_TTS_ENABLED 1
+  _env_default "$va_env" JARVIS_LOCAL_TTS_ENGINE  kokoro
+  _env_default "$va_env" JARVIS_LOCAL_TTS_URL     "http://127.0.0.1:8880/v1"
+  _env_default "$va_env" JARVIS_LOCAL_TTS_VOICE   af_bella
+  _env_default "$va_env" JARVIS_LOCAL_TTS_PRIMARY 1
+  ok "local TTS (kokoro) configured — Edge-TTS stays as fallback"
+
+  # LLM offline failover (Stage 1, 2026-07-10): append the local model as the
+  # LAST FallbackAdapter rung so voice survives with no internet — reached ONLY
+  # after every cloud rung fails (providers/llm.py::wrap_local_failover). Seed
+  # ON by default so a fresh box has offline parity; _env_default never
+  # overrides a value the user already set. Distinct from JARVIS_LOCAL_LLM_ENABLED
+  # (that one makes local the rung-0 PRIMARY — leave it off).
+  _env_default "$va_env" JARVIS_LOCAL_LLM_FAILOVER 1
+  # Pin the local model + endpoint so the runtime failover rung and the pull
+  # step below CANNOT diverge (the bug: unset JARVIS_LOCAL_LLM_MODEL → runtime
+  # defaulted to qwen2.5:7b while the installer pulled a qwen3 tag → same-base
+  # self-heal blocked → dead rung). Same tag pull_local_llm uses.
+  _env_default "$va_env" JARVIS_LOCAL_LLM_MODEL "$JARVIS_LOCAL_LLM_TAG"
+  _env_default "$va_env" JARVIS_LOCAL_LLM_URL   "http://127.0.0.1:11434/v1"
+  # Pinned-supervisor baseline the offline work assumes (fresh boxes only, like
+  # JARVIS_STT_LOCAL_ONLY): all routes go through one model + a local-friendly
+  # fallback rung, instead of the cloud-first routed dispatcher.
+  if [ "$fresh" = "1" ]; then
+    _env_default "$va_env" JARVIS_PIN_ALL_ROUTES     1
+    _env_default "$va_env" JARVIS_PIN_FALLBACK_MODEL kimi-k2.6-instant
+  fi
+  ok "local LLM offline-failover armed (last-resort rung; cloud stays primary)"
+}
+
+# livekit.yaml pins key_file at an ABSOLUTE /home/<user> path (committed).
+# On any box whose $HOME differs, livekit-server dies at start because the
+# key file "doesn't exist". Localize the path in the working tree (no-op
+# when it already matches).
+localize_livekit_yaml() {
+  if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then return 0; fi
+  local yaml="$INSTALL_DIR/src/voice-agent/livekit.yaml"
+  local want="$HOME/.jarvis/livekit-keys.yaml"
+  [ -f "$yaml" ] || return 0
+  local current
+  current="$(grep -E '^key_file:' "$yaml" | head -1 | sed 's/^key_file:[[:space:]]*//')"
+  [ -z "$current" ] && return 0
+  if [ "$current" = "$want" ]; then
+    ok "livekit.yaml key_file already points at $want"
+    return 0
+  fi
+  sed -i "s|^key_file:.*|key_file: $want|" "$yaml"
+  warn "localized livekit.yaml key_file → $want (was $current; dirties the checkout — expected on non-default \$HOME)"
+}
+
+# The committed livekit.yaml pins WebRTC media to jarvis0 (10.201.0.1) so the
+# audio ICE path is WiFi-independent (see jarvis-net.service + the offline
+# runbook). But jarvis0 only exists once jarvis-net.service has run, and a
+# stale pin at an ABSENT interface = zero ICE candidates = voice dead ONLINE
+# too. So localize the rtc pin to what this box actually has, preferring the
+# stable jarvis0, then docker0, then (last resort, WiFi-dependent) the primary
+# interface so at least ONLINE voice works. Idempotent; rewrites node_ip + the
+# single interfaces.includes entry (6-space-indented — uniquely matches).
+localize_livekit_rtc() {
+  if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then return 0; fi
+  local yaml="$INSTALL_DIR/src/voice-agent/livekit.yaml"
+  [ -f "$yaml" ] || return 0
+  grep -qE '^  node_ip:' "$yaml" || return 0   # not the pinned-media layout; leave it
+  local if_name ip
+  if ip link show "$JARVIS_NET_IF" >/dev/null 2>&1; then
+    if_name="$JARVIS_NET_IF"; ip="$JARVIS_NET_IP"
+  elif ip -4 -o addr show docker0 2>/dev/null | grep -q 'inet '; then
+    if_name="docker0"
+    ip="$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d/ -f1 | head -1)"
+    warn "jarvis0 absent — pinning LiveKit media to docker0 ($ip). Survives WiFi loss only while Docker runs; enable jarvis-net.service for a Docker-independent path."
+  else
+    if_name="$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oE 'dev [^ ]+' | awk '{print $2}' | head -1)"
+    ip="$(ip -4 -o addr show "$if_name" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
+    [ -z "$if_name" ] || [ -z "$ip" ] && { warn "no jarvis0/docker0/primary interface found — leaving livekit.yaml rtc as-is; if voice fails, run: sudo systemctl enable --now jarvis-net.service"; return 0; }
+    warn "no jarvis0/docker0 — pinning LiveKit to $if_name ($ip); ONLINE voice works but WiFi-off voice will NOT hold. Fix: sudo systemctl enable --now jarvis-net.service"
+  fi
+  sed -i "s|^  node_ip:.*|  node_ip: $ip|" "$yaml"
+  sed -i "s|^      - .*|      - $if_name|" "$yaml"
+  ok "livekit.yaml rtc pinned to $if_name ($ip) for WiFi-independent media"
+}
+
+# Install + enable the SYSTEM unit that creates the jarvis0 dummy NIC (needs
+# root; the voice units are all --user). Best-effort: without NOPASSWD sudo we
+# warn and localize_livekit_rtc falls back to docker0/primary.
+install_jarvis_net() {
+  if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then return 0; fi
+  local unit="jarvis-net.service"
+  local src="$INSTALL_DIR/setup/systemd/$unit"
+  [ -f "$src" ] || return 0
+  if ip link show "$JARVIS_NET_IF" >/dev/null 2>&1 \
+     && systemctl is-enabled "$unit" >/dev/null 2>&1; then
+    ok "$JARVIS_NET_IF already up + $unit enabled"
+    return 0
+  fi
+  if ! sudo -n true 2>/dev/null; then
+    warn "no passwordless sudo — can't install $unit (creates $JARVIS_NET_IF for WiFi-independent voice). Run manually:"
+    sub "sudo cp $src $SYSTEM_SYSTEMD/$unit && sudo systemctl enable --now $unit"
+    return 0
+  fi
+  sudo -n cp "$src" "$SYSTEM_SYSTEMD/$unit" 2>/dev/null || { warn "couldn't copy $unit to $SYSTEM_SYSTEMD"; return 0; }
+  sudo -n systemctl daemon-reload 2>/dev/null
+  if sudo -n systemctl enable --now "$unit" 2>/dev/null; then
+    ok "$unit enabled — $JARVIS_NET_IF ($JARVIS_NET_IP) up (WiFi/Docker-independent voice media)"
+  else
+    warn "installed $unit but couldn't start it — run: sudo systemctl enable --now $unit"
+  fi
+}
+
+# faster-whisper + (GPU-only) the CUDA runtime wheels ctranslate2 needs.
+# requirements.txt now carries faster-whisper, but keep this as a detect-
+# and-repair net for venvs created before that (and for the nvidia libs,
+# which are GPU-conditional and deliberately NOT in requirements.txt).
+install_local_stt() {
+  if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then return 0; fi
+  section "Local STT (faster-whisper)"
+  local va="$INSTALL_DIR/src/voice-agent"
+  local py="$va/.venv/bin/python"
+  if [ ! -x "$py" ]; then
+    warn "voice venv missing at $va/.venv — run the voice channel first (skipping STT setup)"
+    return 0
+  fi
+
+  if "$py" -c "import faster_whisper" 2>/dev/null; then
+    ok "faster-whisper already installed ($("$py" -c 'import faster_whisper; print(faster_whisper.__version__)' 2>/dev/null))"
+  else
+    sub "installing faster-whisper into the voice venv..."
+    if _venv_pip_install "faster-whisper~=1.2"; then
+      ok "faster-whisper installed"
+    else
+      warn "faster-whisper install FAILED — on-device STT won't work; re-run ./install.sh to retry"
+      return 0
+    fi
+  fi
+
+  # GPU boxes: ctranslate2 needs cuBLAS + cuDNN 9 at runtime. The pip
+  # wheels are the supported delivery (CT2 auto-loads them from the venv —
+  # see the note in src/voice-agent/.env). ~700 MB, GPU-gated.
+  if detect_nvidia_gpu; then
+    if "$py" -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('nvidia.cublas') and importlib.util.find_spec('nvidia.cudnn') else 1)" 2>/dev/null; then
+      ok "CUDA runtime wheels (nvidia-cublas-cu12 + nvidia-cudnn-cu12) present"
+    else
+      sub "GPU detected — installing CUDA runtime wheels for faster-whisper (~700 MB)..."
+      if _venv_pip_install nvidia-cublas-cu12 nvidia-cudnn-cu12; then
+        ok "installed nvidia-cublas-cu12 + nvidia-cudnn-cu12"
+      else
+        warn "CUDA wheel install failed — GPU STT will fall over; retry with:"
+        sub "$va/.venv/bin/pip install nvidia-cublas-cu12 nvidia-cudnn-cu12"
+      fi
+    fi
+  else
+    sub "no GPU — skipping CUDA runtime wheels (CPU STT needs none)"
+  fi
+}
+
+# Prefetch the STT model so the FIRST utterance doesn't stall for minutes
+# behind a ~1.5 GB HuggingFace download. Skipped by JARVIS_SKIP_MODELS=1;
+# the model still auto-downloads lazily on first use if skipped/failed.
+prefetch_stt_model() {
+  if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then return 0; fi
+  if [ "${JARVIS_SKIP_MODELS:-0}" = "1" ]; then
+    warn "skipping STT model prefetch (JARVIS_SKIP_MODELS=1) — first utterance will trigger the ~1.5 GB download"
+    return 0
+  fi
+  local va="$INSTALL_DIR/src/voice-agent"
+  local py="$va/.venv/bin/python"
+  [ -x "$py" ] || return 0
+  local model
+  model="$(_env_get "$va/.env" JARVIS_LOCAL_STT_MODEL)"
+  model="${model:-large-v3-turbo}"
+  if _stt_model_cached "$model"; then
+    ok "STT model '$model' already in HuggingFace cache"
+    return 0
+  fi
+  section "Prefetching STT model '$model' (~1.5 GB; skip with JARVIS_SKIP_MODELS=1)"
+  if "$py" -c "import sys; from faster_whisper.utils import download_model; download_model(sys.argv[1])" "$model"; then
+    ok "STT model '$model' downloaded"
+  else
+    warn "STT model prefetch failed (non-fatal — it auto-downloads on first use, which will stall the first utterance)"
+  fi
+}
+
+# Kokoro TTS — the on-device primary voice. Runs as the `kokoro-tts`
+# Docker container (ghcr.io/remsky/kokoro-fastapi-cpu) serving an
+# OpenAI-compatible API on 127.0.0.1:8880. Without it, Edge-TTS (cloud,
+# auth-free) carries speech — voice still works, just not offline.
+install_kokoro_tts() {
+  if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then return 0; fi
+  if [ "${JARVIS_SKIP_KOKORO:-0}" = "1" ]; then
+    warn "skipping Kokoro TTS (JARVIS_SKIP_KOKORO=1) — Edge-TTS (cloud) will carry speech"
+    return 0
+  fi
+  section "Local TTS (Kokoro)"
+  local va_env="$INSTALL_DIR/src/voice-agent/.env"
+  local url
+  url="$(_env_get "$va_env" JARVIS_LOCAL_TTS_URL)"
+  url="${url:-http://127.0.0.1:8880/v1}"
+
+  if curl -fsS --max-time 3 -o /dev/null "${url%/}/audio/voices" 2>/dev/null; then
+    ok "Kokoro TTS already serving at $url"
+    return 0
+  fi
+
+  case "$url" in
+    http://127.0.0.1:8880*|http://localhost:8880*) : ;;
+    *)
+      warn "JARVIS_LOCAL_TTS_URL points at $url but nothing answered — not managing a remote TTS box; Edge-TTS carries speech meanwhile"
+      return 0 ;;
+  esac
+
+  if ! have docker; then
+    warn "docker not installed — can't run the Kokoro TTS container. Edge-TTS (cloud) carries speech."
+    sub "To go on-device later: install docker, then:"
+    sub "docker run -d --name kokoro-tts --restart unless-stopped -p 127.0.0.1:8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest"
+    return 0
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    warn "docker installed but the daemon is unreachable (permissions? not running?) — Edge-TTS carries speech."
+    sub "Fix docker access, then re-run ./install.sh (or run the kokoro-tts container manually)."
+    return 0
+  fi
+
+  # Container exists but stopped → just start it (never recreate/overwrite).
+  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx kokoro-tts; then
+    if docker start kokoro-tts >/dev/null 2>&1; then
+      ok "started existing kokoro-tts container"
+    else
+      warn "could not start existing kokoro-tts container — check 'docker logs kokoro-tts'"
+    fi
+    return 0
+  fi
+
+  sub "pulling + starting kokoro-fastapi (CPU image; multi-GB pull on first run)..."
+  if docker run -d --name kokoro-tts --restart unless-stopped \
+       -p 127.0.0.1:8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest >/dev/null; then
+    ok "kokoro-tts container running (127.0.0.1:8880, restart=unless-stopped)"
+  else
+    warn "kokoro-tts container failed to start (non-fatal — Edge-TTS carries speech). Retry:"
+    sub "docker run -d --name kokoro-tts --restart unless-stopped -p 127.0.0.1:8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest"
+  fi
+}
+
+# Vosk small-en model (~40 MB) — powers the partial-word barge-in tap
+# (pipeline/bargein_tap.py). Soft dependency: missing model just disables
+# mid-utterance barge-in, so failures here are warn-only.
+fetch_vosk_model() {
+  if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then return 0; fi
+  if [ "${JARVIS_SKIP_MODELS:-0}" = "1" ]; then return 0; fi
+  local dst="${JARVIS_PARTIAL_BARGEIN_MODEL:-$HOME/.jarvis/models/vosk-small-en}"
+  if [ -d "$dst" ]; then
+    ok "vosk barge-in model present at $dst"
+    return 0
+  fi
+  sub "fetching vosk small-en model (~40 MB) for partial-word barge-in..."
+  local url="https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+  local tmp
+  tmp="$(mktemp -d)"
+  if curl -fsSL --max-time 600 -o "$tmp/vosk.zip" "$url" \
+     && python3 -c "import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$tmp/vosk.zip" "$tmp" \
+     && [ -d "$tmp/vosk-model-small-en-us-0.15" ]; then
+    mkdir -p "$(dirname "$dst")"
+    mv "$tmp/vosk-model-small-en-us-0.15" "$dst"
+    ok "vosk model installed at $dst"
+  else
+    warn "vosk model fetch failed (non-fatal — partial-word barge-in disabled; VAD barge-in still works)"
+    sub "Manual: unzip vosk-model-small-en-us-0.15 from https://alphacephei.com/vosk/models to $dst"
+  fi
+  rm -rf "$tmp"
+}
+
+# ── Local LLM (Ollama) — offline-parity failover model ──────────────────
+# Stage 1 of full offline parity (2026-07-10): the voice cascade appends the
+# local model as its LAST FallbackAdapter rung (JARVIS_LOCAL_LLM_FAILOVER=1 in
+# src/voice-agent/.env; providers/llm.py::wrap_local_failover), reached only
+# when every cloud rung fails. These provision the engine + model that rung
+# needs. Idempotent, warn-not-abort: a missing ollama/model just means no
+# offline failover — cloud voice is unaffected.
+
+# _ollama_base_url — the native Ollama API base (strip the /v1 OpenAI-compat
+# suffix the voice .env carries).
+_ollama_base_url() {
+  local url
+  url="$(_env_get "$INSTALL_DIR/src/voice-agent/.env" JARVIS_LOCAL_LLM_URL)"
+  url="${url:-http://127.0.0.1:11434/v1}"
+  url="${url%/}"; url="${url%/v1}"
+  printf '%s' "$url"
+}
+
+_ollama_api_up() {
+  curl -fsS --max-time 3 -o /dev/null "$(_ollama_base_url)/api/tags" 2>/dev/null
+}
+
+install_ollama() {
+  if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then return 0; fi
+  section "Local LLM engine (Ollama)"
+  if have ollama; then
+    ok "ollama already installed ($(ollama --version 2>/dev/null | head -1))"
+  else
+    if [ "$(uname -s)" != "Linux" ]; then
+      warn "ollama auto-install is Linux-only — install manually from https://ollama.com/download (offline LLM failover stays dormant)"
+      return 0
+    fi
+    # The official installer escalates via sudo internally. Guard the
+    # non-interactive + no-NOPASSWD case so a curl-pipe install can't hang
+    # or die mid-script — warn and continue instead.
+    if ! sudo -n true 2>/dev/null && ! _interactive; then
+      warn "ollama not installed and sudo needs a password in a non-interactive run — skipping (later: curl -fsSL https://ollama.com/install.sh | sh)"
+      return 0
+    fi
+    sub "installing ollama (official installer, needs sudo)..."
+    if curl -fsSL https://ollama.com/install.sh | sh; then
+      ok "ollama installed"
+    else
+      warn "ollama install FAILED (non-fatal — no offline LLM failover; cloud voice unaffected). Retry: curl -fsSL https://ollama.com/install.sh | sh"
+      return 0
+    fi
+  fi
+
+  # Daemon reachable? The official installer enables a system ollama.service;
+  # start it when present, else point at `ollama serve`.
+  if _ollama_api_up; then
+    ok "ollama API answering at $(_ollama_base_url)"
+    return 0
+  fi
+  if have systemctl && systemctl list-unit-files ollama.service --no-legend 2>/dev/null | grep -q ollama; then
+    sub "starting ollama.service..."
+    if sudo -n systemctl enable --now ollama.service 2>/dev/null; then
+      local _i
+      for _i in 1 2 3 4 5; do
+        _ollama_api_up && break
+        sleep 1
+      done
+      if _ollama_api_up; then
+        ok "ollama.service running ($(_ollama_base_url))"
+      else
+        warn "ollama.service started but the API isn't answering yet at $(_ollama_base_url) — check 'journalctl -u ollama'"
+      fi
+    else
+      warn "could not start ollama.service (sudo not NOPASSWD?) — run: sudo systemctl enable --now ollama"
+    fi
+  else
+    # No ollama systemd unit — start a detached `ollama serve` so pull_local_llm
+    # can reach the API this run (the offline LLM is otherwise dormant on a
+    # fresh box until the user hand-starts it). Only if it isn't already up.
+    if ! _ollama_api_up; then
+      sub "no ollama.service — starting 'ollama serve' in the background..."
+      nohup ollama serve >"$HOME/.local/share/jarvis/logs/ollama-serve.log" 2>&1 &
+      local _i
+      for _i in 1 2 3 4 5 6; do _ollama_api_up && break; sleep 1; done
+    fi
+    if _ollama_api_up; then
+      ok "ollama serving at $(_ollama_base_url) (background 'ollama serve'; for boot-persistence install the systemd unit)"
+    else
+      warn "ollama installed but no daemon reachable at $(_ollama_base_url) — start it with 'ollama serve' (or install the systemd unit)"
+    fi
+  fi
+}
+
+pull_local_llm() {
+  if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then return 0; fi
+  if ! have ollama; then return 0; fi   # install_ollama already warned
+  local tag
+  tag="$(_env_get "$INSTALL_DIR/src/voice-agent/.env" JARVIS_LOCAL_LLM_MODEL)"
+  tag="${tag:-$JARVIS_LOCAL_LLM_TAG}"
+  if [ "$tag" = "auto" ] || [ "$tag" = "AUTO" ]; then
+    # 'auto' is resolved by the voice agent's hwfit picker at runtime; use
+    # the same picker here when the venv exists, else the safe default.
+    local py="$INSTALL_DIR/src/voice-agent/.venv/bin/python"
+    if [ -x "$py" ]; then
+      tag="$(cd "$INSTALL_DIR/src/voice-agent" && "$py" -c "from providers.local_model_picker import resolve_model_tag; print(resolve_model_tag('auto'))" 2>/dev/null)"
+    fi
+    tag="${tag:-$JARVIS_LOCAL_LLM_TAG}"
+  fi
+  if ! _ollama_api_up; then
+    warn "ollama API not reachable — can't check/pull '$tag' (offline LLM failover stays dormant; later: ollama pull $tag)"
+    return 0
+  fi
+  if ollama list 2>/dev/null | awk '{print $1}' | grep -qxF "$tag"; then
+    ok "local LLM '$tag' already pulled"
+    return 0
+  fi
+  if [ "${JARVIS_SKIP_MODELS:-0}" = "1" ]; then
+    warn "skipping local LLM pull (JARVIS_SKIP_MODELS=1) — offline failover stays dormant until: ollama pull $tag"
+    return 0
+  fi
+  section "Pulling local LLM '$tag' (~2.5 GB for qwen3:4b-instruct-2507; skip with JARVIS_SKIP_MODELS=1)"
+  if ollama pull "$tag"; then
+    ok "local LLM '$tag' pulled"
+  else
+    warn "ollama pull '$tag' failed (non-fatal — offline LLM failover stays dormant; retry: ollama pull $tag)"
+  fi
+}
+
+# ── Voice-stack readiness report (read-only; end of install) ─────────────
+verify_voice_stack() {
+  if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then return 0; fi
+  section "Voice stack readiness"
+  local va="$INSTALL_DIR/src/voice-agent"
+  local py="$va/.venv/bin/python"
+  local issues=0
+
+  # GPU
+  if detect_nvidia_gpu; then
+    ok "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
+    if [ -x "$py" ]; then
+      local cuda_n
+      cuda_n="$("$py" -c "import ctranslate2; print(ctranslate2.get_cuda_device_count())" 2>/dev/null || echo "?")"
+      if [ "$cuda_n" != "?" ] && [ "$cuda_n" -ge 1 ] 2>/dev/null; then
+        ok "CUDA usable from the voice venv (ctranslate2 sees $cuda_n device(s))"
+      else
+        warn "ctranslate2 can't see CUDA from the venv — GPU STT will fail (check nvidia-cublas-cu12/nvidia-cudnn-cu12; after suspend: bin/jarvis-cuda-recover)"
+        issues=$((issues+1))
+      fi
+    fi
+  else
+    warn "no NVIDIA GPU — STT runs on CPU (~25 s/clip; voice will be degraded/near-silent)"
+    issues=$((issues+1))
+  fi
+
+  # STT package + model
+  if [ -x "$py" ] && "$py" -c "import faster_whisper" 2>/dev/null; then
+    ok "faster-whisper importable in venv"
+  else
+    warn "faster-whisper NOT importable — no on-device STT"
+    issues=$((issues+1))
+  fi
+  local model
+  model="$(_env_get "$va/.env" JARVIS_LOCAL_STT_MODEL)"; model="${model:-large-v3-turbo}"
+  if _stt_model_cached "$model"; then
+    ok "STT model '$model' cached"
+  else
+    warn "STT model '$model' not cached — first utterance triggers a ~1.5 GB download"
+    issues=$((issues+1))
+  fi
+
+  # Voice .env + LiveKit
+  if [ -f "$va/.env" ]; then
+    ok "voice .env present"
+    # The keypair may live in .env OR the single secret store (keys.env
+    # overrides .env on collision — see setup_env_template).
+    if [ -z "$(_env_get "$va/.env" LIVEKIT_API_KEY)" ] \
+       && [ -z "$(_env_get "$HOME/.jarvis/keys.env" LIVEKIT_API_KEY)" ]; then
+      warn "LIVEKIT_API_KEY not set in $va/.env or ~/.jarvis/keys.env — agent can't auth to the SFU"
+      issues=$((issues+1))
+    fi
+  else
+    warn "voice .env MISSING — jarvis-voice-agent.service will fail (non-optional EnvironmentFile=)"
+    issues=$((issues+1))
+  fi
+  if [ -x "$va/livekit-server.bin" ]; then
+    ok "livekit-server.bin present"
+  else
+    warn "livekit-server.bin missing — no SFU, no voice (re-run ./install.sh)"
+    issues=$((issues+1))
+  fi
+  if [ -s "$HOME/.jarvis/livekit-keys.yaml" ]; then
+    ok "LiveKit keys at $HOME/.jarvis/livekit-keys.yaml"
+  else
+    warn "LiveKit keys missing/empty at $HOME/.jarvis/livekit-keys.yaml — livekit-server can't start"
+    issues=$((issues+1))
+  fi
+  if have systemctl; then
+    if systemctl --user is-active --quiet livekit-server.service 2>/dev/null; then
+      ok "livekit-server.service ACTIVE (ws://127.0.0.1:7880)"
+    elif systemctl --user is-enabled --quiet livekit-server.service 2>/dev/null; then
+      sub "livekit-server.service enabled but not started (start it after configuring .env — see summary)"
+    else
+      warn "livekit-server.service not enabled — voice agent has no SFU"
+      issues=$((issues+1))
+    fi
+  fi
+
+  # TTS
+  local tts_url
+  tts_url="$(_env_get "$va/.env" JARVIS_LOCAL_TTS_URL)"; tts_url="${tts_url:-http://127.0.0.1:8880/v1}"
+  if curl -fsS --max-time 3 -o /dev/null "${tts_url%/}/audio/voices" 2>/dev/null; then
+    ok "Kokoro TTS serving at $tts_url"
+  else
+    warn "Kokoro TTS not reachable at $tts_url — Edge-TTS (cloud) will carry speech"
+    issues=$((issues+1))
+  fi
+  if [ -x "$py" ] && "$py" -c "import edge_tts" 2>/dev/null; then
+    ok "edge-tts fallback importable"
+  else
+    warn "edge-tts NOT importable — no TTS fallback"
+    issues=$((issues+1))
+  fi
+
+  # Local LLM failover (ollama + model) — the offline-parity tail rung
+  local ollama_base llm_tag
+  ollama_base="$(_ollama_base_url)"
+  llm_tag="$(_env_get "$va/.env" JARVIS_LOCAL_LLM_MODEL)"; llm_tag="${llm_tag:-qwen3:4b-instruct-2507-q4_K_M}"
+  if curl -fsS --max-time 3 "$ollama_base/api/tags" 2>/dev/null | grep -qF "\"$llm_tag\""; then
+    ok "local LLM failover ready: ollama serving '$llm_tag' at $ollama_base"
+  elif _ollama_api_up; then
+    warn "ollama reachable at $ollama_base but model '$llm_tag' not pulled — offline LLM failover dormant (ollama pull $llm_tag)"
+    issues=$((issues+1))
+  else
+    warn "ollama not reachable at $ollama_base — no offline LLM failover (cloud voice unaffected)"
+    issues=$((issues+1))
+  fi
+
+  # Barge-in extras (soft)
+  local vosk_dir="${JARVIS_PARTIAL_BARGEIN_MODEL:-$HOME/.jarvis/models/vosk-small-en}"
+  if [ -d "$vosk_dir" ]; then
+    ok "vosk barge-in model present"
+  else
+    sub "vosk barge-in model absent (optional — partial-word barge-in disabled)"
+  fi
+
+  if [ "$issues" -eq 0 ]; then
+    ok "voice stack READY"
+  else
+    warn "$issues item(s) need attention (see ⚠ lines above) — voice may be degraded until fixed"
   fi
 }
 
@@ -1042,12 +1688,23 @@ main() {
   install_bubblewrap     # bash-tool sandbox runtime (§P0-SEC-7)
   generate_bridge_token  # ~/.jarvis/local-api-token.env + web .env.local
   ensure_livekit_binary  # fetch livekit-server.bin at install time (not in git)
+  setup_voice_env        # src/voice-agent/.env bootstrap + local STT/TTS flags (GPU-aware)
   setup_livekit_keys
+  localize_livekit_yaml  # fix hardcoded key_file path on non-default $HOME
+  install_jarvis_net     # jarvis0 dummy NIC (WiFi/Docker-independent voice media)
+  localize_livekit_rtc   # pin livekit media to jarvis0 → docker0 → primary (portable)
+  install_local_stt      # faster-whisper + (GPU) CUDA runtime wheels in the venv
+  prefetch_stt_model     # ~1.5 GB HF model (skip: JARVIS_SKIP_MODELS=1)
+  install_kokoro_tts     # on-device TTS container (skip: JARVIS_SKIP_KOKORO=1)
+  fetch_vosk_model       # ~40 MB partial-word barge-in model (skip: JARVIS_SKIP_MODELS=1)
+  install_ollama         # local LLM engine for the offline failover rung (warn-not-abort)
+  pull_local_llm         # ~4.7 GB failover model (skip: JARVIS_SKIP_MODELS=1)
   check_computer_use_deps  # optional probes for computer_use subagent
   install_audio_profile
   install_echo_cancel_aec
   configure                # first-run: interactive API keys + persona, or just the templates when non-interactive
   install_honcho           # optional: self-hosted honcho cross-session memory (JARVIS_INSTALL_HONCHO=1)
+  verify_voice_stack       # read-only readiness report: GPU / STT / SFU / TTS
   print_summary
 }
 

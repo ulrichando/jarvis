@@ -31,24 +31,26 @@ rtc:
   # now. When we add WAN (Tailscale / Wireguard), this flips to true
   # and we add stun_servers.
   use_external_ip: false
-  # Advertise the docker0 bridge IP (always up, WiFi-independent) for
-  # WebRTC media instead of auto-detecting the wlan0 IP. 2026-07-12: the
-  # SFU was advertising the wlan0 host IP + a STUN-reflexive public IP for
-  # the media path, so dropping WiFi killed every ICE candidate →
-  # "wait_pc_connection timed out" → voice dead offline even though the
-  # LLM/STT/TTS are all local. docker0 (172.17.0.1) survives WiFi loss, so
-  # the loopback-ish media path holds. No STUN (use_external_ip:false), so
-  # clients gather host candidates only — no public/WiFi-dependent srflx.
-  node_ip: 172.17.0.1
-  # Gather ICE candidates ONLY from docker0 — so no WiFi IPv4/IPv6 (wlan0 /
-  # 2600:1702:… ) candidates are ever offered. Without this, node_ip fixed
-  # the IPv4 side to docker0 but the SFU still advertised WiFi IPv6 host
-  # candidates and the publisher selected one → still died on WiFi loss.
-  # docker0 is the single stable media interface; the media path is now
-  # WiFi-independent end to end.
+  # Advertise the jarvis0 dummy interface for WebRTC media instead of
+  # auto-detecting wlan0. 2026-07-12: the SFU was advertising the wlan0 host
+  # IP + a STUN-reflexive public IP, so dropping WiFi killed every ICE
+  # candidate → "wait_pc_connection timed out" → voice dead offline even
+  # though the LLM/STT/TTS are all local. jarvis0 (a dummy NIC created by
+  # jarvis-net.service — see setup/systemd/) is ALWAYS up: WiFi-independent
+  # AND Docker-independent, and non-loopback so libwebrtc CLIENTS actually
+  # gather it (loopback 127.0.0.1 is filtered by libwebrtc → tested, fails
+  # with wait_pc_connection; docker0 works but isn't portable — absent on a
+  # no-Docker box, killing voice online-inclusive). No STUN
+  # (use_external_ip:false) so no public/WiFi-dependent srflx candidates.
+  # NOTE: node_ip is set at INSTALL time by install.sh::localize_livekit_rtc
+  # (jarvis0 → docker0 → wlan0 fallback); this committed value is the
+  # jarvis0 default that jarvis-net.service provisions.
+  node_ip: 10.201.0.1
+  # Gather ICE candidates ONLY from jarvis0 — no WiFi IPv4/IPv6 candidates
+  # are ever offered, so nothing in the media path depends on WiFi.
   interfaces:
     includes:
-      - docker0
+      - jarvis0
 
 # API keypair lives in the `key_file` referenced above so this yaml can
 # be committed without leaking secrets. The agent + every client read
