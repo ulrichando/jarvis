@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# jarvis-iot — launcher for the IoT discovery sidecar (iot/service.py → :8779).
+# Mirrors bin/jarvis-computer-use. The service answers "what devices do I have"
+# for the voice smart_home tool and the web Devices tab.
+#
+#   jarvis-iot [start|stop|status]
+set -u
+
+REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
+VA="$REPO/src/voice-agent"
+PY="$VA/.venv/bin/python"
+LOG="$HOME/.local/share/jarvis/logs/iot-service.log"
+mkdir -p "$(dirname "$LOG")"
+
+# Bracket the first char so pgrep never matches its own command line.
+svc_up() { pgrep -f "[i]ot.service" >/dev/null 2>&1; }
+
+case "${1:-start}" in
+  start)
+    if svc_up; then
+      echo "iot: already up (:${JARVIS_IOT_PORT:-8779})"
+    elif [ -x "$PY" ]; then
+      ( cd "$VA" && setsid nohup "$PY" -m iot.service >>"$LOG" 2>&1 & )
+      echo "iot: starting on :${JARVIS_IOT_PORT:-8779} (log: $LOG)"
+    else
+      echo "iot: venv python not found at $PY" >&2
+      exit 1
+    fi
+    ;;
+  stop)
+    pkill -f "[i]ot.service" 2>/dev/null && echo "iot: stopped" || echo "iot: not running"
+    ;;
+  status)
+    svc_up && echo "iot: up (:${JARVIS_IOT_PORT:-8779})" || echo "iot: down"
+    ;;
+  *)
+    echo "usage: $0 [start|stop|status]" >&2
+    exit 1
+    ;;
+esac
