@@ -19,6 +19,11 @@ readonly REPO_URL="https://github.com/ulrichando/jarvis.git"
 readonly DEFAULT_INSTALL_DIR="$HOME/Documents/Projects/jarvis"
 readonly LOCAL_BIN="$HOME/.local/bin"
 readonly USER_SYSTEMD="$HOME/.config/systemd/user"
+readonly SYSTEM_SYSTEMD="/etc/systemd/system"
+# Stable dummy NIC + IP that LiveKit pins WebRTC media to (jarvis-net.service),
+# so the voice audio path survives WiFi loss.
+readonly JARVIS_NET_IF="jarvis0"
+readonly JARVIS_NET_IP="10.201.0.1"
 
 INSTALL_DIR="${JARVIS_INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
 
@@ -682,6 +687,63 @@ localize_livekit_yaml() {
   fi
   sed -i "s|^key_file:.*|key_file: $want|" "$yaml"
   warn "localized livekit.yaml key_file → $want (was $current; dirties the checkout — expected on non-default \$HOME)"
+}
+
+# The committed livekit.yaml pins WebRTC media to jarvis0 (10.201.0.1) so the
+# audio ICE path is WiFi-independent. But jarvis0 only exists once
+# jarvis-net.service has run, and a stale pin at an ABSENT interface = zero ICE
+# candidates = voice dead ONLINE too. So localize the rtc pin to what this box
+# actually has, preferring the stable jarvis0, then docker0, then (last resort,
+# WiFi-dependent) the primary interface so at least ONLINE voice works.
+# Idempotent; rewrites node_ip + the single interfaces.includes entry.
+localize_livekit_rtc() {
+  if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then return 0; fi
+  local yaml="$INSTALL_DIR/src/voice-agent/livekit.yaml"
+  [ -f "$yaml" ] || return 0
+  grep -qE '^  node_ip:' "$yaml" || return 0   # not the pinned-media layout; leave it
+  local if_name ip
+  if ip link show "$JARVIS_NET_IF" >/dev/null 2>&1; then
+    if_name="$JARVIS_NET_IF"; ip="$JARVIS_NET_IP"
+  elif ip -4 -o addr show docker0 2>/dev/null | grep -q 'inet '; then
+    if_name="docker0"
+    ip="$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d/ -f1 | head -1)"
+    warn "jarvis0 absent — pinning LiveKit media to docker0 ($ip). Survives WiFi loss only while Docker runs; enable jarvis-net.service for a Docker-independent path."
+  else
+    if_name="$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oE 'dev [^ ]+' | awk '{print $2}' | head -1)"
+    ip="$(ip -4 -o addr show "$if_name" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
+    [ -z "$if_name" ] || [ -z "$ip" ] && { warn "no jarvis0/docker0/primary interface found — leaving livekit.yaml rtc as-is; if voice fails, run: sudo systemctl enable --now jarvis-net.service"; return 0; }
+    warn "no jarvis0/docker0 — pinning LiveKit to $if_name ($ip); ONLINE voice works but WiFi-off voice will NOT hold. Fix: sudo systemctl enable --now jarvis-net.service"
+  fi
+  sed -i "s|^  node_ip:.*|  node_ip: $ip|" "$yaml"
+  sed -i "s|^      - .*|      - $if_name|" "$yaml"
+  ok "livekit.yaml rtc pinned to $if_name ($ip) for WiFi-independent media"
+}
+
+# Install + enable the SYSTEM unit that creates the jarvis0 dummy NIC (needs
+# root; the voice units are all --user). Best-effort: without NOPASSWD sudo we
+# warn and localize_livekit_rtc falls back to docker0/primary.
+install_jarvis_net() {
+  if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then return 0; fi
+  local unit="jarvis-net.service"
+  local src="$INSTALL_DIR/setup/systemd/$unit"
+  [ -f "$src" ] || return 0
+  if ip link show "$JARVIS_NET_IF" >/dev/null 2>&1 \
+     && systemctl is-enabled "$unit" >/dev/null 2>&1; then
+    ok "$JARVIS_NET_IF already up + $unit enabled"
+    return 0
+  fi
+  if ! sudo -n true 2>/dev/null; then
+    warn "no passwordless sudo — can't install $unit (creates $JARVIS_NET_IF for WiFi-independent voice). Run manually:"
+    sub "sudo cp $src $SYSTEM_SYSTEMD/$unit && sudo systemctl enable --now $unit"
+    return 0
+  fi
+  sudo -n cp "$src" "$SYSTEM_SYSTEMD/$unit" 2>/dev/null || { warn "couldn't copy $unit to $SYSTEM_SYSTEMD"; return 0; }
+  sudo -n systemctl daemon-reload 2>/dev/null
+  if sudo -n systemctl enable --now "$unit" 2>/dev/null; then
+    ok "$unit enabled — $JARVIS_NET_IF ($JARVIS_NET_IP) up (WiFi/Docker-independent voice media)"
+  else
+    warn "installed $unit but couldn't start it — run: sudo systemctl enable --now $unit"
+  fi
 }
 
 # faster-whisper + (GPU-only) the CUDA runtime wheels ctranslate2 needs.
@@ -1630,6 +1692,8 @@ main() {
   setup_voice_env        # src/voice-agent/.env bootstrap + local STT/TTS flags (GPU-aware)
   setup_livekit_keys
   localize_livekit_yaml  # fix hardcoded key_file path on non-default $HOME
+  install_jarvis_net     # jarvis0 dummy NIC (WiFi/Docker-independent voice media)
+  localize_livekit_rtc   # pin livekit media to jarvis0 → docker0 → primary (portable)
   install_local_stt      # faster-whisper + (GPU) CUDA runtime wheels in the venv
   prefetch_stt_model     # ~1.5 GB HF model (skip: JARVIS_SKIP_MODELS=1)
   install_kokoro_tts     # on-device TTS container (skip: JARVIS_SKIP_KOKORO=1)
