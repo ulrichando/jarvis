@@ -1,0 +1,14 @@
+[Unit]
+Description=JARVIS — pull scheduled-task voice reminders from the VPS every minute
+
+[Timer]
+# Fire every minute; a reminder fired on the VPS is voiced within ~1 min.
+OnCalendar=minutely
+AccuracySec=5s
+# Not persistent: a missed minute (laptop asleep) just means the reminder is
+# pulled on the next tick — the endpoint holds it until fetched.
+Persistent=false
+Unit=jarvis-scheduled-voice-poll.service
+
+[Install]
+WantedBy=timers.target

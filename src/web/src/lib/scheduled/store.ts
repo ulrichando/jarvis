@@ -24,6 +24,12 @@ export type ScheduledChat = {
   created_at: number;
   last_run_at: number | null;
   last_conversation_id: string | null;
+  // Voice-reminder delivery tracking. `last_voice_text` is the (capped)
+  // spoken text set when the task fires; a reminder is "pending voice" when
+  // last_run_at > voice_delivered_at. The local voice poller fetches pending
+  // ones from a remote (VPS) instance and marks them delivered.
+  last_voice_text?: string | null;
+  voice_delivered_at?: number | null;
 };
 
 // ponytail: JSON file store like ~/.jarvis/workspaces/_meta.json — no DB
@@ -79,7 +85,7 @@ export function createScheduledChat(input: {
 
 export function updateScheduledChat(
   id: string,
-  patch: Partial<Pick<ScheduledChat, "name" | "prompt" | "cron" | "label" | "at" | "model" | "paused" | "last_run_at" | "last_conversation_id">>,
+  patch: Partial<Pick<ScheduledChat, "name" | "prompt" | "cron" | "label" | "at" | "model" | "paused" | "last_run_at" | "last_conversation_id" | "last_voice_text" | "voice_delivered_at">>,
 ): ScheduledChat | null {
   const tasks = readAll();
   const idx = tasks.findIndex((t) => t.id === id);
@@ -95,6 +101,30 @@ export function deleteScheduledChat(id: string): boolean {
   if (next.length === tasks.length) return false;
   writeAll(next);
   return true;
+}
+
+/** Reminders that have fired but haven't been voiced yet, marked delivered in
+ *  the same read (so a poll never double-delivers). Used by the voice-pending
+ *  endpoint the local poller pulls. */
+export function takePendingVoiceReminders(
+  now = Date.now(),
+): Array<{ id: string; name: string; text: string }> {
+  const tasks = readAll();
+  const out: Array<{ id: string; name: string; text: string }> = [];
+  let changed = false;
+  for (const t of tasks) {
+    if (
+      t.last_run_at &&
+      t.last_voice_text &&
+      t.last_run_at > (t.voice_delivered_at ?? 0)
+    ) {
+      out.push({ id: t.id, name: t.name, text: t.last_voice_text });
+      t.voice_delivered_at = now;
+      changed = true;
+    }
+  }
+  if (changed) writeAll(tasks);
+  return out;
 }
 
 /** Tasks due right now: one-time `at` reached and never run, or cron due

@@ -182,6 +182,11 @@ const SELF_AUTH_GET_PATTERNS: RegExp[] = [
   // Now self-authing (getUserIdOrSharedLocal → the caller's own sessions), so a
   // per-user API token reads its owner's sessions; the cookie'd UI still works.
   /^\/api\/bridge\/v1\/sessions$/,
+  // Scheduled-task voice reminders the local voice poller pulls from a remote
+  // (VPS) instance. Self-auths in-handler against JARVIS_SCHEDULED_VOICE_TOKEN
+  // (a dedicated shared secret, NOT a user session). Deployed instances behind
+  // Cloudflare Access must also exclude this path (like /api/bridge/*).
+  /^\/api\/scheduled\/voice-pending$/,
 ]
 
 // Host header allowlist (DNS-rebinding defense, parallel to the bridge

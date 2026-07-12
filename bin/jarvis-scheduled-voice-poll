@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# jarvis-scheduled-voice-poll — pull fired scheduled-task voice reminders from a
+# remote (VPS) JARVIS web instance and speak them on THIS box (where the voice
+# agent runs). The web app is on the VPS but the voice agent is local, so the
+# local box must pull: this hits GET /api/scheduled/voice-pending (which marks
+# each reminder delivered as it returns them), then delivers each the same way
+# the in-process fire path does — POST to the local voice client's /user-input
+# when a session is live (so "yes, read it" works), else queue the pending file
+# the voice agent drains on next connect.
+#
+# Config (~/.jarvis/scheduled-voice-poll.env), same secret set on the VPS web:
+#   JARVIS_VPS_WEB_URL=https://0wlan.com
+#   JARVIS_SCHEDULED_VOICE_TOKEN=<shared secret>
+#   JARVIS_VOICE_CLIENT_PORT=8767   # optional, default 8767
+#
+# Wired to run every minute by jarvis-scheduled-voice-poll.timer. No-op (exit 0)
+# when unconfigured, so enabling the timer before setting the token is harmless.
+set -euo pipefail
+
+CONF="${HOME}/.jarvis/scheduled-voice-poll.env"
+[ -f "$CONF" ] && . "$CONF"
+
+URL="${JARVIS_VPS_WEB_URL:-}"
+TOKEN="${JARVIS_SCHEDULED_VOICE_TOKEN:-}"
+PORT="${JARVIS_VOICE_CLIENT_PORT:-8767}"
+if [ -z "$URL" ] || [ -z "$TOKEN" ]; then
+  exit 0   # not configured yet — nothing to do
+fi
+command -v jq >/dev/null 2>&1 || { echo "jarvis-scheduled-voice-poll: jq required" >&2; exit 0; }
+
+CRON_DIR="${HOME}/.jarvis/cron"
+PENDING="${CRON_DIR}/pending.jsonl"
+LOCK="${CRON_DIR}/.pending.lock"
+mkdir -p "$CRON_DIR"
+
+# Fetch pending reminders (the endpoint marks them delivered as it returns them).
+resp="$(curl -fsS --max-time 15 -H "Authorization: Bearer ${TOKEN}" \
+  "${URL%/}/api/scheduled/voice-pending" 2>/dev/null || true)"
+[ -z "$resp" ] && exit 0
+
+# Speak one reminder: try the live session (/user-input, LLM voices the offer
+# and holds the result for a spoken "yes"); on 503/failure queue pending.jsonl.
+deliver() {
+  local name="$1" text="$2" directive body
+  directive="(Automated — your scheduled task \"${name}\" just ran. In ONE short sentence, tell me it's ready and ask if I'd like you to read it. Don't read the content unless I say yes. Here is the result to read only if I ask:)
+
+${text}"
+  body="$(jq -nc --arg t "$directive" '{text:$t}')"
+  if curl -fsS --max-time 5 -X POST -H 'Content-Type: application/json' \
+      -d "$body" "http://127.0.0.1:${PORT}/user-input" >/dev/null 2>&1; then
+    return 0   # a live session picked it up
+  fi
+  # No live session → queue for the next connect (voice agent drains it). Same
+  # flock the Python side uses so an append can't be lost mid-drain.
+  local line
+  line="$(jq -nc --arg j "$name" --arg x "just ran — it's ready in your chats. Ask me to read it any time." '{job:$j,text:$x}')"
+  printf '%s\n' "$line" | flock -x "$LOCK" sh -c "cat >> '$PENDING'"
+}
+
+echo "$resp" | jq -c '.reminders[]?' | while IFS= read -r item; do
+  name="$(printf '%s' "$item" | jq -r '.name')"
+  text="$(printf '%s' "$item" | jq -r '.text')"
+  [ -n "$name" ] && deliver "$name" "$text" || true
+done
+
+exit 0
