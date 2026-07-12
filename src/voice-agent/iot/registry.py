@@ -40,6 +40,10 @@ class DeviceRegistry:
     def get(self, key: str) -> Device | None:
         return self._devices.get(key)
 
+    def remove(self, key: str) -> None:
+        if self._devices.pop(key, None) is not None:
+            self._save()
+
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"devices": [d.to_dict() for d in self._devices.values()]}

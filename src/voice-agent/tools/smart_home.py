@@ -35,14 +35,31 @@ def _service_up() -> bool:
 
 
 def _speakable(devices: list[dict]) -> str:
+    """Lead with the IDENTIFIED smart devices (by name), state what's
+    controllable, and fold anonymous/infra hosts into a trailing count — so
+    the spoken answer never reads out raw IPs."""
     if not devices:
         return "I didn't find any devices on your network."
-    controllable = [d for d in devices if d.get("controllable") in ("local", "matter")]
-    names = ", ".join(d.get("name", "a device") for d in devices[:8])
-    line = f"You have {len(devices)} device{'s' if len(devices) != 1 else ''}: {names}."
-    if len(controllable) < len(devices):
-        line += (f" I can control {len(controllable)} of them directly; "
-                 "the rest (like Alexa and cloud bulbs) I can only see, not command.")
+    named = [d for d in devices
+             if d.get("type", "unknown") != "unknown" or d.get("brand")]
+    unknown = [d for d in devices if d not in named]
+    if not named:
+        return (f"I found {len(devices)} host{'s' if len(devices) != 1 else ''} on "
+                "your network but couldn't identify any as smart-home devices.")
+    controllable = [d for d in named if d.get("controllable") in ("local", "matter")]
+    names = ", ".join(d.get("name") or d.get("brand") or d.get("type") for d in named[:6])
+    line = f"You have {len(named)} smart device{'s' if len(named) != 1 else ''}: {names}."
+    if not controllable:
+        line += (" None are locally controllable yet — they're mostly cloud-only "
+                 "devices like Alexa.")
+    elif len(controllable) < len(named):
+        can = ", ".join(d.get("name") or d.get("brand") for d in controllable[:4])
+        line += (f" I can control {can} directly; the rest (like Alexa and cloud "
+                 "bulbs) I can only see, not command.")
+    else:
+        line += " I can control all of them directly."
+    if unknown:
+        line += f" Plus {len(unknown)} unidentified host{'s' if len(unknown) != 1 else ''}."
     return line
 
 
