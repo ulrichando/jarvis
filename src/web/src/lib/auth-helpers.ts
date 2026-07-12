@@ -118,8 +118,11 @@ export async function requireUserIdOrSharedLocal(
  * A genuinely multi-user box (2+ real users) makes the single shared token
  * ambiguous — it can't name which user — so return null (→ 401) rather than
  * guess. Single-user personal boxes (the JARVIS target) never hit that.
+ *
+ * Exported for trusted in-process service callers (the scheduled-chats
+ * background tick) that need the owning user without a request context.
  */
-async function resolveSharedLocalOwnerId(): Promise<string | null> {
+export async function resolveSharedLocalOwnerId(): Promise<string | null> {
   const { LOCAL_USER_ID, ensureLocalUser } = await import("./chat/persist");
   const { db, schema } = await import("./db");
   if (!db) return LOCAL_USER_ID;

@@ -34,12 +34,20 @@ export async function ensureConversation({
   model,
   firstUserText,
   userId = LOCAL_USER_ID,
+  kind,
+  title: titleOverride,
 }: {
   id?: string;
   model: string;
   firstUserText: string;
   /** Owner of the conversation. Defaults to the local user (auth-disabled). */
   userId?: string;
+  /** "task" marks scheduled-task setup/run sessions so the sidebar shows a
+   *  task icon. Omit (→ column default "chat") for normal chats. */
+  kind?: "task" | "chat";
+  /** Explicit title override (e.g. "Daily brief" for a template task).
+   *  Falls back to firstUserText when absent. */
+  title?: string;
 }) {
   if (!persistenceEnabled || !db) return null;
   if (userId === LOCAL_USER_ID) await ensureLocalUser();
@@ -58,15 +66,16 @@ export async function ensureConversation({
     if (existing) return existing;
   }
 
-  const title = firstUserText.slice(0, 80).trim() || "New chat";
+  const title =
+    titleOverride?.trim() || firstUserText.slice(0, 80).trim() || "New chat";
 
   // Don't pass `id` when it's null/undefined — postgres rejects it as
   // a not-null violation. Omitting lets the column's gen_random_uuid()
   // default fill in. When id IS provided (e.g. existing chat), pass
   // it through so the row is created with the caller's id.
   const values = id
-    ? { id, userId, title, model }
-    : { userId, title, model };
+    ? { id, userId, title, model, ...(kind ? { kind } : {}) }
+    : { userId, title, model, ...(kind ? { kind } : {}) };
   const [created] = await db
     .insert(schema.conversations)
     .values(values)

@@ -26,6 +26,7 @@ import { readKnowledgeBlock } from "@/lib/workspace/knowledge";
 import { readGlobalKnowledgeBlock } from "@/lib/knowledge/store";
 import { generateQuestions, renderQuestionsHtml } from "@/lib/design/questionnaire";
 import { buildWorkbenchPrompt, buildDesignPrompt, buildArtifactPrompt } from "@/lib/actions/jarvis-prompt";
+import { buildScheduleInterviewPrompt } from "@/lib/scheduled/interview";
 import { extractJarvisArtifacts } from "@/lib/artifacts/extract";
 import { detectArtifacts } from "@/lib/artifacts/detect";
 import { upsertArtifactFromMessage } from "@/lib/artifacts/store";
@@ -235,10 +236,20 @@ type Body = {
   // generation for this turn (model-independent), matching Open WebUI's
   // explicit image mode. Works even with thinking models that can't tool-call.
   image?: boolean;
+  // Incognito chat (claude.ai ghost mode) — true skips ensureConversation, so
+  // NOTHING persists: no conversation row, no messages, no X-Conversation-Id.
+  // Every save path below is already guarded on `conversation` being set.
+  incognito?: boolean;
+  // Scheduled-task SETUP mode — true appends the interview instructions so
+  // the model runs the ask-questions-then-create flow. Off by default.
+  scheduleSetup?: boolean;
+  // Title for a template-launched task conversation ("Daily brief"), so the
+  // sidebar shows the clean name instead of the long seed prompt.
+  taskTitle?: string;
 };
 
 export async function POST(req: Request) {
-  const { id, messages, model, system, workspaceId, mode, format, search, image }: Body = await req.json();
+  const { id, messages, model, system, workspaceId, mode, format, search, image, incognito, scheduleSetup, taskTitle }: Body = await req.json();
   // UIMessage shape only — a {role, content} message (or missing array)
   // used to 500 deep in extractText instead of failing at the boundary.
   if (
@@ -347,12 +358,17 @@ export async function POST(req: Request) {
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   const firstUserText = lastUser ? extractText(lastUser.parts) : "";
 
-  const conversation = await ensureConversation({
-    id,
-    model: modelId,
-    firstUserText,
-    userId,
-  });
+  const conversation = incognito
+    ? null
+    : await ensureConversation({
+        id,
+        model: modelId,
+        firstUserText,
+        userId,
+        // Schedule-setup chats are task sessions → task icon in the sidebar.
+        ...(scheduleSetup ? { kind: "task" as const } : {}),
+        ...(scheduleSetup && taskTitle ? { title: taskTitle } : {}),
+      });
 
   // Pin conversation→workspace server-side so refresh / different-
   // browser still resolves the same chat history. Was localStorage-only
@@ -458,6 +474,12 @@ export async function POST(req: Request) {
   // below. Kill-switch: JARVIS_WEB_ARTIFACTS_ENABLED=0.
   if (!workspaceId && process.env.JARVIS_WEB_ARTIFACTS_ENABLED !== "0") {
     finalSystem += buildArtifactPrompt();
+  }
+  // Scheduled-task setup interview — only when the client is in that mode
+  // (Home "Scheduled" templates / composer). Turns the chat into the
+  // ask-questions-then-create flow that produces a real /api/scheduled task.
+  if (!workspaceId && scheduleSetup) {
+    finalSystem += buildScheduleInterviewPrompt();
   }
   if (workspaceId) {
     const ws = await getWorkspace(workspaceId);
