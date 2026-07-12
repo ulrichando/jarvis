@@ -1,9 +1,12 @@
 import "server-only";
 
-import { generateText } from "ai";
+import { generateText, stepCountIs, type ToolSet } from "ai";
 import { randomUUID } from "node:crypto";
 import type { UIMessage } from "ai";
 import { getModelWithLocalFailover } from "@/lib/ai/local-failover";
+import { webSearchTool } from "@/lib/tools/web-search";
+import { listMcpServers } from "@/lib/mcp/store";
+import { loadMcpTools } from "@/lib/mcp/client";
 import { loadSettings } from "@/lib/settings/store";
 import { resolveSharedLocalOwnerId } from "@/lib/auth-helpers";
 import {
@@ -60,7 +63,39 @@ export async function runScheduledChat(
   const system =
     settings.defaults.systemPrompt?.trim() ||
     "You are Jarvis. This message is a scheduled task run — produce the requested output directly, no preamble.";
-  const result = await generateText({ model, system, prompt: task.prompt });
+
+  // Wire the same data tools the chat has (web search + this instance's MCP
+  // connectors) so a "morning brief" can actually gather real data — GitHub,
+  // calendar, the Coding-Kiddos MCP, etc. — instead of hallucinating. Tools
+  // come from THIS instance's connector config, so a brief that needs a
+  // specific MCP must run where that MCP is installed. A broken/slow MCP is
+  // skipped (loadMcpTools is per-server try/catch), never breaking the run.
+  let mcpTools: ToolSet = {};
+  let mcpClose: (() => Promise<void>) | null = null;
+  try {
+    const servers = await listMcpServers();
+    if (servers.some((s) => s.enabled && s.url)) {
+      const loaded = await loadMcpTools(servers);
+      mcpTools = loaded.tools;
+      mcpClose = loaded.close;
+    }
+  } catch (err) {
+    console.error("[scheduled] mcp load failed:", err);
+  }
+
+  let result;
+  try {
+    result = await generateText({
+      model,
+      system,
+      prompt: task.prompt,
+      tools: { webSearch: webSearchTool, ...mcpTools },
+      // Multi-step: the model calls tools, reads results, then writes the brief.
+      stopWhen: stepCountIs(8),
+    });
+  } finally {
+    await mcpClose?.();
+  }
 
   if (conversation) {
     await saveAssistantMessage({
