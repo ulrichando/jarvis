@@ -76,15 +76,22 @@ export async function runScheduledChat(
     }
   }
 
+  // Stash the (capped) result as the reminder text so both the direct voice
+  // path and the remote poller can voice it. Cap keeps the JSON store small
+  // and the /user-input turn from bloating context.
+  const voiceText =
+    result.text.length > 2500 ? result.text.slice(0, 2500) + "…" : result.text;
   updateScheduledChat(task.id, {
     last_run_at: Date.now(),
     last_conversation_id: conversation?.id ?? null,
+    last_voice_text: voiceText,
   });
 
-  // Voice reminder: hand the result to the JARVIS voice agent so it speaks
-  // "your <task> is ready — want me to read it?" (live) or queues it for the
-  // next session connect (offline). Best-effort; never blocks the run result.
-  void announceScheduledResult(task.name, result.text);
+  // Voice reminder. On the local box (JARVIS_LOCAL_VOICE=1) deliver directly to
+  // the voice agent and mark it delivered so the poller skips it. On a remote
+  // instance (the VPS, no local voice client) this is a no-op — the reminder
+  // stays "pending voice" for the local poller to pull. Never blocks the run.
+  void announceScheduledResult(task.id, task.name, voiceText);
 
   return { conversationId: conversation?.id ?? null };
 }

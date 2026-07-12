@@ -33,7 +33,16 @@ function liveDirective(name: string, result: string): string {
   );
 }
 
-async function tryLiveAnnounce(name: string, result: string): Promise<boolean> {
+// Probe result: whether the local voice client is reachable and what it did.
+//   "spoken"     — a live session took it (200); nothing more to do.
+//   "client-idle"— voice client running but no session (503); queue pending.
+//   "no-client"  — nothing listening on :8767 (likely a remote/VPS instance).
+type VoiceProbe = "spoken" | "client-idle" | "no-client";
+
+async function tryLiveAnnounce(
+  name: string,
+  result: string,
+): Promise<VoiceProbe> {
   try {
     const res = await fetch(`http://127.0.0.1:${VOICE_PORT}/user-input`, {
       method: "POST",
@@ -41,11 +50,10 @@ async function tryLiveAnnounce(name: string, result: string): Promise<boolean> {
       body: JSON.stringify({ text: liveDirective(name, result) }),
       signal: AbortSignal.timeout(3000),
     });
-    // 200 → a session is live and JARVIS will voice it. 503 → no session.
-    return res.ok;
+    return res.ok ? "spoken" : "client-idle";
   } catch {
-    // Voice client down / not running → fall through to the offline queue.
-    return false;
+    // Connection refused / timeout → no voice client on this box.
+    return "no-client";
   }
 }
 
@@ -90,22 +98,43 @@ function notifyDesktop(name: string): void {
   });
 }
 
-/** Announce a fired scheduled task by voice. Never throws — a reminder failure
- *  must not break the task run. Off via JARVIS_SCHEDULED_VOICE=0. */
+/** Announce a fired scheduled task by voice. Auto-detects whether this box has
+ *  a local voice agent by probing the voice client:
+ *   - live session → /user-input voices the offer now (a spoken "yes" reads it);
+ *   - client idle → queue pending.jsonl (drained on next connect);
+ *   - no client + JARVIS_LOCAL_VOICE=1 → still queue (a local agent will drain it);
+ *   - no client + no flag → leave "pending voice" for the remote poller to pull.
+ *  Marks the reminder delivered whenever it was handled locally, so the poller
+ *  never double-voices it. Never throws (a reminder must not break the run).
+ *  Off entirely via JARVIS_SCHEDULED_VOICE=0. */
 export async function announceScheduledResult(
+  taskId: string,
   name: string,
   result: string,
 ): Promise<void> {
   if (process.env.JARVIS_SCHEDULED_VOICE === "0") return;
   try {
-    const spokenLive = await tryLiveAnnounce(name, result);
-    if (!spokenLive) {
+    const probe = await tryLiveAnnounce(name, result);
+    const localFlag = process.env.JARVIS_LOCAL_VOICE === "1";
+    let handledLocally = false;
+    if (probe === "spoken") {
+      handledLocally = true;
+    } else if (probe === "client-idle" || localFlag) {
+      // Voice client is on this box (idle), or we're told this box is local:
+      // queue for the agent to drain, and notify the desktop.
       queuePending(
         name,
         "just ran — it's ready in your chats. Ask me to read it any time.",
       );
+      notifyDesktop(name);
+      handledLocally = true;
     }
-    notifyDesktop(name);
+    // probe === "no-client" && !localFlag → remote (VPS): leave it pending in
+    // the store; the local poller pulls it via /api/scheduled/voice-pending.
+    if (handledLocally) {
+      const { updateScheduledChat } = await import("./store");
+      updateScheduledChat(taskId, { voice_delivered_at: Date.now() });
+    }
   } catch {
     /* best-effort — never break the run */
   }

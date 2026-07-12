@@ -1,0 +1,16 @@
+[Unit]
+Description=JARVIS — deliver VPS scheduled-task voice reminders to the local voice agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/mkdir -p %h/.jarvis/cron %h/.local/share/jarvis/logs
+ExecStart=/home/ulrich/Documents/Projects/jarvis/bin/jarvis-scheduled-voice-poll
+# One poll is a couple of short HTTP calls; bound it so a hung remote can't
+# wedge the timer slot.
+TimeoutStartSec=60
+StandardOutput=append:%h/.local/share/jarvis/logs/scheduled-voice-poll.log
+StandardError=append:%h/.local/share/jarvis/logs/scheduled-voice-poll.log
+
+# No [Install]: triggered by jarvis-scheduled-voice-poll.timer, not default.target.

@@ -136,11 +136,6 @@ const SELF_AUTH_PATTERNS: RegExp[] = [
 // events path's GET (transcript read for the web UI) has no in-handler
 // bearer auth and must stay behind the gate.
 const SELF_AUTH_POST_PATTERNS: RegExp[] = [
-  // Cross-surface "sign out everywhere": the desktop/CLI POST here with their
-  // Remote Control bridge token to revoke all the user's web sessions + the
-  // bridge token server-side. Self-auths in-handler (resolveBridgeToken), so it
-  // must bypass the shared-token gate like the other bridge self-auth routes.
-  /^\/api\/bridge\/logout$/,
   /^\/api\/bridge\/v1\/sessions\/[^/]+\/(archive|events)$/,
   // REPL bridge (/remote-control) CCR session lifecycle: create + archive.
   // Handlers validate per-user bridge tokens / session credentials / the
@@ -182,6 +177,11 @@ const SELF_AUTH_GET_PATTERNS: RegExp[] = [
   // Now self-authing (getUserIdOrSharedLocal → the caller's own sessions), so a
   // per-user API token reads its owner's sessions; the cookie'd UI still works.
   /^\/api\/bridge\/v1\/sessions$/,
+  // Scheduled-task voice reminders the local voice poller pulls from a remote
+  // (VPS) instance. Self-auths in-handler against JARVIS_SCHEDULED_VOICE_TOKEN
+  // (a dedicated shared secret, NOT a user session). Deployed instances behind
+  // Cloudflare Access must also exclude this path (like /api/bridge/*).
+  /^\/api\/scheduled\/voice-pending$/,
 ]
 
 // Host header allowlist (DNS-rebinding defense, parallel to the bridge

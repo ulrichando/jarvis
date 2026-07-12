@@ -1,0 +1,25 @@
+[Unit]
+Description=JARVIS — local web app on 127.0.0.1:3000 (voice-agent integration + local scheduled tasks)
+Documentation=file:%h/Documents/Projects/jarvis/src/web/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Persistent local web instance the voice agent talks to (web_* tools target
+# JARVIS_WEB_URL, default 127.0.0.1:3000) and where LOCALLY-created scheduled
+# tasks fire — so their voice reminders reach the voice agent directly. The
+# public app on the VPS is separate; this is the on-box counterpart.
+#
+# Prereq: a production build — run `bun run build` in src/web after each pull
+# (the poll-deploy timer that updates the VPS does NOT build this local unit).
+WorkingDirectory=/home/ulrich/Documents/Projects/jarvis/src/web
+Environment=NODE_ENV=production
+# JARVIS_LOCAL_VOICE=1 tells the scheduled-task runner this box has a voice
+# agent, so it delivers reminders directly instead of leaving them for a poller.
+Environment=JARVIS_LOCAL_VOICE=1
+ExecStart=/home/ulrich/.bun/bin/bun run start
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
