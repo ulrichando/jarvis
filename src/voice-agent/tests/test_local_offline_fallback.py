@@ -137,6 +137,40 @@ def test_failover_skipped_when_endpoint_down(monkeypatch):
     assert llm.build_local_failover_llm() is None
 
 
+def test_failover_self_heals_bare_tag_to_ctx_variant(monkeypatch):
+    """Fresh-box rung: a bare install-pulled tag that Ollama's /v1 won't serve
+    self-heals to the installed ctx-baked '-jarvis-ctx' variant (loads at the
+    baked num_ctx, not the 4096 default that 400s on the supervisor prompt)."""
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_FAILOVER", "1")
+    monkeypatch.delenv("JARVIS_LOCAL_LLM_ASSUME_AVAILABLE", raising=False)
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_MODEL", "qwen3:4b-instruct-2507-q4_K_M")
+    import providers.llm as llm
+    import providers.local_model_picker as picker
+    variant = "qwen3-4b-instruct-2507-q4_K_M-jarvis-ctx:12288"
+    monkeypatch.setattr(picker, "list_installed_tags", lambda: [variant, "qwen2.5:7b"])
+    # Bare tag is dropped by /v1; ONLY the ctx variant probes OK.
+    monkeypatch.setattr(
+        llm, "_probe_local_llm",
+        lambda url, model, *a, **kw: (llm.OLLAMA_CTX_MARKER in model, "ok"),
+    )
+    tail = llm.build_local_failover_llm()
+    assert tail is not None
+    assert tail._jarvis_label == f"local:{variant}"
+
+
+def test_failover_self_heal_never_crosses_base(monkeypatch):
+    """The heal must not cross model bases: a bare qwen3 tag with only an
+    UNRELATED base installed heals to nothing → still no dead/wrong rung."""
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_FAILOVER", "1")
+    monkeypatch.delenv("JARVIS_LOCAL_LLM_ASSUME_AVAILABLE", raising=False)
+    monkeypatch.setenv("JARVIS_LOCAL_LLM_MODEL", "qwen3:4b-instruct-2507-q4_K_M")
+    import providers.llm as llm
+    import providers.local_model_picker as picker
+    monkeypatch.setattr(picker, "list_installed_tags", lambda: ["llama3.2:3b-jarvis-ctx:12288"])
+    monkeypatch.setattr(llm, "_probe_local_llm", lambda *a, **kw: (False, "down"))
+    assert llm.build_local_failover_llm() is None
+
+
 def test_wrap_local_failover_local_is_last_label_preserved(failover_on):
     from livekit.agents.llm import FallbackAdapter
     import providers.llm as llm
