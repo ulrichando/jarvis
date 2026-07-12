@@ -10,7 +10,7 @@ type Ctx = { params: Promise<{ path: string[] }> };
 const ctx = (...path: string[]): Ctx => ({ params: Promise.resolve({ path }) });
 
 function stubFetch(reply: { status?: number; body?: unknown } | { throws: true }) {
-  const fn = vi.fn(async () => {
+  const fn = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
     if ("throws" in reply) throw new Error("ECONNREFUSED");
     return new Response(JSON.stringify(reply.body ?? {}), {
       status: reply.status ?? 200,

@@ -49,7 +49,7 @@ const FLEET: IotDevice[] = [
 
 function stubFetch(body: unknown = { devices: [] }) {
   const fn = vi.fn(
-    async () =>
+    async (_input: RequestInfo | URL, _init?: RequestInit) =>
       new Response(JSON.stringify(body), {
         status: 200,
         headers: { "content-type": "application/json" },
