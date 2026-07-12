@@ -18,6 +18,7 @@ import {
   Palette,
   PenLine,
   Presentation,
+  Radar,
   Search,
   Table2,
   Terminal,
@@ -81,6 +82,14 @@ export const PROVIDER_FEATURES: Record<Provider, Feature[]> = {
       badge: "Beta",
       description:
         "Let Jarvis see and drive your desktop — watch it click and type, approve actions, and take control anytime.",
+    },
+    {
+      slug: "devices",
+      label: "Devices",
+      icon: Radar,
+      href: "/devices",
+      description:
+        "Everything Jarvis can see on your network — what each device is, where it lives, and whether it's locally controllable.",
     },
   ],
 
