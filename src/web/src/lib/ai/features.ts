@@ -2,6 +2,8 @@ import {
   AudioLines,
   Bot,
   Brain,
+  Briefcase,
+  Clock,
   Code2,
   Compass,
   Crosshair,
@@ -62,9 +64,24 @@ export const PROVIDER_FEATURES: Record<Provider, Feature[]> = {
         "Versioned, sandboxed code and document blocks. React components, HTML, SVG, and markdown — rendered live in the preview pane.",
     },
     // "Code" feature removed from the anthropic provider list — the
-    // sidebar's top-level CORE_NAV already has a Code entry linking to
-    // /code, and rendering both produced a duplicate "Code" item in the
-    // sidebar.
+    // sidebar's top-level Home|Code tabs already link to /code, and
+    // rendering both produced a duplicate "Code" item in the sidebar.
+    {
+      slug: "scheduled",
+      label: "Scheduled",
+      icon: Clock,
+      href: "/scheduled",
+      description:
+        "Recurring routines that run on a schedule, by API, or webhook — morning briefing, weekly digest, monthly report.",
+    },
+    {
+      slug: "customize",
+      label: "Customize",
+      icon: Briefcase,
+      href: "/customize",
+      description:
+        "Tell Jarvis who you are and how to respond — name, role, and personal preferences.",
+    },
     {
       slug: "design",
       label: "Design",
@@ -78,7 +95,6 @@ export const PROVIDER_FEATURES: Record<Provider, Feature[]> = {
       label: "Computer use",
       icon: Monitor,
       href: "/computer-use",
-      badge: "Beta",
       description:
         "Let Jarvis see and drive your desktop — watch it click and type, approve actions, and take control anytime.",
     },

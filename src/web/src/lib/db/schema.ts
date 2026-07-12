@@ -102,6 +102,9 @@ export const conversations = pgTable(
     }),
     title: text("title").notNull().default("New chat"),
     model: text("model").notNull().default("claude-sonnet-4-6"),
+    // "chat" (default) or "task" — task = a scheduled-task setup/run session;
+    // the sidebar renders it with a task icon instead of the chat bubble.
+    kind: text("kind").notNull().default("chat"),
     systemPrompt: text("system_prompt"),
     pinned: boolean("pinned").notNull().default(false),
     archived: boolean("archived").notNull().default(false),

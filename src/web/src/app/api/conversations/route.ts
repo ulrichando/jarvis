@@ -1,11 +1,15 @@
 import { desc, eq, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
+import { ensureWebSchema } from "@/lib/db/ensure-schema";
 import { requireUserId, Unauthenticated } from "@/lib/auth-helpers";
 
 export const runtime = "nodejs";
 
 export async function GET(req: Request) {
   if (!db) return Response.json({ conversations: [] });
+  // Ensure the `kind` column exists before selecting it — an existing prod DB
+  // has no migration flow (see ensure-schema.ts). No-op after the first call.
+  await ensureWebSchema();
   let userId: string;
   try {
     userId = await requireUserId(req.headers);
@@ -20,6 +24,8 @@ export async function GET(req: Request) {
       title: schema.conversations.title,
       pinned: schema.conversations.pinned,
       model: schema.conversations.model,
+      // "task" → sidebar task icon; "chat" (default) → chat bubble.
+      kind: schema.conversations.kind,
       // `updated_at` is `timestamp` WITHOUT time zone, written as the PG
       // session's local wall-clock (America/New_York) but parsed by node-pg
       // as UTC → a multi-hour skew on every relative time. Re-interpret it in
