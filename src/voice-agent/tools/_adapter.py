@@ -70,6 +70,10 @@ LOCAL_VOICE_CORE_TOOLS: tuple = (
     "memory",
     "web_search",
     "clarify",
+    # Small 2-field schema; lets the local supervisor list + run the user's
+    # Home scheduled tasks ("run my morning brief"). Only appears when the
+    # scheduled-voice token is configured (its own check_fn).
+    "scheduled",
 )
 
 
