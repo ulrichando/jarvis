@@ -48,7 +48,7 @@ except Exception:  # pragma: no cover — install-only guard
 from pipeline import specialty_routes as _specialty
 from pipeline.dispatching_llm import DispatchingLLM
 from pipeline.settings import read_unified_setting
-from providers.local_model_picker import resolve_model_tag
+from providers.local_model_picker import resolve_model_tag, resolve_installed_model_tag
 from resilience import LLM_BREAKER
 from resilience.circuit_breaker import (
     CircuitOpenError,
@@ -75,6 +75,17 @@ __all__ = [
     "BreakeredLLMStream",
     # Per-route dispatcher build
     "build_dispatching_llm",
+    # Local last-resort failover tail (Stage 1 offline parity)
+    "build_local_failover_llm",
+    "wrap_local_failover",
+    # Local-mode context window (num_ctx variant + prune budget)
+    "is_local_voice_mode",
+    "local_llm_num_ctx",
+    "local_ctx_prune_target",
+    "ensure_ollama_ctx_variant",
+    "derived_ollama_ctx_tag",
+    "LOCAL_LLM_NUM_CTX_DEFAULT",
+    "LOCAL_LLM_NUM_CTX_MAX",
 ]
 
 
@@ -558,13 +569,40 @@ def _make_local_speech_llm(model_id: str):
         "JARVIS_LOCAL_LLM_URL", "http://127.0.0.1:11434/v1"
     ).strip() or "http://127.0.0.1:11434/v1"
     key = os.environ.get("JARVIS_LOCAL_LLM_API_KEY", "ollama").strip() or "ollama"
-    return lk_openai.LLM(
+    # Local mode only (2026-07-11): route via a derived `-jarvis-ctx:<N>`
+    # variant so the model loads with a real context window — Ollama's /v1
+    # ignores request-body num_ctx and the daemon default (4096) 400s every
+    # supervisor turn. See the "Local-mode context window" section below.
+    # Cloud mode (including an explicit ollama/* pin with voice-mode=cloud)
+    # is untouched: predicate False → base tag, exactly as before.
+    # `is_local_voice_mode` / `ensure_ollama_ctx_variant` are defined later
+    # in this module — resolved at call time, and best-effort on any error.
+    try:
+        if is_local_voice_mode():
+            model_id = ensure_ollama_ctx_variant(model_id, local_llm_num_ctx(), base_url=url)
+    except Exception as e:  # noqa: BLE001 — never break LLM construction
+        logger.warning("[local] ctx-variant routing skipped: %s", e)
+    # Cold Ollama loads routinely exceed the 5s cloud profile; a DOWN
+    # endpoint still fails fast (connect error, not timeout). Same knob
+    # as the dispatcher's rung-0 local (JARVIS_LOCAL_LLM_TIMEOUT).
+    try:
+        timeout = float(os.environ.get("JARVIS_LOCAL_LLM_TIMEOUT", "60").strip() or 60)
+    except (TypeError, ValueError):
+        timeout = 60.0
+    inst = lk_openai.LLM(
         model=model_id,
         base_url=url,
         api_key=key,
         temperature=0.6,
+        timeout=timeout,
+        max_retries=0,  # fail over fast; any FallbackAdapter wrap handles the hop
         _strict_tool_schema=False,
     )
+    # Same label convention as the dispatcher's rung-0 local rung
+    # (`local:<tag>`) so telemetry's model column is consistent and any
+    # outer local-failover wrap can recognize an already-local chain.
+    inst._jarvis_label = f"local:{model_id}"
+    return inst
 
 
 SPEECH_MODELS["ollama/auto"] = {
@@ -599,13 +637,274 @@ SPEECH_MODELS["ollama/gpt-oss:120b"] = {
 }
 
 
+# The desktop tray's Local/Cloud toggle (and the "Local (on-device)"
+# conversation mode) write this file; read_speech_model() consults it so
+# local mode pins the speech SUPERVISOR itself to the on-device model.
+# JARVIS_VOICE_MODE_PATH override = suite hermeticity (tests/conftest.py
+# points it at a nonexistent path so a dev box that IS in local mode
+# doesn't flip every dispatcher/pin assertion — same pattern as
+# JARVIS_SOUL_OVERRIDE_PATH).
+VOICE_MODE_FILE: Path = Path(
+    os.environ.get("JARVIS_VOICE_MODE_PATH", "").strip()
+    or str(Path.home() / ".jarvis" / "voice-mode")
+)
+
+
+def _register_ollama_speech_model(name: str) -> bool:
+    """Additively register an ``ollama/<tag>`` SPEECH_MODELS entry for any
+    tag not in the fixed catalog above (e.g. ``ollama/qwen2.5:7b``).
+
+    The static entries only cover 4 hand-validated tags, so a box whose
+    pulled models don't intersect that list couldn't pin ANY local model —
+    read_speech_model() rejected the id and silently fell back to the cloud
+    default (the 2026-07-10 "local mode still runs Claude Haiku" bug). Same
+    build path as the static entries (`_make_local_speech_llm`, which keeps
+    the MANDATORY `_strict_tool_schema=False`). Deliberately does NOT check
+    `ollama list` — JARVIS_LOCAL_LLM_URL may point at a remote GPU box whose
+    pull set is invisible locally, matching the static entries' semantics.
+    Cloud model ids never hit this (gated on the ``ollama/`` prefix)."""
+    if not isinstance(name, str) or not name.startswith("ollama/"):
+        return False
+    if name in SPEECH_MODELS:
+        return True
+    tag = name[len("ollama/"):].strip()
+    if not tag:
+        return False
+    SPEECH_MODELS[name] = {
+        "label": f"Local · {tag} (Ollama)",
+        "build": lambda _tag=tag: _make_local_speech_llm(_tag),
+    }
+    logger.info(f"[local] auto-registered speech model {name!r}")
+    return True
+
+
+def _local_mode_speech_model(pinned: str | None) -> str | None:
+    """When ``~/.jarvis/voice-mode`` is ``local``, return the ``ollama/<tag>``
+    id the speech SUPERVISOR must run, else None (leave the normal pin).
+
+    This is THE local-mode brain switch (2026-07-10). Before it, local mode
+    only set JARVIS_LOCAL_LLM_ENABLED=1 — with JARVIS_PIN_ALL_ROUTES=1 and a
+    cloud model in ~/.jarvis/voice-model the dispatcher (and its local
+    rung-0 prepend) never ran, so the pinned CLOUD model stayed the brain
+    and local was at best a failover rung (live log: "speech LLM:
+    claude-haiku-4-5" with voice-mode=local). Resolution order:
+      1. an explicit ``ollama/*`` pin in voice-model wins (user picked a
+         specific local model) → None, the pin flows through unchanged;
+      2. JARVIS_LOCAL_LLM_MODEL env — in the agent process
+         _apply_voice_mode() has already resolved it to an INSTALLED tag;
+      3. `resolve_installed_model_tag()` discovery (`ollama list`);
+      4. nothing local resolvable → None: keep the cloud pin rather than
+         pinning a dead endpoint (degrades like today instead of muting).
+    The voice-model FILE is never rewritten, so flipping voice-mode back to
+    cloud restores the previous cloud pin exactly."""
+    try:
+        mode = (read_unified_setting("voice-mode", VOICE_MODE_FILE) or "").strip().lower()
+    except Exception:
+        return None
+    if mode != "local":
+        return None
+    if pinned and pinned.startswith("ollama/"):
+        return None
+    tag = (os.environ.get("JARVIS_LOCAL_LLM_MODEL", "") or "").strip()
+    if tag.lower() == "auto":
+        tag = ""
+    if not tag:
+        try:
+            from providers.local_model_picker import resolve_installed_model_tag
+            tag = resolve_installed_model_tag() or ""
+        except Exception:
+            tag = ""
+    if not tag:
+        logger.warning(
+            "[local] voice-mode=local but no local model resolvable "
+            "(JARVIS_LOCAL_LLM_MODEL unset and Ollama discovery empty); "
+            "leaving the cloud speech pin in place"
+        )
+        return None
+    return f"ollama/{tag}"
+
+
+def is_local_voice_mode() -> bool:
+    """THE canonical local-mode predicate: True iff ``~/.jarvis/voice-mode``
+    reads ``local``. Same file + same read helper as
+    ``_local_mode_speech_model`` (the 2026-07-10 brain switch) so every
+    local-mode gate in the tree flips together. Reads the module-level
+    ``VOICE_MODE_FILE`` dynamically (tests monkeypatch that attribute; the
+    JARVIS_VOICE_MODE_PATH env override in conftest keeps the suite hermetic
+    on a dev box that IS in local mode). Any read failure → False (cloud
+    behavior — fail toward the full untouched stack)."""
+    try:
+        mode = (read_unified_setting("voice-mode", VOICE_MODE_FILE) or "").strip().lower()
+    except Exception:
+        return False
+    return mode == "local"
+
+
+# ── Local-mode context window (num_ctx) ──────────────────────────────
+# Ollama's OpenAI-compat /v1 endpoint IGNORES num_ctx in the request body
+# (verified live on Ollama 0.30.9 — only native /api/chat honors it), so a
+# local model loads at the daemon default (OLLAMA_CONTEXT_LENGTH, 4096
+# unless overridden) and any real supervisor turn 400s with "request (N
+# tokens) exceeds the available context size". Fix (ported from the CLI's
+# src/cli/src/proxy/ollamaContext.ts, 2026-07-11): lazily POST /api/create
+# a derived manifest from the base tag with `num_ctx` baked in — e.g.
+#   qwen3:4b-instruct-2507  →  qwen3-4b-instruct-2507-jarvis-ctx:12288
+# (manifest-only; weights are shared blobs — no disk/VRAM duplication) and
+# point the speech LLM at the derived name. Gated on is_local_voice_mode()
+# so cloud mode — including an explicit ollama/* tray pin while
+# voice-mode=cloud — is byte-identical to before.
+#
+# VRAM calibration (6 GB RTX 2060 + on-device STT resident, q8 KV cache +
+# flash attention on the daemon, measured 2026-07-11): 12288 ctx ≈ 3.5 GB /
+# 100% GPU; 16384 spills to CPU. So 12288 is the ceiling — larger values
+# are clamped with a warning rather than honored (a spilled KV cache also
+# OOMs the STT encode, re-creating the "JARVIS silent" failure the dynamic
+# job_memory cap fixed).
+LOCAL_LLM_NUM_CTX_DEFAULT: int = 12288
+LOCAL_LLM_NUM_CTX_MAX: int = 12288
+# Marker must match the CLI's OLLAMA_JARVIS_CTX_MARKER so both trees share
+# derived variants for the same (base, num_ctx) instead of minting parallel
+# manifests.
+OLLAMA_CTX_MARKER: str = "-jarvis-ctx"
+
+# Reply + tool-schema headroom subtracted from num_ctx to get the prompt-side
+# prune budget: ~1.5k tokens of core-tool schemas + framing and ~1.5k of
+# generation room.
+LOCAL_CTX_OUTPUT_HEADROOM_TOKENS: int = 3072
+
+
+def local_llm_num_ctx() -> int:
+    """The context window to bake into the local model's derived variant.
+    ``JARVIS_LOCAL_LLM_NUM_CTX`` overrides the 12288 default; values over
+    LOCAL_LLM_NUM_CTX_MAX are clamped (they spill to CPU on the 6 GB box —
+    see the calibration note above), unparseable / sub-2048 values fall
+    back to the default (a sub-2048 window can't fit even the lean local
+    prompt plus a reply)."""
+    raw = (os.environ.get("JARVIS_LOCAL_LLM_NUM_CTX", "") or "").strip()
+    if not raw:
+        return LOCAL_LLM_NUM_CTX_DEFAULT
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "[local] JARVIS_LOCAL_LLM_NUM_CTX=%r unparseable; using %d",
+            raw, LOCAL_LLM_NUM_CTX_DEFAULT,
+        )
+        return LOCAL_LLM_NUM_CTX_DEFAULT
+    if n < 2048:
+        logger.warning(
+            "[local] JARVIS_LOCAL_LLM_NUM_CTX=%d too small (<2048); using %d",
+            n, LOCAL_LLM_NUM_CTX_DEFAULT,
+        )
+        return LOCAL_LLM_NUM_CTX_DEFAULT
+    if n > LOCAL_LLM_NUM_CTX_MAX:
+        logger.warning(
+            "[local] JARVIS_LOCAL_LLM_NUM_CTX=%d exceeds the %d VRAM ceiling "
+            "(measured: >12288 spills the KV cache to CPU on the 6 GB GPU "
+            "alongside the STT model); clamping to %d",
+            n, LOCAL_LLM_NUM_CTX_MAX, LOCAL_LLM_NUM_CTX_MAX,
+        )
+        return LOCAL_LLM_NUM_CTX_MAX
+    return n
+
+
+def local_ctx_prune_target() -> "int | None":
+    """Prompt-token budget the local-mode chat_ctx must fit in, or None in
+    cloud mode (cloud keeps the 128k-window behavior untouched — the
+    token-aware pruner simply never engages there via this path)."""
+    if not is_local_voice_mode():
+        return None
+    return max(2048, local_llm_num_ctx() - LOCAL_CTX_OUTPUT_HEADROOM_TOKENS)
+
+
+def derived_ollama_ctx_tag(base_tag: str, num_ctx: int) -> str:
+    """``qwen3:4b-…`` → ``qwen3-4b-…-jarvis-ctx:<numCtx>`` (Ollama model
+    names allow [A-Za-z0-9._-]; ':' and '/' in the base tag flatten to '-').
+    Mirrors the CLI's derivedOllamaModelName so both trees share variants."""
+    sanitized = base_tag.replace(":", "-").replace("/", "-")
+    return f"{sanitized}{OLLAMA_CTX_MARKER}:{num_ctx}"
+
+
+# Memoized per (daemon root, base tag, num_ctx). Success memoizes for the
+# process lifetime (the manifest exists on the daemon); failures are NOT
+# cached so a transiently-down daemon retries on the next build instead of
+# pinning the degraded base tag.
+_ENSURED_CTX_VARIANTS: dict[str, str] = {}
+
+
+def _ollama_api_create(root: str, payload: dict) -> None:
+    """POST /api/create on the Ollama daemon. Raises on any failure —
+    the caller treats every error as 'fall back to the base tag'.
+    Split out so tests can monkeypatch the HTTP hop without a live daemon."""
+    req = urllib.request.Request(
+        f"{root}/api/create",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 — local daemon
+        if resp.status >= 400:  # urlopen normally raises, but belt-and-suspenders
+            raise urllib.error.HTTPError(
+                req.full_url, resp.status, "create failed", resp.headers, None
+            )
+
+
+def ensure_ollama_ctx_variant(base_tag: str, num_ctx: int, base_url: str | None = None) -> str:
+    """Best-effort: make sure a ``<base>-jarvis-ctx:<num_ctx>`` derived model
+    exists on the Ollama daemon and return its tag; on ANY failure log and
+    return ``base_tag`` unchanged (the request then runs exactly as before
+    this mechanism existed — daemon-default context)."""
+    if not base_tag or f"{OLLAMA_CTX_MARKER}:" in base_tag:
+        return base_tag  # already a derived variant (or nothing to derive)
+    url = (base_url or os.environ.get(
+        "JARVIS_LOCAL_LLM_URL", "http://127.0.0.1:11434/v1"
+    )).strip() or "http://127.0.0.1:11434/v1"
+    root = url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[: -len("/v1")]
+    key = f"{root}|{base_tag}|{num_ctx}"
+    cached = _ENSURED_CTX_VARIANTS.get(key)
+    if cached:
+        return cached
+    derived = derived_ollama_ctx_tag(base_tag, num_ctx)
+    try:
+        _ollama_api_create(root, {
+            "model": derived,
+            "from": base_tag,
+            "parameters": {"num_ctx": num_ctx},
+            "stream": False,
+        })
+    except Exception as e:  # noqa: BLE001 — variant creation must never break boot
+        logger.warning(
+            "[local] could not create num_ctx=%d variant of %r (%s: %s) — "
+            "falling back to the base tag at the daemon-default context "
+            "(likely 4096; long prompts may 400)",
+            num_ctx, base_tag, type(e).__name__, e,
+        )
+        return base_tag
+    _ENSURED_CTX_VARIANTS[key] = derived
+    logger.info(
+        "[local] routing %r via %r (num_ctx=%d, JARVIS_LOCAL_LLM_NUM_CTX)",
+        base_tag, derived, num_ctx,
+    )
+    return derived
+
+
 def read_speech_model() -> str:
     """Return the active speech model ID, or the default if unset/invalid.
 
     Reads the flat file written by the tray UI under `~/.jarvis/`
     (the unified-settings SDK is a thin wrapper over that file —
-    there is no SQLite settings store)."""
+    there is no SQLite settings store). When ``~/.jarvis/voice-mode`` is
+    ``local``, the on-device model OVERRIDES the file pin (without
+    rewriting it) so the local mode's brain is actually local — see
+    `_local_mode_speech_model`."""
     name = read_unified_setting("voice-model", SPEECH_MODEL_FILE)
+    local_pin = _local_mode_speech_model(name)
+    if local_pin:
+        name = local_pin
+    if name and name.startswith("ollama/"):
+        _register_ollama_speech_model(name)
     if name in SPEECH_MODELS:
         return name
     if name:
@@ -672,6 +971,146 @@ def wrap_pin_fallback(primary, primary_id: str):
             f"[dispatch] pin fallback wrap failed ({e}); pinned {primary_id} alone"
         )
         return primary
+
+
+# ── Local LAST-RESORT failover tail (JARVIS_LOCAL_LLM_FAILOVER) ──────
+# Stage 1 of full offline parity (2026-07-10). DISTINCT from the
+# JARVIS_LOCAL_LLM_ENABLED rung-0 path above build_dispatching_llm —
+# that one PREPENDS local as the first-tried rung (local becomes the
+# primary). This one never changes what is tried first: it nests the
+# fully-assembled cloud chain as rung 0 of a new outer FallbackAdapter
+# with the local model as the ONLY other rung, so local is reached
+# strictly AFTER every cloud rung has failed (no internet / providers
+# down). When the cloud is up the outer adapter is a pure pass-through:
+# FallbackLLMStream tries rungs in order and never constructs a request
+# to a later rung unless an earlier one raised/timed out, and the probe
+# below runs ONCE at build time (not per turn), so the online path is
+# unchanged.
+#
+# Timeout note (why nesting instead of appending to the existing flat
+# rung list): FallbackAdapter has a single attempt_timeout applied to
+# EVERY rung (fallback_adapter.py::_try_generate replaces
+# conn_options.timeout with it). Appending local to the pin chain would
+# cap the local rung at the pin's 6s — a cold Ollama model load can
+# exceed that. Nesting keeps the inner cloud chain's own attempt_timeout
+# per cloud rung (an inner FallbackAdapter re-applies its own value, so
+# the outer's is ignored for it) while the outer's generous timeout
+# governs only the local rung.
+def _local_failover_timeout_s() -> float:
+    """Outer-adapter attempt timeout — bounds the LOCAL rung's connect +
+    inter-chunk gap (cold model load). Ignored by an inner FallbackAdapter
+    rung (it re-applies its own attempt_timeout per cloud rung)."""
+    try:
+        return float(os.environ.get("JARVIS_LOCAL_LLM_FAILOVER_TIMEOUT", "45.0"))
+    except (TypeError, ValueError):
+        return 45.0
+
+
+def build_local_failover_llm():
+    """Build the LAST-resort local rung, or None.
+
+    None when JARVIS_LOCAL_LLM_FAILOVER != 1, the endpoint/model probe
+    fails (stale flag must not add a dead rung / lie in telemetry), or
+    construction raises. Reuses the rung-0 knobs for endpoint + model
+    (JARVIS_LOCAL_LLM_URL / _MODEL / _API_KEY / _TEMP) so there is ONE
+    local model config. Deliberately does NOT honor
+    JARVIS_LOCAL_LLM_ROUTES — that filter scopes the rung-0 local-primary
+    experiment; offline failover must cover every route or offline TASK
+    turns would be dead. `_strict_tool_schema=False` is MANDATORY (local
+    servers reject OpenAI strict schema → JARVIS's 20+ tools silently
+    break otherwise)."""
+    if os.environ.get("JARVIS_LOCAL_LLM_FAILOVER", "0") != "1":
+        return None
+    url = os.environ.get(
+        "JARVIS_LOCAL_LLM_URL", "http://127.0.0.1:11434/v1"
+    ).strip() or "http://127.0.0.1:11434/v1"
+    model = resolve_model_tag(
+        os.environ.get("JARVIS_LOCAL_LLM_MODEL", "qwen2.5:7b").strip() or "qwen2.5:7b"
+    )
+    key = os.environ.get("JARVIS_LOCAL_LLM_API_KEY", "ollama").strip() or "ollama"
+    ok, reason = _probe_local_llm(url, model, key, _local_failover_timeout_s())
+    if not ok:
+        # Self-heal a BARE tag ('qwen3-4b') to its installed ':tag' form
+        # ('qwen3-4b:latest' / the ctx-baked 'qwen3-4b-jarvis-ctx:12288').
+        # Ollama's /v1/models advertises only the full ':tag', so the probe
+        # above drops a bare tag and the offline backstop would silently
+        # vanish. Only on probe-fail (happy path unchanged, stays mockable),
+        # only to a SAME-BASE installed tag (never heal to an unrelated
+        # model like the vision model), and only if the healed tag itself
+        # probes OK. Same `ollama list` discovery the speech-brain path uses.
+        healed = resolve_installed_model_tag(model) or ""
+        if healed and healed != model and healed.split(":")[0].startswith(model.split(":")[0]):
+            ok2, reason2 = _probe_local_llm(url, healed, key, _local_failover_timeout_s())
+            if ok2:
+                logger.info(
+                    "[dispatch] local failover self-healed bare tag %r → %r", model, healed
+                )
+                model, ok, reason = healed, ok2, reason2
+    if not ok:
+        logger.warning(
+            "[dispatch] local failover requested but unavailable: model=%s url=%s (%s); "
+            "no local tail rung (cloud chain unchanged)",
+            model, url, reason,
+        )
+        return None
+    try:
+        temp = float(os.environ.get("JARVIS_LOCAL_LLM_TEMP", "0.6") or 0.6)
+    except (TypeError, ValueError):
+        temp = 0.6
+    try:
+        inst = lk_openai.LLM(
+            model=model,
+            base_url=url,
+            api_key=key,
+            temperature=temp,
+            max_retries=0,
+            _strict_tool_schema=False,
+        )
+        inst._jarvis_label = f"local:{model}"
+        return inst
+    except Exception as e:
+        logger.warning(
+            f"[dispatch] local failover LLM construction failed: {e} "
+            "(no local tail rung; cloud chain unchanged)"
+        )
+        return None
+
+
+def wrap_local_failover(chain, tail=None):
+    """Nest `chain` as rung 0 of FallbackAdapter([chain, local-tail]).
+
+    The local model is the FINAL rung — reached only after every rung
+    inside `chain` has failed. Returns `chain` unchanged when the
+    failover flag is off, the probe fails, `chain` is None, or `chain`
+    is itself already local (label `local:*` — the rung-0 local-only
+    boot path; nesting would double it). Telemetry label is preserved
+    from `chain` so the online `model` column is byte-identical.
+
+    `tail`: pass a prebuilt rung (from build_local_failover_llm) to
+    share ONE probe + instance across the dispatcher's 9 routes."""
+    if chain is None:
+        return chain
+    label = getattr(chain, "_jarvis_label", "") or ""
+    if label.startswith("local:"):
+        return chain
+    if tail is None:
+        tail = build_local_failover_llm()
+    if tail is None:
+        return chain
+    try:
+        from livekit.agents.llm import FallbackAdapter as _LLMFallback
+        wrapped = _LLMFallback([chain, tail], attempt_timeout=_local_failover_timeout_s())
+        wrapped._jarvis_label = label or "?"
+        logger.info(
+            "[dispatch] local failover armed (LAST resort): %s → %s",
+            label or repr(chain), getattr(tail, "_jarvis_label", "local:?"),
+        )
+        return wrapped
+    except Exception as e:
+        logger.warning(
+            f"[dispatch] local failover wrap failed ({e}); cloud chain unchanged"
+        )
+        return chain
 
 
 # ── Pre-flight singleton ─────────────────────────────────────────────
@@ -1192,6 +1631,14 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
             )
         _local_enabled = ok
 
+    # ── LAST-resort local failover tail (JARVIS_LOCAL_LLM_FAILOVER=1) ──
+    # Distinct from the rung-0 prepend above: NEVER changes what is tried
+    # first. One probe + one shared instance for all 9 routes (same
+    # pattern as ds_fallback). Per-route in _wrap_chain: skipped on any
+    # route where rung-0 already injected local (would double it); routes
+    # the rung-0 filter left uncovered still get the tail.
+    _failover_tail = build_local_failover_llm()
+
     def _make_local_llm(route: str):
         """Build the rung-0 local OpenAI-compat LLM for `route`. Returns
         None when disabled/unavailable, the route is filtered out by
@@ -1380,7 +1827,11 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
         LLM is prepended as rung 0 (tried first); the shared DeepSeek
         fallback is rung 2 (when available). Labels the
         chain by its FIRST rung for telemetry. Returns the primary
-        unwrapped when no other rungs are available."""
+        unwrapped when no other rungs are available. Finally, when the
+        JARVIS_LOCAL_LLM_FAILOVER tail is armed (and rung-0 local isn't
+        already in this route's chain), the whole chain is nested as
+        rung 0 of FallbackAdapter([chain, local]) — local strictly LAST,
+        online order untouched."""
         rungs: list[Any] = [primary]
         primary_label = getattr(primary, "_jarvis_label", "")
         # Rung 2: shared DeepSeek (cross-provider safety net). Skip when
@@ -1397,26 +1848,34 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
         local_rung = _make_local_llm(route)
         if local_rung is not None:
             rungs.insert(0, local_rung)
-        if len(rungs) == 1:
-            return primary
-        try:
-            from livekit.agents.llm import FallbackAdapter as _LLMFallback
-            wrapped = _LLMFallback(rungs)
-            # Label the chain by its FIRST rung (what's actually tried
-            # first): `local:<model>` when rung-0 is active, else the
-            # cloud primary's label — behavior-preserving when local is
-            # off (rungs[0] IS primary). dispatching_llm reads this for
-            # the telemetry `model` column.
-            wrapped._jarvis_label = (
-                getattr(rungs[0], "_jarvis_label", "") or primary_label or "?"
-            )
-            return wrapped
-        except Exception as e:
-            logger.warning(
-                f"[dispatch] {route} LLM FallbackAdapter wrap failed ({e}); "
-                "using primary alone"
-            )
-            return primary
+        chain = primary
+        if len(rungs) > 1:
+            try:
+                from livekit.agents.llm import FallbackAdapter as _LLMFallback
+                wrapped = _LLMFallback(rungs)
+                # Label the chain by its FIRST rung (what's actually tried
+                # first): `local:<model>` when rung-0 is active, else the
+                # cloud primary's label — behavior-preserving when local is
+                # off (rungs[0] IS primary). dispatching_llm reads this for
+                # the telemetry `model` column.
+                wrapped._jarvis_label = (
+                    getattr(rungs[0], "_jarvis_label", "") or primary_label or "?"
+                )
+                chain = wrapped
+            except Exception as e:
+                logger.warning(
+                    f"[dispatch] {route} LLM FallbackAdapter wrap failed ({e}); "
+                    "using primary alone"
+                )
+                chain = primary
+        # LAST-resort tail: only when rung-0 local is NOT already in this
+        # route's chain (it would be reached earlier anyway — nesting
+        # would double the local model). wrap_local_failover preserves
+        # the chain's label, so telemetry + the resolved-primary log stay
+        # byte-identical online.
+        if _failover_tail is not None and local_rung is None:
+            chain = wrap_local_failover(chain, tail=_failover_tail)
+        return chain
 
     def _build_route(route: str):
         """Build the full FallbackAdapter chain for `route`. Tries
@@ -1503,6 +1962,12 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
     # wins everywhere it could land. Per global review §P0-12 plus the
     # 2026-05-24 8-route expansion.
     if task_override is not None:
+        # Give the tray-pinned TASK override the same LAST-resort local
+        # tail as the built routes (one shared wrap for all 6 slots).
+        # No-op when the tail isn't armed; online the pinned model is
+        # still the first (and only cloud) rung, label preserved.
+        if _failover_tail is not None:
+            task_override = wrap_local_failover(task_override, tail=_failover_tail)
         task_inner   = task_override
         task_desktop = task_override
         task_browser = task_override

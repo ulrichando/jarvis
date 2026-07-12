@@ -66,6 +66,16 @@ struct ToolItems(Mutex<Vec<(&'static str, &'static str, MenuItem<Wry>)>>);
 /// voice-client is publishing, "Start Screen Share" when not.
 struct ShareLabel(Mutex<Option<MenuItem<Wry>>>);
 
+/// Handle to the tray "Sign in / Sign out of JARVIS Server" item, plus a
+/// last-known signed-in flag. The 3 s mode-refresh tick repaints the label
+/// from bridge_login_status (JARVIS_BRIDGE_TOKEN in keys.env), so signing in
+/// or out — from the panel, a terminal, or this item — updates the tray
+/// without a restart. The click handler reads the flag to decide sign-in
+/// (spawn `jarvis auth login`) vs sign-out (drop the token). Before this the
+/// item was a static "Sign in to JARVIS Server…" that never reflected state.
+struct SignInItem(Mutex<Option<MenuItem<Wry>>>);
+struct SignedInFlag(std::sync::atomic::AtomicBool);
+
 /// Handle to the "Active: …" header line inside the Conversation
 /// mode submenu. Refreshed every 3 s by a background task that
 /// checks systemd --user state of the gemini/gpt direct-mode units.
@@ -1008,17 +1018,49 @@ fn bridge_login_status() -> serde_json::Value {
     serde_json::json!({ "loggedIn": logged_in, "baseUrl": base_url })
 }
 
-/// Sign this box out of its JARVIS server: drop the Remote Control token +
-/// base URL from ~/.jarvis/keys.env. Device-level sign-out — the bridge token
-/// IS the credential, so clearing it locally revokes this box's access. (Full
-/// server-session invalidation is `jarvis auth logout`; this is the instant
-/// in-UI action the voice panel's Sign-out uses.)
+/// Sign this box out of its JARVIS server — CROSS-SURFACE "sign out everywhere"
+/// (user decision 2026-07-11). Three steps, each best-effort so a failure in
+/// one still cuts this box off:
+///   1. Server revoke: POST /api/bridge/logout with the Remote Control token →
+///      deletes ALL the user's web sessions (every browser/device logs out) and
+///      revokes the reusable bridge token in the server DB. Skipped when offline
+///      (no token/base) — the local steps below still work.
+///   2. Local wipe: drop the bridge token + base + proxy token from keys.env so
+///      the CLI + voice agent on this box can't reach the server anymore.
+///   3. Hard-stop voice: stop + disable jarvis-voice-agent.service so the
+///      assistant actually goes silent AND a reboot won't silently resume it
+///      while signed out. The sign-in path (refresh_signin_menu, false→true)
+///      re-enables + starts it.
 #[tauri::command]
 fn bridge_logout() -> Result<(), String> {
-    let mut map = _keys_read_map();
+    let map = _keys_read_map();
+    let token = map.get("JARVIS_BRIDGE_TOKEN").cloned().unwrap_or_default();
+    let base = map.get("JARVIS_BRIDGE_BASE_URL").cloned().unwrap_or_default();
+    // 1. Best-effort server-side revoke (logs out every browser + kills the token).
+    if !token.is_empty() && !base.is_empty() {
+        let url = format!("{}/api/bridge/logout", base.trim_end_matches('/'));
+        let _ = hidden_command("curl")
+            .args([
+                "-s", "-X", "POST", "--max-time", "5",
+                "-H", &format!("Authorization: Bearer {token}"),
+                &url,
+            ])
+            .output();
+    }
+    // 2. Local credential wipe.
+    let mut map = map;
     map.remove("JARVIS_BRIDGE_TOKEN");
     map.remove("JARVIS_BRIDGE_BASE_URL");
-    _keys_write_map(&map)
+    map.remove("JARVIS_PROXY_TOKEN");
+    _keys_write_map(&map)?;
+    // 3. Hard-stop the voice agent (deliberate sign-out → the assistant stops).
+    let _ = hidden_command("systemctl")
+        .args(["--user", "stop", "jarvis-voice-agent.service"])
+        .output();
+    let _ = hidden_command("systemctl")
+        .args(["--user", "disable", "jarvis-voice-agent.service"])
+        .output();
+    Ok(())
 }
 
 /// Open a terminal running the jarvis CLI (login=false) or the JARVIS
@@ -1177,6 +1219,7 @@ fn cli_model_pretty(id: &str) -> Option<&'static str> {
         "gpt-5.1"                                        => Some("OpenAI · GPT-5.1"),
         "gpt-5-mini"                                     => Some("OpenAI · GPT-5 mini"),
         "deepseek-v4-pro"                                => Some("DeepSeek · V4 Pro"),
+        "ollama/qwen3-4b"                                => Some("Local · Qwen3 4B"),
         _ => None,
     }
 }
@@ -1193,8 +1236,7 @@ fn speech_model_pretty(id: &str) -> Option<&'static str> {
         "claude-opus-4-7"                                => Some("Claude · Opus 4.7"),
         "gpt-5-mini"                                     => Some("OpenAI · GPT-5 mini"),
         "gpt-5.1"                                        => Some("OpenAI · GPT-5.1"),
-        "ollama/qwen3:30b-a3b"                           => Some("Local · Qwen3 30B-A3B"),
-        "ollama/gpt-oss:120b"                            => Some("Local · gpt-oss 120B"),
+        "ollama/qwen3-4b"                                => Some("Local · Qwen3 4B"),
         "deepseek-v4-flash"                              => Some("DeepSeek · V4 Flash"),
         "deepseek-chat-v3"                               => Some("DeepSeek · V3 Chat"),
         _ => None,
@@ -1741,6 +1783,55 @@ fn refresh_mode_menu(app: &tauri::AppHandle) {
     }
 }
 
+/// Repaint the tray "Sign in / Sign out of JARVIS Server" item from the live
+/// login state (bridge_login_status → keys.env JARVIS_BRIDGE_TOKEN) and stash
+/// the signed-in flag so the click handler knows which action to take. Runs on
+/// the same 3 s tick as refresh_mode_menu, so logging in/out from the panel or
+/// a terminal updates the tray without a restart.
+fn refresh_signin_menu(app: &tauri::AppHandle) {
+    let status = bridge_login_status();
+    let logged_in = status.get("loggedIn").and_then(|v| v.as_bool()).unwrap_or(false);
+    let base = status.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("");
+    // baseUrl → bare host for the label (mirrors the panel's serverHost).
+    let host = base
+        .strip_prefix("https://")
+        .or_else(|| base.strip_prefix("http://"))
+        .unwrap_or(base);
+    let host = host.split('/').next().unwrap_or(host);
+    let text = if logged_in {
+        if host.is_empty() {
+            "Sign out of JARVIS Server".to_string()
+        } else {
+            format!("Sign out of JARVIS ({host})")
+        }
+    } else {
+        "Sign in to JARVIS Server…".to_string()
+    };
+    if let Some(flag) = app.try_state::<SignedInFlag>() {
+        // Resume the voice agent on a genuine signed-out → signed-in edge:
+        // bridge_logout stop+disabled it, so re-enable + start when a login
+        // (from the panel, tray, or the `jarvis auth login` terminal) lands.
+        // enable/start are idempotent no-ops when it's already up, so the
+        // false(init)→true tick at launch does nothing harmful.
+        let was_in = flag.0.swap(logged_in, std::sync::atomic::Ordering::Relaxed);
+        if logged_in && !was_in {
+            let _ = hidden_command("systemctl")
+                .args(["--user", "enable", "jarvis-voice-agent.service"])
+                .output();
+            let _ = hidden_command("systemctl")
+                .args(["--user", "start", "jarvis-voice-agent.service"])
+                .output();
+        }
+    }
+    if let Some(item_state) = app.try_state::<SignInItem>() {
+        if let Ok(guard) = item_state.0.lock() {
+            if let Some(item) = guard.as_ref() {
+                let _ = item.set_text(text);
+            }
+        }
+    }
+}
+
 // ── Audio device picker (Microphone ▸ / Speaker ▸) ──────────────────────────
 //
 // The voice-client (:8767) enumerates mic/speaker devices via sounddevice
@@ -2257,12 +2348,24 @@ fn find_bun_executable() -> Option<std::path::PathBuf> {
     None
 }
 
-/// Spawn `bun run dev` in src/web as a detached background process.
+/// Spawn the local JARVIS web in src/web as a detached background process.
 /// Fire-and-forget — no PID tracking. Matches the launch.sh pattern
 /// where backend services (proxy, bridge, voice) survive tray exits.
 /// Returns true if the spawn was attempted (bun + web dir present),
 /// false otherwise so the caller can fall through to the diagnostic
 /// window instead of waiting on a no-op.
+///
+/// Only reached from `handle_open_browser` AFTER `probe_jarvis_web`
+/// found neither a reachable `JARVIS_WEB_URL` (0wlan.com health check
+/// failed) nor a live local web — i.e. this is the on-demand OFFLINE
+/// fallback, never an always-on standby (that was retired 2026-07-10:
+/// `next dev` at boot burned ~1-2 cores; see ~/.jarvis/desktop.env).
+///
+/// Prefers the PROD server (`bun run start` → prebuilt `next start`,
+/// near-zero idle cost, ~2 s boot) when a `next build` output exists
+/// (.next/BUILD_ID). Falls back to `bun run dev` only when no build
+/// has ever been made (fresh clone) — dev compiles on demand and costs
+/// cores, but a heavy fallback beats no web at all when offline.
 fn try_spawn_web() -> bool {
     let Some(root) = find_project_root() else {
         eprintln!("[JARVIS] try_spawn_web: project root not found");
@@ -2303,8 +2406,19 @@ fn try_spawn_web() -> bool {
         );
         return false;
     };
+    // Prefer prod (`next start` from a prior `next build`) over dev — the
+    // whole reason the always-on standby was retired is `next dev`'s
+    // Turbopack watcher cost. BUILD_ID is written last by `next build`,
+    // so its presence means a complete, servable build.
+    let has_prod_build = web_dir.join(".next").join("BUILD_ID").is_file();
+    let script = if has_prod_build { "start" } else { "dev" };
+    if !has_prod_build {
+        eprintln!(
+            "[JARVIS] try_spawn_web: no .next/BUILD_ID — falling back to `bun run dev` (heavier); run `bun run build` in src/web to enable the light prod fallback"
+        );
+    }
     let mut cmd = hidden_command(&bun);
-    cmd.arg("run").arg("dev")
+    cmd.arg("run").arg(script)
         .current_dir(&web_dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(log))
@@ -2312,8 +2426,9 @@ fn try_spawn_web() -> bool {
     match cmd.spawn() {
         Ok(child) => {
             eprintln!(
-                "[JARVIS] try_spawn_web: spawned {} run dev (pid={}) in {} — log {}",
+                "[JARVIS] try_spawn_web: spawned {} run {} (pid={}) in {} — log {}",
                 bun.display(),
+                script,
                 child.id(),
                 web_dir.display(),
                 log_path.display(),
@@ -2338,7 +2453,10 @@ fn try_spawn_web() -> bool {
 /// VS Code Server / Docker Desktop): the click ALWAYS leads to the
 /// web opening, even if it wasn't running. Flow:
 ///   1. Probe — if a JARVIS web is up, open it. (Fast path, no spawn.)
-///   2. Otherwise: spawn `bun run dev` in src/web (idempotent —
+///      "Up" includes the deployed JARVIS_WEB_URL (0wlan.com) when its
+///      health check passes — so while online, NOTHING is ever spawned.
+///   2. Otherwise: spawn the local web in src/web — prod `next start`
+///      when a build exists, else `next dev` (idempotent —
 ///      duplicate spawn is harmless, port-collision fail is silent).
 ///   3. Poll the port for up to 30 s waiting for readiness.
 ///   4. On readiness: open the browser. On timeout: show the
@@ -2587,6 +2705,8 @@ fn main() {
         .manage(RateItems(Mutex::new(Vec::new())))
         .manage(ToolItems(Mutex::new(Vec::new())))
         .manage(ShareLabel(Mutex::new(None)))
+        .manage(SignInItem(Mutex::new(None)))
+        .manage(SignedInFlag(std::sync::atomic::AtomicBool::new(false)))
         .manage(ModeLabel(Mutex::new(None)))
         .manage(ModeItems(Mutex::new(Vec::new())))
         .manage(AudioItems(Mutex::new(AudioItemsInner::default())))
@@ -2909,6 +3029,12 @@ fn main() {
             // both spawn a terminal via spawn_cli_terminal.
             let open_cli_item = MenuItemBuilder::with_id("open_cli", "Open jarvis CLI").build(app)?;
             let sign_in_item  = MenuItemBuilder::with_id("sign_in",  "Sign in to JARVIS Server…").build(app)?;
+            {
+                // Stash the item so the 3 s tick can flip its label between
+                // Sign in / Sign out; refreshed once below after setup.
+                let s: State<SignInItem> = app.state();
+                *s.0.lock().unwrap() = Some(sign_in_item.clone());
+            }
             let sep_prov     = PredefinedMenuItem::separator(app)?;
 
             // ── Models submenu ──
@@ -2964,8 +3090,17 @@ fn main() {
             // pinned speech model bypasses the per-route dispatcher, so v4-flash gets
             // tool_choice="auto" (it 400s only on the dispatcher's "required"). Local (Ollama) entries
             // show only when actually pulled, after a separator.
-            let local_qwen3_ok  = ollama_has(&ollama_models, "qwen3:30b-a3b");
-            let local_gptoss_ok = ollama_has(&ollama_models, "gpt-oss:120b");
+            // Local speech options = the pulled, device-fitting Ollama models
+            // (gated per-tag by ollama_has). Dropped the old hardcoded
+            // qwen3:30b-a3b / gpt-oss:120b — 20 GB / 65 GB models that don't fit
+            // a typical consumer GPU. qwen2.5:7b is the recommended fit for a
+            // 6-8 GB GPU (measured 2026-07-11: less CPU-offload than llama3.1:8b
+            // AND calls tools reliably); llama3.1:8b offered too when pulled.
+            // The default local pin stays JARVIS_LOCAL_LLM_MODEL=qwen2.5:7b.
+            // Base-match on "qwen3-4b" so it stays true across the ctx-baked
+            // variant churn (qwen3-4b:latest / qwen3-4b-jarvis-ctx:12288 all
+            // share this base). Standardized on qwen3-4b 2026-07-12.
+            let local_qwen3_ok = ollama_has(&ollama_models, "qwen3-4b");
             let cur_speech = read_picker_current("voice-model");
             let speech_defs: &[(&'static str, &'static str, bool)] = &[
                 ("claude-haiku-4-5",     "Use Anthropic · Claude Haiku 4.5  (default, ~0.7s)",       have_anthropic),
@@ -2975,17 +3110,23 @@ fn main() {
                 ("gpt-5.1",              "Use OpenAI · GPT-5.1 (best OpenAI tools)",                 have_openai),
                 ("deepseek-v4-flash",    "Use DeepSeek · V4 Flash (fast)",                           have_deepseek),
                 ("deepseek-chat-v3",     "Use DeepSeek · V3 Chat (best DeepSeek conversation)",      have_deepseek),
-                ("ollama/qwen3:30b-a3b", "Use Local · Qwen3 30B-A3B (Ollama, on-device, fast)",      local_qwen3_ok),
-                ("ollama/gpt-oss:120b",  "Use Local · gpt-oss 120B (Ollama, heavy, slow on CPU)",    local_gptoss_ok),
+                ("ollama/qwen3-4b",      "Use Local · Qwen3 4B (Ollama · on-device, offline)",       local_qwen3_ok),
             ];
-            // Local conversation mode needs an actually-pulled Ollama model
-            // (user rule 2026-07-02): with none installed the on-device agent
-            // boots with no LLM and the mic goes dead. Grey the item out and
-            // say why — NOT hidden, so ModeItems indexes stay stable for
-            // refresh_mode_menu's positional repaint. Evaluated once at
-            // startup (same lifecycle as the audio-device list); pulling a
-            // model takes effect on the next tray launch.
-            if !(local_qwen3_ok || local_gptoss_ok) {
+            // Local conversation mode needs at least ONE actually-pulled Ollama
+            // model (user rule 2026-07-02): with none installed the on-device
+            // agent boots with no LLM and the mic goes dead. The agent now
+            // AUTO-DISCOVERS whatever's pulled (jarvis_agent._apply_voice_mode →
+            // local_model_picker.resolve_installed_model_tag), which ranks by
+            // hardware fit (VRAM/RAM) and picks the best-FITTING installed tag —
+            // so ANY installed model qualifies, not just qwen3:30b-a3b /
+            // gpt-oss:120b (that narrow check greyed out boxes that had e.g.
+            // llama3.1:8b, which fits a 6 GB GPU where the two hardcoded models
+            // don't). Grey the item out only when NOTHING is pulled — NOT
+            // hidden, so ModeItems indexes stay stable for refresh_mode_menu's
+            // positional repaint. Evaluated once at startup (same lifecycle as
+            // the audio-device list); pulling a model takes effect on the next
+            // tray launch.
+            if ollama_models.is_empty() {
                 let _ = mode_local_item.set_enabled(false);
                 let _ = mode_local_item.set_text("Local — install an Ollama model first");
             }
@@ -3092,6 +3233,7 @@ fn main() {
                 ("gpt-5.1",           "Use OpenAI · GPT-5.1 (best OpenAI tools)",              have_openai),
                 ("gpt-5-mini",        "Use OpenAI · GPT-5 mini (alternative)",                 have_openai),
                 ("deepseek-v4-pro",   "Use DeepSeek · V4 Pro (strong reasoning)",              have_deepseek),
+                ("ollama/qwen3-4b",   "Use Local · Qwen3 4B (Ollama · on-device, offline)",    local_qwen3_ok),
             ];
             let mut tool_sb = SubmenuBuilder::new(app, "Tool model ▸");
             let mut tool_store: Vec<(&'static str, &'static str, MenuItem<Wry>)> = Vec::new();
@@ -3329,10 +3471,20 @@ fn main() {
                             // Claude/DeepSeek also set the supervisor Tool LLM.
                             // switch_cli_model writes ~/.jarvis/cli-model + repaints
                             // the Tool-model ✓ — no restart (it's read per-turn).
-                            // Default Claude = Sonnet 4.6 (the supervisor default).
+                            // Each mode picks its provider's most capable TOOLS
+                            // variant (per voice_client_tray_config.py curation):
+                            //   Claude   → Sonnet 4.6 (τ-bench 87.5% multi-turn
+                            //              tool-use leader; Opus is reserved for
+                            //              the hardest work via the Tools picker)
+                            //   DeepSeek → v4-pro (the strongest tool-capable
+                            //              DeepSeek in the picker)
                             match id {
                                 "mode_claude"   => switch_cli_model(app, "claude-sonnet-4-6"),
                                 "mode_deepseek" => switch_cli_model(app, "deepseek-v4-pro"),
+                                // Local mode pins the on-device tool model too, so
+                                // the Tool ✓ moves to Local and tool work stays
+                                // offline-capable — not just the speech supervisor.
+                                "mode_local"    => switch_cli_model(app, "ollama/qwen3-4b"),
                                 _ => {}
                             }
                             // Only a cloud↔on-device flip needs a restart; remember
@@ -3356,29 +3508,40 @@ fn main() {
                             // (non-default id + JARVIS_PIN_ALL_ROUTES) bypasses the
                             // per-route dispatcher that would force it, so v4-flash is
                             // only ever sent tool_choice="auto" — which it handles
-                            // (verified live). Local keeps its on-device model.
+                            // (verified live). Local pins ollama/qwen3-4b for the
+                            // speech supervisor too (2026-07-12) so the Speech ✓
+                            // moves to Local and the on-device brain is what you talk
+                            // to — WiFi loss then can't kill the conversation.
                             let speech_switched = match id {
                                 "mode_claude" => {
-                                    // Don't stomp an explicit cloud speech pick.
-                                    // Live 2026-07-01: user picked DeepSeek in the
-                                    // Voice submenu; every mode_claude click (his
-                                    // "restart" path) rewrote voice-model to Haiku.
-                                    // Claude mode only asserts a Claude voice when
-                                    // the current pick can't serve the cloud
-                                    // pipeline (unset / on-device ollama model).
-                                    let cur = read_picker_current("voice-model");
-                                    if cur.is_empty() || cur.starts_with("ollama/") {
-                                        switch_speech_model(app, "claude-haiku-4-5");
-                                        true
-                                    } else {
-                                        false
-                                    }
+                                    // Claude mode is a deterministic preset: Haiku 4.5
+                                    // for voice (fastest Claude — best TTFT/tool-quality
+                                    // balance per the speech-picker curation, ~0.7s
+                                    // TTFT) + Sonnet 4.6 for tools (set above), ALWAYS —
+                                    // picking the mode IS choosing the model pair, so
+                                    // it always asserts the mode's voice model (Ulrich
+                                    // 2026-07-10). This intentionally replaces the
+                                    // 2026-07-01 "don't stomp an explicit voice pick"
+                                    // guard: the conversation mode is now the single
+                                    // deterministic control, so switching to Claude
+                                    // always gives the Claude voice regardless of the
+                                    // prior pick.
+                                    switch_speech_model(app, "claude-haiku-4-5");
+                                    true
                                 }
                                 // V3-chat, not v4-flash (2026-07-01): same pinned
                                 // bypass mechanics (tool_choice stays "auto"), but
                                 // V3 is the better conversational DeepSeek — flash
                                 // trades accuracy for latency and audibly drifts.
                                 "mode_deepseek" => { switch_speech_model(app, "deepseek-chat-v3"); true }
+                                // Local mode explicitly pins the on-device speech
+                                // supervisor so the Speech ✓ moves to Local and the
+                                // clean base name shows (an explicit ollama/* pin in
+                                // voice-model makes _local_mode_speech_model pass it
+                                // through instead of deriving the ctx-variant name).
+                                // switch_speech_model bounces the stack, so the
+                                // voice-mode=local flip below needs no extra restart.
+                                "mode_local" => { switch_speech_model(app, "ollama/qwen3-4b"); true }
                                 _ => false,
                             };
                             let arg = match id {
@@ -3501,7 +3664,20 @@ fn main() {
                             }
                         }
                         "sign_in" => {
-                            if let Err(e) = spawn_cli_terminal(true) {
+                            // Same item toggles: signed in → sign out (drop the
+                            // token, same as the panel's Sign out); signed out →
+                            // open the `jarvis auth login` terminal. The 3 s tick
+                            // repaints the label right after either.
+                            let logged_in = app
+                                .try_state::<SignedInFlag>()
+                                .map(|f| f.0.load(std::sync::atomic::Ordering::Relaxed))
+                                .unwrap_or(false);
+                            if logged_in {
+                                if let Err(e) = bridge_logout() {
+                                    eprintln!("[JARVIS] sign_out failed: {e}");
+                                }
+                                refresh_signin_menu(app);
+                            } else if let Err(e) = spawn_cli_terminal(true) {
                                 eprintln!("[JARVIS] sign_in failed: {e}");
                             }
                         }
@@ -3514,6 +3690,7 @@ fn main() {
                         "model_gpt-5.1"                                    => switch_cli_model(app, "gpt-5.1"),
                         "model_gpt-5-mini"                                 => switch_cli_model(app, "gpt-5-mini"),
                         "model_deepseek-v4-pro"                            => switch_cli_model(app, "deepseek-v4-pro"),
+                        "model_ollama/qwen3-4b"                            => switch_cli_model(app, "ollama/qwen3-4b"),
                         // Speech-model picks (these trigger an agent restart)
                         // 2026-05-18: curated to 6 entries matching
                         // SPEECH_MODELS_AVAILABLE in voice_client_tray_config.py
@@ -3524,8 +3701,7 @@ fn main() {
                         "speech_gpt-5.1"                                   => switch_speech_model(app, "gpt-5.1"),
                         "speech_deepseek-v4-flash"                         => switch_speech_model(app, "deepseek-v4-flash"),
                         "speech_deepseek-chat-v3"                          => switch_speech_model(app, "deepseek-chat-v3"),
-                        "speech_ollama/qwen3:30b-a3b"                      => switch_speech_model(app, "ollama/qwen3:30b-a3b"),
-                        "speech_ollama/gpt-oss:120b"                       => switch_speech_model(app, "ollama/gpt-oss:120b"),
+                        "speech_ollama/qwen3-4b"                           => switch_speech_model(app, "ollama/qwen3-4b"),
                         // Speech-rate presets — write ~/.jarvis/tts-speed.
                         // No bounce: both TTS engines read the file per
                         // utterance, so the pick is audible on the very
@@ -3741,9 +3917,11 @@ fn main() {
             {
                 let app_handle = app.handle().clone();
                 refresh_mode_menu(&app_handle);
+                refresh_signin_menu(&app_handle);
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_secs(3));
                     refresh_mode_menu(&app_handle);
+                    refresh_signin_menu(&app_handle);
                 });
             }
 

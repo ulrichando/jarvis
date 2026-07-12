@@ -31,6 +31,24 @@ rtc:
   # now. When we add WAN (Tailscale / Wireguard), this flips to true
   # and we add stun_servers.
   use_external_ip: false
+  # Advertise the docker0 bridge IP (always up, WiFi-independent) for
+  # WebRTC media instead of auto-detecting the wlan0 IP. 2026-07-12: the
+  # SFU was advertising the wlan0 host IP + a STUN-reflexive public IP for
+  # the media path, so dropping WiFi killed every ICE candidate →
+  # "wait_pc_connection timed out" → voice dead offline even though the
+  # LLM/STT/TTS are all local. docker0 (172.17.0.1) survives WiFi loss, so
+  # the loopback-ish media path holds. No STUN (use_external_ip:false), so
+  # clients gather host candidates only — no public/WiFi-dependent srflx.
+  node_ip: 172.17.0.1
+  # Gather ICE candidates ONLY from docker0 — so no WiFi IPv4/IPv6 (wlan0 /
+  # 2600:1702:… ) candidates are ever offered. Without this, node_ip fixed
+  # the IPv4 side to docker0 but the SFU still advertised WiFi IPv6 host
+  # candidates and the publisher selected one → still died on WiFi loss.
+  # docker0 is the single stable media interface; the media path is now
+  # WiFi-independent end to end.
+  interfaces:
+    includes:
+      - docker0
 
 # API keypair lives in the `key_file` referenced above so this yaml can
 # be committed without leaking secrets. The agent + every client read
