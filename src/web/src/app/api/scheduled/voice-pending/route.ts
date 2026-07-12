@@ -1,3 +1,5 @@
+import { timingSafeEqual } from "node:crypto";
+
 import { takePendingVoiceReminders } from "@/lib/scheduled/store";
 
 export const runtime = "nodejs";
@@ -23,9 +25,14 @@ export async function GET(req: Request) {
   }
   const auth = req.headers.get("authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  // Constant-time-ish compare: length check + char accumulation. Node's
-  // timingSafeEqual needs equal-length buffers, so guard length first.
-  if (token.length !== expected.length || token !== expected) {
+  // Constant-time compare. A plain `token !== expected` short-circuits on the
+  // first mismatched char, leaking the token to a timing attack — and this
+  // route is proxy-gate-bypassed (SELF_AUTH_GET) and remotely reachable by
+  // design, so the compare MUST be constant-time. Length gate first because
+  // timingSafeEqual requires equal-length buffers.
+  const a = Buffer.from(token);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
     return new Response("Unauthorized", { status: 401 });
   }
   return Response.json({ reminders: takePendingVoiceReminders() });
