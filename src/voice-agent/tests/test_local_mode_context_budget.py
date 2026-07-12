@@ -258,6 +258,7 @@ def test_tool_allowlist_core_set_in_local_mode(local_mode, monkeypatch):
     assert local_voice_tool_allowlist() == frozenset(LOCAL_VOICE_CORE_TOOLS)
     assert set(LOCAL_VOICE_CORE_TOOLS) == {
         "terminal", "read_file", "write_file", "memory", "web_search", "clarify",
+        "scheduled",
     }
 
 
