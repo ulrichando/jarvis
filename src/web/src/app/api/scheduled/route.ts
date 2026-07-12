@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { requireUserId, Unauthenticated } from "@/lib/auth-helpers";
+import { resolveScheduledCaller } from "@/lib/scheduled/caller-auth";
 import {
   createScheduledChat,
   listScheduledChats,
@@ -20,9 +21,11 @@ async function gate(req: Request): Promise<Response | null> {
   }
 }
 
+// GET (list) also accepts the shared voice token so the JARVIS voice
+// `scheduled` tool can list tasks. Create (POST) stays session-only.
 export async function GET(req: Request) {
-  const denied = await gate(req);
-  if (denied) return denied;
+  const userId = await resolveScheduledCaller(req);
+  if (!userId) return new Response("Unauthorized", { status: 401 });
   return Response.json({ tasks: listScheduledChats() });
 }
 

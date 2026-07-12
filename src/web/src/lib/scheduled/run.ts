@@ -30,7 +30,7 @@ export async function runScheduledChat(
   // conversation lands in THEIR chats; the background tick has no request and
   // falls back to the box owner.
   asUserId?: string,
-): Promise<{ conversationId: string | null }> {
+): Promise<{ conversationId: string | null; text: string }> {
   const ownerId = asUserId ?? (await resolveSharedLocalOwnerId());
   const settings = await loadSettings();
   const modelId = task.model ?? settings.defaults.model;
@@ -93,7 +93,7 @@ export async function runScheduledChat(
   // stays "pending voice" for the local poller to pull. Never blocks the run.
   void announceScheduledResult(task.id, task.name, voiceText);
 
-  return { conversationId: conversation?.id ?? null };
+  return { conversationId: conversation?.id ?? null, text: result.text };
 }
 
 /** Background tick: run every due task. Serial on purpose — these are

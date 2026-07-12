@@ -155,6 +155,10 @@ const SELF_AUTH_POST_PATTERNS: RegExp[] = [
   // not the CCR base. POST-only: the same path's GET is the web UI's session
   // list (cookie-authed via getUserId) and must stay behind the gate.
   /^\/api\/bridge\/v1\/sessions$/,
+  // Scheduled-task "run now" for the JARVIS voice `scheduled` tool. Self-auths
+  // in-handler (resolveScheduledCaller: session OR JARVIS_SCHEDULED_VOICE_TOKEN).
+  // Scoped to /run only — the sibling PATCH/DELETE on /[id] stay session-only.
+  /^\/api\/scheduled\/[^/]+\/run$/,
 ]
 
 // PATCH-only: the REPL bridge's session title sync. Same in-handler
@@ -187,6 +191,10 @@ const SELF_AUTH_GET_PATTERNS: RegExp[] = [
   // (a dedicated shared secret, NOT a user session). Deployed instances behind
   // Cloudflare Access must also exclude this path (like /api/bridge/*).
   /^\/api\/scheduled\/voice-pending$/,
+  // Scheduled-task LIST for the JARVIS voice `scheduled` tool. Self-auths
+  // in-handler (resolveScheduledCaller: session OR JARVIS_SCHEDULED_VOICE_TOKEN).
+  // GET-only — create/edit/delete stay session-only behind the shared gate.
+  /^\/api\/scheduled$/,
 ]
 
 // Host header allowlist (DNS-rebinding defense, parallel to the bridge
