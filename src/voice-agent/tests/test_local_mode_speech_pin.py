@@ -31,6 +31,15 @@ def files(tmp_path, monkeypatch):
     monkeypatch.setattr(
         local_model_picker, "resolve_installed_model_tag", lambda preferred="": None
     )
+    # The num_ctx ctx-variant derivation (2026-07-11, llm.py) ALSO probes the
+    # live ollama daemon (/api/tags, /api/create) — on a dev box where ollama
+    # is up and a `<tag>-jarvis-ctx:<N>` variant is registered it returns the
+    # derived tag, breaking the fixture's documented "no real ollama" contract
+    # (the model.build() assertions expect the base tag). Stub it to a
+    # pass-through so hermeticity holds whether or not ollama is running.
+    monkeypatch.setattr(
+        llm_mod, "ensure_ollama_ctx_variant", lambda base_tag, *a, **k: base_tag
+    )
     return vmodel, vmode
 
 
