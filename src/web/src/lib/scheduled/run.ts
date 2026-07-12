@@ -30,6 +30,11 @@ export async function runScheduledChat(
   // conversation lands in THEIR chats; the background tick has no request and
   // falls back to the box owner.
   asUserId?: string,
+  // Fire the voice reminder (default true, for scheduled/background runs). A
+  // manual run-now passes false: the caller already has the text (the voice
+  // tool reads it, the web UI shows it), so queuing a reminder too would
+  // double-speak once the poller pulls it.
+  announce = true,
 ): Promise<{ conversationId: string | null; text: string }> {
   const ownerId = asUserId ?? (await resolveSharedLocalOwnerId());
   const settings = await loadSettings();
@@ -91,7 +96,7 @@ export async function runScheduledChat(
   // the voice agent and mark it delivered so the poller skips it. On a remote
   // instance (the VPS, no local voice client) this is a no-op — the reminder
   // stays "pending voice" for the local poller to pull. Never blocks the run.
-  void announceScheduledResult(task.id, task.name, voiceText);
+  if (announce) void announceScheduledResult(task.id, task.name, voiceText);
 
   return { conversationId: conversation?.id ?? null, text: result.text };
 }
