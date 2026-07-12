@@ -6,33 +6,44 @@ os.environ.setdefault("JARVIS_SCHEDULED_VOICE_TOKEN", "test-token")
 from tools import scheduled  # noqa: E402
 
 
-def test_match_exact_then_substring():
-    tasks = [
-        {"id": "1", "name": "Morning Brief"},
-        {"id": "2", "name": "Weekly Review"},
+def test_instances_dedup_and_default():
+    os.environ.pop("JARVIS_SCHEDULED_WEB_URLS", None)
+    os.environ.pop("JARVIS_SCHEDULED_WEB_URL", None)
+    inst = scheduled._instances()
+    assert "https://0wlan.com" in inst and "http://127.0.0.1:3000" in inst
+    os.environ["JARVIS_SCHEDULED_WEB_URLS"] = "https://a.com/, https://a.com , http://b:3000"
+    try:
+        assert scheduled._instances() == ["https://a.com", "http://b:3000"]  # dedup + strip
+    finally:
+        os.environ.pop("JARVIS_SCHEDULED_WEB_URLS", None)
+
+
+def test_match_across_instances():
+    pairs = [
+        ("https://0wlan.com", {"id": "1", "name": "Morning Brief"}),
+        ("http://127.0.0.1:3000", {"id": "2", "name": "Weekly Review"}),
     ]
-    # exact (case-insensitive)
-    assert scheduled._match(tasks, "morning brief")["id"] == "1"
-    # substring
-    assert scheduled._match(tasks, "weekly")["id"] == "2"
-    # no match
-    assert scheduled._match(tasks, "nonexistent") is None
-    # empty
-    assert scheduled._match(tasks, "  ") is None
+    url, t = scheduled._match(pairs, "morning brief")  # exact, case-insensitive
+    assert url == "https://0wlan.com" and t["id"] == "1"
+    url, t = scheduled._match(pairs, "weekly")  # substring → home instance
+    assert url == "http://127.0.0.1:3000" and t["id"] == "2"
+    assert scheduled._match(pairs, "nope") is None
+    assert scheduled._match(pairs, "  ") is None
 
 
-def test_fmt_list():
+def test_fmt_list_tags_instance_when_multi():
+    single = scheduled._fmt_list([("https://0wlan.com", {"name": "X", "label": "Daily"})])
+    assert "X" in single and "[cloud]" not in single  # no tag when one instance
+    multi = scheduled._fmt_list([
+        ("https://0wlan.com", {"name": "A", "label": "Daily"}),
+        ("http://127.0.0.1:3000", {"name": "B", "label": "Weekly"}),
+    ])
+    assert "[cloud]" in multi and "[local]" in multi
     assert "don't have any" in scheduled._fmt_list([]).lower()
-    out = scheduled._fmt_list(
-        [{"name": "Morning Brief", "label": "Weekdays at 8:00 AM", "paused": False}]
-    )
-    assert "Morning Brief" in out and "8:00" in out
-    # paused surfaces as paused
-    assert "paused" in scheduled._fmt_list([{"name": "X", "paused": True}]).lower()
 
 
 def test_configured_gate():
-    assert scheduled._configured() is True  # token set at import
+    assert scheduled._configured() is True
     old = os.environ.pop("JARVIS_SCHEDULED_VOICE_TOKEN", None)
     try:
         assert scheduled._configured() is False

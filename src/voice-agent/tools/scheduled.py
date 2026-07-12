@@ -1,34 +1,30 @@
-"""``scheduled`` voice tool — let JARVIS list and run the user's Home scheduled
-tasks (the web app's Scheduled feature) and read the result aloud.
+"""``scheduled`` voice tool — list and run the user's Home scheduled tasks (the
+web app's Scheduled feature) and read the result aloud.
 
-Distinct from ``web_routine`` (that's the /code-shell routines). These are the
-Home "Scheduled" tasks — a prompt that runs on a cron and lands as a chat.
+Distinct from ``web_routine`` (the /code-shell routines). These are the Home
+"Scheduled" tasks — a prompt that runs on a cron and lands as a chat.
 
-Unlike the other ``web_*`` tools, this one targets the user's canonical web
-instance — the VPS by default (``JARVIS_SCHEDULED_WEB_URL``, default
-``https://0wlan.com``) — and authenticates with the dedicated shared token
-``JARVIS_SCHEDULED_VOICE_TOKEN`` (the same secret the reminder poller uses),
-NOT the local-api token. So "run my morning brief" hits the always-on VPS
-store where the user creates their tasks, and reads back the generated brief.
+Queries EVERY configured instance (``JARVIS_SCHEDULED_WEB_URLS``, comma-
+separated; default the VPS ``https://0wlan.com`` plus the local web
+``http://127.0.0.1:3000``) with the shared token ``JARVIS_SCHEDULED_VOICE_TOKEN``.
+A scheduled brief can only use the data tools installed on the instance it runs
+on (e.g. the Coding-Kiddos MCP lives on the local box, GitHub on the VPS), so
+each task is listed with its instance and RUN on the instance it belongs to.
 
-Gated (``check_fn``) on the token being configured, so the tool only appears
-once the scheduled-voice bridge is set up.
+Gated (``check_fn``) on the token being configured.
 """
 from __future__ import annotations
 
+import asyncio
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
 from .registry import registry, tool_error
 
-_DEFAULT_URL = "https://0wlan.com"
-_TIMEOUT_S = 30.0  # a run generates an LLM brief; give it room
-
-
-def _base_url() -> str:
-    return os.environ.get("JARVIS_SCHEDULED_WEB_URL", _DEFAULT_URL).rstrip("/")
+_DEFAULT_URLS = "https://0wlan.com,http://127.0.0.1:3000"
+_TIMEOUT_S = 30.0  # a run generates an LLM brief with tool calls; give it room
 
 
 def _token() -> str:
@@ -39,63 +35,100 @@ def _configured() -> bool:
     return bool(_token())
 
 
-async def _get(path: str) -> Any:
+def _instances() -> List[str]:
+    # Back-compat: honor the singular var, else the plural list, else defaults.
+    raw = (
+        os.environ.get("JARVIS_SCHEDULED_WEB_URLS")
+        or os.environ.get("JARVIS_SCHEDULED_WEB_URL")
+        or _DEFAULT_URLS
+    )
+    seen, out = set(), []
+    for u in raw.split(","):
+        u = u.strip().rstrip("/")
+        if u and u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def _label(url: str) -> str:
+    return "local" if ("127.0.0.1" in url or "localhost" in url) else "cloud"
+
+
+async def _get(url: str, path: str) -> Any:
     async with httpx.AsyncClient(timeout=_TIMEOUT_S) as c:
         r = await c.get(
-            f"{_base_url()}{path}",
-            headers={"Authorization": f"Bearer {_token()}"},
+            f"{url}{path}", headers={"Authorization": f"Bearer {_token()}"}
         )
         r.raise_for_status()
         return r.json()
 
 
-async def _post(path: str) -> Any:
+async def _post(url: str, path: str) -> Any:
     async with httpx.AsyncClient(timeout=_TIMEOUT_S) as c:
         r = await c.post(
-            f"{_base_url()}{path}",
-            headers={"Authorization": f"Bearer {_token()}"},
+            f"{url}{path}", headers={"Authorization": f"Bearer {_token()}"}
         )
         r.raise_for_status()
         return r.json()
 
 
-def _fmt_list(tasks: List[Dict[str, Any]]) -> str:
-    if not tasks:
+async def _all_tasks() -> List[Tuple[str, Dict[str, Any]]]:
+    """(instance_url, task) across every reachable instance. Unreachable
+    instances are skipped (a laptop offline / VPS blip must not error the whole
+    list)."""
+    async def one(url: str) -> List[Tuple[str, Dict[str, Any]]]:
+        try:
+            tasks = (await _get(url, "/api/scheduled")).get("tasks", [])
+            return [(url, t) for t in tasks]
+        except Exception:  # noqa: BLE001 — skip an unreachable instance
+            return []
+
+    results = await asyncio.gather(*(one(u) for u in _instances()))
+    return [pair for group in results for pair in group]
+
+
+def _fmt_list(pairs: List[Tuple[str, Dict[str, Any]]]) -> str:
+    if not pairs:
         return "You don't have any scheduled tasks set up."
+    multi = len({_label(u) for u, _ in pairs}) > 1
     lines = []
-    for t in tasks:
+    for url, t in pairs:
         state = "paused" if t.get("paused") else (t.get("label") or t.get("cron", ""))
-        lines.append(f"- {t.get('name', 'Untitled')} ({state})")
+        where = f" [{_label(url)}]" if multi else ""
+        lines.append(f"- {t.get('name', 'Untitled')} ({state}){where}")
     return "Your scheduled tasks:\n" + "\n".join(lines)
 
 
-def _match(tasks: List[Dict[str, Any]], name: str) -> Optional[Dict[str, Any]]:
+def _match(
+    pairs: List[Tuple[str, Dict[str, Any]]], name: str
+) -> Optional[Tuple[str, Dict[str, Any]]]:
     q = name.strip().lower()
     if not q:
         return None
-    # Exact (case-insensitive) first, then substring.
-    for t in tasks:
+    for url, t in pairs:  # exact first
         if (t.get("name") or "").lower() == q:
-            return t
-    for t in tasks:
+            return (url, t)
+    for url, t in pairs:  # then substring
         if q in (t.get("name") or "").lower():
-            return t
+            return (url, t)
     return None
 
 
 async def _handle_scheduled(args: Dict[str, Any]) -> str:
     action = (args.get("action") or "list").strip().lower()
     try:
-        tasks = (await _get("/api/scheduled")).get("tasks", [])
+        pairs = await _all_tasks()
         if action == "list":
-            return _fmt_list(tasks)
+            return _fmt_list(pairs)
         if action == "run":
             name = args.get("name") or ""
-            task = _match(tasks, name)
-            if not task:
-                avail = ", ".join(t.get("name", "?") for t in tasks) or "none"
+            hit = _match(pairs, name)
+            if not hit:
+                avail = ", ".join(t.get("name", "?") for _, t in pairs) or "none"
                 return f"I couldn't find a scheduled task called '{name}'. You have: {avail}."
-            res = await _post(f"/api/scheduled/{task['id']}/run")
+            url, task = hit
+            res = await _post(url, f"/api/scheduled/{task['id']}/run")
             text = (res.get("text") or "").strip()
             return text or f"Ran '{task.get('name')}', but it produced no output."
         return tool_error(f"Unknown action '{action}' (use 'list' or 'run').")
