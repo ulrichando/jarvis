@@ -14,7 +14,17 @@ const BTN =
 function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
-  const next = params.get("next") || "/chat";
+  // Open-redirect guard: only accept a same-origin RELATIVE path. Reject
+  // absolute URLs and the protocol-relative "//host" / "/\host" tricks, so
+  // /login?next=//evil.com can't bounce a signed-in user off-site.
+  const rawNext = params.get("next");
+  const next =
+    rawNext &&
+    rawNext.startsWith("/") &&
+    !rawNext.startsWith("//") &&
+    !rawNext.startsWith("/\\")
+      ? rawNext
+      : "/chat";
   const didReset = params.get("reset") === "1";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
