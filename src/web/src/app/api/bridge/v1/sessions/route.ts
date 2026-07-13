@@ -102,6 +102,10 @@ export async function GET(req: Request): Promise<NextResponse> {
           archived: !!s.archived,
           group_id: s.group_id,
           group_name: s.group_id ? (groupName.get(s.group_id) ?? null) : null,
+          // Dispatch-origin flag (sidebar badge) + the two persisted toggles.
+          dispatch: !!s.dispatch,
+          keep_awake: !!s.keep_awake,
+          allow_all_actions: !!s.allow_all_actions,
         }
       })
     return NextResponse.json({ sessions })

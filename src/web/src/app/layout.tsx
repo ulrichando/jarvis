@@ -28,6 +28,8 @@ const jetbrains = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "Jarvis",
   description: "Personal AI workbench.",
+  // Required for iOS Web Push (Add to Home Screen → installed PWA).
+  manifest: "/manifest.webmanifest",
   icons: {
     icon: "/jarvis-logo.svg",
     apple: "/jarvis-logo.svg",

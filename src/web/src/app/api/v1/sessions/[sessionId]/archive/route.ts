@@ -3,6 +3,7 @@ import { getStore } from '@/lib/bridge/db'
 import { archiveSession } from '@/lib/bridge/store'
 import { authorizeSessionCredential, extractBearer } from '@/lib/bridge/auth'
 import { bridgeError } from '@/lib/bridge/errors'
+import { releaseKeepAwake } from '@/lib/dispatch/keep-awake'
 
 // CCR-compat archive — the client's archiveSession. Idempotent: an
 // already-archived session returns 409, which the client treats as success.
@@ -20,6 +21,7 @@ export async function POST(
     return bridgeError(401, 'unauthorized', 'Invalid session credential')
   }
   const result = archiveSession(store, sessionId)
+  releaseKeepAwake(sessionId) // archived task must not hold the sleep lock
   if (result === 'already') {
     return bridgeError(409, 'already_archived', 'Session already archived')
   }

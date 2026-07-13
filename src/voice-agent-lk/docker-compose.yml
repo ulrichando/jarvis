@@ -1,0 +1,14 @@
+# JARVIS headless voice agent — deployed at /opt/jarvis/voice-agent-lk/
+# on the VPS next to /opt/jarvis/livekit/ (P1). Host networking because
+# both LiveKit (:7880) and the LLM gateway (127.0.0.1:4000) bind on the
+# host; the worker itself only dials out (plus its :8081 health/debug
+# HTTP listener).
+services:
+  voice-agent:
+    build: .
+    image: jarvis-voice-agent-lk
+    container_name: voice-agent-lk
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    init: true

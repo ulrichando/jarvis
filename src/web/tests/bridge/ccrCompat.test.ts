@@ -23,6 +23,10 @@ function row(over: Partial<SessionRow>): SessionRow {
     routine_id: null,
     worker_spec_json: null,
     inbound_floor_seq: 0,
+    last_diff_json: null,
+    dispatch: 0,
+    keep_awake: 0,
+    allow_all_actions: 0,
     ...over,
   };
 }

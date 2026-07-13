@@ -8,6 +8,7 @@ import {
   findSession,
   setSessionAutofix,
   setSessionAutomerge,
+  setSessionDispatch,
   setSessionGroup,
   setSessionPinned,
   setSessionRead,
@@ -17,6 +18,7 @@ import { extractBearer } from '@/lib/bridge/auth'
 import { getUserId } from '@/lib/auth-helpers'
 import { bridgeError } from '@/lib/bridge/errors'
 import { ccrSessionStatus } from '@/lib/bridge/ccrCompat'
+import { acquireKeepAwake, releaseKeepAwake } from '@/lib/dispatch/keep-awake'
 
 // Authorize a mutation on a session two ways: the CLI worker presents a
 // bearer (v1-permissive — any non-empty token); the /code browser presents a
@@ -96,6 +98,8 @@ export async function PATCH(
     group_id?: string | null
     autofix?: boolean
     automerge?: boolean
+    keep_awake?: boolean
+    allow_all_actions?: boolean
   } | null
   const renaming = typeof body?.title === 'string' && body.title.trim() !== ''
   const archiving = body?.archived === true
@@ -105,6 +109,8 @@ export async function PATCH(
   const grouping = body !== null && 'group_id' in body
   const togglingAutofix = typeof body?.autofix === 'boolean'
   const togglingAutomerge = typeof body?.automerge === 'boolean'
+  const togglingKeepAwake = typeof body?.keep_awake === 'boolean'
+  const togglingAllowActions = typeof body?.allow_all_actions === 'boolean'
   if (
     !renaming &&
     !archiving &&
@@ -113,12 +119,14 @@ export async function PATCH(
     !reading &&
     !grouping &&
     !togglingAutofix &&
-    !togglingAutomerge
+    !togglingAutomerge &&
+    !togglingKeepAwake &&
+    !togglingAllowActions
   ) {
     return bridgeError(
       400,
       'invalid_request',
-      'title, archived, pinned, read, group_id, autofix, or automerge required',
+      'title, archived, pinned, read, group_id, autofix, automerge, keep_awake, or allow_all_actions required',
     )
   }
   const denied = await authorizeMutation(req, sessionId)
@@ -134,10 +142,25 @@ export async function PATCH(
       const g = body!.group_id
       setSessionGroup(store, sessionId, typeof g === 'string' && g ? g : null)
     }
-    if (archiving) archiveSession(store, sessionId)
+    if (archiving) {
+      archiveSession(store, sessionId)
+      releaseKeepAwake(sessionId) // archived task must not hold the sleep lock
+    }
     if (unarchiving) unarchiveSession(store, sessionId)
     if (togglingAutofix) setSessionAutofix(store, sessionId, body!.autofix!)
     if (togglingAutomerge) setSessionAutomerge(store, sessionId, body!.automerge!)
+    if (togglingKeepAwake || togglingAllowActions) {
+      setSessionDispatch(store, sessionId, {
+        keep_awake: togglingKeepAwake ? body!.keep_awake! : undefined,
+        allow_all_actions: togglingAllowActions ? body!.allow_all_actions! : undefined,
+      })
+      // Flipping keep-awake mid-run is symmetric: ON acquires the sleep
+      // inhibitor (dedup no-op if already held), OFF drops it.
+      if (togglingKeepAwake) {
+        if (body!.keep_awake === true) acquireKeepAwake(sessionId)
+        else releaseKeepAwake(sessionId)
+      }
+    }
     return NextResponse.json({ id: sessionId })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -157,6 +180,7 @@ export async function DELETE(
   if (denied) return denied
   try {
     deleteSession(getStore(), sessionId)
+    releaseKeepAwake(sessionId) // deleted task must not hold the sleep lock
     return new NextResponse(null, { status: 204 })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

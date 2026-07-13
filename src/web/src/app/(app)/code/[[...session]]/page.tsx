@@ -16,6 +16,8 @@ import { isPickableEnv } from "@/components/code/env-picker";
 import { CodeSession } from "@/components/code/code-session";
 import { CodePanels, type PanelName } from "@/components/code/code-panels";
 import { RoutinesView } from "@/components/code/routines-view";
+import { DispatchView } from "@/components/code/dispatch-view";
+import { useIsMobile } from "@/hooks/use-is-mobile";
 import { shouldAutoOpenSession } from "@/components/code/session-liveness";
 
 type Machine = {
@@ -43,6 +45,7 @@ type SessionSummary = {
   archived?: boolean;
   group_id?: string | null;
   group_name?: string | null;
+  dispatch?: boolean;
 };
 
 function repoLabel(m: Machine | null): string | null {
@@ -148,6 +151,8 @@ export default function CodePage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   // Routines view (path /code/routines) — distinct from a session.
   const [showRoutines, setShowRoutines] = useState(false);
+  // Dispatch view (path /code/dispatch) — the phone-first task composer.
+  const [showDispatch, setShowDispatch] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // A 401 from a write = the login session lapsed server-side. Show a re-login
@@ -161,6 +166,10 @@ export default function CodePage() {
   // same reason: a saved custom width made the two shells visibly mismatch.
   // Collapse the session sidebar (like the main app's "Jarvis" sidebar).
   const [codeSidebarOpen, setCodeSidebarOpen] = useState(true);
+  // Mobile (<768px): the sidebar is an overlay drawer, default closed. Desktop
+  // path (isMobile===false) is byte-identical to before.
+  const isMobile = useIsMobile();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   // Inline review comments queued from the diff panel — bundled into the next
   // message with their location, like claude.ai/code.
   const [diffComments, setDiffComments] = useState<{ file: string; line: number; text: string }[]>([]);
@@ -281,19 +290,24 @@ export default function CodePage() {
       const segRaw = routeParams?.session;
       const seg = Array.isArray(segRaw) ? segRaw[0] : segRaw;
       urlCandidate.current =
-        seg === "routines"
-          ? "routines"
+        seg === "routines" || seg === "dispatch"
+          ? seg
           : (fromSeg(seg) ?? new URLSearchParams(window.location.search).get("s"));
       urlPhase.current = "restore";
     }
     if (urlPhase.current === "restore") {
       const cand = urlCandidate.current;
-      // Routines is data-independent — restore it BEFORE the liveness gate so a
-      // /code/routines deep link doesn't flash the welcome view while the machine
-      // + session fetches are still in flight.
+      // Routines + Dispatch are data-independent — restore them BEFORE the
+      // liveness gate so a /code/routines or /code/dispatch deep link doesn't
+      // flash the welcome view while the machine + session fetches are in flight.
       if (cand === "routines") {
         urlPhase.current = "sync";
         setShowRoutines(true);
+        return;
+      }
+      if (cand === "dispatch") {
+        urlPhase.current = "sync";
+        setShowDispatch(true);
         return;
       }
       // Wait for the liveness inputs (machines starts null). Returning early
@@ -320,12 +334,24 @@ export default function CodePage() {
       }
       // No deep link → fall through to sync (welcome view).
     }
-    const url = showRoutines ? "/code/routines" : sessionId ? toPath(sessionId) : "/code";
+    const url = showDispatch
+      ? "/code/dispatch"
+      : showRoutines
+        ? "/code/routines"
+        : sessionId
+          ? toPath(sessionId)
+          : "/code";
     if (window.location.pathname !== url) {
       window.history.replaceState(null, "", url);
     }
-  }, [sessionId, showRoutines, routeParams, machines, sessions, sessionsLoaded,
-      sessionsLoadFailed, machinesLoadFailed]);
+  }, [sessionId, showRoutines, showDispatch, routeParams, machines, sessions,
+      sessionsLoaded, sessionsLoadFailed, machinesLoadFailed]);
+
+  // Mobile: close the overlay drawer whenever the open view changes (select a
+  // session, open Dispatch/Routines) — mirrors the Home sidebar's close-on-nav.
+  useEffect(() => {
+    if (isMobile) setMobileNavOpen(false);
+  }, [sessionId, showRoutines, showDispatch, isMobile]);
 
   const changeMode = (m: string) => {
     setMode(m);
@@ -516,6 +542,7 @@ export default function CodePage() {
       if (e.key === "n") {
         setSessionId(null);
         setShowRoutines(false);
+        setShowDispatch(false);
         setInput("");
       } else if (e.key === "d" && sessionId) {
         setPanels((s) => ({ ...s, diff: !s.diff }));
@@ -649,29 +676,58 @@ export default function CodePage() {
     }
   };
 
+  const codeSidebarNode = (
+    <CodeSidebar
+      sessions={sessions}
+      activeSessionId={sessionId}
+      onSelectSession={(id) => { setSessionId(id || null); setShowRoutines(false); setShowDispatch(false); }}
+      onNewSession={() => { setSessionId(null); setInput(""); setShowRoutines(false); setShowDispatch(false); }}
+      onRefresh={loadSessions}
+      onShareSession={(id) => { setSessionId(id); setShowRoutines(false); setShowDispatch(false); setShareOpen(true); }}
+      routinesActive={showRoutines}
+      onOpenRoutines={() => { setShowRoutines(true); setShowDispatch(false); setSessionId(null); }}
+      dispatchActive={showDispatch}
+      onOpenDispatch={() => { setShowDispatch(true); setShowRoutines(false); setSessionId(null); }}
+      width={SIDEBAR_W}
+      onCollapse={() => { if (isMobile) setMobileNavOpen(false); else setCodeSidebarOpen(false); }}
+    />
+  );
+
   return (
     // Full-screen overlay so /code presents like standalone Claude Code.
     <div className="fixed inset-0 z-40 flex bg-background text-foreground overflow-hidden">
-      {codeSidebarOpen && (
+      {/* Desktop: in-flow sidebar (byte-identical to before). */}
+      {!isMobile && codeSidebarOpen && codeSidebarNode}
+
+      {/* Mobile (<768px): overlay drawer + a hamburger to open it. */}
+      {isMobile && (
         <>
-          <CodeSidebar
-            sessions={sessions}
-            activeSessionId={sessionId}
-            onSelectSession={(id) => { setSessionId(id || null); setShowRoutines(false); }}
-            onNewSession={() => { setSessionId(null); setInput(""); setShowRoutines(false); }}
-            onRefresh={loadSessions}
-            onShareSession={(id) => { setSessionId(id); setShowRoutines(false); setShareOpen(true); }}
-            routinesActive={showRoutines}
-            onOpenRoutines={() => { setShowRoutines(true); setSessionId(null); }}
-            width={SIDEBAR_W}
-            onCollapse={() => setCodeSidebarOpen(false)}
-          />
+          {!mobileNavOpen && (
+            <button
+              type="button"
+              onClick={() => setMobileNavOpen(true)}
+              aria-label="Open sidebar"
+              className="fixed left-2 top-2 z-30 flex size-8 items-center justify-center rounded-md bg-card/80 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground"
+            >
+              <PanelLeftOpen className="size-4" />
+            </button>
+          )}
+          {mobileNavOpen && (
+            <>
+              <div
+                className="fixed inset-0 z-40 bg-black/50"
+                onClick={() => setMobileNavOpen(false)}
+                aria-hidden
+              />
+              <div className="fixed inset-y-0 left-0 z-50">{codeSidebarNode}</div>
+            </>
+          )}
         </>
       )}
 
       {/* Collapsed → a thin rail with a button re-opens it (no overlap with the
-          session header; mirrors a collapsed sidebar). */}
-      {!codeSidebarOpen && (
+          session header; mirrors a collapsed sidebar). Desktop only. */}
+      {!isMobile && !codeSidebarOpen && (
         <div className="flex shrink-0 flex-col items-center border-r border-border/40 px-1.5 pt-2.5">
           <button
             type="button"
@@ -688,7 +744,23 @@ export default function CodePage() {
       <main className="flex flex-1 overflow-hidden">
         {/* chat column (messages + composer) */}
         <div className="flex min-w-0 flex-1 flex-col">
-          {showRoutines ? (
+          {showDispatch ? (
+            <DispatchView
+              machines={machines === null ? null : machines.filter(isPickableEnv)}
+              selected={selected}
+              onPickMachine={(id) => {
+                const m = machines?.find((x) => x.environment_id === id);
+                if (m) setSelected(m);
+              }}
+              model={model}
+              recentDispatchSessionId={
+                sessions.find((s) => s.dispatch && !s.archived)?.session_id ?? null
+              }
+              onOpenSession={(id) => { setSessionId(id); setShowDispatch(false); }}
+              onReloadSessions={loadSessions}
+              onExit={() => setShowDispatch(false)}
+            />
+          ) : showRoutines ? (
             <RoutinesView onOpenSession={(id) => { setSessionId(id); setShowRoutines(false); }} />
           ) : sessionId ? (
             <CodeSession
@@ -770,7 +842,7 @@ export default function CodePage() {
             </div>
           )}
 
-          {!showRoutines && (
+          {!showRoutines && !showDispatch && (
           <div className="mx-auto w-full max-w-3xl px-6 pb-6">
             {authExpired && (
               <div className="mb-2 flex items-center gap-2 text-[12px] text-amber-500">

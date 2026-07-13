@@ -127,6 +127,7 @@ const SELF_AUTH_PATTERNS: RegExp[] = [
   /^\/api\/bridge\/v1\/routines\/[^/]+$/, //     patch / delete a routine
   /^\/api\/bridge\/v1\/routines\/[^/]+\/run$/, // run a routine now
   /^\/api\/bridge\/v1\/tasks$/, //               dispatch a code task (POST)
+  /^\/api\/bridge\/v1\/dispatch$/, //            phone-first Dispatch task (POST)
   /^\/api\/bridge\/v1\/environments$/, //        list environments (GET)
 ]
 
@@ -486,6 +487,6 @@ export function proxy(req: NextRequest) {
 // internals + static assets (so images/fonts/css aren't redirected to /login).
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|svg|ico|webp|avif|woff|woff2|ttf|otf|css|js|map|txt|xml|json)).*)',
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|svg|ico|webp|avif|woff|woff2|ttf|otf|css|js|map|txt|xml|json|webmanifest)).*)',
   ],
 }

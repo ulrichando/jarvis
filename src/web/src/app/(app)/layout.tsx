@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { Sidebar } from "@/components/layout/sidebar";
 import { SettingsDialog } from "@/components/settings/settings-dialog";
+import { PushSubscribe } from "@/components/push/push-subscribe";
 import { useSettings } from "@/hooks/use-settings";
 
 // Font size → the <html> root font-size. Every rem-based Tailwind utility
@@ -49,6 +50,9 @@ export default function AppLayout({
         {/* Settings/Customize modal — also reachable from the code shell's
             own Customize button. */}
         <SettingsDialog />
+        {/* Web Push subscribe (Dispatch phone notifications). No-op when
+            unsupported / VAPID unconfigured / permission denied. */}
+        <PushSubscribe />
       </div>
     );
   }

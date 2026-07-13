@@ -10,6 +10,7 @@ import {
 import { emitInbound } from '@/lib/bridge/events'
 import { getUserId } from '@/lib/auth-helpers'
 import { bridgeError } from '@/lib/bridge/errors'
+import { releaseKeepAwake } from '@/lib/dispatch/keep-awake'
 
 // POST /api/bridge/v1/sessions/{id}/messages — the /code session view talks
 // INTO a connected CLI session. Session-cookie authenticated (same-origin
@@ -133,6 +134,9 @@ export async function POST(
         request_id: uuid,
         request: { subtype: 'interrupt' },
       })
+      // A stopped dispatch task must not hold the keep-awake sleep lock
+      // (no-op for non-dispatch / non-keep_awake sessions).
+      releaseKeepAwake(sessionId)
     } else if (mode) {
       appendInbound(store, sessionId, {
         type: 'control_request',

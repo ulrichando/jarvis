@@ -18,6 +18,12 @@ import {
   getSessionGitScope,
   validateGitCapToken,
   findSession,
+  getOrCreateSession,
+  setSessionDispatch,
+  sessionOwnerUserId,
+  upsertPushSubscription,
+  listPushSubscriptions,
+  deletePushSubscription,
   type Store,
 } from '@/lib/bridge/store'
 
@@ -290,5 +296,70 @@ describe('git scope + cap token', () => {
     setSessionContainer(store, 's2', { container: 'c', repo: 'o/legacy' })
     expect(getSessionGitScope(findSession(store, 's2')!)).toEqual(['o/legacy'])
     expect(validateGitCapToken(store, 's2', 'anything')).toBe(false)
+  })
+})
+
+describe('dispatch flags + push subscriptions', () => {
+  test('setSessionDispatch writes only the given flags; defaults are 0', () => {
+    const env = createEnvironment(store, {
+      machine_name: 'kali',
+      directory: '/tmp',
+      max_sessions: 4,
+      worker_type: 'jarvis',
+      user_id: 'u1',
+    })
+    getOrCreateSession(store, 'sd', env.environment_id)
+    // Fresh session → all flags default 0.
+    const before = findSession(store, 'sd')!
+    expect(before.dispatch).toBe(0)
+    expect(before.keep_awake).toBe(0)
+    expect(before.allow_all_actions).toBe(0)
+    // Partial write leaves untouched flags alone.
+    setSessionDispatch(store, 'sd', { dispatch: true, allow_all_actions: true })
+    const after = findSession(store, 'sd')!
+    expect(after.dispatch).toBe(1)
+    expect(after.allow_all_actions).toBe(1)
+    expect(after.keep_awake).toBe(0)
+    // Toggle one back off without disturbing the others.
+    setSessionDispatch(store, 'sd', { allow_all_actions: false })
+    const final = findSession(store, 'sd')!
+    expect(final.dispatch).toBe(1)
+    expect(final.allow_all_actions).toBe(0)
+  })
+
+  test('sessionOwnerUserId resolves via environment; null for orphan', () => {
+    const env = createEnvironment(store, {
+      machine_name: 'kali',
+      directory: '/tmp',
+      max_sessions: 4,
+      worker_type: 'jarvis',
+      user_id: 'owner-42',
+    })
+    getOrCreateSession(store, 'so', env.environment_id)
+    expect(sessionOwnerUserId(store, 'so')).toBe('owner-42')
+    expect(sessionOwnerUserId(store, 'does-not-exist')).toBeNull()
+  })
+
+  test('push subscription upsert / list / delete', () => {
+    upsertPushSubscription(store, {
+      endpoint: 'https://push.example/abc',
+      user_id: 'u1',
+      p256dh: 'k1',
+      auth: 'a1',
+    })
+    // Re-subscribe from the same endpoint updates in place (no dup row).
+    upsertPushSubscription(store, {
+      endpoint: 'https://push.example/abc',
+      user_id: 'u1',
+      p256dh: 'k2',
+      auth: 'a2',
+    })
+    const subs = listPushSubscriptions(store, 'u1')
+    expect(subs).toHaveLength(1)
+    expect(subs[0].p256dh).toBe('k2')
+    // Scoped by user.
+    expect(listPushSubscriptions(store, 'other')).toHaveLength(0)
+    deletePushSubscription(store, 'https://push.example/abc')
+    expect(listPushSubscriptions(store, 'u1')).toHaveLength(0)
   })
 })

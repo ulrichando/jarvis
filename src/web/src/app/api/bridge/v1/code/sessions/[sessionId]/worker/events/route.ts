@@ -9,6 +9,7 @@ import {
 } from '@/lib/bridge/store'
 import { clearLiveText, emitInbound, setLiveText } from '@/lib/bridge/events'
 import { authorizeSessionToken } from '@/lib/bridge/authz'
+import { firePushForResult } from '@/lib/push/fire'
 import { bridgeError } from '@/lib/bridge/errors'
 
 // Structural slice of an ephemeral stream_event carrying a full-so-far
@@ -110,6 +111,8 @@ export async function POST(
             // no human in the loop, so without it the worker blocks forever on
             // the first Write/Bash.
             if (/^exit_?plan_?mode/i.test(r.tool_name ?? '')) {
+              // Waiting on a human decision → Dispatch "needs a go-ahead" push.
+              firePushForResult(store, sessionId, 'needs_input')
               appendSessionEvent(store, sessionId, {
                 type: 'ultraplan_permission',
                 payload: {
@@ -158,6 +161,10 @@ export async function POST(
       // The complete message supersedes any in-flight snapshot.
       if (payload.type === 'assistant' || payload.type === 'result') {
         clearLiveText(sessionId)
+      }
+      // A result event = the turn finished → Dispatch "task finished" push.
+      if (payload.type === 'result') {
+        firePushForResult(store, sessionId, 'done')
       }
       appendSessionEvent(store, sessionId, { type: payload.type, payload })
     }

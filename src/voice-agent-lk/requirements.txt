@@ -1,0 +1,6 @@
+# Headless VPS voice agent — CPU-only, no desktop tools.
+# silero: VAD; anthropic: Claude via the JARVIS gateway (/v1/messages).
+# pinned to the minor that passed the 2026-07-13 e2e probe on the VPS
+livekit-agents[silero,anthropic]~=1.6.5
+faster-whisper~=1.2
+edge-tts~=7.0
