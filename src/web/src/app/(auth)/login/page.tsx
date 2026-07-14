@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Asterisk, Loader2 } from "lucide-react";
 import { signIn, authClient } from "@/lib/auth-client";
+import { safeNextPath } from "@/lib/safe-redirect";
 
 const INPUT =
   "w-full rounded-lg border border-border/60 bg-accent/20 px-3 py-2 text-[14px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/40";
@@ -14,17 +15,10 @@ const BTN =
 function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
-  // Open-redirect guard: only accept a same-origin RELATIVE path. Reject
-  // absolute URLs and the protocol-relative "//host" / "/\host" tricks, so
-  // /login?next=//evil.com can't bounce a signed-in user off-site.
-  const rawNext = params.get("next");
-  const next =
-    rawNext &&
-    rawNext.startsWith("/") &&
-    !rawNext.startsWith("//") &&
-    !rawNext.startsWith("/\\")
-      ? rawNext
-      : "/chat";
+  // Open-redirect guard — see safeNextPath in @/lib/safe-redirect for the
+  // rules (control-char stripping BEFORE the same-origin path checks, which
+  // closes the "/%09//evil.com" tab/newline/CR smuggling bypass).
+  const next = safeNextPath(params.get("next"));
   const didReset = params.get("reset") === "1";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -43,17 +37,25 @@ function LoginForm() {
     e.preventDefault();
     setBusy(true);
     setError(null);
-    const { data, error } = await signIn.email({ email, password });
-    setBusy(false);
-    if (error) {
-      setError(error.message ?? "Sign in failed");
-      return;
+    // try/catch: a thrown transport error (network down, fetch rejection)
+    // would otherwise skip setBusy(false) and leave the button disabled
+    // forever. The finally guarantees the form always recovers.
+    try {
+      const { data, error } = await signIn.email({ email, password });
+      if (error) {
+        setError(error.message ?? "Sign in failed");
+        return;
+      }
+      if (data && (data as { twoFactorRedirect?: boolean }).twoFactorRedirect) {
+        setStep("2fa");
+        return;
+      }
+      router.push(next);
+    } catch (err) {
+      setError(err instanceof Error && err.message ? err.message : "Sign in failed — network error");
+    } finally {
+      setBusy(false);
     }
-    if (data && (data as { twoFactorRedirect?: boolean }).twoFactorRedirect) {
-      setStep("2fa");
-      return;
-    }
-    router.push(next);
   };
 
   const submit2fa = async (e: React.FormEvent) => {
@@ -62,16 +64,23 @@ function LoginForm() {
     if (!c) return;
     setBusy(true);
     setError(null);
-    const { error } = useBackup
-      ? await authClient.twoFactor.verifyBackupCode({ code: c })
-      : await authClient.twoFactor.verifyTotp({ code: c });
-    setBusy(false);
-    if (error) {
-      setError(error.message ?? "Invalid code — try again");
-      setCode("");
-      return;
+    // Same transport-error recovery as submitCreds: never strand the form
+    // with busy=true if the verify call throws instead of returning {error}.
+    try {
+      const { error } = useBackup
+        ? await authClient.twoFactor.verifyBackupCode({ code: c })
+        : await authClient.twoFactor.verifyTotp({ code: c });
+      if (error) {
+        setError(error.message ?? "Invalid code — try again");
+        setCode("");
+        return;
+      }
+      router.push(next);
+    } catch (err) {
+      setError(err instanceof Error && err.message ? err.message : "Verification failed — network error");
+    } finally {
+      setBusy(false);
     }
-    router.push(next);
   };
 
   const backToCreds = () => {
