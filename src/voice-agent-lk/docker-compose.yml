@@ -12,3 +12,7 @@ services:
     network_mode: host
     env_file: .env
     init: true
+    # Per-user cross-session voice memory (JSONL). Host-mounted so it survives
+    # rebuilds/redeploys; matches VOICE_MEMORY_DIR (default /data/memory).
+    volumes:
+      - ./memory:/data/memory

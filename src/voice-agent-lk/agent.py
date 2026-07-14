@@ -22,8 +22,10 @@ Env (see .env.example):
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+from pathlib import Path
 
 from livekit.agents import (
     Agent,
@@ -34,6 +36,7 @@ from livekit.agents import (
     cli,
     metrics,
 )
+from livekit.agents.llm import ChatContext
 from livekit.plugins import anthropic, silero
 
 import proxy_token
@@ -54,7 +57,60 @@ realtime voice call, so:
   no emojis. Spell out anything that must be read aloud.
 - If a transcription seems garbled or cut off, ask a brief clarifying
   question instead of guessing.
+- You remember earlier conversations with this user; refer back to them
+  naturally when relevant instead of asking for information already given.
 """
+
+# ── Cross-session memory ────────────────────────────────────────────────────
+# Each voice session is a fresh AgentSession, so without this the agent forgets
+# everything between calls. We persist finalized turns per user (the userId is
+# embedded in the room name) and replay the recent tail into the chat context on
+# join. Stored as append-only JSONL under a host-mounted volume so it survives
+# container redeploys.
+MEMORY_DIR = Path(os.environ.get("VOICE_MEMORY_DIR", "/data/memory"))
+MAX_HISTORY_TURNS = int(os.environ.get("VOICE_MEMORY_TURNS", "40"))
+
+
+def _user_id_from_room(room_name: str) -> str | None:
+    """Rooms are `voice-<userId>-<uuid8>`; the userId is itself a hyphenated
+    UUID, so strip the `voice-` prefix and the trailing `-<uuid8>` suffix."""
+    if not room_name.startswith("voice-"):
+        return None
+    rest = room_name[len("voice-") :]
+    uid, _, _suffix = rest.rpartition("-")
+    return uid or None
+
+
+def _memory_file(user_id: str) -> Path:
+    safe = "".join(c for c in user_id if c.isalnum() or c in "-_")
+    return MEMORY_DIR / f"{safe}.jsonl"
+
+
+def _load_history(user_id: str) -> list[dict]:
+    f = _memory_file(user_id)
+    if not f.exists():
+        return []
+    turns: list[dict] = []
+    for line in f.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if obj.get("role") in ("user", "assistant") and obj.get("text"):
+            turns.append(obj)
+    return turns[-MAX_HISTORY_TURNS:]
+
+
+def _append_turn(user_id: str, role: str, text: str) -> None:
+    try:
+        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        with _memory_file(user_id).open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"role": role, "text": text}, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.warning("[memory] append failed: %s", e)
 
 
 def prewarm(proc: JobProcess) -> None:
@@ -91,7 +147,21 @@ def _build_llm() -> anthropic.LLM:
 
 async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
-    logger.info("[job] joined room %s", ctx.room.name)
+    # Identity from the signed LiveKit token (route.ts sets identity=userId),
+    # not the room-name string — so memory can't be keyed on another user even
+    # if the room-naming convention ever changes. Room parse is only a fallback.
+    participant = await ctx.wait_for_participant()
+    user_id = participant.identity or _user_id_from_room(ctx.room.name)
+    history = _load_history(user_id) if user_id else []
+    logger.info(
+        "[job] joined room %s (user=%s, %d prior turn(s))",
+        ctx.room.name, user_id, len(history),
+    )
+
+    # Replay recent memory into the chat context so the agent recalls past calls.
+    chat_ctx = ChatContext.empty()
+    for turn in history:
+        chat_ctx.add_message(role=turn["role"], content=turn["text"])
 
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
@@ -123,12 +193,16 @@ async def entrypoint(ctx: JobContext) -> None:
     def _on_transcript(ev) -> None:
         if ev.is_final:
             logger.info("[stt] user said: %r", ev.transcript)
+            if user_id and ev.transcript:
+                _append_turn(user_id, "user", ev.transcript)
 
     @session.on("conversation_item_added")
     def _on_item(ev) -> None:
         item = ev.item
         if getattr(item, "role", None) == "assistant":
             logger.info("[llm] agent replied: %r", item.text_content)
+            if user_id and item.text_content:
+                _append_turn(user_id, "assistant", item.text_content)
 
     @session.on("agent_state_changed")
     def _on_state(ev) -> None:
@@ -139,7 +213,7 @@ async def entrypoint(ctx: JobContext) -> None:
         metrics.log_metrics(ev.metrics)
 
     await session.start(
-        agent=Agent(instructions=INSTRUCTIONS),
+        agent=Agent(instructions=INSTRUCTIONS, chat_ctx=chat_ctx),
         room=ctx.room,
     )
 

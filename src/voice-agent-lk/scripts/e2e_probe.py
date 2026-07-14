@@ -18,7 +18,11 @@ import io
 import os
 import time
 
-QUESTION = "What is two plus two? Answer in one short sentence."
+# Overridable so the same probe can drive multi-session tests (e.g. the
+# cross-session memory check: same userId in PROBE_ROOM, different suffix).
+QUESTION = os.environ.get(
+    "PROBE_QUESTION", "What is two plus two? Answer in one short sentence."
+)
 SAMPLE_RATE = 48000
 AGENT_JOIN_TIMEOUT_S = 60
 REPLY_TIMEOUT_S = 90
@@ -55,7 +59,7 @@ async def main() -> int:
     key = os.environ["LIVEKIT_API_KEY"]
     secret = os.environ["LIVEKIT_API_SECRET"]
 
-    room_name = f"voice-e2e-{int(time.time())}"
+    room_name = os.environ.get("PROBE_ROOM") or f"voice-e2e-{int(time.time())}"
     token = (
         api.AccessToken(key, secret)
         .with_identity("probe")
@@ -140,6 +144,9 @@ async def main() -> int:
 
     try:
         await asyncio.wait_for(reply_done.wait(), REPLY_TIMEOUT_S)
+        # Let the agent finish speaking so the turn is committed to its chat
+        # context (and persisted to memory) before we tear the room down.
+        await asyncio.sleep(float(os.environ.get("PROBE_LINGER_S", "10")))
     except asyncio.TimeoutError:
         pass
 
