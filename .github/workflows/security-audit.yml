@@ -23,11 +23,22 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install pip-audit
-      # PYSEC-2025-49 / CVE-2024-6345 affect setuptools install-time path
-      # traversal during package install. Voice agent never invokes
-      # `pip install` at runtime, and the setuptools<70 pin is required
-      # for transitive `pkg_resources` consumers (langchain). Accepted.
-      - run: pip-audit -r src/voice-agent/requirements.txt --strict --ignore-vuln PYSEC-2025-49 --ignore-vuln CVE-2024-6345
+      # Accepted (unfixable-in-place, non-exploitable in this runtime):
+      # - PYSEC-2025-49 / CVE-2024-6345: setuptools install-time path traversal
+      #   during `pip install`. Voice agent never invokes `pip install` at
+      #   runtime, and the setuptools<82 pin is required for transitive
+      #   `pkg_resources` consumers (numpy/onnxruntime/scipy/sklearn — setuptools
+      #   82+ removed pkg_resources, which would break VAD/STT).
+      # - PYSEC-2026-3447: setuptools MANIFEST.in exclusion bypass, ONLY on macOS
+      #   APFS/HFS+ and ONLY while building an sdist. We run on Linux and never
+      #   build sdists at runtime (setuptools present solely for pkg_resources).
+      #   Its fix is 83.0.0, which removes pkg_resources → same <82 pin conflict.
+      # - GHSA-xf7x-x43h-rpqh: json-repair DoS in SchemaRepairer.resolve_schema()
+      #   via a circular-$ref JSON *schema*. Hard-pinned ==0.59.10 by
+      #   livekit-agents (the framework); its usage is repairing LLM tool-call
+      #   output strings (repair_json), not resolving attacker-supplied schemas,
+      #   so the vulnerable path isn't reached. Clears when livekit-agents bumps.
+      - run: pip-audit -r src/voice-agent/requirements.txt --strict --ignore-vuln PYSEC-2025-49 --ignore-vuln CVE-2024-6345 --ignore-vuln PYSEC-2026-3447 --ignore-vuln GHSA-xf7x-x43h-rpqh
 
   npm-audit-cli:
     name: npm audit (cli)
