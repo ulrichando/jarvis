@@ -5,6 +5,7 @@ import {
   timestamp,
   uuid,
   integer,
+  bigint,
   jsonb,
   boolean,
   index,
@@ -110,6 +111,11 @@ export const conversations = pgTable(
     archived: boolean("archived").notNull().default(false),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    // Monotonic change cursor for two-way mobile sync: bumped (nextval) on
+    // every write to this row (metadata upsert + message append). The actual
+    // sequence/default/unique-index live in ensureWebSchema (drizzle-push has
+    // no migration flow); the default 0 here is type-only.
+    changeSeq: bigint("change_seq", { mode: "number" }).notNull().default(0),
   },
   (table) => [
     index("conversations_user_idx").on(table.userId),

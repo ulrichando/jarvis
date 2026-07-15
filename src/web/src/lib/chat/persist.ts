@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { UIMessage } from "ai";
 import { db, persistenceEnabled, schema } from "@/lib/db";
 import { estimateCostUsd } from "@/lib/ai/pricing";
@@ -243,6 +243,134 @@ export async function maybeUpdateLastAssistantMessage({
     .update(schema.messages)
     .set({ content: candidate.parts })
     .where(eq(schema.messages.id, last.id));
+}
+
+// ── Two-way mobile sync — idempotent, phone-owned ids ───────────────────────
+// The phone mints every id (conversation + message) and pushes finalized rows.
+// Conversations are whole-row LWW by updatedAt; messages are append-only union
+// by id. Every applied write bumps the conversation's change_seq (the pull
+// cursor). Callers must have passed the route's IDOR guard.
+
+export type SyncConversationInput = {
+  id: string;
+  title?: string;
+  model?: string;
+  kind?: string;
+  pinned?: boolean;
+  archived?: boolean;
+  createdAt?: string; // ISO
+  updatedAt: string; // ISO — the LWW key
+};
+
+export type SyncMessageInput = {
+  id: string;
+  conversationId: string;
+  role: "user" | "assistant";
+  parts: unknown; // UIMessage parts, stored verbatim into content jsonb
+  clientCreatedAt?: string; // ISO → messages.created_at (intra-conversation order)
+  tokensIn?: number;
+  tokensOut?: number;
+  stopReason?: string | null;
+};
+
+/**
+ * Upsert conversations from a device. Whole-row LWW by updatedAt, guarded so a
+ * stale client can't clobber a newer server row (and can't touch another user's
+ * row). Bumps change_seq on every applied write. Returns per-id apply results
+ * so the phone can advance its cursor / know what to re-pull.
+ */
+export async function upsertConversations(
+  userId: string,
+  rows: SyncConversationInput[],
+): Promise<Array<{ id: string; changeSeq: number; applied: boolean }>> {
+  if (!db || rows.length === 0) return [];
+  const out: Array<{ id: string; changeSeq: number; applied: boolean }> = [];
+  for (const r of rows) {
+    if (!r?.id || !r?.updatedAt) continue;
+    const applied = await db
+      .insert(schema.conversations)
+      .values({
+        id: r.id,
+        userId,
+        title: r.title ?? "New chat",
+        model: r.model ?? "claude-sonnet-4-6",
+        kind: r.kind ?? "chat",
+        pinned: r.pinned ?? false,
+        archived: r.archived ?? false,
+        ...(r.createdAt ? { createdAt: new Date(r.createdAt) } : {}),
+        updatedAt: new Date(r.updatedAt),
+        changeSeq: sql`nextval('web.conversation_change_seq')`,
+      })
+      .onConflictDoUpdate({
+        target: schema.conversations.id,
+        set: {
+          title: sql`excluded.title`,
+          model: sql`excluded.model`,
+          kind: sql`excluded.kind`,
+          pinned: sql`excluded.pinned`,
+          archived: sql`excluded.archived`,
+          updatedAt: sql`excluded.updated_at`,
+          changeSeq: sql`nextval('web.conversation_change_seq')`,
+        },
+        // LWW + ownership: only overwrite when the client row is strictly newer
+        // AND the existing row is this user's (defense-in-depth vs the route guard).
+        setWhere: sql`excluded.updated_at > ${schema.conversations.updatedAt} and ${schema.conversations.userId} = ${userId}`,
+      })
+      .returning({ id: schema.conversations.id, changeSeq: schema.conversations.changeSeq });
+    if (applied[0]) out.push({ id: applied[0].id, changeSeq: applied[0].changeSeq, applied: true });
+    else out.push({ id: r.id, changeSeq: 0, applied: false }); // LWW-rejected → phone should pull
+  }
+  return out;
+}
+
+/**
+ * Insert pushed messages (append-only union). Only accepts messages whose
+ * conversation is owned by `userId`. `ON CONFLICT (id) DO NOTHING` makes re-push
+ * a no-op. Bumps each touched conversation's change_seq. Returns the ids that
+ * were actually inserted (new to the server).
+ */
+export async function upsertMessages(
+  userId: string,
+  rows: SyncMessageInput[],
+): Promise<string[]> {
+  if (!db || rows.length === 0) return [];
+  const valid = rows.filter((m) => m?.id && m?.conversationId && (m.role === "user" || m.role === "assistant"));
+  if (valid.length === 0) return [];
+  const convIds = [...new Set(valid.map((m) => m.conversationId))];
+  const owned = await db
+    .select({ id: schema.conversations.id })
+    .from(schema.conversations)
+    .where(and(inArray(schema.conversations.id, convIds), eq(schema.conversations.userId, userId)));
+  const ownedSet = new Set(owned.map((o) => o.id));
+  const accepted = valid.filter((m) => ownedSet.has(m.conversationId));
+  if (accepted.length === 0) return [];
+
+  const inserted = await db
+    .insert(schema.messages)
+    .values(
+      accepted.map((m) => ({
+        id: m.id,
+        conversationId: m.conversationId,
+        role: m.role,
+        content: m.parts as UIMessage["parts"],
+        ...(m.clientCreatedAt ? { createdAt: new Date(m.clientCreatedAt) } : {}),
+        tokensIn: m.tokensIn ?? null,
+        tokensOut: m.tokensOut ?? null,
+        stopReason: m.stopReason ?? null,
+      })),
+    )
+    .onConflictDoNothing({ target: schema.messages.id })
+    .returning({ id: schema.messages.id });
+
+  // Bump the pull cursor on conversations that actually gained messages.
+  if (inserted.length > 0) {
+    const touched = [...new Set(accepted.map((m) => m.conversationId))];
+    await db
+      .update(schema.conversations)
+      .set({ changeSeq: sql`nextval('web.conversation_change_seq')` })
+      .where(inArray(schema.conversations.id, touched));
+  }
+  return inserted.map((r) => r.id);
 }
 
 export function toUIMessages(
