@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { ensureWebSchema } from "@/lib/db/ensure-schema";
 import { requireUserIdOrSharedLocal, Unauthenticated } from "@/lib/auth-helpers";
@@ -47,6 +47,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
       and(
         eq(schema.messages.conversationId, id),
         inArray(schema.messages.role, ["user", "assistant"]),
+        isNull(schema.messages.deletedAt), // exclude soft-deleted messages
       ),
     )
     .orderBy(asc(schema.messages.createdAt));

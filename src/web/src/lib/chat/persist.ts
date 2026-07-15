@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { UIMessage } from "ai";
 import { db, persistenceEnabled, schema } from "@/lib/db";
 import { ensureWebSchema } from "@/lib/db/ensure-schema";
@@ -410,6 +410,62 @@ export async function upsertMessages(
       .where(inArray(schema.conversations.id, touched));
   }
   return inserted.map((r) => r.id);
+}
+
+/**
+ * Soft-delete conversations pushed as tombstones from a device. Sets deleted_at
+ * + bumps change_seq so the delete propagates via the pull. Owned-only,
+ * idempotent (skips already-deleted rows).
+ */
+export async function softDeleteConversations(
+  userId: string,
+  ids: string[],
+  exec: DbExecutor = db as DbExecutor,
+): Promise<void> {
+  if (!db || ids.length === 0) return;
+  await exec
+    .update(schema.conversations)
+    .set({ deletedAt: sql`now()`, changeSeq: sql`nextval('web.conversation_change_seq')` })
+    .where(
+      and(
+        inArray(schema.conversations.id, ids),
+        eq(schema.conversations.userId, userId),
+        isNull(schema.conversations.deletedAt),
+      ),
+    );
+}
+
+/**
+ * Soft-delete messages pushed as tombstones. Owned-only (via the parent
+ * conversation), idempotent; bumps each affected conversation's change_seq so
+ * the deletion is picked up by the pull (which excludes deleted messages).
+ */
+export async function softDeleteMessages(
+  userId: string,
+  ids: string[],
+  exec: DbExecutor = db as DbExecutor,
+): Promise<void> {
+  if (!db || ids.length === 0) return;
+  const rows = await exec
+    .select({ id: schema.messages.id, conversationId: schema.messages.conversationId })
+    .from(schema.messages)
+    .innerJoin(schema.conversations, eq(schema.messages.conversationId, schema.conversations.id))
+    .where(
+      and(
+        inArray(schema.messages.id, ids),
+        eq(schema.conversations.userId, userId),
+        isNull(schema.messages.deletedAt),
+      ),
+    );
+  if (rows.length === 0) return;
+  await exec
+    .update(schema.messages)
+    .set({ deletedAt: sql`now()` })
+    .where(inArray(schema.messages.id, rows.map((r) => r.id)));
+  await exec
+    .update(schema.conversations)
+    .set({ changeSeq: sql`nextval('web.conversation_change_seq')` })
+    .where(inArray(schema.conversations.id, [...new Set(rows.map((r) => r.conversationId))]));
 }
 
 export function toUIMessages(

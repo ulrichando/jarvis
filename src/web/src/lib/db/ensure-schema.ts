@@ -42,6 +42,11 @@ export async function ensureWebSchema(): Promise<void> {
     await db.execute(
       sql`CREATE INDEX IF NOT EXISTS messages_conv_created_idx ON web.messages (conversation_id, created_at)`,
     );
+    // Soft-delete tombstones for two-way delete sync. Null = live. A deleted
+    // conversation is still returned by the pull (as a tombstone) so other
+    // devices remove it; deleted messages are excluded from the message pull.
+    await db.execute(sql`ALTER TABLE web.conversations ADD COLUMN IF NOT EXISTS deleted_at timestamp`);
+    await db.execute(sql`ALTER TABLE web.messages ADD COLUMN IF NOT EXISTS deleted_at timestamp`);
     // One continuous 'voice' conversation per user — backs the find-or-create
     // in /api/voice-memory so a concurrent racer can't insert a duplicate.
     await db.execute(

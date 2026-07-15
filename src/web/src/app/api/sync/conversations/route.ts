@@ -1,4 +1,4 @@
-import { and, asc, gt, eq, sql } from "drizzle-orm";
+import { and, asc, gt, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { ensureWebSchema } from "@/lib/db/ensure-schema";
 import { requireUserIdOrSharedLocal, Unauthenticated } from "@/lib/auth-helpers";
@@ -40,22 +40,30 @@ export async function GET(req: Request) {
       createdAt: sql<string>`(${schema.conversations.createdAt} AT TIME ZONE current_setting('TimeZone'))`,
       updatedAt: sql<string>`(${schema.conversations.updatedAt} AT TIME ZONE current_setting('TimeZone'))`,
       changeSeq: schema.conversations.changeSeq,
+      // Soft-delete tombstone → the phone removes it locally (no resurrection).
+      deleted: sql<boolean>`(web.conversations.deleted_at IS NOT NULL)`,
       // The phone skips re-downloading a thread whose count already matches, so
       // a self-push echo / metadata-only change doesn't re-pull every message.
       // NB: reference the outer column by its explicit qualified name — drizzle
       // renders an interpolated ${schema.conversations.id} here as a bare "id",
       // which Postgres binds to web.messages.id inside the subquery → always 0.
-      messageCount: sql<number>`(SELECT count(*)::int FROM web.messages m WHERE m.conversation_id = web.conversations.id AND m.role IN ('user','assistant'))`,
+      messageCount: sql<number>`(SELECT count(*)::int FROM web.messages m WHERE m.conversation_id = web.conversations.id AND m.role IN ('user','assistant') AND m.deleted_at IS NULL)`,
     })
     .from(schema.conversations)
     .where(
       and(
         eq(schema.conversations.userId, userId),
         gt(schema.conversations.changeSeq, since),
-        // The phone is a chat client — don't sync voice-memory threads, task
-        // sessions, or archived conversations down to it.
-        eq(schema.conversations.kind, "chat"),
-        eq(schema.conversations.archived, false),
+        // Live chats (not voice/task/archived) OR any deleted conversation (as a
+        // tombstone so other devices remove it).
+        or(
+          and(
+            eq(schema.conversations.kind, "chat"),
+            eq(schema.conversations.archived, false),
+            isNull(schema.conversations.deletedAt),
+          ),
+          isNotNull(schema.conversations.deletedAt),
+        ),
       ),
     )
     .orderBy(asc(schema.conversations.changeSeq))
@@ -63,7 +71,12 @@ export async function GET(req: Request) {
 
   const nextSince = rows.length ? Number(rows[rows.length - 1].changeSeq) : since;
   return Response.json({
-    conversations: rows.map((r) => ({ ...r, changeSeq: Number(r.changeSeq), messageCount: Number(r.messageCount) })),
+    conversations: rows.map((r) => ({
+      ...r,
+      changeSeq: Number(r.changeSeq),
+      messageCount: Number(r.messageCount),
+      deleted: Boolean(r.deleted),
+    })),
     nextSince,
     hasMore: rows.length === limit,
   });

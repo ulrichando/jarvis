@@ -116,6 +116,8 @@ export const conversations = pgTable(
     // sequence/default/unique-index live in ensureWebSchema (drizzle-push has
     // no migration flow); the default 0 here is type-only.
     changeSeq: bigint("change_seq", { mode: "number" }).notNull().default(0),
+    // Soft-delete tombstone (mobile delete sync). Null = live. DDL in ensureWebSchema.
+    deletedAt: timestamp("deleted_at"),
   },
   (table) => [
     index("conversations_user_idx").on(table.userId),
@@ -139,6 +141,8 @@ export const messages = pgTable(
     tokensOut: integer("tokens_out"),
     stopReason: text("stop_reason"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
+    // Soft-delete tombstone (mobile delete sync). Null = live. DDL in ensureWebSchema.
+    deletedAt: timestamp("deleted_at"),
   },
   (table) => [index("messages_conversation_idx").on(table.conversationId)],
 );

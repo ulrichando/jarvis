@@ -3,6 +3,8 @@ import { db, schema } from "@/lib/db";
 import { ensureWebSchema } from "@/lib/db/ensure-schema";
 import { requireUserIdOrSharedLocal, Unauthenticated } from "@/lib/auth-helpers";
 import {
+  softDeleteConversations,
+  softDeleteMessages,
   upsertConversations,
   upsertMessages,
   type SyncConversationInput,
@@ -31,11 +33,19 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => null)) as {
     conversations?: SyncConversationInput[];
     messages?: SyncMessageInput[];
+    deletedConversations?: string[];
+    deletedMessages?: string[];
   } | null;
   if (!body) return new Response("Bad JSON", { status: 400 });
 
   const conversations = Array.isArray(body.conversations) ? body.conversations : [];
   const messages = Array.isArray(body.messages) ? body.messages : [];
+  const deletedConversations = Array.isArray(body.deletedConversations)
+    ? body.deletedConversations.filter((x): x is string => typeof x === "string")
+    : [];
+  const deletedMessages = Array.isArray(body.deletedMessages)
+    ? body.deletedMessages.filter((x): x is string => typeof x === "string")
+    : [];
   // Sanity cap — the phone batches ≤200 msgs/push; reject a runaway payload.
   if (conversations.length > 500 || messages.length > 2000) {
     return new Response("Batch too large", { status: 413 });
@@ -47,6 +57,7 @@ export async function POST(req: Request) {
     ...new Set([
       ...conversations.map((c) => c?.id).filter(Boolean),
       ...messages.map((m) => m?.conversationId).filter(Boolean),
+      ...deletedConversations,
     ]),
   ] as string[];
   if (referencedConvIds.length > 0) {
@@ -66,11 +77,16 @@ export async function POST(req: Request) {
   const { convResults, msgApplied } = await db.transaction(async (tx) => {
     const convResults = await upsertConversations(userId, conversations, tx);
     const msgApplied = await upsertMessages(userId, messages, tx);
+    // Deletes last so an upsert+delete in the same batch nets to deleted.
+    await softDeleteConversations(userId, deletedConversations, tx);
+    await softDeleteMessages(userId, deletedMessages, tx);
     return { convResults, msgApplied };
   });
 
   return Response.json({
     conversations: convResults,
     messages: msgApplied.map((id) => ({ id, applied: true })),
+    deletedConversations,
+    deletedMessages,
   });
 }
