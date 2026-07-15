@@ -1,0 +1,28 @@
+# Honcho VPS override — installed by setup-honcho-vps.sh as
+# <honcho checkout>/docker-compose.override.yml (compose auto-merges it over
+# honcho's own docker-compose.yml; this file is REPO-OWNED and re-copied on
+# every setup run — put box-local tweaks in honcho's .env, not here).
+#
+# What it does: joins honcho's `api` container to the web stack's private
+# `jarvis-honcho` network (declared + created by src/web/docker-compose.yml,
+# internal:true) under the DNS alias `honcho`, so the web app's /api/recall
+# route reaches it at http://honcho:8000 WITHOUT honcho ever being published
+# beyond the host loopback. The upstream compose already binds every host
+# port to 127.0.0.1 (api :8000, db :5433*, redis :6380* — *remapped by the
+# setup script), so nothing honcho is reachable from the internet.
+#
+# `default` must be listed explicitly: supplying a `networks:` key here
+# replaces the implicit default membership, and api still needs it to reach
+# `database:5432` / `redis:6379` and for OpenAI egress (the dialectic chat +
+# deriver LLM calls). deriver/database/redis stay on honcho's default net only.
+services:
+  api:
+    networks:
+      default:
+      jarvis-honcho:
+        aliases: [honcho]
+
+networks:
+  jarvis-honcho:
+    external: true
+    name: jarvis-honcho

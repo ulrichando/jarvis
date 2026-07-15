@@ -29,6 +29,16 @@ JARVIS_REPO=/path/to/jarvis setup/honcho/setup-honcho.sh
 JARVIS_INSTALL_HONCHO=1 ./install.sh
 ```
 
+## VPS (cloud voice agent)
+
+The **cloud** deployment is a separate, independent install:
+`setup-honcho-vps.sh` provisions honcho at `/opt/honcho` on the VPS, joins
+its `api` container to the web stack's private `jarvis-honcho` network
+(via `docker-compose.vps.yml`), and wires `HONCHO_BASE_URL` into
+`src/web/.env.production` — there the **web app** is the only honcho
+client (`/api/recall`), and the LiveKit voice worker calls the web app.
+Full bring-up + verify: **`docs/runbook/honcho-cloud-recall.md`**.
+
 The script: clones the honcho server (pinned to the tag matching the
 `honcho-ai` client in the voice venv — server **v3.0.9** ↔ client **2.1.2**),
 remaps the conflicting host ports, writes honcho's `.env` (auth off, your

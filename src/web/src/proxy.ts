@@ -169,6 +169,11 @@ const SELF_AUTH_POST_PATTERNS: RegExp[] = [
   // Same in-handler dual auth as /api/voice-memory (shared
   // @/lib/voice-service-auth: session OR sub === "voice-agent" proxy JWT).
   /^\/api\/memory$/,
+  // Voice-agent semantic recall (honcho dialectic query + turn sync). Same
+  // in-handler dual auth as /api/voice-memory. POST-only — the route has no
+  // GET. The handler is the only thing that talks to the internal honcho API
+  // and fails soft when HONCHO_BASE_URL is unset.
+  /^\/api\/recall$/,
 ]
 
 // PATCH-only: the REPL bridge's session title sync. Same in-handler

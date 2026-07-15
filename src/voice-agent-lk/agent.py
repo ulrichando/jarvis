@@ -97,6 +97,24 @@ _pending: set[asyncio.Task] = set()
 # multi-user throughput ever matters.
 _post_lock = asyncio.Lock()
 
+# Separate lock for the semantic-recall (honcho) turn sync: keeps honcho
+# ingestion in emission order without letting a slow sync delay the
+# primary voice-memory writes behind _post_lock.
+_sync_lock = asyncio.Lock()
+
+# The sync runs fire-and-forget OFF the turn path, so it can afford more
+# room than the 5s turn-adjacent _MEMORY_HTTP_TIMEOUT: on first contact the
+# web route runs up to 4 honcho ensure POSTs before add_messages, which can
+# exceed 5s even when the server ultimately succeeds (a premature client
+# timeout here logs a false "sync failed").
+_SYNC_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=15)
+
+# First recall-sync failure per process logs at WARNING, repeats at DEBUG —
+# quieter than the voice-memory path because sync is a best-effort
+# enrichment layer (the web route fail-softs when honcho isn't deployed;
+# a hard failure here usually means the web app predates /api/recall).
+_recall_sync_failure_logged = False
+
 # First cloud-memory failure per process logs at ERROR (a persistent failure
 # is usually config, e.g. JARVIS_PROXY_JWT_SECRET drift); repeats at WARNING.
 _cloud_failure_logged = False
@@ -214,13 +232,67 @@ async def _post_turn(user_id: str, role: str, text: str) -> None:
         _append_turn_file(user_id, role, text)
 
 
-def _append_turn(user_id: str, role: str, text: str) -> None:
+async def _sync_recall_turn(
+    user_id: str, role: str, text: str, session_id: str
+) -> None:
+    """Best-effort: mirror one finalized turn into the semantic-recall store
+    (honcho, via the web app's POST /api/recall {mode:"sync"}).
+
+    Deliberately independent of the /api/voice-memory write and its JSONL
+    fallback — losing a sync only degrades deep recall, never the turn
+    itself. Never blocks or fails a turn: it runs fire-and-forget off the
+    turn path and swallows every error (except CancelledError on job
+    shutdown, where there is nothing to fall back to)."""
+    global _recall_sync_failure_logged
+    try:
+        async with _sync_lock:  # honcho ingests turns in emission order
+            token = proxy_token.mint_from_env(sub="voice-agent")
+            url = f"{WEB_URL}/api/recall"
+            async with aiohttp.ClientSession(timeout=_SYNC_HTTP_TIMEOUT) as http:
+                async with http.post(
+                    url,
+                    json={
+                        "mode": "sync",
+                        "user_id": user_id,
+                        "role": role,
+                        "text": text,
+                        "session_id": session_id,
+                    },
+                    headers={"Authorization": f"Bearer {token}"},
+                ) as resp:
+                    if resp.status != 200:
+                        raise RuntimeError(f"HTTP {resp.status}")
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        if not _recall_sync_failure_logged:
+            _recall_sync_failure_logged = True
+            logger.warning(
+                "[recall] turn sync failed (%s); semantic recall will lag "
+                "until /api/recall is reachable",
+                e,
+            )
+        else:
+            logger.debug("[recall] turn sync failed: %s", e)
+
+
+def _append_turn(
+    user_id: str, role: str, text: str, session_id: str | None = None
+) -> None:
     """Synchronous shim for livekit event handlers (the EventEmitter rejects
-    coroutine callbacks): fire the cloud write off-loop, keep a strong ref."""
+    coroutine callbacks): fire the cloud write off-loop, keep a strong ref.
+    When session_id is given, also mirror the turn into the semantic-recall
+    store (honcho) as an independent fire-and-forget task."""
     try:
         task = asyncio.create_task(_post_turn(user_id, role, text))
         _pending.add(task)
         task.add_done_callback(_pending.discard)
+        if session_id:
+            sync = asyncio.create_task(
+                _sync_recall_turn(user_id, role, text, session_id)
+            )
+            _pending.add(sync)
+            sync.add_done_callback(_pending.discard)
     except RuntimeError:
         # No running loop (shouldn't happen inside session callbacks) —
         # persist locally rather than dropping the turn.
@@ -372,6 +444,97 @@ def _build_memory_tool(user_id: str):
     return memory
 
 
+# ── Semantic recall (honcho, via the web app's /api/recall) ────────────────
+# Deep cross-session recall over EVERYTHING the user has ever said, beyond
+# the MAX_HISTORY_TURNS tail replayed into chat_ctx and the curated snapshot.
+# The web app is the only thing that talks to honcho (co-located on the VPS,
+# internal network); this side just calls POST /api/recall. Two halves:
+#   query — the 'recall' function tool below (LLM-CHOSEN, multi-second
+#           dialectic call; NOT auto-fired per turn)
+#   sync  — _sync_recall_turn above (fire-and-forget per finalized turn so
+#           honcho's deriver ingests the conversation off the turn path)
+
+# Honcho's dialectic endpoint is a multi-second LLM call — give it far more
+# room than the 5s memory timeout, but still bound it so a wedged recall
+# can't hold the tool call open forever.
+_RECALL_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=30)
+_RECALL_MAX_CHARS = 8000  # web side caps too; belt and suspenders
+
+RECALL_TOOL_SCHEMA = {
+    "name": "recall",
+    "description": (
+        "Recall facts or context from your earlier conversations with this "
+        "user by natural-language query. Searches the user's full "
+        "cross-session history — far beyond the recent transcript replayed "
+        "into this conversation.\n\n"
+        "USE WHEN the user references something from a past conversation "
+        "that is not in your current context ('what did I tell you about "
+        "X', 'remember when we discussed Y', 'what was that restaurant I "
+        "mentioned'), or when a durable detail about the user would help "
+        "and you don't already have it.\n\n"
+        "DON'T use it for things already visible in this conversation or "
+        "in your memory snapshot, and don't fire it speculatively on every "
+        "turn — it takes a few seconds. Ask a focused question, e.g. "
+        "'What has the user said about their sister?'"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": (
+                    "Natural-language question about the user's past "
+                    "conversations, e.g. 'What projects has the user "
+                    "mentioned working on?'"
+                ),
+            },
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+}
+
+
+def _build_recall_tool(user_id: str):
+    """Build the per-session 'recall' function tool, with the user's id bound
+    in the closure (the LLM never supplies it — it can't query another
+    user's history). Fail-soft: any error returns a spoken-prose-safe
+    string so the turn never breaks when honcho/the web app is down."""
+
+    @function_tool(raw_schema=RECALL_TOOL_SCHEMA)
+    async def recall(raw_arguments: dict[str, object]) -> str:
+        query = str(raw_arguments.get("query") or "").strip()
+        if not query:
+            return "recall needs a non-empty query."
+        try:
+            token = proxy_token.mint_from_env(sub="voice-agent")
+            url = f"{WEB_URL}/api/recall"
+            async with aiohttp.ClientSession(timeout=_RECALL_HTTP_TIMEOUT) as http:
+                async with http.post(
+                    url,
+                    json={"mode": "query", "user_id": user_id, "query": query},
+                    headers={"Authorization": f"Bearer {token}"},
+                ) as resp:
+                    if resp.status != 200:
+                        raise RuntimeError(f"HTTP {resp.status}")
+                    data = await resp.json()
+            text = str(data.get("text") or "").strip()
+            if not text:
+                return (
+                    "No stored context matched that query. Answer from what "
+                    "you already know, without claiming you can't remember."
+                )
+            return text[:_RECALL_MAX_CHARS]
+        except Exception as e:
+            logger.warning("[recall] query failed: %s", e)
+            return (
+                "Recall is unavailable right now. Answer from the current "
+                "conversation and your memory snapshot."
+            )
+
+    return recall
+
+
 def prewarm(proc: JobProcess) -> None:
     """Load Silero VAD + the whisper model before the first job."""
     proc.userdata["vad"] = silero.VAD.load(
@@ -471,7 +634,9 @@ async def entrypoint(ctx: JobContext) -> None:
         if ev.is_final:
             logger.info("[stt] user said: %r", ev.transcript)
             if user_id and ev.transcript:
-                _append_turn(user_id, "user", ev.transcript)
+                _append_turn(
+                    user_id, "user", ev.transcript, session_id=ctx.room.name
+                )
 
     @session.on("conversation_item_added")
     def _on_item(ev) -> None:
@@ -486,7 +651,12 @@ async def entrypoint(ctx: JobContext) -> None:
                 and item.text_content
                 and not getattr(item, "interrupted", False)
             ):
-                _append_turn(user_id, "assistant", item.text_content)
+                _append_turn(
+                    user_id,
+                    "assistant",
+                    item.text_content,
+                    session_id=ctx.room.name,
+                )
 
     @session.on("agent_state_changed")
     def _on_state(ev) -> None:
@@ -500,9 +670,14 @@ async def entrypoint(ctx: JobContext) -> None:
         agent=Agent(
             instructions=instructions,
             chat_ctx=chat_ctx,
-            # The memory tool is keyed on user_id in its closure — without an
-            # identity there is nothing safe to bind writes to, so omit it.
-            tools=[_build_memory_tool(user_id)] if user_id else [],
+            # The memory + recall tools are keyed on user_id in their
+            # closures — without an identity there is nothing safe to bind
+            # reads/writes to, so omit them.
+            tools=(
+                [_build_memory_tool(user_id), _build_recall_tool(user_id)]
+                if user_id
+                else []
+            ),
         ),
         room=ctx.room,
     )

@@ -42,9 +42,11 @@ services:
     restart: unless-stopped
     # default = the stack (postgres, docker-proxy, caddy, hub); jarvis-code-bridge
     # = the internal bridge /code workbench containers join to reach the git-proxy;
-    # cu-net = the computer-use sandbox (:8771 SSE). One key — YAML rejects
-    # duplicates (the 2026-07-06 deploy failed to parse on exactly that).
-    networks: [default, jarvis-code-bridge, cu-net]
+    # cu-net = the computer-use sandbox (:8771 SSE); jarvis-honcho = the private
+    # link to the separately-composed honcho memory stack (/api/recall backend).
+    # One key — YAML rejects duplicates (the 2026-07-06 deploy failed to parse
+    # on exactly that).
+    networks: [default, jarvis-code-bridge, cu-net, jarvis-honcho]
     env_file:
       - path: .env.production
         required: false
@@ -270,4 +272,16 @@ networks:
   # connects the workbench with `docker network connect jarvis-code-bridge`.
   jarvis-code-bridge:
     name: jarvis-code-bridge
+    internal: true
+  # Private web ↔ honcho link (semantic recall, /api/recall). The honcho stack
+  # is composed SEPARATELY (/opt/honcho, provisioned by
+  # setup/honcho/setup-honcho-vps.sh, pinned v3.0.9); its override joins the
+  # honcho `api` container here under the DNS alias `honcho`, so `web` reaches
+  # it at http://honcho:8000 (HONCHO_BASE_URL in .env.production) without
+  # honcho ever being published beyond the host loopback. internal:true → no
+  # egress via this net; only `web` attaches from this stack, so postgres +
+  # docker-proxy stay unreachable from honcho. Harmlessly idle when honcho
+  # isn't deployed — /api/recall fails soft (empty recall, no-op sync).
+  jarvis-honcho:
+    name: jarvis-honcho
     internal: true
