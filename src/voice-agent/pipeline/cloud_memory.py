@@ -675,6 +675,18 @@ class CloudMemoryProvider(MemoryProvider):
             logger.debug("[cloud-memory] fallback recall_context failed: %s", exc)
             return ""
 
+    async def search(self, query: str, limit: int = 8) -> str:
+        """Semantic message search — LOCAL honcho only. The cloud /api/recall
+        route has no search mode yet, and dual-sync keeps the local store warm
+        with every turn, so (like ``recall_context``) this delegates straight to
+        the local fallback rather than making a WAN round-trip."""
+        try:
+            result = await self._delegate("search", query, limit)
+            return result if isinstance(result, str) else ""
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[cloud-memory] fallback search failed: %s", exc)
+            return ""
+
     async def sync_message(self, role: str, text: str) -> None:
         """Turn sync. DUAL-SYNC by default (``dual_sync_enabled``): fire the
         cloud sync AND the local provider's sync for every turn, so the

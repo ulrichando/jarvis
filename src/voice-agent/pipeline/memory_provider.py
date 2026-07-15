@@ -177,6 +177,32 @@ def recall_for_query(query: str) -> str:
         return ""
 
 
+def search_for_query(query: str, limit: int = 8) -> str:
+    """Semantic message search via the active provider (recall mode='search').
+
+    Sync, async-aware wrapper (mirrors ``recall_for_query``): the provider's
+    ``search`` may be a coroutine (Honcho embedding search) or plain sync.
+    Returns the matches as text, or "" when no provider is active, the provider
+    exposes no ``search``, or the call fails. Called from the recall() tool via
+    ``asyncio.to_thread`` (worker thread, no running loop → ``asyncio.run`` safe).
+    """
+    prov = active_provider()
+    if prov is None:
+        return ""
+    search_fn = getattr(prov, "search", None)
+    if search_fn is None:
+        return ""
+    try:
+        if inspect.iscoroutinefunction(search_fn):
+            result = asyncio.run(search_fn(query, limit))
+        else:
+            result = search_fn(query, limit)
+        return result if isinstance(result, str) else ""
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("memory search failed: %s", exc)
+        return ""
+
+
 async def maybe_recall_for_turn(text: str, *, timeout_s: float = 1.5) -> str:
     """Cheap gated auto-recall for on_user_turn_completed.
 

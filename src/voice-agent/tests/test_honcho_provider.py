@@ -432,3 +432,142 @@ def test_durable_representation_drops_bare_heading():
     """A durable heading with no bullets is no signal → ""."""
     m = _load()
     assert m._durable_representation("## Deductive Observations\n\n") == ""
+
+
+# ---------------------------------------------------------------------------
+# search() — honcho semantic message retrieval (recall mode='search').
+# ---------------------------------------------------------------------------
+
+def _fake_honcho_with_search(monkeypatch, messages):
+    """Faked honcho SDK whose client.aio.search returns the given messages."""
+    import sys
+    import types
+    mod = _load()
+
+    class _ClientAio:
+        async def peer(self, pid): return types.SimpleNamespace(id=pid)
+        async def session(self, sid): return types.SimpleNamespace(id=sid)
+        async def search(self, query, limit=8): return messages
+
+    class _Client:
+        def __init__(self, api_key=None, base_url=None): self.aio = _ClientAio()
+
+    fake = types.ModuleType("honcho")
+    fake.Honcho = _Client
+    fake.MessageCreateParams = lambda **k: types.SimpleNamespace(**k)
+    monkeypatch.setitem(sys.modules, "honcho", fake)
+    monkeypatch.setenv("HONCHO_API_KEY", "k")
+    monkeypatch.setattr(mod.HonchoMemoryProvider, "is_available", lambda self: True)
+    return mod
+
+
+def test_search_is_async():
+    p = _load().HonchoMemoryProvider()
+    assert inspect.iscoroutinefunction(p.search)
+
+
+def test_search_safe_when_uninitialized(monkeypatch):
+    import asyncio
+    monkeypatch.delenv("HONCHO_API_KEY", raising=False)
+    p = _load().HonchoMemoryProvider()
+    assert asyncio.run(p.search("x")) == ""
+
+
+def test_search_formats_messages(monkeypatch):
+    import asyncio
+    import types
+    msgs = [types.SimpleNamespace(peer_id="ulrich", content="I asked about car chargers"),
+            types.SimpleNamespace(peer_id="jarvis", content="Belkin inverters are reliable")]
+    mod = _fake_honcho_with_search(monkeypatch, msgs)
+    p = mod.HonchoMemoryProvider()
+
+    async def run():
+        p.initialize("s1")
+        out = await p.search("vehicle power", limit=6)
+        assert out == "ulrich: I asked about car chargers\njarvis: Belkin inverters are reliable"
+
+    asyncio.run(run())
+
+
+def test_search_redacts_capability_denials(monkeypatch):
+    """Self-poisoning gate: a persisted jarvis capability-denial in the search
+    results must be dropped, not replayed into context."""
+    import asyncio
+    import types
+    msgs = [types.SimpleNamespace(peer_id="jarvis",
+                                  content="I don't have memory of past conversations"),
+            types.SimpleNamespace(peer_id="ulrich",
+                                  content="we discussed the brain project")]
+    mod = _fake_honcho_with_search(monkeypatch, msgs)
+    p = mod.HonchoMemoryProvider()
+
+    async def run():
+        p.initialize("s1")
+        out = await p.search("brain project", limit=6)
+        assert "don't have memory" not in out.lower()        # denial dropped
+        assert "we discussed the brain project" in out        # real message kept
+
+    asyncio.run(run())
+
+
+def test_search_empty_results(monkeypatch):
+    import asyncio
+    mod = _fake_honcho_with_search(monkeypatch, [])
+    p = mod.HonchoMemoryProvider()
+
+    async def run():
+        p.initialize("s1")
+        assert await p.search("nothing") == ""
+
+    asyncio.run(run())
+
+
+def test_search_skips_blank_content(monkeypatch):
+    import asyncio
+    import types
+    msgs = [types.SimpleNamespace(peer_id="ulrich", content="   "),
+            types.SimpleNamespace(peer_id="jarvis", content="real answer")]
+    mod = _fake_honcho_with_search(monkeypatch, msgs)
+    p = mod.HonchoMemoryProvider()
+
+    async def run():
+        p.initialize("s1")
+        assert await p.search("q") == "jarvis: real answer"
+
+    asyncio.run(run())
+
+
+def test_search_truncates_long_content(monkeypatch):
+    """Each message is capped so a few long turns can't flood voice context."""
+    import asyncio
+    import types
+    long_text = "x" * 5000
+    mod = _fake_honcho_with_search(
+        monkeypatch, [types.SimpleNamespace(peer_id="jarvis", content=long_text)])
+    p = mod.HonchoMemoryProvider()
+
+    async def run():
+        p.initialize("s1")
+        out = await p.search("q")
+        assert out.endswith("…")
+        assert len(out) < 600           # ~400 cap + "jarvis: " + ellipsis, not 5000
+
+    asyncio.run(run())
+
+
+def test_search_keeps_user_capability_phrase(monkeypatch):
+    """The denial gate is jarvis-side only: a user message matching the pattern
+    is a real statement and must NOT be dropped (over-redaction guard)."""
+    import asyncio
+    import types
+    msgs = [types.SimpleNamespace(peer_id="ulrich",
+                                  content="I don't have memory of where I left my keys")]
+    mod = _fake_honcho_with_search(monkeypatch, msgs)
+    p = mod.HonchoMemoryProvider()
+
+    async def run():
+        p.initialize("s1")
+        out = await p.search("keys")
+        assert "keys" in out             # user's own words kept
+
+    asyncio.run(run())

@@ -57,6 +57,14 @@ _USER_MODEL_TIMEOUT_S = 0.5
 # produce durable conclusions the filter yields nothing.
 _DURABLE_REP_SECTIONS = ("deductive", "inductive", "contradiction")
 
+# Semantic-search (recall mode='search') bounds. Cap each returned message so a
+# few long assistant turns can't dump tens of KB into the voice model's context
+# (the tool's max_result_size_chars is not enforced by the adapter). The
+# assistant peer id gates the self-poisoning denial filter (jarvis-side only —
+# a user message that matches the denial pattern is real and kept).
+_SEARCH_MSG_MAX_CHARS = 400
+_AGENT_PEER_ID = "jarvis"
+
 
 def _durable_representation(rep: str) -> str:
     """Keep only the durable (reasoned) sections of a honcho working
@@ -273,6 +281,53 @@ class HonchoMemoryProvider(MemoryProvider):
             return ""
         durable = _durable_representation(rep if isinstance(rep, str) else "")
         return f"[user model]\n{durable}" if durable else ""
+
+    async def search(self, query: str, limit: int = 8) -> str:
+        """Semantic message retrieval — honcho embedding search over the stored
+        turns, workspace-scoped so it spans past sessions.
+
+        Returns the actual past messages ranked by MEANING (not keyword) as a
+        compact ``peer: text`` block, or ``""``. Distinct from ``recall`` (which
+        synthesizes a prose answer) and from the keyword ``session_search`` /
+        ``recall_conversation`` tools — this finds messages phrased differently
+        from the query. Costs one server-side embedding call, so it is invoked
+        only from the ``recall(mode="search")`` tool, never on the turn path.
+        """
+        await self._ensure_init()
+        if self._client is None:
+            return ""
+        try:
+            msgs = await self._client.aio.search(query, limit=limit)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[honcho] search failed: %s", exc)
+            return ""
+        try:
+            from sanitizers.denial_detector import is_capability_denial
+        except Exception:  # noqa: BLE001 — detector missing → no redaction
+            is_capability_denial = None  # type: ignore[assignment]
+        lines: list[str] = []
+        for msg in (msgs or [])[:limit]:
+            peer_id = getattr(msg, "peer_id", "") or "?"
+            content = (getattr(msg, "content", "") or "").strip()
+            if not content:
+                continue
+            # Self-poisoning gate (mirrors tools/session_search.py, jarvis-side
+            # only): never replay a persisted assistant capability-denial ("I
+            # can't remember X") back into context — it teaches the model to keep
+            # denying. Scoped to the assistant peer so a user message matching
+            # the pattern is kept.
+            if (peer_id == _AGENT_PEER_ID
+                    and is_capability_denial is not None
+                    and is_capability_denial(content)):
+                logger.warning(
+                    "[self-poisoning gate] redacted persisted denial from honcho "
+                    "search result: %r", content[:120]
+                )
+                continue
+            if len(content) > _SEARCH_MSG_MAX_CHARS:
+                content = content[:_SEARCH_MSG_MAX_CHARS].rstrip() + "…"
+            lines.append(f"{peer_id}: {content}")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Async write path
