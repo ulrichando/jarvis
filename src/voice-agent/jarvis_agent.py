@@ -5016,9 +5016,22 @@ class JarvisAgent(Agent):
         # transcript here. Injects into `turn_ctx` (the mutable copy the
         # framework hands this hook), same context the T12 marker above
         # writes to. No-op when the layer is off (active_provider() is None).
+        #
+        # Gate widened 2026-07-15: inject on every NON-BANTER route
+        # (TASK_* / REASONING / EMOTIONAL), not just recall-shaped
+        # questions — recall_context is honcho's cheapest recall, and
+        # maybe_recall_for_turn's 1.5 s hard timeout + silent skip means
+        # a slow/dead honcho never delays the turn. The route is REUSED
+        # from session._jarvis_route (stamped synchronously by the
+        # user_input_transcribed dispatch handler before this hook runs)
+        # — no second classify. BANTER stays excluded (noise + latency),
+        # except recall-shaped text, so the legacy is_recall_query gate
+        # survives as a strict subset. See
+        # turn_router.should_inject_session_context.
         try:
             from pipeline import turn_router, memory_provider
-            if memory_provider.active_provider() is not None and turn_router.is_recall_query(text):
+            _mem_route = getattr(self.session, "_jarvis_route", None) or ""
+            if memory_provider.active_provider() is not None and turn_router.should_inject_session_context(text, _mem_route):
                 ctx = await memory_provider.maybe_recall_for_turn(text)
                 if ctx:
                     # Inject as a USER-side context message — never as

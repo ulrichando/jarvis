@@ -142,6 +142,7 @@ def cloud_env(tmp_path, monkeypatch):
     monkeypatch.setenv("JARVIS_CLOUD_USER_ID", "test-user-uuid")
     monkeypatch.setenv("JARVIS_PROXY_JWT_SECRET", "test-secret")
     monkeypatch.delenv("JARVIS_CLOUD_MEMORY_URL", raising=False)
+    monkeypatch.delenv("JARVIS_CLOUD_MEMORY_DUAL_SYNC", raising=False)
     cloud_memory._reset_for_tests()
     file_memory.reload_store()
     yield tmp_path
@@ -376,7 +377,10 @@ def test_provider_recall_context_is_local_only(cloud_env, monkeypatch):
     assert ("ctx", "hint") in fake.calls
 
 
-def test_provider_sync_cloud_then_local_fallback(cloud_env, monkeypatch):
+def test_provider_sync_kill_switch_restores_cloud_first(cloud_env, monkeypatch):
+    """JARVIS_CLOUD_MEMORY_DUAL_SYNC=0 → the legacy cloud-first sync:
+    local honcho only sees the turn when the cloud write failed."""
+    monkeypatch.setenv("JARVIS_CLOUD_MEMORY_DUAL_SYNC", "0")
     fake = _FakeFallback()
     prov = cloud_memory.CloudMemoryProvider(fallback=fake)
     prov.initialize("sess-9")
@@ -397,6 +401,83 @@ def test_provider_sync_cloud_then_local_fallback(cloud_env, monkeypatch):
     monkeypatch.setattr(cloud_memory, "recall_sync", _sync_fail)
     asyncio.run(prov.sync_message("assistant", "offline turn"))
     assert ("sync", "assistant", "offline turn") in fake.calls  # local took it
+
+
+# ── 5b. Dual-sync (default when cloud memory is ON) ───────────────────
+#
+# recall_context is LOCAL-ONLY (1.5 s turn budget), so the local honcho
+# must keep seeing the live session's turns — otherwise the widened
+# per-turn context inject reads a store the current session never fed.
+# Default ON with the flag; kill-switch JARVIS_CLOUD_MEMORY_DUAL_SYNC=0.
+
+
+def test_dual_sync_enabled_by_default_with_flag(cloud_env, monkeypatch):
+    assert cloud_memory.dual_sync_enabled() is True
+    monkeypatch.setenv("JARVIS_CLOUD_MEMORY_DUAL_SYNC", "0")
+    assert cloud_memory.dual_sync_enabled() is False
+
+
+def test_dual_sync_off_when_cloud_memory_off(local_env):
+    # Flag-off = byte-identical current behavior: the dual-sync gate is
+    # False no matter what (and the CloudMemoryProvider isn't in the
+    # provider chain at all — see test_flag_off_active_provider_unchanged).
+    assert cloud_memory.dual_sync_enabled() is False
+
+
+def test_provider_dual_sync_writes_both_honchos(cloud_env, monkeypatch):
+    """Default dual-sync: a successful cloud sync does NOT skip the local
+    honcho — both stores ingest the turn."""
+    fake = _FakeFallback()
+    prov = cloud_memory.CloudMemoryProvider(fallback=fake)
+    prov.initialize("sess-dual")
+    seen = {}
+
+    async def _sync_ok(role, text, sid):
+        seen["args"] = (role, text, sid)
+        return True
+
+    monkeypatch.setattr(cloud_memory, "recall_sync", _sync_ok)
+    asyncio.run(prov.sync_message("user", "hello both"))
+    assert seen["args"] == ("user", "hello both", "sess-dual")   # cloud leg
+    assert ("sync", "user", "hello both") in fake.calls          # local leg
+
+
+def test_provider_dual_sync_cloud_failure_writes_local_once(cloud_env, monkeypatch):
+    """Cloud failure under dual-sync: the local honcho still gets the turn,
+    exactly ONCE (the dual path must not also run the legacy fallback —
+    that would double-ingest)."""
+    fake = _FakeFallback()
+    prov = cloud_memory.CloudMemoryProvider(fallback=fake)
+    prov.initialize("sess-dual-2")
+
+    async def _sync_fail(role, text, sid):
+        raise RuntimeError("cloud down")
+
+    monkeypatch.setattr(cloud_memory, "recall_sync", _sync_fail)
+    asyncio.run(prov.sync_message("assistant", "offline-ish turn"))
+    local_syncs = [c for c in fake.calls if c[0] == "sync"]
+    assert local_syncs == [("sync", "assistant", "offline-ish turn")]
+
+
+def test_provider_dual_sync_local_failure_never_raises(cloud_env, monkeypatch):
+    """A blowing-up local fallback must not surface (background task) nor
+    stop the cloud leg."""
+    class _BoomFallback(_FakeFallback):
+        def sync_message(self, role, text):
+            raise RuntimeError("local honcho down")
+
+    fake = _BoomFallback()
+    prov = cloud_memory.CloudMemoryProvider(fallback=fake)
+    prov.initialize("sess-dual-3")
+    seen = {}
+
+    async def _sync_ok(role, text, sid):
+        seen["args"] = (role, text, sid)
+        return True
+
+    monkeypatch.setattr(cloud_memory, "recall_sync", _sync_ok)
+    asyncio.run(prov.sync_message("user", "still lands in cloud"))
+    assert seen["args"] == ("user", "still lands in cloud", "sess-dual-3")
 
 
 # ── 6. Offline journal-and-replay ─────────────────────────────────────

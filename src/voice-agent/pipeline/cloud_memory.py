@@ -52,6 +52,7 @@ repointing it would break them.
 """
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
@@ -137,6 +138,26 @@ def enabled() -> bool:
             )
         return False
     return True
+
+
+def dual_sync_enabled() -> bool:
+    """Dual-sync gate (2026-07-15). When cloud memory is ON, every turn is
+    synced to BOTH honchos: the cloud one (VPS, via /api/recall mode=sync)
+    AND the local one (the fallback provider). This is load-bearing for the
+    widened per-turn context inject: ``recall_context`` is LOCAL-ONLY (it
+    runs under memory_provider's 1.5 s turn budget — a WAN round-trip can't
+    fit), so with the legacy cloud-first sync the local honcho never saw the
+    current session's turns and the injected context went stale.
+
+    Default ON whenever ``enabled()`` is True — without it the widened
+    context is stale. Kill switch: JARVIS_CLOUD_MEMORY_DUAL_SYNC=0 restores
+    the legacy cloud-first / local-only-on-cloud-failure sync. Always False
+    when cloud memory itself is off (flag-off behavior is byte-identical —
+    the CloudMemoryProvider isn't even in the provider chain then).
+    """
+    if not enabled():
+        return False
+    return os.environ.get("JARVIS_CLOUD_MEMORY_DUAL_SYNC", "1").strip() != "0"
 
 
 def _token() -> str:
@@ -581,7 +602,11 @@ class CloudMemoryProvider(MemoryProvider):
     ``maybe_recall_for_turn`` runs it under a 1.5 s hard budget
     (pipeline/memory_provider.py) and a WAN round-trip to the cloud web app
     plus honcho cannot fit that; /api/recall also has no cheap context mode.
-    Deep recall (the ``recall`` tool) and turn sync go cloud-first.
+    Deep recall (the ``recall`` tool) goes cloud-first. Turn sync is
+    DUAL-SYNC by default (both honchos — see ``sync_message`` /
+    ``dual_sync_enabled``) precisely BECAUSE recall_context is local-only:
+    the local honcho must keep seeing the live session's turns or the
+    per-turn injected context goes stale.
     """
 
     name = "cloud"
@@ -651,15 +676,39 @@ class CloudMemoryProvider(MemoryProvider):
             return ""
 
     async def sync_message(self, role: str, text: str) -> None:
-        """Cloud-first turn sync; on failure the turn lands in local honcho
-        so offline conversations still feed local semantic recall."""
-        ok = False
-        try:
-            ok = await recall_sync(role, text, self._session_id or "")
-        except Exception:  # noqa: BLE001 — recall_sync shouldn't raise, but be safe
-            ok = False
-        if ok:
+        """Turn sync. DUAL-SYNC by default (``dual_sync_enabled``): fire the
+        cloud sync AND the local provider's sync for every turn, so the
+        local honcho that serves the per-turn ``recall_context`` (LOCAL-ONLY,
+        1.5 s turn budget — see class docstring) stays warm with the live
+        session. Both legs are best-effort and swallow their own errors;
+        the whole coroutine already runs OFF the turn path (fire-and-forget
+        task via ``memory_provider.sync_item_async``), so neither honcho can
+        block or fail a turn.
+
+        Kill switch JARVIS_CLOUD_MEMORY_DUAL_SYNC=0 → legacy cloud-first
+        sync: the local honcho only sees the turn when the cloud write
+        failed (the pre-2026-07-15 behavior). Either way, a cloud failure
+        writes local exactly ONCE (the dual path does NOT also run the
+        legacy fallback — that would double-ingest the turn)."""
+        if dual_sync_enabled():
+            await asyncio.gather(
+                self._sync_cloud(role, text),
+                self._sync_local(role, text),
+            )
             return
+        # Legacy cloud-first (kill-switch path): local only on cloud failure.
+        if not await self._sync_cloud(role, text):
+            await self._sync_local(role, text)
+
+    async def _sync_cloud(self, role: str, text: str) -> bool:
+        """One cloud sync attempt; False on any failure, never raises."""
+        try:
+            return bool(await recall_sync(role, text, self._session_id or ""))
+        except Exception:  # noqa: BLE001 — recall_sync shouldn't raise, but be safe
+            return False
+
+    async def _sync_local(self, role: str, text: str) -> None:
+        """One local (fallback provider) sync attempt; never raises."""
         try:
             await self._delegate("sync_message", role, text)
         except Exception as exc:  # noqa: BLE001 — background; never surface
