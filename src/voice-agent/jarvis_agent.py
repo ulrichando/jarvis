@@ -5016,9 +5016,22 @@ class JarvisAgent(Agent):
         # transcript here. Injects into `turn_ctx` (the mutable copy the
         # framework hands this hook), same context the T12 marker above
         # writes to. No-op when the layer is off (active_provider() is None).
+        #
+        # Gate widened 2026-07-15: inject on every NON-BANTER route
+        # (TASK_* / REASONING / EMOTIONAL), not just recall-shaped
+        # questions — recall_context is honcho's cheapest recall, and
+        # maybe_recall_for_turn's 1.5 s hard timeout + silent skip means
+        # a slow/dead honcho never delays the turn. The route is REUSED
+        # from session._jarvis_route (stamped synchronously by the
+        # user_input_transcribed dispatch handler before this hook runs)
+        # — no second classify. BANTER stays excluded (noise + latency),
+        # except recall-shaped text, so the legacy is_recall_query gate
+        # survives as a strict subset. See
+        # turn_router.should_inject_session_context.
         try:
             from pipeline import turn_router, memory_provider
-            if memory_provider.active_provider() is not None and turn_router.is_recall_query(text):
+            _mem_route = getattr(self.session, "_jarvis_route", None) or ""
+            if memory_provider.active_provider() is not None and turn_router.should_inject_session_context(text, _mem_route):
                 ctx = await memory_provider.maybe_recall_for_turn(text)
                 if ctx:
                     # Inject as a USER-side context message — never as
@@ -6473,7 +6486,22 @@ def _build_memory_block() -> str:
     if not _MEMORY_AVAILABLE:
         return ""
     try:
-        block = file_memory.snapshot_for_prompt()
+        # Cloud-primary (JARVIS_CLOUD_MEMORY=1): prefer the FROZEN cloud
+        # snapshot fetched once in _build_initial_prompt_state. It is a
+        # module-cached constant for the whole session, so the per-turn
+        # dispatch-handler comparison stays a no-op and the prefix cache
+        # holds — identical frozen semantics to the local store. None
+        # (flag off / fetch failed) → local snapshot, byte-identical to
+        # the pre-cloud behavior.
+        block = None
+        try:
+            from pipeline import cloud_memory
+            if cloud_memory.enabled():
+                block = cloud_memory.frozen_snapshot_text()
+        except Exception:  # noqa: BLE001 — cloud layer must never break the block
+            block = None
+        if block is None:
+            block = file_memory.snapshot_for_prompt()
         if not block:
             return ""
         # Local mode (2026-07-11): hard-truncate the snapshot so it can't
@@ -6609,6 +6637,15 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
     # session start and per-turn — returns this same snapshot, so the
     # system-prompt prefix never changes mid-session.
     if _MEMORY_AVAILABLE:
+        # Cloud-primary curated memory (JARVIS_CLOUD_MEMORY=1 only) is
+        # handled BEFORE this function runs: the async entrypoint awaits
+        # `asyncio.to_thread(cloud_memory.sync_at_session_start)` — fetch +
+        # freeze the shared snapshot, replay journaled offline writes, and
+        # mirror into the local files — so the blocking httpx calls never
+        # land on the event loop, and this (sync, on-loop) builder only
+        # READS the already-cached frozen snapshot (frozen_snapshot_text in
+        # _build_memory_block; no second fetch). reload_store() runs AFTER
+        # that mirror so the local frozen snapshot matches the cloud one.
         try:
             file_memory.reload_store()
         except Exception as e:
@@ -7818,6 +7855,26 @@ async def entrypoint(ctx: JobContext) -> None:
     # close-event → voice-client-restart path.
     _register_session_error_handlers(session)
     _register_session_crash_watchdog(session, _bg_tasks)
+
+    # Cloud-primary curated memory (JARVIS_CLOUD_MEMORY=1 only): fetch +
+    # freeze the SHARED cloud snapshot, replay any journaled offline writes
+    # (~/.jarvis/cloud-memory-pending.jsonl), and mirror into the local
+    # files — all BLOCKING sync httpx (2 s connect / bounded totals), so it
+    # runs OFF the event loop via asyncio.to_thread. Must happen BEFORE
+    # _build_initial_prompt_state (sync, on-loop), which then reads the
+    # already-cached frozen snapshot without a second fetch — no HTTP ever
+    # runs on the loop, so LiveKit signaling never stalls. Flag off:
+    # enabled() is False (pure env read) and the thread hop is skipped —
+    # behavior is byte-identical to the pre-cloud path.
+    if _MEMORY_AVAILABLE:
+        try:
+            from pipeline import cloud_memory as _cloud_memory
+            if _cloud_memory.enabled():
+                await asyncio.to_thread(_cloud_memory.sync_at_session_start)
+        except Exception as e:
+            logger.warning(
+                f"[cloud-memory] session-start sync failed; local snapshot only: {e}"
+            )
 
     # Assemble the system-prompt state — Step 8d of the 10/10 refactor.
     # See `_build_initial_prompt_state` for what each piece contains

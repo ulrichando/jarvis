@@ -15,6 +15,52 @@ def test_recall_tool_inert_without_provider(monkeypatch):
     assert check_recall_available() is False
 
 
+def test_recall_tool_schema_has_search_mode():
+    """recall exposes a 'mode' param with 'answer' (default) and 'search'."""
+    from tools.memory_providers import _RECALL_SCHEMA
+    mode = _RECALL_SCHEMA["parameters"]["properties"].get("mode")
+    assert mode is not None
+    assert set(mode["enum"]) == {"answer", "search"}
+
+
+def test_recall_tool_routes_mode(monkeypatch):
+    """mode='search' → search_for_query; default/absent → recall_for_query."""
+    import asyncio
+    from pipeline import memory_provider
+    calls = []
+    monkeypatch.setattr(memory_provider, "search_for_query",
+                        lambda q, *a, **k: calls.append(("search", q)) or "SEARCH-RESULT")
+    monkeypatch.setattr(memory_provider, "recall_for_query",
+                        lambda q, *a, **k: calls.append(("answer", q)) or "ANSWER-RESULT")
+    from tools.memory_providers import _handle_recall
+
+    out_search = asyncio.run(_handle_recall({"query": "cars", "mode": "search"}))
+    out_answer = asyncio.run(_handle_recall({"query": "cars"}))
+    assert out_search == "SEARCH-RESULT" and ("search", "cars") in calls
+    assert out_answer == "ANSWER-RESULT" and ("answer", "cars") in calls
+
+
+def test_recall_search_empty_is_non_authoritative(monkeypatch):
+    """An empty search result must NOT read as 'never discussed' (denial risk)."""
+    import asyncio
+    from pipeline import memory_provider
+    monkeypatch.setattr(memory_provider, "search_for_query", lambda q, *a, **k: "")
+    from tools.memory_providers import _handle_recall
+    out = asyncio.run(_handle_recall({"query": "x", "mode": "search"}))
+    assert "does not mean" in out.lower()
+
+
+def test_recall_mode_coerces_non_string(monkeypatch):
+    """A non-string mode must not crash — coerced via str(), routes to answer."""
+    import asyncio
+    from pipeline import memory_provider
+    monkeypatch.setattr(memory_provider, "recall_for_query", lambda q, *a, **k: "ANSWER")
+    monkeypatch.setattr(memory_provider, "search_for_query", lambda q, *a, **k: "SEARCH")
+    from tools.memory_providers import _handle_recall
+    out = asyncio.run(_handle_recall({"query": "x", "mode": 123}))
+    assert out == "ANSWER"     # unknown/non-string mode → safe default (answer)
+
+
 def test_memory_tool_schema_has_procedure_target():
     """Track 2c: tool schema's target enum includes 'procedure'."""
     from tools.memory import MEMORY_SCHEMA

@@ -38,6 +38,13 @@ class MemoryProvider(abc.ABC):
         """Cheap recent-context recall (e.g. Honcho session.get_context)."""
         return ""
 
+    def search(self, query: str, limit: int = 8) -> str:
+        """Semantic message retrieval (e.g. Honcho embedding search). Returns
+        the actual matching past messages as text, or "". Distinct from recall
+        (a synthesized answer) — this returns the real messages, ranked by
+        meaning, so it finds turns the keyword tools miss."""
+        return ""
+
     def sync_message(self, role: str, text: str) -> None:
         """Ingest one message (role: 'user'|'assistant'). Background-called."""
         return None
@@ -68,8 +75,19 @@ async def _handle_recall(args: dict) -> str:
     if not query:
         from tools.registry import tool_error
         return tool_error("recall requires a 'query' (what to look up about the user/past).")
+    mode = str(args.get("mode") or "answer").strip().lower() if isinstance(args, dict) else "answer"
     from pipeline import memory_provider
     import asyncio
+    if mode == "search":
+        res = await asyncio.to_thread(memory_provider.search_for_query, query)
+        # Non-authoritative empty result: an empty return can mean "no close
+        # match" OR "backend offline" — never let the model treat it as proof
+        # the topic was never discussed (that persists a denial via dual-sync).
+        return res or (
+            "No close semantic matches surfaced for that query. This does NOT "
+            "mean the topic was never discussed — semantic search only returns "
+            "close matches; try recall mode='answer' or reword the query."
+        )
     res = await asyncio.to_thread(memory_provider.recall_for_query, query)
     return res or "No relevant memory found."
 
@@ -78,17 +96,28 @@ _RECALL_SCHEMA = {
     "name": "recall",
     "description": (
         "Look up what you know about the user from past conversations (cross-session "
-        "memory). Use for 'what did I tell you about X', 'remember when…', or when you "
-        "need durable context the current chat doesn't contain. Returns a synthesized "
-        "answer; may take a moment. For facts in the current chat, just answer directly."
+        "memory). Two modes:\n"
+        "- mode='answer' (default): a synthesized answer that reasons over the user "
+        "model — for 'what did I tell you about X', 'remember when…'. May take a moment.\n"
+        "- mode='search': the actual past MESSAGES most related in MEANING to the query "
+        "(semantic, not keyword) — fast, verbatim quotes with speaker labels. Use when you "
+        "want the real wording of what was said, or when the keyword tools (session_search) "
+        "miss it because the user phrased it differently now.\n"
+        "For facts already in the current chat, just answer directly."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "Natural-language question about the user or past context.",
-            }
+                "description": "Natural-language question or topic about the user or past context.",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["answer", "search"],
+                "description": "'answer' = synthesized reasoning (default); 'search' = verbatim semantic message matches.",
+                "default": "answer",
+            },
         },
         "required": ["query"],
     },
