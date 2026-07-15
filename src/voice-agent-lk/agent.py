@@ -766,6 +766,39 @@ async def _drain_pending_writes() -> None:
         await asyncio.gather(*list(_pending), return_exceptions=True)
 
 
+async def _resolve_tts_voice(room, participant, default_voice: str, timeout: float = 3.0) -> str:
+    """Voice-mode voice = the phone's selected Edge voice, delivered as the
+    `voice` participant attribute (Android LocalParticipant.updateAttributes) —
+    no token/route change needed. Caught via the room's attribute-changed event
+    (the participant object handed back by wait_for_participant does not reflect
+    later runtime updates), with a check of whatever is already set. Falls back
+    to the server default after `timeout`."""
+    def _voice_of(p):
+        return ((getattr(p, "attributes", None) or {}).get("voice") or "").strip()
+
+    logger.info("[job] initial attrs=%s", dict(getattr(participant, "attributes", {}) or {}))
+    v = _voice_of(participant)
+    if v:
+        return v
+
+    fut = asyncio.get_event_loop().create_future()
+
+    def _on_changed(changed_attributes, changed_participant):
+        try:
+            nv = ((changed_attributes or {}).get("voice") or "").strip() or _voice_of(changed_participant)
+            logger.info("[job] attrs changed (%s): voice=%s", getattr(changed_participant, "identity", "?"), nv)
+            if nv and not fut.done():
+                fut.set_result(nv)
+        except Exception as e:  # never let a bad event kill the session
+            logger.warning("[job] attr handler error: %s", e)
+
+    room.on("participant_attributes_changed", _on_changed)
+    try:
+        return await asyncio.wait_for(fut, timeout=timeout)
+    except asyncio.TimeoutError:
+        return default_voice
+
+
 async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
     ctx.add_shutdown_callback(_drain_pending_writes)
@@ -807,15 +840,22 @@ async def entrypoint(ctx: JobContext) -> None:
     for turn in history:
         chat_ctx.add_message(role=turn["role"], content=turn["text"])
 
+    # Voice-mode TTS voice = the phone's selected Edge voice (participant attr),
+    # else the server default.
+    default_voice = os.environ.get("VOICE_TTS_VOICE", tts_edge.DEFAULT_VOICE)
+    tts_voice = await _resolve_tts_voice(ctx.room, participant, default_voice)
+    logger.info(
+        "[job] tts voice=%s%s", tts_voice,
+        "" if tts_voice == default_voice else " [from phone]",
+    )
+
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
         # Non-streaming STT: AgentSession auto-wraps it in a
         # StreamAdapter with the VAD above.
         stt=ctx.proc.userdata["stt"],
         llm=_build_llm(model_override),
-        tts=tts_edge.EdgeTTS(
-            voice=os.environ.get("VOICE_TTS_VOICE", tts_edge.DEFAULT_VOICE)
-        ),
+        tts=tts_edge.EdgeTTS(voice=tts_voice),
         turn_handling={
             "interruption": {
                 "enabled": True,
