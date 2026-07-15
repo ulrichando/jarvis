@@ -380,3 +380,39 @@ def test_real_openai_context_overflow_still_names_openai():
     assert c.category == "context_too_long"
     assert c.provider == "OpenAI"
     assert "OpenAI" in c.spoken
+
+
+# ── DeepSeek-via-openai-plugin mislabel (live bug 2026-07-15) ─────────────────
+# DeepSeek/Kimi/OpenRouter all front through livekit.plugins.openai.LLM, so a
+# ConnectError from the fallback cascade reads "all LLMs failed
+# (['livekit.plugins.openai.llm.LLM', ...])". The bare plugin path tripped the
+# OpenAI pattern in the error TEXT → JARVIS spoke "I can't reach OpenAI" for a
+# DeepSeek network blip. The model id (the active pin) is authoritative.
+def test_deepseek_connecterror_via_openai_plugin_names_deepseek_not_openai():
+    from livekit.agents import APIConnectionError
+    err = APIConnectionError(
+        "all LLMs failed (['livekit.plugins.openai.llm.LLM', "
+        "'livekit.plugins.openai.llm.LLM'])"
+    )
+    c = classify_provider_error(err, model="deepseek-chat-v3", component="llm")
+    assert c.provider == "DeepSeek"
+    for field in (c.provider, c.spoken, c.notify_title, c.notify_body):
+        assert "OpenAI" not in field
+
+
+def test_openai_plugin_path_alone_is_not_an_openai_signal_when_model_unknown():
+    # No pin: the bare plugin path must NOT read as OpenAI — stay generic
+    # rather than name the wrong vendor.
+    from livekit.agents import APIConnectionError
+    err = APIConnectionError("all LLMs failed (['livekit.plugins.openai.llm.LLM'])")
+    c = classify_provider_error(err, component="llm")
+    assert "OpenAI" not in c.provider
+
+
+def test_real_openai_outage_still_detected_from_url_token():
+    # A genuine OpenAI failure carries api.openai.com even with no model pin —
+    # that token survives the plugin-path strip, so OpenAI is still named.
+    c = classify_provider_error(
+        _Err("Connection error to https://api.openai.com/v1/chat/completions", None),
+    )
+    assert c.provider == "OpenAI"

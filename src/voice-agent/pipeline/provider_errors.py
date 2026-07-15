@@ -81,6 +81,15 @@ def _is_local_llm(model: str | None, text: str) -> bool:
     return _LOCAL_LLM_TEXT_RE.search(text) is not None
 
 
+# The livekit OpenAI-COMPATIBLE plugin's class path is a WIRE SHAPE, not a
+# vendor signal — DeepSeek / Kimi / OpenRouter all front through it, so their
+# error reprs carry "livekit.plugins.openai.llm.LLM". Strip it before
+# text-based provider detection so a DeepSeek/Kimi outage is never read as
+# OpenAI. Real OpenAI errors carry other tokens (api.openai.com, gpt-*,
+# insufficient_quota) that survive this.
+_OPENAI_PLUGIN_PATH_RE = re.compile(r"livekit\.plugins\.openai[\w.]*", re.I)
+
+
 def _detect_provider(model: str | None, text: str) -> str:
     if _is_local_llm(model, text):
         # Local (Ollama / llama.cpp) LLM behind the OpenAI-compatible plugin:
@@ -94,8 +103,22 @@ def _detect_provider(model: str | None, text: str) -> str:
                 if name != "OpenAI" and pat.search(model):
                     return name
         return "the local model"
+    # The MODEL ID is authoritative — it names the real vendor even when the
+    # error text carries only the openai-compat plugin's wire-shape "openai"
+    # token. DeepSeek / Kimi / OpenRouter all front through
+    # livekit.plugins.openai.LLM, so a ConnectError for a DeepSeek outage reads
+    # "all LLMs failed (['livekit.plugins.openai.llm.LLM', ...])" — matching the
+    # text there mislabels DeepSeek as OpenAI (live bug 2026-07-15). Prefer the
+    # model, then fall back to the text with the bare plugin path stripped so it
+    # never counts as an OpenAI signal (a real OpenAI error still carries
+    # "api.openai.com" / "insufficient_quota" / a "gpt-*" id, which survive).
+    if model:
+        for pat, name in _PROVIDER_PATS:
+            if pat.search(model):
+                return name
+    text = _OPENAI_PLUGIN_PATH_RE.sub(" ", text)
     for pat, name in _PROVIDER_PATS:
-        if (model and pat.search(model)) or pat.search(text):
+        if pat.search(text):
             return name
     return "the model provider"
 
