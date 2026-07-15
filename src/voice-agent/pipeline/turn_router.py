@@ -522,6 +522,37 @@ def is_recall_query(transcript: str) -> bool:
         return False
     return any(p.search(text) for p in _RECALL_PATTERNS)
 
+
+def should_inject_session_context(transcript: str, route: str) -> bool:
+    """Per-turn session-context inject gate (widened 2026-07-15).
+
+    Decides whether the auto-recall hook in jarvis_agent.py should inject
+    honcho's cheap session context (``memory_provider.maybe_recall_for_turn``
+    → the provider's ``recall_context``) into the turn.
+
+    Widened from the old ``is_recall_query``-only gate: inject on EVERY
+    substantive route — anything that is NOT BANTER (TASK_* / REASONING /
+    EMOTIONAL) — so the session context enriches every real turn, not just
+    memory-shaped questions. ``recall_context`` is honcho's cheapest recall
+    and ``maybe_recall_for_turn`` runs it under a 1.5 s hard timeout with
+    silent skip, so a slow/dead honcho can never delay the turn.
+
+    ``route`` is REUSED from ``session._jarvis_route`` (stamped synchronously
+    by the ``user_input_transcribed`` dispatch handler before
+    ``on_user_turn_completed`` runs) — callers must NOT run a second
+    classify. An empty/unset route is treated as substantive (inject): the
+    stamp is only missing on non-voice paths where TASK-shaped input is the
+    norm and a spurious inject is harmless (budgeted + best-effort).
+
+    BANTER stays excluded (noise + latency on chit-chat) — EXCEPT when the
+    text is recall-shaped (``is_recall_query``), which preserves the legacy
+    gate as a strict subset: everything that injected before still injects.
+    """
+    if route != "BANTER":
+        return True
+    return is_recall_query(transcript)
+
+
 # detect_capture_trigger + _CAPTURE_PATTERNS ("Layer 2.5") were deleted
 # 2026-07-06: dead code since the 2026-05-20 rebuild — the
 # on_user_turn_completed wiring and memory consolidator the docstring

@@ -601,3 +601,25 @@ def remove(target: str, old_text: str) -> Dict[str, Any]:
 
 def read(target: str) -> Dict[str, Any]:
     return get_store().read(target)
+
+
+def mirror_entries(target: str, entries: List[str]) -> None:
+    """Overwrite a store file with entries mirrored from the CLOUD store
+    (pipeline.cloud_memory, JARVIS_CLOUD_MEMORY=1 only) so offline sessions
+    boot from the last-seen cloud state.
+
+    Deliberately BYPASSES the scan/budget path (``add`` would re-scan and
+    could roll/reject) — the cloud API already enforced the identical
+    contract server-side. Uses the same sidecar ``.lock`` + atomic
+    temp-file-rename write as the normal mutation path, so it is safe
+    against concurrent sessions. Does NOT touch the live singleton or the
+    frozen snapshot — callers run ``reload_store()`` afterwards."""
+    if target not in VALID_TARGETS:
+        raise ValueError(f"Invalid target {target!r}. Use one of {VALID_TARGETS}.")
+    cleaned = list(
+        dict.fromkeys(e.strip() for e in entries if (e or "").strip())
+    )
+    path = MemoryStore._path_for(target)
+    _memory_dir().mkdir(parents=True, exist_ok=True)
+    with MemoryStore._file_lock(path):
+        MemoryStore._write_file(path, cleaned)

@@ -15,6 +15,8 @@ Env (see .env.example):
   LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET — LiveKit server
   JARVIS_PROXY_JWT_SECRET — mints per-job gateway bearer tokens
   JARVIS_GATEWAY_URL      — default http://localhost:4000
+  JARVIS_WEB_URL          — web app base for cloud voice memory
+                            (default http://127.0.0.1:80)
   VOICE_LLM_MODEL         — default claude-sonnet-4-6 (gateway registry id)
   VOICE_STT_MODEL         — default base.en (faster-whisper, cpu/int8)
   VOICE_TTS_VOICE         — default en-GB-RyanNeural (matches Android)
@@ -22,10 +24,13 @@ Env (see .env.example):
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 from pathlib import Path
+
+import aiohttp
 
 from livekit.agents import (
     Agent,
@@ -71,10 +76,42 @@ realtime voice call, so:
 # Each voice session is a fresh AgentSession, so without this the agent forgets
 # everything between calls. We persist finalized turns per user (the userId is
 # embedded in the room name) and replay the recent tail into the chat context on
-# join. Stored as append-only JSONL under a host-mounted volume so it survives
-# container redeploys.
+# join. Primary store is the web app's Postgres via /api/voice-memory (turns
+# land in the user's single continuous 'voice' conversation, so they also
+# render in the web chat UI). The append-only JSONL under a host-mounted
+# volume is kept as the offline fallback when the web API is unreachable.
 MEMORY_DIR = Path(os.environ.get("VOICE_MEMORY_DIR", "/data/memory"))
 MAX_HISTORY_TURNS = int(os.environ.get("VOICE_MEMORY_TURNS", "40"))
+WEB_URL = os.environ.get("JARVIS_WEB_URL", "http://127.0.0.1:80").rstrip("/")
+_MEMORY_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=5)
+
+# Strong refs to in-flight fire-and-forget memory writes (asyncio only keeps
+# weak refs to tasks — without this a pending POST can be garbage-collected).
+_pending: set[asyncio.Task] = set()
+
+# Serializes cloud turn writes so a user/assistant pair can't commit inverted
+# when their fire-and-forget tasks interleave (asyncio.Lock wakes waiters
+# FIFO, so posts land in emission order).
+# ponytail: global lock — serializes across ALL users; make it per-user if
+# multi-user throughput ever matters.
+_post_lock = asyncio.Lock()
+
+# First cloud-memory failure per process logs at ERROR (a persistent failure
+# is usually config, e.g. JARVIS_PROXY_JWT_SECRET drift); repeats at WARNING.
+_cloud_failure_logged = False
+
+
+def _log_cloud_failure(what: str, err: BaseException) -> None:
+    global _cloud_failure_logged
+    if not _cloud_failure_logged:
+        _cloud_failure_logged = True
+        logger.error(
+            "[memory] cloud %s failed (%s); using local file — "
+            "check JARVIS_PROXY_JWT_SECRET matches the web app",
+            what, err,
+        )
+    else:
+        logger.warning("[memory] cloud %s failed (%s); using local file", what, err)
 
 
 def _user_id_from_room(room_name: str) -> str | None:
@@ -92,7 +129,8 @@ def _memory_file(user_id: str) -> Path:
     return MEMORY_DIR / f"{safe}.jsonl"
 
 
-def _load_history(user_id: str) -> list[dict]:
+def _load_history_file(user_id: str) -> list[dict]:
+    """Offline fallback: read the recent tail from the local JSONL store."""
     f = _memory_file(user_id)
     if not f.exists():
         return []
@@ -110,13 +148,80 @@ def _load_history(user_id: str) -> list[dict]:
     return turns[-MAX_HISTORY_TURNS:]
 
 
-def _append_turn(user_id: str, role: str, text: str) -> None:
+def _append_turn_file(user_id: str, role: str, text: str) -> None:
+    """Offline fallback: append one turn to the local JSONL store."""
     try:
         MEMORY_DIR.mkdir(parents=True, exist_ok=True)
         with _memory_file(user_id).open("a", encoding="utf-8") as fh:
             fh.write(json.dumps({"role": role, "text": text}, ensure_ascii=False) + "\n")
     except Exception as e:
         logger.warning("[memory] append failed: %s", e)
+
+
+async def _load_history(user_id: str) -> list[dict]:
+    """Load the user's recent voice turns from the web app's cloud store.
+
+    GET {JARVIS_WEB_URL}/api/voice-memory, authed with a service proxy JWT
+    (sub="voice-agent"). On any error/timeout, fall back to the local JSONL.
+    """
+    try:
+        token = proxy_token.mint_from_env(sub="voice-agent")
+        url = f"{WEB_URL}/api/voice-memory"
+        async with aiohttp.ClientSession(timeout=_MEMORY_HTTP_TIMEOUT) as http:
+            async with http.get(
+                url,
+                params={"user_id": user_id, "limit": str(MAX_HISTORY_TURNS)},
+                headers={"Authorization": f"Bearer {token}"},
+            ) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"HTTP {resp.status}")
+                data = await resp.json()
+        turns = [
+            {"role": t["role"], "text": t["text"]}
+            for t in data.get("turns", [])
+            if t.get("role") in ("user", "assistant") and t.get("text")
+        ]
+        return turns[-MAX_HISTORY_TURNS:]
+    except Exception as e:
+        _log_cloud_failure("history load", e)
+        return _load_history_file(user_id)
+
+
+async def _post_turn(user_id: str, role: str, text: str) -> None:
+    """Write one finalized turn to the cloud store; JSONL fallback on failure."""
+    try:
+        async with _post_lock:  # commit turns in emission order
+            token = proxy_token.mint_from_env(sub="voice-agent")
+            url = f"{WEB_URL}/api/voice-memory"
+            async with aiohttp.ClientSession(timeout=_MEMORY_HTTP_TIMEOUT) as http:
+                async with http.post(
+                    url,
+                    json={"role": role, "text": text, "user_id": user_id},
+                    headers={"Authorization": f"Bearer {token}"},
+                ) as resp:
+                    if resp.status != 200:
+                        raise RuntimeError(f"HTTP {resp.status}")
+    except asyncio.CancelledError:
+        # Cancelled mid-write (job shutdown) — land the turn in the JSONL
+        # fallback rather than dropping it, then let cancellation propagate.
+        _append_turn_file(user_id, role, text)
+        raise
+    except Exception as e:
+        _log_cloud_failure("append", e)
+        _append_turn_file(user_id, role, text)
+
+
+def _append_turn(user_id: str, role: str, text: str) -> None:
+    """Synchronous shim for livekit event handlers (the EventEmitter rejects
+    coroutine callbacks): fire the cloud write off-loop, keep a strong ref."""
+    try:
+        task = asyncio.create_task(_post_turn(user_id, role, text))
+        _pending.add(task)
+        task.add_done_callback(_pending.discard)
+    except RuntimeError:
+        # No running loop (shouldn't happen inside session callbacks) —
+        # persist locally rather than dropping the turn.
+        _append_turn_file(user_id, role, text)
 
 
 def prewarm(proc: JobProcess) -> None:
@@ -151,17 +256,52 @@ def _build_llm() -> anthropic.LLM:
     return anthropic.LLM(model=model, api_key=token, base_url=base_url)
 
 
+async def _drain_pending_writes() -> None:
+    """Job-shutdown callback: let in-flight memory posts finish instead of
+    being cancelled with the loop (a cancelled post still lands in the JSONL
+    fallback via _post_turn's CancelledError handler, but finishing the cloud
+    write is strictly better)."""
+    if _pending:
+        await asyncio.gather(*list(_pending), return_exceptions=True)
+
+
+async def _resolve_tts_voice(
+    participant, default_voice: str, attempts: int = 15, interval: float = 0.1
+) -> str:
+    """Voice-mode voice = the phone's selected Edge voice, delivered as the
+    `voice` participant attribute (Android LocalParticipant.updateAttributes) —
+    no token/route change needed. The client sets it just after connect, so
+    poll briefly for it (exits the instant it's present) then fall back to the
+    server default. Worst case (old client that never sets it) waits ~1.5 s."""
+    for _ in range(attempts):
+        v = (participant.attributes or {}).get("voice", "").strip()
+        if v:
+            return v
+        await asyncio.sleep(interval)
+    return default_voice
+
+
 async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
+    ctx.add_shutdown_callback(_drain_pending_writes)
     # Identity from the signed LiveKit token (route.ts sets identity=userId),
     # not the room-name string — so memory can't be keyed on another user even
     # if the room-naming convention ever changes. Room parse is only a fallback.
     participant = await ctx.wait_for_participant()
     user_id = participant.identity or _user_id_from_room(ctx.room.name)
-    history = _load_history(user_id) if user_id else []
+    history = (await _load_history(user_id)) if user_id else []
+    # The phone selects the voice-mode voice (an Edge voice id) and sends it as
+    # the `voice` participant attribute (LocalParticipant.updateAttributes on the
+    # Android client) — no token/route change needed. It's set right after the
+    # client connects, so it may land a beat after wait_for_participant; poll
+    # briefly (the history fetch above already gave it time) then fall back to
+    # the server default.
+    default_voice = os.environ.get("VOICE_TTS_VOICE", tts_edge.DEFAULT_VOICE)
+    tts_voice = await _resolve_tts_voice(participant, default_voice)
     logger.info(
-        "[job] joined room %s (user=%s, %d prior turn(s))",
-        ctx.room.name, user_id, len(history),
+        "[job] joined room %s (user=%s, %d prior turn(s), voice=%s%s)",
+        ctx.room.name, user_id, len(history), tts_voice,
+        "" if tts_voice == default_voice else " [from phone]",
     )
 
     # Replay recent memory into the chat context so the agent recalls past calls.
@@ -175,9 +315,7 @@ async def entrypoint(ctx: JobContext) -> None:
         # StreamAdapter with the VAD above.
         stt=ctx.proc.userdata["stt"],
         llm=_build_llm(),
-        tts=tts_edge.EdgeTTS(
-            voice=os.environ.get("VOICE_TTS_VOICE", tts_edge.DEFAULT_VOICE)
-        ),
+        tts=tts_edge.EdgeTTS(voice=tts_voice),
         turn_handling={
             "interruption": {
                 "enabled": True,

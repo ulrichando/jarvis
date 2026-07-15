@@ -1,7 +1,9 @@
 # tests/test_memory_turn_integration.py — verifies the JarvisAgent turn-loop
-# hooks call the memory_provider runtime, gated by is_recall_query, without
-# disturbing existing turn handling. All assertions hold with the layer OFF
-# (default) and prove the wiring exists + is correctly gated when ON.
+# hooks call the memory_provider runtime, gated by
+# turn_router.should_inject_session_context (every non-BANTER route; widened
+# 2026-07-15 from the old is_recall_query-only gate), without disturbing
+# existing turn handling. All assertions hold with the layer OFF (default)
+# and prove the wiring exists + is correctly gated when ON.
 import asyncio
 import sys
 from pathlib import Path
@@ -72,11 +74,29 @@ class _FakeItem:
         return self._text
 
 
-# ── is_recall_query gating (the seam the auto-recall hook keys off) ───────
+# ── is_recall_query gating (the BANTER carve-out of the widened gate) ─────
 def test_is_recall_query_gating():
     from pipeline import turn_router
     assert turn_router.is_recall_query("what did I tell you about my dog") is True
     assert turn_router.is_recall_query("set a timer for 5 minutes") is False
+
+
+# ── should_inject_session_context (the widened per-turn gate seam) ────────
+def test_should_inject_session_context_gate():
+    from pipeline import turn_router
+    g = turn_router.should_inject_session_context
+    # Every substantive (non-BANTER) route injects, recall-shaped or not.
+    assert g("set a timer for 5 minutes", "TASK_OTHER") is True
+    assert g("refactor the auth module", "TASK_CODE") is True
+    assert g("why is the sky blue", "REASONING") is True
+    assert g("I'm so frustrated with this", "EMOTIONAL") is True
+    # Unset route (non-voice path / stamp missing) → treated as substantive.
+    assert g("open the browser", "") is True
+    # BANTER skips (noise + latency)…
+    assert g("thanks man", "BANTER") is False
+    assert g("good morning", "BANTER") is False
+    # …EXCEPT recall-shaped text — the legacy gate survives as a subset.
+    assert g("what did I tell you about my dog", "BANTER") is True
 
 
 # ── jarvis_agent imports clean (the 4 monkeypatches install) ──────────────
@@ -132,35 +152,49 @@ def test_runtime_inert_when_flag_unset(monkeypatch):
     assert asyncio.run(mp.maybe_recall_for_turn("what did I tell you about X")) == ""
 
 
-# ── Gated auto-recall fires ONLY on recall queries (layer ON) ─────────────
-def test_auto_recall_only_on_recall_queries(monkeypatch):
+# ── Widened auto-recall: every non-BANTER route injects (layer ON) ────────
+def test_auto_recall_injects_for_task_skips_banter(monkeypatch):
     from pipeline import memory_provider as mp, turn_router
     f = _Fake()
     _install(monkeypatch, f)
     mp.begin_session("room-test")
     assert ("init", "room-test") in f.calls
 
-    async def _drive(text):
+    async def _drive(text, route):
         # mirror the jarvis_agent.on_user_turn_completed auto-recall snippet
-        # — injected as USER-side context (NOT assistant) so the LLM doesn't
-        # attribute the recalled fact to its own prior reply.
+        # (widened 2026-07-15) — the route is REUSED from
+        # session._jarvis_route (no second classify); injected as USER-side
+        # context (NOT assistant) so the LLM doesn't attribute the recalled
+        # fact to its own prior reply.
         ctxobj = _FakeChatCtx()
-        if mp.active_provider() is not None and turn_router.is_recall_query(text):
+        if mp.active_provider() is not None and turn_router.should_inject_session_context(text, route):
             ctx = await mp.maybe_recall_for_turn(text)
             if ctx:
                 ctxobj.add_message(role="user", content=f"[context from memory] {ctx}")
         return ctxobj
 
-    # recall-ish query → recall_context invoked + injected
-    recall_ctx = asyncio.run(_drive("what did I tell you about my dog"))
+    # plain TASK command (NOT recall-shaped) → recall_context invoked + injected
+    task_ctx = asyncio.run(_drive("set a timer for 5 minutes", "TASK_OTHER"))
+    assert any(c[0] == "ctx" for c in f.calls)
+    assert task_ctx.added == [("user", "[context from memory] RECALLED-CONTEXT")]
+
+    # REASONING turn → injected too (every substantive route)
+    f.calls.clear()
+    reasoning_ctx = asyncio.run(_drive("why does the build keep failing", "REASONING"))
+    assert any(c[0] == "ctx" for c in f.calls)
+    assert reasoning_ctx.added == [("user", "[context from memory] RECALLED-CONTEXT")]
+
+    # BANTER chit-chat → no recall, no injection (noise + latency)
+    f.calls.clear()
+    banter_ctx = asyncio.run(_drive("thanks man", "BANTER"))
+    assert not any(c[0] == "ctx" for c in f.calls)
+    assert banter_ctx.added == []
+
+    # BANTER-routed but recall-shaped → still injects (legacy gate subset)
+    f.calls.clear()
+    recall_ctx = asyncio.run(_drive("what did I tell you about my dog", "BANTER"))
     assert any(c[0] == "ctx" for c in f.calls)
     assert recall_ctx.added == [("user", "[context from memory] RECALLED-CONTEXT")]
-
-    # non-recall command → no recall, no injection
-    f.calls.clear()
-    cmd_ctx = asyncio.run(_drive("set a timer for 5 minutes"))
-    assert not any(c[0] == "ctx" for c in f.calls)
-    assert cmd_ctx.added == []
 
 
 # ── Per-item sync is fire-and-forget for user + assistant items ───────────
