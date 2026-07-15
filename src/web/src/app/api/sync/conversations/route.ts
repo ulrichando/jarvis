@@ -1,4 +1,4 @@
-import { and, asc, gt, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, asc, gt, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { ensureWebSchema } from "@/lib/db/ensure-schema";
 import { requireUserIdOrSharedLocal, Unauthenticated } from "@/lib/auth-helpers";
@@ -54,11 +54,12 @@ export async function GET(req: Request) {
       and(
         eq(schema.conversations.userId, userId),
         gt(schema.conversations.changeSeq, since),
-        // Live chats (not voice/task/archived) OR any deleted conversation (as a
-        // tombstone so other devices remove it).
+        // Live chat/voice/task threads (not archived) OR any deleted
+        // conversation (as a tombstone so other devices remove it). The phone
+        // history surfaces voice + task conversations alongside chats.
         or(
           and(
-            eq(schema.conversations.kind, "chat"),
+            inArray(schema.conversations.kind, ["chat", "voice", "task"]),
             eq(schema.conversations.archived, false),
             isNull(schema.conversations.deletedAt),
           ),
