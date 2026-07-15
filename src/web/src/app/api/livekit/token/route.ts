@@ -49,10 +49,22 @@ export async function POST(req: Request): Promise<NextResponse> {
       );
     }
 
+    // Optional: the chat the phone opened voice from. Forwarded to the
+    // auto-dispatched voice agent as PARTICIPANT METADATA (read from the phone
+    // participant on join) so it can seed THAT conversation's history instead of
+    // the standalone kind='voice' thread. The phone's conversation UUID is the
+    // same id as web.conversations.id (mobile sync upserts by id), so no mapping.
+    const body = (await req.json().catch(() => ({}))) as { conversationId?: unknown };
+    const conversationId =
+      typeof body.conversationId === "string" && body.conversationId.trim()
+        ? body.conversationId.trim()
+        : undefined;
+
     const room = `voice-${userId}-${randomUUID().slice(0, 8)}`;
     const at = new AccessToken(apiKey, apiSecret, {
       identity: userId,
       ttl: TOKEN_TTL,
+      ...(conversationId ? { metadata: JSON.stringify({ conversationId }) } : {}),
     });
     at.addGrant({
       roomJoin: true,
