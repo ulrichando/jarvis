@@ -88,6 +88,11 @@ export async function POST(req: Request): Promise<NextResponse> {
       room,
       canPublish: true,
       canSubscribe: true,
+      // Lets the phone set its own `voice` participant attribute (the chosen
+      // Edge voice) so the realtime voice agent reads it and speaks in that
+      // voice (agent._resolve_tts_voice). Was a box-only hand-edit; folded into
+      // the repo here so the deploy doesn't regress phone voice selection.
+      canUpdateOwnMetadata: true,
     });
     const token = await at.toJwt();
 
