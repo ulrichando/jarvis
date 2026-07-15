@@ -26,6 +26,8 @@ export const runtime = "nodejs";
 
 const DEFAULT_LIMIT = 40;
 const MAX_LIMIT = 200;
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The user's single continuous voice conversation, or null. */
 async function findVoiceConversation(
@@ -72,7 +74,34 @@ export async function GET(req: Request) {
     ? Math.min(Math.max(rawLimit, 1), MAX_LIMIT)
     : DEFAULT_LIMIT;
 
-  const convo = await findVoiceConversation(userId);
+  // Optional: load a SPECIFIC conversation — the chat the phone opened voice
+  // from (#15), so the agent continues THAT thread instead of the standalone
+  // voice conversation. Scoped to (id, userId) so a forged conversation_id on
+  // the service path can't read another user's chat. Absent → the continuous
+  // voice thread (default behaviour).
+  const convParam = url.searchParams.get("conversation_id")?.trim();
+  let convo: { id: string } | null;
+  if (convParam) {
+    if (!UUID_RE.test(convParam)) {
+      return Response.json(
+        { error: "conversation_id must be a valid UUID" },
+        { status: 400 },
+      );
+    }
+    const owned = await db
+      .select({ id: schema.conversations.id })
+      .from(schema.conversations)
+      .where(
+        and(
+          eq(schema.conversations.id, convParam),
+          eq(schema.conversations.userId, userId),
+        ),
+      )
+      .limit(1);
+    convo = owned[0] ?? null;
+  } else {
+    convo = await findVoiceConversation(userId);
+  }
   if (!convo) return Response.json({ turns: [] });
 
   // Newest N by created_at, then reverse to chronological. Over-fetch: the

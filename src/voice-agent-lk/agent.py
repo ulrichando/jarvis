@@ -71,6 +71,10 @@ realtime voice call, so:
   conversation starts fresh — you do carry memory across calls. If a
   detail is genuinely not in your memory, just say you don't have that
   particular detail and move on.
+- You can look things up on the web with the search tool. Use it for current
+  events, prices, weather, or any fact you're unsure of — never claim you have
+  no internet access or can't check. After searching, answer in one or two
+  spoken sentences; don't read out links or lists.
 """
 
 # ── Cross-session memory ────────────────────────────────────────────────────
@@ -85,6 +89,9 @@ MEMORY_DIR = Path(os.environ.get("VOICE_MEMORY_DIR", "/data/memory"))
 MAX_HISTORY_TURNS = int(os.environ.get("VOICE_MEMORY_TURNS", "40"))
 WEB_URL = os.environ.get("JARVIS_WEB_URL", "http://127.0.0.1:80").rstrip("/")
 _MEMORY_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=5)
+# Web search proxies through jarvis-web → SearXNG, slower than a memory read;
+# give it a longer budget so a normal search isn't cut off mid-turn.
+_SEARCH_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=12)
 
 # Strong refs to in-flight fire-and-forget memory writes (asyncio only keeps
 # weak refs to tasks — without this a pending POST can be garbage-collected).
@@ -286,6 +293,103 @@ def _start_history_backfill(user_id: str, turns: list[dict]) -> None:
     task = asyncio.create_task(_backfill_history(user_id, turns))
     _pending.add(task)
     task.add_done_callback(_pending.discard)
+
+
+def _participant_metadata(participant) -> dict:
+    """Parse the participant metadata JSON the token route (POST
+    /api/livekit/token) sets: {conversationId?, model?}. conversationId = the
+    chat voice was opened from, so the agent seeds THAT conversation (#15);
+    model = the user's Settings voice-model pick (#19). Empty dict when absent
+    (standalone voice / old client). The phone's conversation UUID IS the cloud
+    web.conversations.id."""
+    raw = getattr(participant, "metadata", "") or ""
+    if not raw:
+        return {}
+    try:
+        d = json.loads(raw)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _meta_str(meta: dict, key: str) -> str | None:
+    """A non-empty string field from parsed metadata, else None."""
+    v = meta.get(key)
+    return v.strip() if isinstance(v, str) and v.strip() else None
+
+
+async def _load_conversation(user_id: str, conversation_id: str) -> list[dict]:
+    """Seed from a SPECIFIC chat (the one the phone opened voice from) so the
+    agent continues that conversation with its real history, instead of the
+    standalone voice thread. GET /api/voice-memory?conversation_id=… (same
+    service auth + ownership scoping as _load_history). Falls back to the
+    continuous voice thread on any error so resumed voice is never worse off."""
+    try:
+        token = proxy_token.mint_from_env(sub="voice-agent")
+        url = f"{WEB_URL}/api/voice-memory"
+        async with aiohttp.ClientSession(timeout=_MEMORY_HTTP_TIMEOUT) as http:
+            async with http.get(
+                url,
+                params={
+                    "user_id": user_id,
+                    "conversation_id": conversation_id,
+                    "limit": str(MAX_HISTORY_TURNS),
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            ) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"HTTP {resp.status}")
+                data = await resp.json()
+        turns = [
+            {"role": t["role"], "text": t["text"]}
+            for t in data.get("turns", [])
+            if t.get("role") in ("user", "assistant") and t.get("text")
+        ]
+        return turns[-MAX_HISTORY_TURNS:]
+    except Exception as e:
+        _log_cloud_failure("conversation load", e)
+        return await _load_history(user_id)
+
+
+@function_tool
+async def search_web(query: str) -> str:
+    """Search the web for current, real-time, or factual information — news,
+    prices, weather, recent events, or any fact you're unsure of or that may be
+    newer than your training. Call this whenever the user asks something that
+    needs up-to-date or external information, then answer conversationally from
+    the results in one or two spoken sentences (never read out URLs or lists).
+
+    Args:
+        query: A concise web search query capturing what to look up.
+    """
+    try:
+        token = proxy_token.mint_from_env(sub="voice-agent")
+        url = f"{WEB_URL}/api/voice-search"
+        async with aiohttp.ClientSession(timeout=_SEARCH_HTTP_TIMEOUT) as http:
+            async with http.get(
+                url,
+                params={"q": query},
+                headers={"Authorization": f"Bearer {token}"},
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning("[search] HTTP %s for %r", resp.status, query)
+                    return "Web search is unavailable right now; answer from what you already know and mention you couldn't check the web."
+                data = await resp.json()
+        hits = data.get("hits", []) if isinstance(data, dict) else []
+        if not hits:
+            return f"No web results for '{query}'."
+        lines = []
+        for h in hits[:6]:
+            title = (h.get("title") or "").strip()
+            snippet = (h.get("snippet") or "").strip()
+            if not title:
+                continue
+            lines.append(f"- {title}: {snippet}" if snippet else f"- {title}")
+        logger.info("[search] %d result(s) for %r", len(lines), query)
+        return f"Web results for '{query}':\n" + "\n".join(lines)
+    except Exception as e:
+        logger.warning("[search] failed for %r: %s", query, e)
+        return "Web search failed; answer from what you know and say you couldn't search the web."
 
 
 async def _post_turn(user_id: str, role: str, text: str) -> None:
@@ -630,7 +734,7 @@ def prewarm(proc: JobProcess) -> None:
     logger.info("[prewarm] VAD + STT ready")
 
 
-def _build_llm() -> anthropic.LLM:
+def _build_llm(model_override: str | None = None) -> anthropic.LLM:
     """Claude through the JARVIS gateway, authed with a freshly minted
     proxy JWT.
 
@@ -642,8 +746,14 @@ def _build_llm() -> anthropic.LLM:
     """
     token = proxy_token.mint_from_env(sub="voice-agent")
     base_url = os.environ.get("JARVIS_GATEWAY_URL", DEFAULT_GATEWAY_URL).rstrip("/")
-    model = os.environ.get("VOICE_LLM_MODEL", DEFAULT_LLM_MODEL)
-    logger.info("[llm] gateway=%s model=%s (per-job proxy token minted)", base_url, model)
+    # Per-job model: the user's Settings voice pick (forwarded via participant
+    # metadata, #19) wins; else the server default. The gateway serves the
+    # DeepSeek/Claude/Gemini/OpenAI registry, so any of those ids works here.
+    model = model_override or os.environ.get("VOICE_LLM_MODEL", DEFAULT_LLM_MODEL)
+    logger.info(
+        "[llm] gateway=%s model=%s%s (per-job proxy token minted)",
+        base_url, model, " [from phone]" if model_override else "",
+    )
     return anthropic.LLM(model=model, api_key=token, base_url=base_url)
 
 
@@ -664,15 +774,29 @@ async def entrypoint(ctx: JobContext) -> None:
     # if the room-naming convention ever changes. Room parse is only a fallback.
     participant = await ctx.wait_for_participant()
     user_id = participant.identity or _user_id_from_room(ctx.room.name)
-    history = (await _load_history(user_id)) if user_id else []
+    # Metadata from the token route: the chat voice was opened from (#15) and the
+    # user's Settings voice-model pick (#19).
+    meta = _participant_metadata(participant)
+    conversation_id = _meta_str(meta, "conversationId")
+    model_override = _meta_str(meta, "model")
+    # Resumed from a chat → seed THAT conversation's history; else the continuous
+    # voice thread. (#15)
+    if user_id and conversation_id:
+        history = await _load_conversation(user_id, conversation_id)
+    elif user_id:
+        history = await _load_history(user_id)
+    else:
+        history = []
     # Curated memory: fetched ONCE here and frozen into the system prompt for
     # the whole session (prompt-cache stability). Mid-session `memory` tool
     # writes persist to the cloud store immediately but only show up in the
     # NEXT session's snapshot — same design as the local file-backed stack.
     memory_snapshot = (await _load_memory_snapshot(user_id)) if user_id else ""
     logger.info(
-        "[job] joined room %s (user=%s, %d prior turn(s), %d memory chars)",
-        ctx.room.name, user_id, len(history), len(memory_snapshot),
+        "[job] joined room %s (user=%s, %d prior turn(s)%s, %d memory chars)",
+        ctx.room.name, user_id, len(history),
+        f", conv={conversation_id}" if conversation_id else "",
+        len(memory_snapshot),
     )
     instructions = INSTRUCTIONS
     if memory_snapshot:
@@ -688,7 +812,7 @@ async def entrypoint(ctx: JobContext) -> None:
         # Non-streaming STT: AgentSession auto-wraps it in a
         # StreamAdapter with the VAD above.
         stt=ctx.proc.userdata["stt"],
-        llm=_build_llm(),
+        llm=_build_llm(model_override),
         tts=tts_edge.EdgeTTS(
             voice=os.environ.get("VOICE_TTS_VOICE", tts_edge.DEFAULT_VOICE)
         ),
@@ -754,9 +878,9 @@ async def entrypoint(ctx: JobContext) -> None:
             # closures — without an identity there is nothing safe to bind
             # reads/writes to, so omit them.
             tools=(
-                [_build_memory_tool(user_id), _build_recall_tool(user_id)]
+                [_build_memory_tool(user_id), _build_recall_tool(user_id), search_web]
                 if user_id
-                else []
+                else [search_web]  # research works even without an identity (#16)
             ),
         ),
         room=ctx.room,
