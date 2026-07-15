@@ -41,3 +41,10 @@
 		-Server
 	}
 }
+
+# livekit.0wlan.com → LiveKit realtime SFU (host-net :7880). GREY-CLOUD direct
+# A record (bypasses the tunnel); caddy terminates TLS here. Signaling only —
+# WebRTC media goes direct UDP to the public IP (use_external_ip).
+livekit.0wlan.com {
+	reverse_proxy 172.18.0.1:7880
+}
