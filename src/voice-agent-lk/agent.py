@@ -57,8 +57,14 @@ realtime voice call, so:
   no emojis. Spell out anything that must be read aloud.
 - If a transcription seems garbled or cut off, ask a brief clarifying
   question instead of guessing.
-- You remember earlier conversations with this user; refer back to them
-  naturally when relevant instead of asking for information already given.
+- Earlier messages in this conversation may be transcripts replayed from
+  the user's previous calls with you — that is your long-term memory of
+  this user. Trust it and refer back to it naturally when relevant
+  instead of asking for information already given.
+- Never tell the user you cannot remember previous sessions or that each
+  conversation starts fresh — you do carry memory across calls. If a
+  detail is genuinely not in your memory, just say you don't have that
+  particular detail and move on.
 """
 
 # ── Cross-session memory ────────────────────────────────────────────────────
@@ -201,7 +207,14 @@ async def entrypoint(ctx: JobContext) -> None:
         item = ev.item
         if getattr(item, "role", None) == "assistant":
             logger.info("[llm] agent replied: %r", item.text_content)
-            if user_id and item.text_content:
+            # Skip barge-in fragments (interrupted=True): persisting cut-off
+            # partials like "Your" would pollute the replayed memory; the
+            # follow-up full reply is the turn worth remembering.
+            if (
+                user_id
+                and item.text_content
+                and not getattr(item, "interrupted", False)
+            ):
                 _append_turn(user_id, "assistant", item.text_content)
 
     @session.on("agent_state_changed")

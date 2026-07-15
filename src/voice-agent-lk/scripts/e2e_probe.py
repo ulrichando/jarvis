@@ -60,9 +60,12 @@ async def main() -> int:
     secret = os.environ["LIVEKIT_API_SECRET"]
 
     room_name = os.environ.get("PROBE_ROOM") or f"voice-e2e-{int(time.time())}"
+    # The agent keys cross-session memory on the participant identity (route.ts
+    # sets identity=userId), so memory tests must join with the test userId.
+    identity = os.environ.get("PROBE_IDENTITY", "probe")
     token = (
         api.AccessToken(key, secret)
-        .with_identity("probe")
+        .with_identity(identity)
         .with_name("probe")
         .with_grants(api.VideoGrants(room_join=True, room=room_name))
         .to_jwt()
