@@ -571,3 +571,62 @@ def test_search_keeps_user_capability_phrase(monkeypatch):
         assert "keys" in out             # user's own words kept
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# _ensure_init retry — a transient blip at session start must not latch the
+# whole session into no-op memory (regression: the old _init_attempted guard).
+# ---------------------------------------------------------------------------
+
+def test_ensure_init_retries_after_transient_failure(monkeypatch):
+    import asyncio
+    import sys
+    import types
+
+    mod = _load()
+    calls = {"n": 0}
+
+    class _Peer:
+        def __init__(self, pid): self.id = pid
+
+    class _SessAio:
+        async def add_messages(self, *a, **k): return None
+
+    class _Session:
+        def __init__(self, sid): self.id = sid; self.aio = _SessAio()
+
+    class _ClientAio:
+        async def peer(self, pid):
+            calls["n"] += 1
+            if calls["n"] == 1:      # first ever peer call fails (honcho briefly down)
+                raise RuntimeError("Connection error: All connection attempts failed")
+            return _Peer(pid)
+        async def session(self, sid): return _Session(sid)
+
+    class _Client:
+        def __init__(self, **k): self.aio = _ClientAio()
+
+    fake = types.ModuleType("honcho")
+    fake.Honcho = _Client
+    fake.MessageCreateParams = lambda **k: types.SimpleNamespace(**k)
+    monkeypatch.setitem(sys.modules, "honcho", fake)
+    monkeypatch.setenv("HONCHO_API_KEY", "k")
+    monkeypatch.setattr(mod.HonchoMemoryProvider, "is_available", lambda self: True)
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock["t"])
+
+    p = mod.HonchoMemoryProvider()
+
+    async def run():
+        p.initialize("s1")
+        await p._ensure_init()                       # attempt 1 → fails
+        assert p._session is None
+        await p._ensure_init()                       # within backoff → suppressed
+        assert p._session is None and calls["n"] == 1
+        clock["t"] += mod._INIT_RETRY_BACKOFF_S + 1  # past backoff → retry
+        await p._ensure_init()
+        assert p._session is not None                # recovered mid-session
+        assert p._peer_user.id == "ulrich"
+
+    asyncio.run(run())

@@ -34,11 +34,18 @@ import asyncio
 import importlib.util
 import logging
 import os
+import time
 from typing import Optional
 
 from tools.memory_providers import MemoryProvider
 
 logger = logging.getLogger("jarvis.memory.honcho")
+
+# After a FAILED lazy init, wait this long before retrying — so a transient
+# honcho blip (container restart, network flap) at session start does not
+# silently no-op memory for the WHOLE session, while a genuine outage still
+# only retries occasionally instead of every turn.
+_INIT_RETRY_BACKOFF_S = 30.0
 
 # Cap on how many working-representation conclusions to pull per turn — bounds
 # the injected block. No ``search_query`` is passed, so the call is a plain read
@@ -110,7 +117,8 @@ class HonchoMemoryProvider(MemoryProvider):
         self._peer_agent: Optional[object] = None   # Peer for "jarvis"
         self._session: Optional[object] = None       # Session handle
         self._session_id: Optional[str] = None       # set by initialize()
-        self._init_attempted: bool = False           # don't hammer a failing init
+        self._init_attempted: bool = False           # an init attempt has run this session
+        self._last_init_attempt: float = 0.0          # monotonic ts of the last attempt (backoff)
 
     # ------------------------------------------------------------------
     # Availability gate
@@ -142,19 +150,30 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         self._session_id = session_id
         self._init_attempted = False
+        self._last_init_attempt = 0.0
         self._client = self._peer_user = self._peer_agent = self._session = None
 
     async def _ensure_init(self) -> None:
         """Lazily build the client + resolve handles on first async use.
 
-        Idempotent (returns immediately once a session handle exists), runs at
-        most once per session even on failure (``_init_attempted`` guard), and
+        Idempotent (returns immediately once a session handle exists) and
         swallows every error — on failure the handles stay None and callers
         no-op. Runs inside the caller's event loop, so no asyncio.run.
+
+        A FAILED attempt is retried after ``_INIT_RETRY_BACKOFF_S`` rather than
+        latched for the whole session: a transient honcho blip (container
+        restart, network flap) at session start must not permanently disable
+        memory (sync + recall + working representation) until the next restart.
+        A refused loopback connection fails fast, and the per-turn caller wraps
+        this in its own 1.5 s timeout, so retrying stays cheap.
         """
-        if self._session is not None or self._init_attempted:
+        if self._session is not None:
+            return
+        now = time.monotonic()
+        if self._init_attempted and (now - self._last_init_attempt) < _INIT_RETRY_BACKOFF_S:
             return
         self._init_attempted = True
+        self._last_init_attempt = now
         if not self.is_available() or not self._session_id:
             return
         try:
@@ -182,14 +201,22 @@ class HonchoMemoryProvider(MemoryProvider):
                 base_url or "api.honcho.dev",
             )
         except Exception as exc:  # noqa: BLE001 — never surface into a turn
-            logger.warning("[honcho] init failed — recall/sync will no-op: %s", exc)
-            self._client = self._peer_user = self._peer_agent = self._session = None
+            logger.warning(
+                "[honcho] init failed — recall/sync no-op, retry in %.0fs: %s",
+                _INIT_RETRY_BACKOFF_S, exc,
+            )
+            # Don't clobber a concurrently-successful build: if another
+            # _ensure_init (e.g. an off-turn sync while this attempt hung past
+            # the backoff) already set the handles, leave them intact.
+            if self._session is None:
+                self._client = self._peer_user = self._peer_agent = None
 
     def end_session(self) -> None:
         """Best-effort cleanup — clear handles so stale refs don't linger."""
         self._client = self._peer_user = self._peer_agent = self._session = None
         self._session_id = None
         self._init_attempted = False
+        self._last_init_attempt = 0.0
         logger.debug("[honcho] session handles cleared")
 
     # ------------------------------------------------------------------
