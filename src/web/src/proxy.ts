@@ -215,6 +215,10 @@ const SELF_AUTH_GET_PATTERNS: RegExp[] = [
   // better-auth session OR the voice-agent proxy-JWT service token
   // (verifyProxyToken, sub === "voice-agent" mandatory). Mirrors the POST entry.
   /^\/api\/voice-memory$/,
+  // Voice-agent web search (research in voice mode). Self-auths in-handler
+  // (session OR the voice-agent proxy-JWT service token); proxies to the
+  // internal SearXNG the host-networked agent can't reach directly.
+  /^\/api\/voice-search$/,
 ]
 
 // Host header allowlist (DNS-rebinding defense, parallel to the bridge

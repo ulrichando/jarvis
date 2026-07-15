@@ -49,10 +49,39 @@ export async function POST(req: Request): Promise<NextResponse> {
       );
     }
 
+    // Optional body: { conversationId?, model? }. conversationId = the chat the
+    // phone opened voice from, so the agent seeds THAT conversation's history
+    // (#15); model = the user's Settings voice-model pick (#19). Both ride the
+    // participant metadata, which the agent reads on join. Standalone voice (or
+    // an old client) sends neither → empty metadata → default behaviour.
+    let conversationId: string | undefined;
+    let model: string | undefined;
+    try {
+      const body = (await req.json()) as { conversationId?: unknown; model?: unknown } | null;
+      if (body && typeof body === "object") {
+        if (typeof body.conversationId === "string" && body.conversationId.trim()) {
+          conversationId = body.conversationId.trim();
+        }
+        if (typeof body.model === "string" && body.model.trim()) {
+          model = body.model.trim();
+        }
+      }
+    } catch {
+      // no / invalid JSON body → standalone voice, no metadata
+    }
+    const metadata =
+      conversationId || model
+        ? JSON.stringify({
+            ...(conversationId ? { conversationId } : {}),
+            ...(model ? { model } : {}),
+          })
+        : undefined;
+
     const room = `voice-${userId}-${randomUUID().slice(0, 8)}`;
     const at = new AccessToken(apiKey, apiSecret, {
       identity: userId,
       ttl: TOKEN_TTL,
+      ...(metadata ? { metadata } : {}),
     });
     at.addGrant({
       roomJoin: true,
