@@ -44,23 +44,35 @@ _session_started: bool = False
 def active_provider() -> Optional[Any]:
     """The configured + available memory provider, or None.
 
-    Returns None when:
-    - JARVIS_MEMORY_PROVIDER is unset
-    - the named provider is not registered
-    - provider.is_available() returns False or raises
+    Local resolution (unchanged): None when JARVIS_MEMORY_PROVIDER is unset,
+    the named provider is not registered, or is_available() is False/raises.
+
+    Cloud wrap (JARVIS_CLOUD_MEMORY=1, pipeline.cloud_memory): the resolved
+    local provider is wrapped in a CloudMemoryProvider that goes cloud-first
+    for recall/sync and falls back to the local provider on any cloud error —
+    the wrap happens HERE (not in the provider registry) because the
+    JARVIS_MEMORY_PROVIDER slot is single-select and selecting a "cloud"
+    backend by name would DISABLE the local-honcho fallback. With the flag on,
+    recall works even when the local provider is unavailable (fallback=None).
+    Flag off → identical return to the pre-cloud behavior.
     """
+    local_prov: Optional[Any] = None
     name = active_provider_name()
-    if not name:
-        return None
-    prov = provider_registry.get_provider(PROVIDER_KIND, name)
-    if prov is None:
-        return None
+    if name:
+        prov = provider_registry.get_provider(PROVIDER_KIND, name)
+        if prov is not None:
+            try:
+                if prov.is_available():
+                    local_prov = prov
+            except Exception:  # noqa: BLE001 — a probe error means not available
+                local_prov = None
     try:
-        if not prov.is_available():
-            return None
-    except Exception:  # noqa: BLE001 — a probe error means not available
-        return None
-    return prov
+        from pipeline import cloud_memory  # lazy — keeps flag-off import surface identical
+        if cloud_memory.enabled():
+            return cloud_memory.get_cloud_provider(fallback=local_prov)
+    except Exception as exc:  # noqa: BLE001 — cloud layer must never break resolution
+        logger.debug("cloud memory provider unavailable: %s", exc)
+    return local_prov
 
 
 # ---------------------------------------------------------------------------

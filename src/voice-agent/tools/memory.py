@@ -42,6 +42,31 @@ def is_available() -> bool:
 # ── Tool handler ──────────────────────────────────────────────────────
 
 
+def _mirror_to_local(action: str, target: str, args: dict) -> None:
+    """Best-effort replay of a SUCCESSFUL cloud write into the local
+    file-backed store, so the offline-fallback files stay warm mid-session
+    (JARVIS_CLOUD_MEMORY=1 only). Replays through the normal file_memory
+    functions — including the procedure ``## name`` heading prepend the
+    local path applies — and swallows every error (the cloud store already
+    holds the truth; a mirror miss only staples the mirror one session
+    behind)."""
+    try:
+        content = args.get("content")
+        old_text = args.get("old_text")
+        if action == "add":
+            if target == "procedure":
+                name = str(args.get("name", "")).strip()
+                if name:
+                    content = f"## {name}\n{content}"
+            file_memory.add(target, content or "")
+        elif action == "replace":
+            file_memory.replace(target, old_text or "", content or "")
+        elif action == "remove":
+            file_memory.remove(target, old_text or "")
+    except Exception as exc:  # noqa: BLE001 — mirror is best-effort
+        logger.debug("[memory] local mirror failed (%s %s): %s", action, target, exc)
+
+
 def _handle_memory(args: dict) -> str:
     """Dispatch a ``memory`` tool call to the file-backed store.
 
@@ -55,6 +80,61 @@ def _handle_memory(args: dict) -> str:
 
     if target not in file_memory.VALID_TARGETS:
         return tool_error(f"Invalid target {target!r}. Use 'memory', 'user', or 'procedure'.", success=False)
+
+    # Cloud-primary path (JARVIS_CLOUD_MEMORY=1, pipeline.cloud_memory):
+    # POST the RAW args to the shared cloud store — the server runs the
+    # identical contract (budgets, scan, kebab-name + procedure-heading
+    # handling) and returns the tool JSON. Contract failures come back
+    # HTTP 200 success:false and are returned VERBATIM (tool results the
+    # model self-corrects on — no local fallback for those); only
+    # transport/HTTP errors (raise) fall through to the unchanged local
+    # path below, so offline behavior is exactly today's. This handler is
+    # sync and runs in asyncio.to_thread (tools/_adapter.py), so the
+    # bounded blocking POST never stalls the voice loop.
+    try:
+        from pipeline import cloud_memory
+        _cloud_on = cloud_memory.enabled()
+    except Exception:  # noqa: BLE001 — cloud layer must never break the tool
+        _cloud_on = False
+    # Set on a cloud TRANSPORT failure (post_memory_tool raised) for a write
+    # action: after the local fallback below succeeds, the RAW args are
+    # journaled (cloud_memory.journal_pending_write) so the next online
+    # session replays them BEFORE mirroring — otherwise the snapshot mirror
+    # (which never saw this write) would clobber it (data loss). HTTP-200
+    # success:false contract failures return above and are NEVER journaled —
+    # those are authoritative rejections, not lost writes.
+    _journal_args = None
+    if _cloud_on:
+        try:
+            result = cloud_memory.post_memory_tool(
+                {
+                    "user_id": cloud_memory.user_id(),
+                    "action": action,
+                    "target": target,
+                    "content": content,
+                    "old_text": old_text,
+                    "name": args.get("name"),
+                }
+            )
+            if action != "read" and result.get("success"):
+                _mirror_to_local(action, target, args)
+            msg = result.get("message") or result.get("error")
+            if msg:
+                logger.info("[memory] cloud %s %s → %s", action, target, msg)
+            return json.dumps(result, ensure_ascii=False)
+        except Exception as e:  # noqa: BLE001 — transport error → local fallback
+            logger.warning("[memory] cloud write failed (%s); falling back to local", e)
+            if action in ("add", "replace", "remove"):
+                # Capture the RAW tool args NOW — the local 'add' path below
+                # mutates `content` for procedures (## heading prepend); the
+                # cloud contract wants the raw name + content.
+                _journal_args = {
+                    "action": action,
+                    "target": target,
+                    "content": content,
+                    "old_text": old_text,
+                    "name": args.get("name"),
+                }
 
     if action == "add":
         if not content:
@@ -91,6 +171,18 @@ def _handle_memory(args: dict) -> str:
         msg = result.get("message") or result.get("error")
         if msg:
             logger.info("[memory] %s %s → %s", action, target, msg)
+
+    # Journal-and-replay (see comment at _journal_args above): journal only
+    # writes the LOCAL store actually accepted — a local contract failure
+    # (budget / scan / no-match) means nothing landed anywhere, so there is
+    # nothing to lose and nothing to replay.
+    if _journal_args is not None and isinstance(result, dict) and result.get("success"):
+        try:
+            from pipeline import cloud_memory
+            cloud_memory.journal_pending_write(_journal_args)
+        except Exception as exc:  # noqa: BLE001 — journaling must never break the tool
+            logger.warning("[memory] could not journal offline cloud write: %s", exc)
+
     return json.dumps(result, ensure_ascii=False)
 
 
