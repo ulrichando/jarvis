@@ -36,7 +36,7 @@ export async function ensureWebSchema(): Promise<void> {
       sql`ALTER TABLE web.conversations ALTER COLUMN change_seq SET DEFAULT nextval('web.conversation_change_seq')`,
     );
     await db.execute(
-      sql`UPDATE web.conversations SET change_seq = nextval('web.conversation_change_seq') WHERE change_seq IS NULL`,
+      sql`UPDATE web.conversations SET change_seq = nextval('web.conversation_change_seq') WHERE change_seq IS NULL OR change_seq = 0`,
     );
     await db.execute(
       sql`CREATE UNIQUE INDEX IF NOT EXISTS conversations_change_seq_idx ON web.conversations (change_seq)`,

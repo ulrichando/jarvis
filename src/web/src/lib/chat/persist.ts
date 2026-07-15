@@ -1,7 +1,26 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { UIMessage } from "ai";
 import { db, persistenceEnabled, schema } from "@/lib/db";
+import { ensureWebSchema } from "@/lib/db/ensure-schema";
 import { estimateCostUsd } from "@/lib/ai/pricing";
+
+/**
+ * Bump a conversation's updatedAt + change_seq — the latter is the mobile-sync
+ * pull cursor, so a web-authored turn/edit becomes visible to the phone's
+ * `?since=` slice. ensureWebSchema (no-op after boot) guarantees the sequence
+ * exists before nextval so this never breaks the chat path on a cold process.
+ */
+async function touchConversation(conversationId: string) {
+  if (!db) return;
+  await ensureWebSchema();
+  await db
+    .update(schema.conversations)
+    .set({
+      updatedAt: new Date(),
+      changeSeq: sql`nextval('web.conversation_change_seq')`,
+    })
+    .where(eq(schema.conversations.id, conversationId));
+}
 
 export const LOCAL_USER_ID = "00000000-0000-0000-0000-000000000001";
 export const LOCAL_USER_EMAIL = "local@jarvis";
@@ -96,10 +115,7 @@ export async function saveUserMessage({
     role: "user",
     content: message.parts,
   });
-  await db
-    .update(schema.conversations)
-    .set({ updatedAt: new Date() })
-    .where(eq(schema.conversations.id, conversationId));
+  await touchConversation(conversationId);
 }
 
 export async function saveAssistantMessage({
@@ -130,10 +146,7 @@ export async function saveAssistantMessage({
       stopReason,
     })
     .returning({ id: schema.messages.id });
-  await db
-    .update(schema.conversations)
-    .set({ updatedAt: new Date() })
-    .where(eq(schema.conversations.id, conversationId));
+  await touchConversation(conversationId);
   return row?.id ?? null;
 }
 

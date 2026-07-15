@@ -202,6 +202,11 @@ const SELF_AUTH_GET_PATTERNS: RegExp[] = [
   // (a dedicated shared secret, NOT a user session). Deployed instances behind
   // Cloudflare Access must also exclude this path (like /api/bridge/*).
   /^\/api\/scheduled\/voice-pending$/,
+  // Two-way mobile sync — the web→phone pull leg. The Android SyncWorker GETs
+  // changed conversations + their messages with a per-user bridge token;
+  // requireUserIdOrSharedLocal scopes both to that user. GET-only (push is POST).
+  /^\/api\/sync\/conversations$/,
+  /^\/api\/sync\/conversations\/[^/]+\/messages$/,
   // Scheduled-task LIST for the JARVIS voice `scheduled` tool. Self-auths
   // in-handler (resolveScheduledCaller: session OR JARVIS_SCHEDULED_VOICE_TOKEN).
   // GET-only — create/edit/delete stay session-only behind the shared gate.
