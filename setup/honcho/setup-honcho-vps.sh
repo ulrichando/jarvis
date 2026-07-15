@@ -61,7 +61,8 @@ if [ -d "$HONCHO_DIR/.git" ]; then
 else
   log "cloning honcho server ($HONCHO_REF) -> $HONCHO_DIR"
   git clone --depth 1 --branch "$HONCHO_REF" https://github.com/plastic-labs/honcho.git "$HONCHO_DIR" \
-    || git clone https://github.com/plastic-labs/honcho.git "$HONCHO_DIR" \
+    || { git clone https://github.com/plastic-labs/honcho.git "$HONCHO_DIR" \
+         && git -C "$HONCHO_DIR" checkout "$HONCHO_REF"; } \
     || fail "git clone failed"
 fi
 cd "$HONCHO_DIR" || fail "cannot cd $HONCHO_DIR"
@@ -90,6 +91,11 @@ LOG_LEVEL=INFO
 AUTH_USE_AUTH=false
 DB_CONNECTION_URI=postgresql+psycopg://postgres:postgres@database:5432/postgres
 LLM_OPENAI_API_KEY=${KEY}
+# v3.0.9's deriver won't claim a representation work unit until >=1024 unprocessed
+# tokens accumulate, and v3.0.9 has NO age-based flush (added post-v3.0.9, #826) —
+# so short voice turns ingest but never derive, and recall stays empty (issue #494).
+# Flushing forces the deriver to process partial batches. REQUIRED at this pin.
+DERIVER_FLUSH_ENABLED=true
 EOF
   log ".env written ($HONCHO_DIR/.env, chmod 600)"
 else
