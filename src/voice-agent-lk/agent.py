@@ -39,6 +39,7 @@ from livekit.agents import (
     JobProcess,
     WorkerOptions,
     cli,
+    function_tool,
     metrics,
 )
 from livekit.agents.llm import ChatContext
@@ -101,17 +102,19 @@ _post_lock = asyncio.Lock()
 _cloud_failure_logged = False
 
 
-def _log_cloud_failure(what: str, err: BaseException) -> None:
+def _log_cloud_failure(
+    what: str, err: BaseException, fallback: str = "using local file"
+) -> None:
     global _cloud_failure_logged
     if not _cloud_failure_logged:
         _cloud_failure_logged = True
         logger.error(
-            "[memory] cloud %s failed (%s); using local file — "
+            "[memory] cloud %s failed (%s); %s — "
             "check JARVIS_PROXY_JWT_SECRET matches the web app",
-            what, err,
+            what, err, fallback,
         )
     else:
-        logger.warning("[memory] cloud %s failed (%s); using local file", what, err)
+        logger.warning("[memory] cloud %s failed (%s); %s", what, err, fallback)
 
 
 def _user_id_from_room(room_name: str) -> str | None:
@@ -224,6 +227,151 @@ def _append_turn(user_id: str, role: str, text: str) -> None:
         _append_turn_file(user_id, role, text)
 
 
+# ── Curated memory (USER / MEMORY / PROCEDURE stores) ──────────────────────
+# Cloud port of the local file-backed curated-memory stack
+# (src/voice-agent/pipeline/file_memory.py + tools/memory.py). The stores live
+# in the web app's Postgres behind /api/memory; the full contract (char
+# budgets, overflow rules, injection scan, dedup, rendering) is enforced
+# server-side. This side only (a) fetches the rendered snapshot ONCE at
+# session start and freezes it into the system prompt (prompt-cache
+# stability — a mid-session write persists immediately but only appears
+# next session, matching the local FROZEN-snapshot design), and (b) exposes
+# the 'memory' function tool that POSTs deliberate writes to the same API.
+
+MEMORY_TOOL_SCHEMA = {
+    "name": "memory",
+    "description": (
+        "Save or update durable information that survives across sessions. "
+        "Memory is injected into your system prompt at the start of every "
+        "session, so keep entries compact and focused on facts that will "
+        "still matter later.\n\n"
+        "WHEN TO SAVE (proactively — don't wait to be asked):\n"
+        "- The user corrects you or says 'remember this' / 'don't do that again'\n"
+        "- They share a preference, habit, or personal detail (name, role, "
+        "timezone, how they like replies)\n"
+        "- You learn a stable fact about their work or environment that will be "
+        "useful again\n"
+        "- They ask you to 'save this process' or 'remember how to X' — "
+        "store as target='procedure' with a kebab-case name and numbered steps\n\n"
+        "THREE STORES (the 'target'):\n"
+        "- 'user': who the user is — role, background, preferences, "
+        "communication style, pet peeves.\n"
+        "- 'memory': your own notes — environment facts, project "
+        "conventions, tool quirks, lessons learned.\n"
+        "- 'procedure': named multi-step processes the user "
+        "wants to invoke later. Requires 'name' (kebab-case, e.g. "
+        "'deploy-app') and 'content' as a numbered step list.\n\n"
+        "ACTIONS:\n"
+        "- add     — store a new entry (needs 'content'; procedure also needs 'name').\n"
+        "- replace — update an existing entry; 'old_text' is a short unique "
+        "substring identifying it, 'content' is the new text.\n"
+        "- remove  — delete an entry; 'old_text' identifies it.\n"
+        "- read    — list the live entries in a store (use to audit before "
+        "editing).\n\n"
+        "DO save before replying when the user states something durable about "
+        "their life or work — silent, no need to announce it.\n"
+        "DON'T save: code patterns, file paths, git history, debug recipes, "
+        "anything already in your instructions, ephemeral state ('I'm hungry', "
+        "'working on X right now'), or credentials. Write plain assertions, "
+        "never narration ('The user is asking about…')."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["add", "replace", "remove", "read"],
+                "description": "What to do.",
+            },
+            "target": {
+                "type": "string",
+                "enum": ["memory", "user", "procedure"],
+                "description": "Which store: 'user' for the user's profile, 'memory' for your own notes, 'procedure' for named multi-step processes.",
+            },
+            "content": {
+                "type": "string",
+                "description": "The entry text. Required for 'add' and 'replace'. For target='procedure', supply a numbered step list (e.g. '1. step one\\n2. step two').",
+            },
+            "old_text": {
+                "type": "string",
+                "description": "Short unique substring identifying the entry to replace or remove.",
+            },
+            "name": {
+                "type": "string",
+                "description": "Kebab-case identifier (e.g. 'deploy-app'). Required when target='procedure' and action='add'.",
+            },
+        },
+        "required": ["action", "target"],
+        "additionalProperties": False,
+    },
+}
+
+
+async def _load_memory_snapshot(user_id: str) -> str:
+    """Fetch the rendered curated-memory snapshot (the ════-header USER /
+    MEMORY / PROCEDURE blocks) from the web app's cloud store.
+
+    GET {JARVIS_WEB_URL}/api/memory, authed with a service proxy JWT
+    (sub="voice-agent"). Fail-open: on any error/timeout return "" — the
+    session just runs without curated memory (there is no local fallback
+    for this store; the contract lives server-side)."""
+    try:
+        token = proxy_token.mint_from_env(sub="voice-agent")
+        url = f"{WEB_URL}/api/memory"
+        async with aiohttp.ClientSession(timeout=_MEMORY_HTTP_TIMEOUT) as http:
+            async with http.get(
+                url,
+                params={"user_id": user_id},
+                headers={"Authorization": f"Bearer {token}"},
+            ) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"HTTP {resp.status}")
+                data = await resp.json()
+        return str(data.get("snapshot_text") or "")
+    except Exception as e:
+        _log_cloud_failure(
+            "memory snapshot load", e, fallback="session runs without curated memory"
+        )
+        return ""
+
+
+def _build_memory_tool(user_id: str):
+    """Build the per-session 'memory' function tool, with the user's id bound
+    in the closure (the LLM never supplies it — it can't write to another
+    user's stores). Returns the /api/memory tool JSON verbatim so the model
+    sees {success,target,entries,entry_count,usage,message|error} and can
+    self-correct on a char-budget rejection."""
+
+    @function_tool(raw_schema=MEMORY_TOOL_SCHEMA)
+    async def memory(raw_arguments: dict[str, object]) -> str:
+        payload: dict[str, object] = {"user_id": user_id}
+        for key in ("action", "target", "content", "old_text", "name"):
+            value = raw_arguments.get(key)
+            if value is not None:
+                payload[key] = value
+        try:
+            token = proxy_token.mint_from_env(sub="voice-agent")
+            url = f"{WEB_URL}/api/memory"
+            async with aiohttp.ClientSession(timeout=_MEMORY_HTTP_TIMEOUT) as http:
+                async with http.post(
+                    url,
+                    json=payload,
+                    headers={"Authorization": f"Bearer {token}"},
+                ) as resp:
+                    body = await resp.text()
+                    if resp.status != 200:
+                        raise RuntimeError(f"HTTP {resp.status}: {body[:200]}")
+                    return body
+        except Exception as e:
+            _log_cloud_failure("memory write", e, fallback="write NOT persisted")
+            return json.dumps(
+                {"success": False, "error": f"memory store unreachable: {e}"},
+                ensure_ascii=False,
+            )
+
+    return memory
+
+
 def prewarm(proc: JobProcess) -> None:
     """Load Silero VAD + the whisper model before the first job."""
     proc.userdata["vad"] = silero.VAD.load(
@@ -274,10 +422,18 @@ async def entrypoint(ctx: JobContext) -> None:
     participant = await ctx.wait_for_participant()
     user_id = participant.identity or _user_id_from_room(ctx.room.name)
     history = (await _load_history(user_id)) if user_id else []
+    # Curated memory: fetched ONCE here and frozen into the system prompt for
+    # the whole session (prompt-cache stability). Mid-session `memory` tool
+    # writes persist to the cloud store immediately but only show up in the
+    # NEXT session's snapshot — same design as the local file-backed stack.
+    memory_snapshot = (await _load_memory_snapshot(user_id)) if user_id else ""
     logger.info(
-        "[job] joined room %s (user=%s, %d prior turn(s))",
-        ctx.room.name, user_id, len(history),
+        "[job] joined room %s (user=%s, %d prior turn(s), %d memory chars)",
+        ctx.room.name, user_id, len(history), len(memory_snapshot),
     )
+    instructions = INSTRUCTIONS
+    if memory_snapshot:
+        instructions = f"{INSTRUCTIONS}\n{memory_snapshot}\n"
 
     # Replay recent memory into the chat context so the agent recalls past calls.
     chat_ctx = ChatContext.empty()
@@ -341,7 +497,13 @@ async def entrypoint(ctx: JobContext) -> None:
         metrics.log_metrics(ev.metrics)
 
     await session.start(
-        agent=Agent(instructions=INSTRUCTIONS, chat_ctx=chat_ctx),
+        agent=Agent(
+            instructions=instructions,
+            chat_ctx=chat_ctx,
+            # The memory tool is keyed on user_id in its closure — without an
+            # identity there is nothing safe to bind writes to, so omit it.
+            tools=[_build_memory_tool(user_id)] if user_id else [],
+        ),
         room=ctx.room,
     )
 

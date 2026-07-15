@@ -165,6 +165,10 @@ const SELF_AUTH_POST_PATTERNS: RegExp[] = [
   // (verifyProxyToken, sub === "voice-agent" mandatory). Method-scoped like
   // /api/scheduled/voice-pending — never the blanket SELF_AUTH_PATTERNS.
   /^\/api\/voice-memory$/,
+  // Voice-agent curated memory (the memory tool's add/replace/remove/read).
+  // Same in-handler dual auth as /api/voice-memory (shared
+  // @/lib/voice-service-auth: session OR sub === "voice-agent" proxy JWT).
+  /^\/api\/memory$/,
 ]
 
 // PATCH-only: the REPL bridge's session title sync. Same in-handler
@@ -205,6 +209,9 @@ const SELF_AUTH_GET_PATTERNS: RegExp[] = [
   // better-auth session OR the voice-agent proxy-JWT service token
   // (verifyProxyToken, sub === "voice-agent" mandatory). Mirrors the POST entry.
   /^\/api\/voice-memory$/,
+  // Voice-agent curated-memory snapshot load (session-start prompt injection).
+  // Same in-handler dual auth as /api/voice-memory. Mirrors the POST entry.
+  /^\/api\/memory$/,
 ]
 
 // Host header allowlist (DNS-rebinding defense, parallel to the bridge
