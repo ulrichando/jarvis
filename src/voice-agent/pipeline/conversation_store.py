@@ -156,6 +156,41 @@ def auto_title(session_id: str, title: str, db_path: Path = DEFAULT_DB_PATH) -> 
         return
 
 
+# ── Self-poisoning gate — memory-capability denials ────────────────────
+# The voice-agent-lk incident (fix fa7e7080): a cold-start session with
+# zero prior turns truthfully said "I have no memory", the denial was
+# persisted to the per-user store, then replayed into every later
+# session — teaching the agent to keep denying it remembers. The desktop
+# output rail (sanitizers.denial_detector.install) blanks denials on the
+# LiveKit *inference* stream only — Anthropic/Gemini plugin streams have
+# no _parse_choice hook, so a denial CAN reach the chat item and this
+# store. Gate it here at the choke point instead:
+#   - WRITE  (log_turn): an assistant denial is never persisted.
+#   - READ   (recall_conversation): denial rows already persisted by a
+#     pre-fix build are never replayed into the LLM context.
+# Same recall-hygiene pattern as the pycall on-write filters (see
+# pipeline/chat_ctx.py docstring). USER rows are exempt — the user
+# quoting a denial back ("you said you can't remember") is history,
+# not poison.
+
+
+def _is_assistant_memory_denial(role: str, text: str) -> bool:
+    """True when an ASSISTANT row is a memory-capability denial.
+
+    Reuses the output rail's detector (single source of truth for the
+    denial shapes). Late import keeps this module import-safe/stdlib-only
+    at module scope; a missing detector fails open (store unfiltered)
+    per this module's fire-and-forget philosophy.
+    """
+    if role != "assistant" or not text:
+        return False
+    try:
+        from sanitizers.denial_detector import is_capability_denial
+        return is_capability_denial(text)
+    except Exception:
+        return False
+
+
 # ── Per-turn message logging ───────────────────────────────────────────
 
 def log_turn(
@@ -176,6 +211,12 @@ def log_turn(
     swallowed so the DB can never block voice.
     """
     if not session_id or not text or not text.strip():
+        return
+    if _is_assistant_memory_denial(role, text):
+        logger.warning(
+            "[self-poisoning gate] refused to persist assistant "
+            f"memory-capability denial (session {session_id[:12]}): {text[:120]!r}"
+        )
         return
     try:
         with sqlite3.connect(db_path) as conn:
@@ -414,6 +455,15 @@ def recall_conversation(
             sid_val = session_id
         else:
             title, created, role, text, ts, turn_seq, sid_val, score = row
+        # Self-poisoning gate (read side): never replay a persisted
+        # memory-capability denial into the LLM context — scrubs rows a
+        # pre-gate build already wrote. See _is_assistant_memory_denial.
+        if _is_assistant_memory_denial(role, text):
+            logger.warning(
+                "[self-poisoning gate] dropped persisted denial from "
+                f"recall results: {text[:120]!r}"
+            )
+            continue
         results.append(
             {
                 "session_title": title or "(untitled)",
