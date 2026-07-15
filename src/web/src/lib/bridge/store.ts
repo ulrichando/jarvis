@@ -268,6 +268,27 @@ export function initSchema(db: Database.Database): void {
   } catch {
     /* column already present */
   }
+  // Additive (2026-07-12, Dispatch): a session created via the phone-first
+  // Dispatch composer. dispatch=1 badges it in the /code sidebar; keep_awake +
+  // allow_all_actions persist the two Dispatch toggles. allow_all_actions maps
+  // to permission_mode 'bypassPermissions' at dispatch time; keep_awake is
+  // persisted but enforcement lives on the worker host (see docs/runbook), not
+  // here — the toggle is honest about being best-effort.
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN dispatch INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    /* column already present */
+  }
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN keep_awake INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    /* column already present */
+  }
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN allow_all_actions INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    /* column already present */
+  }
   // Additive (2026-07-04, API tokens): a user-assigned name for a bridge token.
   // NULL = the legacy auto-minted Remote Control token (one per user, kept
   // stable by getOrCreateBridgeToken); non-NULL = a named "API token" the user
@@ -309,6 +330,19 @@ export function initSchema(db: Database.Database): void {
     last_run_at INTEGER,
     next_run_at INTEGER
   );`)
+  // Web Push subscriptions (Dispatch phone notifications). One row per
+  // browser/device endpoint per user; pruned on 404/410 at send time. Genuinely
+  // new → CREATE TABLE (not an ALTER).
+  db.exec(`CREATE TABLE IF NOT EXISTS push_subscriptions (
+    endpoint TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    ua TEXT,
+    created_at INTEGER NOT NULL,
+    last_used_at INTEGER
+  );`)
+  db.exec('CREATE INDEX IF NOT EXISTS push_subscriptions_user ON push_subscriptions(user_id);')
   // FK enforcement is the load-bearing reason CASCADE DELETE works on the
   // `work` table when an environment is deleted. Set explicitly here rather
   // than relying on better-sqlite3's bundled SQLite default.
@@ -908,6 +942,10 @@ export interface SessionRow {
   routine_id: string | null
   worker_spec_json: string | null
   inbound_floor_seq: number
+  last_diff_json: string | null
+  dispatch: number
+  keep_awake: number
+  allow_all_actions: number
 }
 
 /** Persisted container meta — the git proxy scope + cap token live here, so no
@@ -1595,6 +1633,94 @@ export function setSessionRead(
   store.db
     .prepare('UPDATE sessions SET read = ? WHERE session_id = ?')
     .run(read ? 1 : 0, sessionId)
+}
+
+/** Set any of the Dispatch flags on a session (partial — only the keys given
+ *  are written). `dispatch` marks Dispatch-origin (sidebar badge); keep_awake +
+ *  allow_all_actions persist the two Dispatch toggles. */
+export function setSessionDispatch(
+  store: Store,
+  sessionId: string,
+  flags: { dispatch?: boolean; keep_awake?: boolean; allow_all_actions?: boolean },
+): void {
+  const sets: string[] = []
+  const vals: number[] = []
+  if (flags.dispatch !== undefined) {
+    sets.push('dispatch = ?')
+    vals.push(flags.dispatch ? 1 : 0)
+  }
+  if (flags.keep_awake !== undefined) {
+    sets.push('keep_awake = ?')
+    vals.push(flags.keep_awake ? 1 : 0)
+  }
+  if (flags.allow_all_actions !== undefined) {
+    sets.push('allow_all_actions = ?')
+    vals.push(flags.allow_all_actions ? 1 : 0)
+  }
+  if (sets.length === 0) return
+  store.db
+    .prepare(`UPDATE sessions SET ${sets.join(', ')} WHERE session_id = ?`)
+    .run(...vals, sessionId)
+}
+
+/** The user who owns a session (via its environment), or null for orphan/
+ *  ownerless rows. Used to route a Dispatch push to the right subscriptions. */
+export function sessionOwnerUserId(store: Store, sessionId: string): string | null {
+  const row = store.db
+    .prepare(
+      `SELECT e.user_id AS user_id
+         FROM sessions s
+         JOIN environments e ON e.environment_id = s.environment_id
+        WHERE s.session_id = ?`,
+    )
+    .get(sessionId) as { user_id: string | null } | undefined
+  return row?.user_id ?? null
+}
+
+export interface PushSubscriptionRow {
+  endpoint: string
+  user_id: string
+  p256dh: string
+  auth: string
+  ua: string | null
+  created_at: number
+  last_used_at: number | null
+}
+
+/** Insert or refresh a Web Push subscription (endpoint is the PK, so a
+ *  re-subscribe from the same browser updates keys in place). */
+export function upsertPushSubscription(
+  store: Store,
+  sub: { endpoint: string; user_id: string; p256dh: string; auth: string; ua?: string | null },
+): void {
+  store.db
+    .prepare(
+      `INSERT INTO push_subscriptions (endpoint, user_id, p256dh, auth, ua, created_at, last_used_at)
+       VALUES (@endpoint, @user_id, @p256dh, @auth, @ua, @now, @now)
+       ON CONFLICT(endpoint) DO UPDATE SET
+         user_id = excluded.user_id, p256dh = excluded.p256dh,
+         auth = excluded.auth, ua = excluded.ua, last_used_at = excluded.last_used_at`,
+    )
+    .run({
+      endpoint: sub.endpoint,
+      user_id: sub.user_id,
+      p256dh: sub.p256dh,
+      auth: sub.auth,
+      ua: sub.ua ?? null,
+      now: Date.now(),
+    })
+}
+
+/** Remove a subscription by endpoint (unsubscribe, or a dead 404/410 on send). */
+export function deletePushSubscription(store: Store, endpoint: string): void {
+  store.db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').run(endpoint)
+}
+
+/** A user's Web Push subscriptions. */
+export function listPushSubscriptions(store: Store, userId: string): PushSubscriptionRow[] {
+  return store.db
+    .prepare('SELECT * FROM push_subscriptions WHERE user_id = ?')
+    .all(userId) as PushSubscriptionRow[]
 }
 
 export interface SessionGroupRow {

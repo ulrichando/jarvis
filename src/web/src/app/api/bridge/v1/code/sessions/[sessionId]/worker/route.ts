@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getStore } from '@/lib/bridge/db'
 import { findSession, mergeWorkerState } from '@/lib/bridge/store'
 import { authorizeSessionToken } from '@/lib/bridge/authz'
+import { firePushForStatusTransition } from '@/lib/push/fire'
 import { bridgeError } from '@/lib/bridge/errors'
 
 // CCR v2 worker state. CCRClient.initialize() PUTs {worker_status:'idle',
@@ -33,6 +34,11 @@ export async function PUT(
       return bridgeError(409, 'epoch_mismatch', 'Worker epoch is stale')
     }
     mergeWorkerState(store, sessionId, body)
+    // Dispatch phone push on a status transition (done / needs a go-ahead).
+    // Fire-and-forget; gated on dispatch===1 + deduped inside fire.ts.
+    if (typeof body.worker_status === 'string') {
+      firePushForStatusTransition(store, sessionId, body.worker_status)
+    }
     return NextResponse.json({})
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

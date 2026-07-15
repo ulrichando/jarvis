@@ -9,6 +9,7 @@ import {
   setSessionAutofixSha,
   type Store,
 } from "./store";
+import { releaseKeepAwake } from "@/lib/dispatch/keep-awake";
 
 /**
  * One auto-fix-CI pass (the background loop, run by instrumentation's interval
@@ -70,6 +71,7 @@ export async function runAutomergeTick(store: Store): Promise<number> {
       // Merged → the work is done; archive the session (claude.ai/code
       // auto-archives on PR merge). The container is reaped by the idle tick.
       archiveSession(store, s.session_id);
+      releaseKeepAwake(s.session_id); // archived → drop any keep-awake lock
       merged++;
     }
   }

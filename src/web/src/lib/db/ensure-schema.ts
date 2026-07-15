@@ -20,6 +20,29 @@ export async function ensureWebSchema(): Promise<void> {
     await db.execute(
       sql`ALTER TABLE web.conversations ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'chat'`,
     );
+    // One continuous 'voice' conversation per user — backs the find-or-create
+    // in /api/voice-memory so a concurrent racer can't insert a duplicate.
+    await db.execute(
+      sql`CREATE UNIQUE INDEX IF NOT EXISTS conversations_voice_user_uniq ON web.conversations (user_id) WHERE kind = 'voice'`,
+    );
+    // Curated memory stores (user/memory/procedure) for /api/memory — the
+    // cloud port of the local voice agent's file-backed USER.md/MEMORY.md/
+    // PROCEDURES.md. One row per (user_id, kind); the unique index backs the
+    // upsert-then-SELECT-FOR-UPDATE read-modify-write in the route.
+    await db.execute(
+      sql`CREATE TABLE IF NOT EXISTS web.curated_memories (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id uuid NOT NULL REFERENCES web.users(id) ON DELETE CASCADE,
+        kind text NOT NULL,
+        entries jsonb NOT NULL DEFAULT '[]',
+        version integer NOT NULL DEFAULT 1,
+        updated_at timestamp NOT NULL DEFAULT now(),
+        created_at timestamp NOT NULL DEFAULT now()
+      )`,
+    );
+    await db.execute(
+      sql`CREATE UNIQUE INDEX IF NOT EXISTS curated_memories_user_kind_uniq ON web.curated_memories (user_id, kind)`,
+    );
   } catch (err) {
     // Never let a schema-ensure failure take down the route — log and move on.
     // (Re-arm so a transient error retries on the next call.)

@@ -152,10 +152,28 @@ def _handle_session_search(args: dict) -> str:
 
         results = []
         for row in rows:
+            # Self-poisoning gate (read side, mirrors
+            # pipeline.conversation_store._is_assistant_memory_denial):
+            # turn_telemetry.db is a faithful ops log — denials stay in
+            # the DB for debugging — but a persisted memory-capability
+            # denial must never be replayed into the LLM context, or it
+            # teaches JARVIS to keep denying it remembers (the
+            # voice-agent-lk fa7e7080 incident). Redact on read.
+            jarvis_text = row["jarvis_text"]
+            try:
+                from sanitizers.denial_detector import is_capability_denial
+                if jarvis_text and is_capability_denial(jarvis_text):
+                    logger.warning(
+                        "[self-poisoning gate] redacted persisted denial "
+                        "from session_search result: %r", jarvis_text[:120]
+                    )
+                    jarvis_text = ""
+            except Exception:  # noqa: BLE001 — detector missing → unfiltered
+                pass
             results.append({
                 "ts_utc": row["ts_utc"],
                 "user_text": row["user_text"],
-                "jarvis_text": row["jarvis_text"],
+                "jarvis_text": jarvis_text,
                 "route": row["route"],
                 "emotion": row["emotion"],
                 "llm_used": row["llm_used"],

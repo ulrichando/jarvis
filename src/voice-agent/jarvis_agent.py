@@ -1579,6 +1579,19 @@ def _should_sync_memory_item(role: str, text: str) -> bool:
         return False
     if _is_silent():
         return False
+    # Self-poisoning gate (2026-07-14, mirrors the voice-agent-lk fix
+    # fa7e7080 + conversation_store._is_assistant_memory_denial): an
+    # assistant memory-capability denial ("I don't retain information…")
+    # must never be synced to the memory provider — the deriver would
+    # replay it into later sessions, teaching JARVIS to keep denying it
+    # remembers. Deliberately ABOVE the directed-only kill-switch: even
+    # sync-everything mode never syncs a denial. User turns are exempt
+    # (quoting a denial back is history, not poison).
+    if role == "assistant" and sanitizers.denial_detector.is_capability_denial(text):
+        logger.warning(
+            f"[self-poisoning gate] refused to sync assistant memory denial: {text[:120]!r}"
+        )
+        return False
     if not MEMORY_SYNC_DIRECTED_ONLY:
         return True
     if role == "user" and (

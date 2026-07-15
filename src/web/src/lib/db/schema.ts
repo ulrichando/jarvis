@@ -8,6 +8,7 @@ import {
   jsonb,
   boolean,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 // Web-specific tables live in their own Postgres schema so they
@@ -220,6 +221,36 @@ export const usageEvents = pgTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => [index("usage_user_idx").on(table.userId, table.createdAt)],
+);
+
+// ---------------------------------------------------------------------------
+// Curated memory — the cloud port of the local voice agent's file-backed
+// USER.md / MEMORY.md / PROCEDURES.md stores (pipeline/file_memory.py). One
+// row per (user_id, kind); kind ∈ 'user' | 'memory' | 'procedure' (SINGULAR,
+// matching file_memory.py::VALID_TARGETS). Plain text column like
+// conversations.kind — no PG enum, so adding kinds is a TS-only change.
+// `entries` is the ordered entry list (jsonb array of strings); budgets,
+// overflow, and the injection scan live in src/lib/memory/curated.ts and are
+// enforced by /api/memory inside a SELECT ... FOR UPDATE transaction.
+// The (user_id, kind) unique index also lives in ensure-schema.ts for
+// existing production DBs (the web DB is drizzle-push managed).
+// ---------------------------------------------------------------------------
+export const curatedMemories = pgTable(
+  "curated_memories",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    entries: jsonb("entries").notNull().default([]),
+    version: integer("version").notNull().default(1),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("curated_memories_user_kind_uniq").on(table.userId, table.kind),
+  ],
 );
 
 // ---------------------------------------------------------------------------

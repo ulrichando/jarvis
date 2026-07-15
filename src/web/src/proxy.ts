@@ -127,6 +127,7 @@ const SELF_AUTH_PATTERNS: RegExp[] = [
   /^\/api\/bridge\/v1\/routines\/[^/]+$/, //     patch / delete a routine
   /^\/api\/bridge\/v1\/routines\/[^/]+\/run$/, // run a routine now
   /^\/api\/bridge\/v1\/tasks$/, //               dispatch a code task (POST)
+  /^\/api\/bridge\/v1\/dispatch$/, //            phone-first Dispatch task (POST)
   /^\/api\/bridge\/v1\/environments$/, //        list environments (GET)
 ]
 
@@ -159,6 +160,20 @@ const SELF_AUTH_POST_PATTERNS: RegExp[] = [
   // in-handler (resolveScheduledCaller: session OR JARVIS_SCHEDULED_VOICE_TOKEN).
   // Scoped to /run only — the sibling PATCH/DELETE on /[id] stay session-only.
   /^\/api\/scheduled\/[^/]+\/run$/,
+  // Voice-agent cloud conversation memory (turn append). Self-auths in-handler:
+  // better-auth session OR the voice-agent proxy-JWT service token
+  // (verifyProxyToken, sub === "voice-agent" mandatory). Method-scoped like
+  // /api/scheduled/voice-pending — never the blanket SELF_AUTH_PATTERNS.
+  /^\/api\/voice-memory$/,
+  // Voice-agent curated memory (the memory tool's add/replace/remove/read).
+  // Same in-handler dual auth as /api/voice-memory (shared
+  // @/lib/voice-service-auth: session OR sub === "voice-agent" proxy JWT).
+  /^\/api\/memory$/,
+  // Voice-agent semantic recall (honcho dialectic query + turn sync). Same
+  // in-handler dual auth as /api/voice-memory. POST-only — the route has no
+  // GET. The handler is the only thing that talks to the internal honcho API
+  // and fails soft when HONCHO_BASE_URL is unset.
+  /^\/api\/recall$/,
 ]
 
 // PATCH-only: the REPL bridge's session title sync. Same in-handler
@@ -195,6 +210,13 @@ const SELF_AUTH_GET_PATTERNS: RegExp[] = [
   // in-handler (resolveScheduledCaller: session OR JARVIS_SCHEDULED_VOICE_TOKEN).
   // GET-only — create/edit/delete stay session-only behind the shared gate.
   /^\/api\/scheduled$/,
+  // Voice-agent cloud conversation memory (history load). Self-auths in-handler:
+  // better-auth session OR the voice-agent proxy-JWT service token
+  // (verifyProxyToken, sub === "voice-agent" mandatory). Mirrors the POST entry.
+  /^\/api\/voice-memory$/,
+  // Voice-agent curated-memory snapshot load (session-start prompt injection).
+  // Same in-handler dual auth as /api/voice-memory. Mirrors the POST entry.
+  /^\/api\/memory$/,
 ]
 
 // Host header allowlist (DNS-rebinding defense, parallel to the bridge
@@ -486,6 +508,6 @@ export function proxy(req: NextRequest) {
 // internals + static assets (so images/fonts/css aren't redirected to /login).
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|svg|ico|webp|avif|woff|woff2|ttf|otf|css|js|map|txt|xml|json)).*)',
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|svg|ico|webp|avif|woff|woff2|ttf|otf|css|js|map|txt|xml|json|webmanifest)).*)',
   ],
 }

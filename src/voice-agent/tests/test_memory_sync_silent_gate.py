@@ -96,3 +96,31 @@ def test_skips_non_conversation_roles(gate):
 def test_skips_empty_text(gate):
     assert gate._should_sync_memory_item("user", "") is False
     assert gate._should_sync_memory_item("user", "   ") is False
+
+# ── Layer 3: self-poisoning gate (2026-07-14) ───────────────────────
+# Mirrors the voice-agent-lk fa7e7080 fix: an assistant memory-
+# capability denial must never reach the memory provider — the deriver
+# would replay it into later sessions, teaching JARVIS to deny it
+# remembers. Assistant-only; sits ABOVE the directed-only kill-switch.
+
+_DENIAL = (
+    "I'm a conversational AI, I don't retain information between "
+    "conversations, so each session starts fresh."
+)
+
+
+def test_assistant_denial_never_syncs_even_when_addressed(gate, monkeypatch):
+    monkeypatch.setattr(gate, "_last_addressed_interaction", time.monotonic())
+    assert gate._should_sync_memory_item("assistant", _DENIAL) is False
+
+
+def test_assistant_denial_blocked_despite_kill_switch(gate, monkeypatch):
+    monkeypatch.setattr(gate, "MEMORY_SYNC_DIRECTED_ONLY", False)
+    assert gate._should_sync_memory_item("assistant", _DENIAL) is False
+
+
+def test_user_quoting_denial_still_syncs(gate):
+    # User-side text is history, not poison — the vocative still gates.
+    assert gate._should_sync_memory_item(
+        "user", "Jarvis, yesterday you claimed you don't retain information"
+    ) is True

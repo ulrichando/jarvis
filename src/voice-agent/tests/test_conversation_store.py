@@ -341,3 +341,81 @@ def test_recall_conversation_respects_limit(db_path):
 
     results = recall_conversation(query="searchable", db_path=db_path, limit=3)
     assert len(results) <= 3
+
+
+# ── Self-poisoning gate — memory-capability denials ────────────────────
+# The voice-agent-lk regression (fix fa7e7080): a cold-start "I have no
+# memory" reply was persisted, then replayed into every later session —
+# teaching the agent to keep denying it remembers. These tests pin the
+# desktop store's write gate (never persist an assistant denial) and
+# read gate (never replay one a pre-gate build already persisted).
+
+_DENIAL_TEXT = (
+    "I'm a conversational AI, I don't retain information between "
+    "conversations — each time you talk to me, it's a new conversation."
+)
+
+
+def _all_messages(db_path):
+    with sqlite3.connect(db_path) as conn:
+        return list(conn.execute("SELECT role, text FROM messages"))
+
+
+def test_log_turn_never_persists_assistant_denial(db_path):
+    """Write gate: an assistant memory-capability denial is dropped."""
+    sid = "test-denial-write-gate"
+    begin_session(sid, db_path)
+    log_turn(session_id=sid, role="assistant", text=_DENIAL_TEXT,
+             turn_sequence=1, db_path=db_path)
+    assert _all_messages(db_path) == []
+
+
+def test_log_turn_keeps_user_role_denial_text(db_path):
+    """The gate is assistant-only: a user quoting the denial back
+    ("you said you don't retain information") is history, not poison."""
+    sid = "test-denial-user-exempt"
+    begin_session(sid, db_path)
+    log_turn(session_id=sid, role="user", text=_DENIAL_TEXT,
+             turn_sequence=1, db_path=db_path)
+    assert _all_messages(db_path) == [("user", _DENIAL_TEXT)]
+
+
+def test_log_turn_keeps_normal_assistant_reply(db_path):
+    """Honest empties / recall replies still persist (no false positive)."""
+    sid = "test-denial-negative"
+    begin_session(sid, db_path)
+    log_turn(session_id=sid, role="assistant",
+             text="I don't have that yet, sir — want me to remember it now?",
+             turn_sequence=1, db_path=db_path)
+    assert len(_all_messages(db_path)) == 1
+
+
+def test_recall_conversation_filters_poisoned_denial(db_path):
+    """Read gate — THE LiveKit regression: a denial persisted by a
+    pre-gate build (inserted via raw SQL to bypass log_turn) must NOT
+    be replayed by recall, while overlapping benign rows still are."""
+    sid = "test-denial-read-gate"
+    begin_session(sid, db_path)
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO messages (session_id, role, text, turn_sequence, ts) "
+            "VALUES (?, 'assistant', ?, 1, ?)",
+            (sid, _DENIAL_TEXT, ts),
+        )
+        conn.execute(
+            "INSERT INTO messages (session_id, role, text, turn_sequence, ts) "
+            "VALUES (?, 'assistant', ?, 2, ?)",
+            (sid, "We reviewed the information architecture for the "
+                  "conversations page yesterday.", ts),
+        )
+
+    # A memory-shaped recall query whose keywords ("information",
+    # "conversations") match BOTH rows.
+    results = recall_conversation(
+        query="what information did we cover across conversations",
+        db_path=db_path,
+    )
+    texts = [r["text"] for r in results]
+    assert any("information architecture" in t for t in texts)
+    assert all("don't retain" not in t for t in texts)

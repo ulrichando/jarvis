@@ -41,7 +41,8 @@ if [ -d "$HONCHO_DIR/.git" ]; then
 else
   log "cloning honcho server ($HONCHO_REF) -> $HONCHO_DIR"
   git clone --depth 1 --branch "$HONCHO_REF" https://github.com/plastic-labs/honcho.git "$HONCHO_DIR" \
-    || git clone https://github.com/plastic-labs/honcho.git "$HONCHO_DIR" \
+    || { git clone https://github.com/plastic-labs/honcho.git "$HONCHO_DIR" \
+         && git -C "$HONCHO_DIR" checkout "$HONCHO_REF"; } \
     || fail "git clone failed"
 fi
 cd "$HONCHO_DIR" || fail "cannot cd $HONCHO_DIR"
@@ -54,14 +55,26 @@ sed -i "s|127.0.0.1:5432:5432|127.0.0.1:${DB_HOST_PORT}:5432|; \
 
 # 4. .env: LLM key (from the repo .env) + auth off + internal DB URI (write once)
 if [ ! -f .env ]; then
-  KEY=$(grep -m1 "^${LLM_KEY_VAR}=" "$REPO/.env" 2>/dev/null | cut -d= -f2-)
-  [ -z "$KEY" ] && fail "no ${LLM_KEY_VAR} in $REPO/.env (honcho's deriver needs an LLM key)"
+  # Source the deriver LLM key from the first place that has it: the repo .env,
+  # the keys-pull cache (~/.jarvis/keys.env — where it lives on this box), or
+  # the voice-agent .env.
+  KEY=""
+  for f in "$REPO/.env" "$HOME/.jarvis/keys.env" "$REPO/src/voice-agent/.env"; do
+    KEY=$(grep -m1 "^${LLM_KEY_VAR}=" "$f" 2>/dev/null | cut -d= -f2-)
+    [ -n "$KEY" ] && { log "LLM key sourced from $f"; break; }
+  done
+  [ -z "$KEY" ] && fail "no ${LLM_KEY_VAR} in \$REPO/.env, ~/.jarvis/keys.env, or voice-agent/.env (honcho's deriver needs an LLM key)"
   umask 077
   cat > .env <<EOF
 LOG_LEVEL=INFO
 AUTH_USE_AUTH=false
 DB_CONNECTION_URI=postgresql+psycopg://postgres:postgres@database:5432/postgres
 LLM_OPENAI_API_KEY=${KEY}
+# v3.0.9's deriver won't process a representation batch until >=1024 unprocessed
+# tokens accumulate, and v3.0.9 has NO age-based flush (added post-v3.0.9, #826) —
+# so short voice turns ingest but never derive and recall stays empty (issue #494,
+# the exact failure the previous local honcho hit). Flush partial batches.
+DERIVER_FLUSH_ENABLED=true
 EOF
   log ".env written ($HONCHO_DIR/.env, chmod 600)"
 else

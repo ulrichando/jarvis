@@ -44,6 +44,7 @@ type SessionSummary = {
   repo?: string | null;
   group_id?: string | null;
   group_name?: string | null;
+  dispatch?: boolean;
 };
 
 type Group = { group_id: string; name: string };
@@ -80,6 +81,8 @@ export function CodeSidebar({
   onShareSession,
   routinesActive = false,
   onOpenRoutines,
+  dispatchActive = false,
+  onOpenDispatch,
   width = 288,
   onCollapse,
 }: {
@@ -91,6 +94,8 @@ export function CodeSidebar({
   onShareSession?: (id: string) => void;
   routinesActive?: boolean;
   onOpenRoutines?: () => void;
+  dispatchActive?: boolean;
+  onOpenDispatch?: () => void;
   /** Sidebar width in px — fixed, and kept equal to the Home sidebar's 288
    *  so switching shells never shifts the left column. */
   width?: number;
@@ -322,7 +327,11 @@ export function CodeSidebar({
           <Zap className="size-4 shrink-0 text-sidebar-foreground/60" />
           Routines
         </button>
-        <button type="button" className={NAV_BTN}>
+        <button
+          type="button"
+          onClick={onOpenDispatch}
+          className={`${NAV_BTN} ${dispatchActive ? "bg-sidebar-accent/60 text-sidebar-foreground" : ""}`}
+        >
           <Send className="size-4 shrink-0 text-sidebar-foreground/60" />
           <span>Dispatch</span>
           <span className="ml-1 rounded border border-border/60 px-1 py-0.5 text-[9px] leading-none text-sidebar-foreground/50">
@@ -399,6 +408,11 @@ export function CodeSidebar({
                   <span className={`size-1.5 shrink-0 rounded-full ${s.read ? "border border-sidebar-foreground/30" : DOT[s.status]}`} />
                   {s.pinned && <Pin className="size-3 shrink-0 -rotate-45 text-sidebar-foreground/50" />}
                   <span className="truncate">{s.title}</span>
+                  {s.dispatch && (
+                    <span className="ml-1 shrink-0 rounded bg-primary/15 px-1 py-0.5 text-[9.5px] font-medium leading-none text-primary">
+                      Dispatch
+                    </span>
+                  )}
                   {s.group_name && (
                     <span className="ml-1 shrink-0 rounded bg-sidebar-accent/70 px-1 py-0.5 text-[9.5px] leading-none text-sidebar-foreground/55">
                       {s.group_name}

@@ -4,6 +4,7 @@ import { getStore } from '@/lib/bridge/db'
 import { archiveSession, findSession } from '@/lib/bridge/store'
 import { stopContainerSession } from '@/lib/bridge/containers'
 import { bridgeError } from '@/lib/bridge/errors'
+import { releaseKeepAwake } from '@/lib/dispatch/keep-awake'
 
 export async function POST(
   req: Request,
@@ -30,6 +31,7 @@ export async function POST(
       void stopContainerSession(store, sessionId).catch(() => {})
     }
     const result = archiveSession(store, sessionId)
+    releaseKeepAwake(sessionId) // archived task must not hold the sleep lock
     return new NextResponse(null, { status: result === 'already' ? 409 : 204 })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
