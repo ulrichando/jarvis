@@ -3,7 +3,9 @@
 #
 # Polls origin/master; when it moves: ff-only pull → rebuild the src/web compose
 # stack (only when src/web or src/cli changed) → health gate → automatic rollback
-# to the previous SHA on failure. Runs from the repo checkout at /opt/jarvis so
+# to the previous SHA on failure. Also syncs + rebuilds the hand-deployed
+# LiveKit voice worker (/opt/jarvis/voice-agent-lk) when src/voice-agent-lk
+# changed. Runs from the repo checkout at /opt/jarvis so
 # the script self-updates with master; the systemd units are one-time copies
 # (scripts/vps/jarvis-deploy-poll.{service,timer}).
 # Runbook: docs/runbook/deploy-online.md ("Continuous deploy").
@@ -157,6 +159,33 @@ elif git -C "$REPO" diff --name-only "$OLD..$NEW" -- src/voice-agent | grep -q .
   "${COMPOSE[@]}" up -d computer-use >>"$LOG" 2>&1 || rollback
   gate
   docker image prune -f >/dev/null 2>&1 || true
+fi
+
+# LiveKit cloud-voice worker: the deployed worker is a hand-placed copy at
+# $REPO/voice-agent-lk (untracked; own .env + memory/ data dir; NOT part of
+# the src/web compose stack), so the branches above never rebuild it. Sync +
+# rebuild when src/voice-agent-lk changes — without this the web /api routes
+# deploy but the worker keeps running old code and features like cloud voice
+# memory ship quietly inert (PR #234 pre-merge audit). Runs IN ADDITION to
+# the web branch (one push can touch both). Failure notifies but does NOT
+# roll back the web deploy: the old worker image keeps running and the /api
+# routes are fail-soft without it. NOTE: `up -d` recreates the container,
+# which drops any live voice call.
+WORKER_SRC="$REPO/src/voice-agent-lk"
+WORKER_DIR="$REPO/voice-agent-lk"
+if git -C "$REPO" diff --name-only "$OLD..$NEW" -- src/voice-agent-lk | grep -q .; then
+  if [ -d "$WORKER_DIR" ] && [ -d "$WORKER_SRC" ]; then
+    if rsync -a --delete --exclude=.env --exclude='memory/' --exclude='__pycache__/' \
+         "$WORKER_SRC/" "$WORKER_DIR/" >>"$LOG" 2>&1 \
+       && (cd "$WORKER_DIR" && docker compose build >>"$LOG" 2>&1 \
+           && docker compose up -d >>"$LOG" 2>&1); then
+      log "voice-agent-lk worker synced + rebuilt"
+    else
+      notify "jarvis-deploy: WARNING $NEW — voice-agent-lk worker sync/rebuild FAILED (web deploy kept; old worker still running). Fix by hand: rsync -a --delete --exclude=.env --exclude=memory/ $WORKER_SRC/ $WORKER_DIR/ && cd $WORKER_DIR && docker compose build && docker compose up -d"
+    fi
+  else
+    log "src/voice-agent-lk changed but no deployed worker at $WORKER_DIR — skipped"
+  fi
 fi
 
 rm -f "$STATE_DIR/failed-sha"

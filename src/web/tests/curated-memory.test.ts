@@ -309,11 +309,11 @@ describe("isMetaParaphrase — narration reject filter", () => {
 
 // ── Contract module: render format ──────────────────────────────────────────
 describe("renderBlock — ════-header block format", () => {
-  it("matches file_memory.py::_render_block exactly", () => {
+  it("matches file_memory.py::_render_block (user header deliberately user-neutral for the multi-user cloud store)", () => {
     const sep = "═".repeat(46);
     // 19 chars / 2000 → 0%
     expect(renderBlock("user", ["Ulrich runs Pretva."])).toBe(
-      `${sep}\nUSER PROFILE (who Ulrich is) [0% — 19/2,000 chars]\n${sep}\nUlrich runs Pretva.`,
+      `${sep}\nUSER PROFILE (who the user is) [0% — 19/2,000 chars]\n${sep}\nUlrich runs Pretva.`,
     );
     // Two entries joined by the §-delimiter; 3000-cap MEMORY header.
     const content = `First note.${ENTRY_DELIMITER}Second note.`;
@@ -783,7 +783,7 @@ describe("GET /api/memory — rendered snapshot", () => {
 
     const sep = "═".repeat(46);
     expect(snap.user_block).toBe(
-      `${sep}\nUSER PROFILE (who Ulrich is) [0% — 17/2,000 chars]\n${sep}\nUSER-FACT-MARKER.`,
+      `${sep}\nUSER PROFILE (who the user is) [0% — 17/2,000 chars]\n${sep}\nUSER-FACT-MARKER.`,
     );
     expect(snap.memory_block).toContain("MEMORY (your durable notes)");
     expect(snap.procedure_block).toContain(

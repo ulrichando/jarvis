@@ -632,7 +632,11 @@ export function renderBlock(target: MemoryTarget, entries: string[]): string {
   const pct = limit > 0 ? Math.min(100, Math.trunc((current / limit) * 100)) : 0;
   let header: string;
   if (target === "user") {
-    header = `USER PROFILE (who Ulrich is) [${pct}% — ${fmt(current)}/${fmt(limit)} chars]`;
+    // User-neutral on purpose: unlike the single-user local port
+    // (file_memory.py hardcodes "who Ulrich is"), this store is per-user in
+    // a multi-user web DB — a hardcoded name would assert every account's
+    // profile describes the same person.
+    header = `USER PROFILE (who the user is) [${pct}% — ${fmt(current)}/${fmt(limit)} chars]`;
   } else if (target === "procedure") {
     header = `PROCEDURES (named multi-step processes) [${pct}% — ${fmt(current)}/${fmt(limit)} chars]`;
   } else {

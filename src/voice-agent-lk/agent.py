@@ -103,11 +103,14 @@ _post_lock = asyncio.Lock()
 _sync_lock = asyncio.Lock()
 
 # The sync runs fire-and-forget OFF the turn path, so it can afford more
-# room than the 5s turn-adjacent _MEMORY_HTTP_TIMEOUT: on first contact the
-# web route runs up to 4 honcho ensure POSTs before add_messages, which can
-# exceed 5s even when the server ultimately succeeds (a premature client
-# timeout here logs a false "sync failed").
-_SYNC_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=15)
+# room than the 5s turn-adjacent _MEMORY_HTTP_TIMEOUT: on cold first contact
+# the web route's worst case is 4 honcho ensure POSTs (5s server-side timeout
+# each) + add_messages (10s) ≈ 30s even when the server ultimately succeeds.
+# 35s covers that whole budget — a shorter client timeout (the original 15s)
+# aborted while the server was still succeeding and logged a false
+# "sync failed". A longer timeout costs nothing here: the task is off the
+# turn path and serialized only against other syncs via _sync_lock.
+_SYNC_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=35)
 
 # First recall-sync failure per process logs at WARNING, repeats at DEBUG —
 # quieter than the voice-memory path because sync is a best-effort
@@ -150,8 +153,8 @@ def _memory_file(user_id: str) -> Path:
     return MEMORY_DIR / f"{safe}.jsonl"
 
 
-def _load_history_file(user_id: str) -> list[dict]:
-    """Offline fallback: read the recent tail from the local JSONL store."""
+def _read_history_file(user_id: str) -> list[dict]:
+    """Every valid turn in the local JSONL store, in file order."""
     f = _memory_file(user_id)
     if not f.exists():
         return []
@@ -166,7 +169,12 @@ def _load_history_file(user_id: str) -> list[dict]:
             continue
         if obj.get("role") in ("user", "assistant") and obj.get("text"):
             turns.append(obj)
-    return turns[-MAX_HISTORY_TURNS:]
+    return turns
+
+
+def _load_history_file(user_id: str) -> list[dict]:
+    """Offline fallback: read the recent tail from the local JSONL store."""
+    return _read_history_file(user_id)[-MAX_HISTORY_TURNS:]
 
 
 def _append_turn_file(user_id: str, role: str, text: str) -> None:
@@ -184,6 +192,14 @@ async def _load_history(user_id: str) -> list[dict]:
 
     GET {JARVIS_WEB_URL}/api/voice-memory, authed with a service proxy JWT
     (sub="voice-agent"). On any error/timeout, fall back to the local JSONL.
+
+    Upgrade path: a successful GET that returns ZERO turns while a legacy
+    JSONL exists means this box just cut over from the JSONL store — serve
+    the JSONL tail for this session and replay the whole file into the cloud
+    store in the background (one-time: once the cloud store holds any turn,
+    this branch never fires again). Without this, the first empty-200 from
+    the new store would permanently orphan the pre-cutover history with no
+    error anywhere.
     """
     try:
         token = proxy_token.mint_from_env(sub="voice-agent")
@@ -202,10 +218,74 @@ async def _load_history(user_id: str) -> list[dict]:
             for t in data.get("turns", [])
             if t.get("role") in ("user", "assistant") and t.get("text")
         ]
-        return turns[-MAX_HISTORY_TURNS:]
+        if turns:
+            return turns[-MAX_HISTORY_TURNS:]
+        legacy = _read_history_file(user_id)  # full file, not just the tail
+        if legacy:
+            logger.info(
+                "[memory] cloud store empty but legacy JSONL has %d turn(s); "
+                "serving the JSONL tail and backfilling the cloud store",
+                len(legacy),
+            )
+            _start_history_backfill(user_id, legacy)
+            return legacy[-MAX_HISTORY_TURNS:]
+        return []
     except Exception as e:
         _log_cloud_failure("history load", e)
         return _load_history_file(user_id)
+
+
+async def _backfill_history(user_id: str, turns: list[dict]) -> None:
+    """One-time migration: replay a legacy JSONL history into the cloud store.
+
+    Holds _post_lock for the WHOLE batch so the replayed history commits
+    before any live turn from the session that triggered it (asyncio.Lock is
+    FIFO; this task is created at session load, before any turn can fire).
+    POSTs directly instead of via _post_turn — its JSONL-fallback-on-failure
+    would re-append lines the file already holds. Aborts on the first
+    failure: the common failure (first POST) leaves the cloud store still
+    empty, so the untouched JSONL retriggers the backfill next session. The
+    JSONL itself is never modified — it stays the offline fallback store.
+    """
+    posted = 0
+    try:
+        async with _post_lock:
+            token = proxy_token.mint_from_env(sub="voice-agent")
+            url = f"{WEB_URL}/api/voice-memory"
+            async with aiohttp.ClientSession(timeout=_MEMORY_HTTP_TIMEOUT) as http:
+                for turn in turns:
+                    async with http.post(
+                        url,
+                        json={
+                            "role": turn["role"],
+                            "text": turn["text"],
+                            "user_id": user_id,
+                        },
+                        headers={"Authorization": f"Bearer {token}"},
+                    ) as resp:
+                        if resp.status != 200:
+                            raise RuntimeError(f"HTTP {resp.status}")
+                    posted += 1
+        logger.info(
+            "[memory] backfilled %d legacy JSONL turn(s) into the cloud store",
+            posted,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(
+            "[memory] legacy JSONL backfill stopped at %d/%d turn(s) (%s); "
+            "JSONL kept — retries next session only if the cloud store is "
+            "still empty",
+            posted, len(turns), e,
+        )
+
+
+def _start_history_backfill(user_id: str, turns: list[dict]) -> None:
+    """Fire the backfill off the load path, strong-ref'd like other writes."""
+    task = asyncio.create_task(_backfill_history(user_id, turns))
+    _pending.add(task)
+    task.add_done_callback(_pending.discard)
 
 
 async def _post_turn(user_id: str, role: str, text: str) -> None:

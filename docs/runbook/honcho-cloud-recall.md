@@ -57,6 +57,55 @@ only ever holds a derived copy.
   (the setup script copies it into honcho's `.env` for the deriver).
 - ~2 GB free disk for images + the pgvector volume.
 
+## 0. Merge-day deploy — one-time manual steps (PR #234)
+
+The 2026-07 pre-merge audit found three deploy-seam traps that health
+checks + auto-rollback cannot catch. All three need a human once:
+
+**BEFORE the merge lands (on the VPS):**
+
+1. **Clean the dirty tree or ff-only refuses.** `/opt/jarvis` has
+   hand-edits to `src/web/package.json` + `src/web/package-lock.json`
+   (livekit-server-sdk added during the LiveKit P1 bring-up). The PR
+   carries the same dep properly, so:
+   `git -C /opt/jarvis checkout -- src/web/package.json src/web/package-lock.json`
+   Do **NOT** reset `src/web/Caddyfile` — its uncommitted
+   `livekit.0wlan.com` block is load-bearing and not in this PR; upstream
+   it in a follow-up commit so the tree gets clean.
+2. **Recreate `jarvis-honcho` under compose ownership.** The live network
+   was `docker network create`d out-of-band (no compose labels); compose
+   2.40.3 hard-fails `up -d` against it ("found but has incorrect label")
+   → deploy-poll would rollback-loop. Run:
+   `docker network disconnect jarvis-honcho honcho-api-1 && docker network rm jarvis-honcho`
+   The merged web compose then creates the network with proper labels.
+   After the web stack is up, re-attach honcho:
+   `cd /opt/honcho && docker compose up -d` (the override re-joins `api`
+   with the `honcho` alias). During the gap `/api/recall` fails soft
+   (empty recall / no-op sync) — nothing user-facing breaks.
+
+**AFTER the merge deploys (one-time):**
+
+3. **Sync + rebuild the voice worker.** deploy-poll.sh now auto-syncs
+   `/opt/jarvis/voice-agent-lk` when `src/voice-agent-lk` changes — but
+   the deploy that *ships* this PR still runs the pre-merge snapshot of
+   the script (it re-execs from a copy taken before the merge), so the
+   new branch doesn't cover its own arrival. When no voice call is live:
+   ```bash
+   rsync -a --delete --exclude=.env --exclude=memory/ \
+     /opt/jarvis/src/voice-agent-lk/ /opt/jarvis/voice-agent-lk/ \
+     && cd /opt/jarvis/voice-agent-lk \
+     && docker compose build && docker compose up -d
+   ```
+   Optional hardening while you're in the `.env`: set
+   `JARVIS_WEB_URL=http://127.0.0.1:80` explicitly so the dependency on
+   caddy's catch-all `:80 → web:3000` shape is visible.
+4. **Legacy JSONL history migrates itself** — no ops step. The new agent
+   backfills `/data/memory/<user>.jsonl` into `/api/voice-memory` on the
+   first session where the cloud store answers empty (the file is kept as
+   the offline fallback). Verify in the worker logs:
+   `docker logs voice-agent-lk 2>&1 | grep backfilled` →
+   "backfilled N legacy JSONL turn(s) into the cloud store".
+
 ## 1. Bring-up (on the VPS)
 
 ```bash
@@ -183,8 +232,9 @@ first).
   `src/web/.env.production`, recreate `web`, then `docker compose down -v`
   in `/opt/honcho`.
 - **Continuous deploy does NOT touch honcho.** `deploy-poll.sh` only
-  rebuilds the web/cli stacks; honcho is version-pinned and upgraded by
-  hand. To upgrade: `git -C /opt/honcho fetch --tags && git checkout
+  rebuilds the web/cli stacks and (since PR #234) syncs + rebuilds the
+  voice worker on `src/voice-agent-lk` changes; honcho is version-pinned
+  and upgraded by hand. To upgrade: `git -C /opt/honcho fetch --tags && git checkout
   <newtag>`, then **re-verify the two wire shapes most likely to drift**
   before rebuilding — the `{"messages":[...]}` batch wrapper on
   `POST .../sessions/{id}/messages` and the `GET .../context?summary=true
