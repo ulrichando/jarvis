@@ -69,6 +69,11 @@ export async function ensureConversation({
   title?: string;
 }) {
   if (!persistenceEnabled || !db) return null;
+  // This SELECT/INSERT now references conversations.change_seq (added to the
+  // schema for mobile sync), so guarantee the column exists first — otherwise a
+  // cold process whose FIRST request is a chat (scheduled task / voice agent)
+  // 500s on an existing DB that hasn't been touched by a sync/settings route yet.
+  await ensureWebSchema();
   if (userId === LOCAL_USER_ID) await ensureLocalUser();
 
   if (id) {
@@ -308,6 +313,13 @@ export async function upsertConversations(
   const out: Array<{ id: string; changeSeq: number; applied: boolean }> = [];
   for (const r of rows) {
     if (!r?.id || !r?.updatedAt) continue;
+    // Skip an unparseable timestamp rather than inserting an Invalid Date (→ 500).
+    const updatedAt = new Date(r.updatedAt);
+    if (Number.isNaN(updatedAt.getTime())) continue;
+    const createdAt = r.createdAt ? new Date(r.createdAt) : null;
+    // Restrict kind to chat/task on create — never let a client inject 'voice',
+    // which would trip conversations_voice_user_uniq and 500 the whole batch.
+    const kind = r.kind === "task" ? "task" : "chat";
     const applied = await exec
       .insert(schema.conversations)
       .values({
@@ -315,21 +327,23 @@ export async function upsertConversations(
         userId,
         title: r.title ?? "New chat",
         model: r.model ?? "claude-sonnet-4-6",
-        kind: r.kind ?? "chat",
+        kind,
         pinned: r.pinned ?? false,
         archived: r.archived ?? false,
-        ...(r.createdAt ? { createdAt: new Date(r.createdAt) } : {}),
-        updatedAt: new Date(r.updatedAt),
+        ...(createdAt && !Number.isNaN(createdAt.getTime()) ? { createdAt } : {}),
+        updatedAt,
         changeSeq: sql`nextval('web.conversation_change_seq')`,
       })
       .onConflictDoUpdate({
         target: schema.conversations.id,
+        // Only fields the phone actually owns. kind/archived are deliberately
+        // NOT overwritten — the phone doesn't store them, so echoing its
+        // hardcoded "chat"/false would silently strip a server-side task/voice/
+        // archived flag (and orphan voice-memory's find-or-create thread).
         set: {
           title: sql`excluded.title`,
           model: sql`excluded.model`,
-          kind: sql`excluded.kind`,
           pinned: sql`excluded.pinned`,
-          archived: sql`excluded.archived`,
           updatedAt: sql`excluded.updated_at`,
           changeSeq: sql`nextval('web.conversation_change_seq')`,
         },

@@ -52,6 +52,10 @@ export async function GET(req: Request) {
       and(
         eq(schema.conversations.userId, userId),
         gt(schema.conversations.changeSeq, since),
+        // The phone is a chat client — don't sync voice-memory threads, task
+        // sessions, or archived conversations down to it.
+        eq(schema.conversations.kind, "chat"),
+        eq(schema.conversations.archived, false),
       ),
     )
     .orderBy(asc(schema.conversations.changeSeq))
