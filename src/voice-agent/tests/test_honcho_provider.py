@@ -250,3 +250,185 @@ def test_lazy_init_builds_handles_in_async_context(monkeypatch):
         assert p._peer_agent.id == "jarvis"
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# _durable_representation — keep the deriver's reasoned sections, drop the
+# noisy ``## Explicit Observations`` transcript-restatement layer.
+# ---------------------------------------------------------------------------
+
+def test_durable_representation_drops_explicit_only():
+    m = _load()
+    rep = "## Explicit Observations\n[t] ulrich said Wow!\n[t] ulrich has a drink"
+    assert m._durable_representation(rep) == ""
+
+
+def test_durable_representation_keeps_reasoned_sections():
+    m = _load()
+    rep = ("## Explicit Observations\n[t] ulrich said Wow!\n"
+           "## Deductive Observations\n[t] ulrich values verification\n"
+           "## Inductive Observations\n[t] ulrich tests end-to-end")
+    out = m._durable_representation(rep)
+    assert "Wow!" not in out                       # explicit dropped
+    assert "## Deductive Observations" in out
+    assert "ulrich values verification" in out
+    assert "## Inductive Observations" in out
+
+
+def test_durable_representation_keeps_contradictions():
+    m = _load()
+    rep = "## Contradictions\n[t] ulrich earlier said X but now Y"
+    out = m._durable_representation(rep)
+    assert "## Contradictions" in out and "X but now Y" in out
+
+
+def test_durable_representation_empty_and_whitespace():
+    m = _load()
+    assert m._durable_representation("") == ""
+    assert m._durable_representation("   \n  ") == ""
+
+
+# ---------------------------------------------------------------------------
+# recall_context — concurrent context() + working-representation, filtered.
+# ---------------------------------------------------------------------------
+
+def _fake_honcho_with_rep(monkeypatch, rep_text, *, summary="prior summary",
+                          messages=None, rep_raises=False, ctx_raises=False):
+    """Faked honcho SDK: peer.aio.representation returns rep_text (or raises);
+    session.aio.context returns the given summary + messages (or raises)."""
+    import sys
+    import types
+
+    mod = _load()
+
+    class _PeerAio:
+        async def representation(self, **k):
+            if rep_raises:
+                raise RuntimeError("representation endpoint 500")
+            return rep_text
+        async def chat(self, q):  # unused here
+            return ""
+
+    class _Peer:
+        def __init__(self, pid): self.id = pid; self.aio = _PeerAio()
+
+    class _Ctx:
+        def __init__(self):
+            self.summary = types.SimpleNamespace(content=summary) if summary else None
+            self.messages = messages or []
+
+    class _SessAio:
+        async def add_messages(self, *a, **k): return None
+        async def context(self, **k):
+            if ctx_raises:
+                raise RuntimeError("context endpoint 500")
+            return _Ctx()
+
+    class _Session:
+        def __init__(self, sid): self.id = sid; self.aio = _SessAio()
+
+    class _ClientAio:
+        async def peer(self, pid): return _Peer(pid)
+        async def session(self, sid): return _Session(sid)
+
+    class _Client:
+        def __init__(self, api_key=None, base_url=None): self.aio = _ClientAio()
+
+    fake = types.ModuleType("honcho")
+    fake.Honcho = _Client
+    fake.MessageCreateParams = lambda **k: types.SimpleNamespace(**k)
+    monkeypatch.setitem(sys.modules, "honcho", fake)
+    monkeypatch.setenv("HONCHO_API_KEY", "k")
+    monkeypatch.setattr(mod.HonchoMemoryProvider, "is_available", lambda self: True)
+    return mod
+
+
+def test_recall_context_omits_user_model_when_explicit_only(monkeypatch):
+    """Explicit-only representation (today's live state) → no user-model block,
+    but the summary + recent messages still come through."""
+    import asyncio
+    import types
+    rep = "## Explicit Observations\n[t] ulrich said Wow!"
+    msgs = [types.SimpleNamespace(peer_id="ulrich", content="hello there")]
+    mod = _fake_honcho_with_rep(monkeypatch, rep, summary="rolling summary", messages=msgs)
+    p = mod.HonchoMemoryProvider()
+
+    async def run():
+        p.initialize("s1")
+        out = await p.recall_context("q")
+        assert "[user model]" not in out           # explicit noise filtered
+        assert "rolling summary" in out
+        assert "ulrich: hello there" in out
+
+    asyncio.run(run())
+
+
+def test_recall_context_injects_user_model_when_durable(monkeypatch):
+    """Once the deriver produces deductive/inductive conclusions, they inject
+    under [user model] ahead of the summary; the explicit layer stays dropped."""
+    import asyncio
+    rep = ("## Explicit Observations\n[t] ulrich said Wow!\n"
+           "## Deductive Observations\n[t] ulrich values verification")
+    mod = _fake_honcho_with_rep(monkeypatch, rep, summary="sum", messages=[])
+    p = mod.HonchoMemoryProvider()
+
+    async def run():
+        p.initialize("s1")
+        out = await p.recall_context("q")
+        assert out.startswith("[user model]")
+        assert "## Deductive Observations" in out
+        assert "ulrich values verification" in out
+        assert "Wow!" not in out                    # explicit dropped
+        assert "sum" in out                         # summary preserved
+
+    asyncio.run(run())
+
+
+def test_recall_context_degrades_when_representation_raises(monkeypatch):
+    """A representation-endpoint failure must not empty the whole context —
+    it degrades to summary + messages (gather return_exceptions)."""
+    import asyncio
+    import types
+    msgs = [types.SimpleNamespace(peer_id="ulrich", content="hi")]
+    mod = _fake_honcho_with_rep(monkeypatch, "", summary="distinct-summary-42",
+                                messages=msgs, rep_raises=True)
+    p = mod.HonchoMemoryProvider()
+
+    async def run():
+        p.initialize("s1")
+        out = await p.recall_context("q")           # rep 500 must not kill context
+        assert "[user model]" not in out
+        assert "distinct-summary-42" in out and "ulrich: hi" in out
+
+    asyncio.run(run())
+
+
+def test_recall_context_survives_context_failure(monkeypatch):
+    """The mirror case: context() fails while representation() succeeds with
+    durable conclusions — the user model must still inject on its own."""
+    import asyncio
+    rep = "## Deductive Observations\n[t] ulrich values verification"
+    mod = _fake_honcho_with_rep(monkeypatch, rep, ctx_raises=True)
+    p = mod.HonchoMemoryProvider()
+
+    async def run():
+        p.initialize("s1")
+        out = await p.recall_context("q")           # context 500 must not drop the user model
+        assert out.startswith("[user model]")
+        assert "ulrich values verification" in out
+
+    asyncio.run(run())
+
+
+def test_durable_representation_drops_unknown_section():
+    """Allowlist, not blocklist: an unknown/renamed section (future honcho
+    image) is dropped, never injected — fail-safe for a prompt."""
+    m = _load()
+    rep = "## Peer Card\n[t] some new honcho section we don't recognize"
+    assert m._durable_representation(rep) == ""
+
+
+def test_durable_representation_drops_bare_heading():
+    """A durable heading with no bullets is no signal → ""."""
+    m = _load()
+    assert m._durable_representation("## Deductive Observations\n\n") == ""

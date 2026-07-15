@@ -30,6 +30,7 @@ already-async call sites avoids that entirely.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import logging
 import os
@@ -38,6 +39,56 @@ from typing import Optional
 from tools.memory_providers import MemoryProvider
 
 logger = logging.getLogger("jarvis.memory.honcho")
+
+# Cap on how many working-representation conclusions to pull per turn — bounds
+# the injected block. No ``search_query`` is passed, so the call is a plain read
+# (no server-side embedding). Its own sub-timeout keeps a slow/hung honcho from
+# eating the shared 1.5 s turn budget and starving the summary+messages inject.
+_USER_MODEL_MAX_CONCLUSIONS = 12
+_USER_MODEL_TIMEOUT_S = 0.5
+
+# honcho's working-representation markdown is split into sections. The
+# ``Explicit Observations`` layer is a timestamped restatement of the raw
+# transcript — redundant with the ``context`` messages we already inject, and
+# noisy in a prompt. The deductive/inductive/contradiction layers are the
+# deriver's *reasoned* user model — the only part worth injecting. We ALLOWLIST
+# those by heading prefix: fail-safe, so an unknown or renamed section from a
+# future honcho image is dropped, never injected. Until the deriver/dreamer
+# produce durable conclusions the filter yields nothing.
+_DURABLE_REP_SECTIONS = ("deductive", "inductive", "contradiction")
+
+
+def _durable_representation(rep: str) -> str:
+    """Keep only the durable (reasoned) sections of a honcho working
+    representation markdown — the deductive/inductive/contradiction layers —
+    dropping the raw ``## Explicit Observations`` transcript restatement and any
+    unknown section. Returns ``""`` when no durable *content* remains (a bare
+    heading with no bullets counts as nothing).
+
+    >>> _durable_representation("## Explicit Observations\\n[t] said hi")
+    ''
+    >>> _durable_representation("## Explicit Observations (recent)\\n[t] said hi")
+    ''
+    >>> _durable_representation("## Deductive Observations\\n[t] values privacy")
+    '## Deductive Observations\\n[t] values privacy'
+    """
+    if not rep or not rep.strip():
+        return ""
+    kept: list[str] = []
+    keep = False
+    for line in rep.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            keep = stripped[3:].strip().lower().startswith(_DURABLE_REP_SECTIONS)
+            if keep:
+                kept.append(line)
+            continue
+        if keep and stripped:
+            kept.append(line)
+    # Require at least one non-heading line — a bare durable heading is no signal.
+    if not any(not line.strip().startswith("## ") for line in kept):
+        return ""
+    return "\n".join(kept).strip()
 
 
 class HonchoMemoryProvider(MemoryProvider):
@@ -155,29 +206,73 @@ class HonchoMemoryProvider(MemoryProvider):
             return ""
 
     async def recall_context(self, hint: str = "") -> str:
-        """Cheap session-context recall (summary + recent messages).
+        """Cheap session-context recall, enriched with the durable user model.
 
         Used by the gated auto-recall path (``maybe_recall_for_turn``), which
-        wraps it in a hard timeout. Returns a compact text string or ``""``.
+        wraps it in a hard 1.5 s timeout. Returns a compact text string or ``""``.
+
+        Two honcho reads run CONCURRENTLY — ``session.context`` (rolling summary
+        + recent messages) and ``peer.representation`` (the deriver's user model,
+        filtered to durable conclusions by ``_user_model``). The user-model leg
+        carries its OWN sub-timeout, so a slow/hung representation call can't
+        extend the critical path or starve the summary+messages inject (which is
+        the guaranteed floor). Ordered general→specific: user model, then
+        summary, then the last few messages.
         """
         await self._ensure_init()
         if self._session is None:
             return ""
         try:
-            ctx = await self._session.aio.context(summary=True, tokens=512)
+            ctx, user_model = await asyncio.gather(
+                self._session.aio.context(summary=True, tokens=512),
+                self._user_model(),
+                return_exceptions=True,
+            )
             parts: list[str] = []
-            summary = getattr(ctx, "summary", None)
-            if summary is not None and getattr(summary, "content", None):
-                parts.append(summary.content)
-            for msg in (getattr(ctx, "messages", None) or [])[-6:]:
-                peer_id = getattr(msg, "peer_id", "")
-                content = getattr(msg, "content", "")
-                if peer_id and content:
-                    parts.append(f"{peer_id}: {content}")
+            if isinstance(user_model, str) and user_model:
+                parts.append(user_model)
+            if not isinstance(ctx, BaseException) and ctx is not None:
+                summary = getattr(ctx, "summary", None)
+                if summary is not None and getattr(summary, "content", None):
+                    parts.append(summary.content)
+                for msg in (getattr(ctx, "messages", None) or [])[-6:]:
+                    peer_id = getattr(msg, "peer_id", "")
+                    content = getattr(msg, "content", "")
+                    if peer_id and content:
+                        parts.append(f"{peer_id}: {content}")
+            elif isinstance(ctx, BaseException):
+                logger.warning("[honcho] recall_context context() failed: %s", ctx)
             return "\n".join(parts) if parts else ""
         except Exception as exc:  # noqa: BLE001
             logger.warning("[honcho] recall_context failed: %s", exc)
             return ""
+
+    async def _user_model(self) -> str:
+        """honcho working representation, filtered to its durable conclusions.
+
+        Returns the deductive/inductive/contradiction sections (the deriver's
+        *reasoned* user model) under a ``[user model]`` marker, dropping the
+        noisy ``## Explicit Observations`` transcript-restatement layer. Returns
+        ``""`` when the peer handle is missing, the call fails/times out, or no
+        durable conclusions exist yet (the common case until the deriver/dreamer
+        mature). No ``search_query`` → no server-side embedding; a private
+        ``_USER_MODEL_TIMEOUT_S`` sub-budget bounds a slow/hung honcho so it
+        can't eat the shared turn budget.
+        """
+        if self._peer_user is None:
+            return ""
+        try:
+            rep = await asyncio.wait_for(
+                self._peer_user.aio.representation(
+                    max_conclusions=_USER_MODEL_MAX_CONCLUSIONS,
+                ),
+                timeout=_USER_MODEL_TIMEOUT_S,
+            )
+        except Exception as exc:  # noqa: BLE001 — incl. TimeoutError → degrade to ""
+            logger.debug("[honcho] representation fetch failed: %s", exc)
+            return ""
+        durable = _durable_representation(rep if isinstance(rep, str) else "")
+        return f"[user model]\n{durable}" if durable else ""
 
     # ------------------------------------------------------------------
     # Async write path
