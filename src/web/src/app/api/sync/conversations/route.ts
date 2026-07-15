@@ -40,6 +40,12 @@ export async function GET(req: Request) {
       createdAt: sql<string>`(${schema.conversations.createdAt} AT TIME ZONE current_setting('TimeZone'))`,
       updatedAt: sql<string>`(${schema.conversations.updatedAt} AT TIME ZONE current_setting('TimeZone'))`,
       changeSeq: schema.conversations.changeSeq,
+      // The phone skips re-downloading a thread whose count already matches, so
+      // a self-push echo / metadata-only change doesn't re-pull every message.
+      // NB: reference the outer column by its explicit qualified name — drizzle
+      // renders an interpolated ${schema.conversations.id} here as a bare "id",
+      // which Postgres binds to web.messages.id inside the subquery → always 0.
+      messageCount: sql<number>`(SELECT count(*)::int FROM web.messages m WHERE m.conversation_id = web.conversations.id AND m.role IN ('user','assistant'))`,
     })
     .from(schema.conversations)
     .where(
@@ -53,7 +59,7 @@ export async function GET(req: Request) {
 
   const nextSince = rows.length ? Number(rows[rows.length - 1].changeSeq) : since;
   return Response.json({
-    conversations: rows.map((r) => ({ ...r, changeSeq: Number(r.changeSeq) })),
+    conversations: rows.map((r) => ({ ...r, changeSeq: Number(r.changeSeq), messageCount: Number(r.messageCount) })),
     nextSince,
     hasMore: rows.length === limit,
   });

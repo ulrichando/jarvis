@@ -59,11 +59,15 @@ export async function POST(req: Request) {
     }
   }
 
-  // ponytail: no explicit transaction — every write is idempotent, so a partial
-  // failure just gets re-pushed next cycle with no dupes. Add a tx if concurrent
-  // multi-device pushes ever race on the same conversation.
-  const convResults = await upsertConversations(userId, conversations);
-  const msgApplied = await upsertMessages(userId, messages);
+  // One transaction so a message insert and its change_seq bump commit together
+  // — otherwise a mid-batch failure could persist the messages but strand the
+  // cursor bump, and the idempotent retry (all ids conflict) would never re-bump,
+  // hiding those messages from other devices.
+  const { convResults, msgApplied } = await db.transaction(async (tx) => {
+    const convResults = await upsertConversations(userId, conversations, tx);
+    const msgApplied = await upsertMessages(userId, messages, tx);
+    return { convResults, msgApplied };
+  });
 
   return Response.json({
     conversations: convResults,

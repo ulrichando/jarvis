@@ -292,15 +292,23 @@ export type SyncMessageInput = {
  * row). Bumps change_seq on every applied write. Returns per-id apply results
  * so the phone can advance its cursor / know what to re-pull.
  */
+// A drizzle db handle or an in-flight transaction — lets the push route run both
+// upserts in ONE transaction so a message insert and its change_seq bump can't
+// commit apart (which would strand the bump on a mid-batch failure/retry).
+type DbExecutor =
+  | NonNullable<typeof db>
+  | Parameters<Parameters<NonNullable<typeof db>["transaction"]>[0]>[0];
+
 export async function upsertConversations(
   userId: string,
   rows: SyncConversationInput[],
+  exec: DbExecutor = db as DbExecutor,
 ): Promise<Array<{ id: string; changeSeq: number; applied: boolean }>> {
   if (!db || rows.length === 0) return [];
   const out: Array<{ id: string; changeSeq: number; applied: boolean }> = [];
   for (const r of rows) {
     if (!r?.id || !r?.updatedAt) continue;
-    const applied = await db
+    const applied = await exec
       .insert(schema.conversations)
       .values({
         id: r.id,
@@ -345,12 +353,13 @@ export async function upsertConversations(
 export async function upsertMessages(
   userId: string,
   rows: SyncMessageInput[],
+  exec: DbExecutor = db as DbExecutor,
 ): Promise<string[]> {
   if (!db || rows.length === 0) return [];
   const valid = rows.filter((m) => m?.id && m?.conversationId && (m.role === "user" || m.role === "assistant"));
   if (valid.length === 0) return [];
   const convIds = [...new Set(valid.map((m) => m.conversationId))];
-  const owned = await db
+  const owned = await exec
     .select({ id: schema.conversations.id })
     .from(schema.conversations)
     .where(and(inArray(schema.conversations.id, convIds), eq(schema.conversations.userId, userId)));
@@ -358,7 +367,7 @@ export async function upsertMessages(
   const accepted = valid.filter((m) => ownedSet.has(m.conversationId));
   if (accepted.length === 0) return [];
 
-  const inserted = await db
+  const inserted = await exec
     .insert(schema.messages)
     .values(
       accepted.map((m) => ({
@@ -375,10 +384,13 @@ export async function upsertMessages(
     .onConflictDoNothing({ target: schema.messages.id })
     .returning({ id: schema.messages.id });
 
-  // Bump the pull cursor on conversations that actually gained messages.
-  if (inserted.length > 0) {
-    const touched = [...new Set(accepted.map((m) => m.conversationId))];
-    await db
+  // Bump the pull cursor ONLY on conversations that actually gained a row (not
+  // every conversation in the batch) — avoids cursor churn that would make other
+  // devices re-download unchanged threads.
+  const insertedIds = new Set(inserted.map((r) => r.id));
+  const touched = [...new Set(accepted.filter((m) => insertedIds.has(m.id)).map((m) => m.conversationId))];
+  if (touched.length > 0) {
+    await exec
       .update(schema.conversations)
       .set({ changeSeq: sql`nextval('web.conversation_change_seq')` })
       .where(inArray(schema.conversations.id, touched));
