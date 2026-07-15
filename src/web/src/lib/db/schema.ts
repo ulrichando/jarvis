@@ -1,10 +1,11 @@
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import {
   pgSchema,
   text,
   timestamp,
   uuid,
   integer,
+  bigint,
   jsonb,
   boolean,
   index,
@@ -111,6 +112,19 @@ export const conversations = pgTable(
     archived: boolean("archived").notNull().default(false),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    // Monotonic change cursor for two-way mobile sync: bumped (nextval) on
+    // every write to this row (metadata upsert + message append). The actual
+    // column/sequence/unique-index live in ensureWebSchema (drizzle-push has no
+    // migration flow). Model the DB-level sequence default here — NOT `.default(0)`,
+    // which would make a drizzle-kit push emit `SET DEFAULT 0` and clobber the
+    // sequence so every new conversation gets 0 and the 2nd insert trips
+    // conversations_change_seq_idx. As a DB default it stays optional on insert
+    // (Postgres fills it), and a push would emit the matching nextval default.
+    changeSeq: bigint("change_seq", { mode: "number" })
+      .notNull()
+      .default(sql`nextval('web.conversation_change_seq')`),
+    // Soft-delete tombstone (mobile delete sync). Null = live. DDL in ensureWebSchema.
+    deletedAt: timestamp("deleted_at"),
   },
   (table) => [
     index("conversations_user_idx").on(table.userId),
@@ -134,6 +148,8 @@ export const messages = pgTable(
     tokensOut: integer("tokens_out"),
     stopReason: text("stop_reason"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
+    // Soft-delete tombstone (mobile delete sync). Null = live. DDL in ensureWebSchema.
+    deletedAt: timestamp("deleted_at"),
   },
   (table) => [index("messages_conversation_idx").on(table.conversationId)],
 );

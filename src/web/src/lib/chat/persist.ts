@@ -1,7 +1,26 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { UIMessage } from "ai";
 import { db, persistenceEnabled, schema } from "@/lib/db";
+import { ensureWebSchema } from "@/lib/db/ensure-schema";
 import { estimateCostUsd } from "@/lib/ai/pricing";
+
+/**
+ * Bump a conversation's updatedAt + change_seq — the latter is the mobile-sync
+ * pull cursor, so a web-authored turn/edit becomes visible to the phone's
+ * `?since=` slice. ensureWebSchema (no-op after boot) guarantees the sequence
+ * exists before nextval so this never breaks the chat path on a cold process.
+ */
+async function touchConversation(conversationId: string) {
+  if (!db) return;
+  await ensureWebSchema();
+  await db
+    .update(schema.conversations)
+    .set({
+      updatedAt: new Date(),
+      changeSeq: sql`nextval('web.conversation_change_seq')`,
+    })
+    .where(eq(schema.conversations.id, conversationId));
+}
 
 export const LOCAL_USER_ID = "00000000-0000-0000-0000-000000000001";
 export const LOCAL_USER_EMAIL = "local@jarvis";
@@ -50,6 +69,11 @@ export async function ensureConversation({
   title?: string;
 }) {
   if (!persistenceEnabled || !db) return null;
+  // This SELECT/INSERT now references conversations.change_seq (added to the
+  // schema for mobile sync), so guarantee the column exists first — otherwise a
+  // cold process whose FIRST request is a chat (scheduled task / voice agent)
+  // 500s on an existing DB that hasn't been touched by a sync/settings route yet.
+  await ensureWebSchema();
   if (userId === LOCAL_USER_ID) await ensureLocalUser();
 
   if (id) {
@@ -96,10 +120,7 @@ export async function saveUserMessage({
     role: "user",
     content: message.parts,
   });
-  await db
-    .update(schema.conversations)
-    .set({ updatedAt: new Date() })
-    .where(eq(schema.conversations.id, conversationId));
+  await touchConversation(conversationId);
 }
 
 export async function saveAssistantMessage({
@@ -130,10 +151,7 @@ export async function saveAssistantMessage({
       stopReason,
     })
     .returning({ id: schema.messages.id });
-  await db
-    .update(schema.conversations)
-    .set({ updatedAt: new Date() })
-    .where(eq(schema.conversations.id, conversationId));
+  await touchConversation(conversationId);
   return row?.id ?? null;
 }
 
@@ -243,6 +261,211 @@ export async function maybeUpdateLastAssistantMessage({
     .update(schema.messages)
     .set({ content: candidate.parts })
     .where(eq(schema.messages.id, last.id));
+}
+
+// ── Two-way mobile sync — idempotent, phone-owned ids ───────────────────────
+// The phone mints every id (conversation + message) and pushes finalized rows.
+// Conversations are whole-row LWW by updatedAt; messages are append-only union
+// by id. Every applied write bumps the conversation's change_seq (the pull
+// cursor). Callers must have passed the route's IDOR guard.
+
+export type SyncConversationInput = {
+  id: string;
+  title?: string;
+  model?: string;
+  kind?: string;
+  pinned?: boolean;
+  archived?: boolean;
+  createdAt?: string; // ISO
+  updatedAt: string; // ISO — the LWW key
+};
+
+export type SyncMessageInput = {
+  id: string;
+  conversationId: string;
+  role: "user" | "assistant";
+  parts: unknown; // UIMessage parts, stored verbatim into content jsonb
+  clientCreatedAt?: string; // ISO → messages.created_at (intra-conversation order)
+  tokensIn?: number;
+  tokensOut?: number;
+  stopReason?: string | null;
+};
+
+/**
+ * Upsert conversations from a device. Whole-row LWW by updatedAt, guarded so a
+ * stale client can't clobber a newer server row (and can't touch another user's
+ * row). Bumps change_seq on every applied write. Returns per-id apply results
+ * so the phone can advance its cursor / know what to re-pull.
+ */
+// A drizzle db handle or an in-flight transaction — lets the push route run both
+// upserts in ONE transaction so a message insert and its change_seq bump can't
+// commit apart (which would strand the bump on a mid-batch failure/retry).
+type DbExecutor =
+  | NonNullable<typeof db>
+  | Parameters<Parameters<NonNullable<typeof db>["transaction"]>[0]>[0];
+
+export async function upsertConversations(
+  userId: string,
+  rows: SyncConversationInput[],
+  exec: DbExecutor = db as DbExecutor,
+): Promise<Array<{ id: string; changeSeq: number; applied: boolean }>> {
+  if (!db || rows.length === 0) return [];
+  const out: Array<{ id: string; changeSeq: number; applied: boolean }> = [];
+  for (const r of rows) {
+    if (!r?.id || !r?.updatedAt) continue;
+    // Skip an unparseable timestamp rather than inserting an Invalid Date (→ 500).
+    const updatedAt = new Date(r.updatedAt);
+    if (Number.isNaN(updatedAt.getTime())) continue;
+    const createdAt = r.createdAt ? new Date(r.createdAt) : null;
+    // Restrict kind to chat/task on create — never let a client inject 'voice',
+    // which would trip conversations_voice_user_uniq and 500 the whole batch.
+    const kind = r.kind === "task" ? "task" : "chat";
+    const applied = await exec
+      .insert(schema.conversations)
+      .values({
+        id: r.id,
+        userId,
+        title: r.title ?? "New chat",
+        model: r.model ?? "claude-sonnet-4-6",
+        kind,
+        pinned: r.pinned ?? false,
+        archived: r.archived ?? false,
+        ...(createdAt && !Number.isNaN(createdAt.getTime()) ? { createdAt } : {}),
+        updatedAt,
+        changeSeq: sql`nextval('web.conversation_change_seq')`,
+      })
+      .onConflictDoUpdate({
+        target: schema.conversations.id,
+        // Only fields the phone actually owns. kind/archived are deliberately
+        // NOT overwritten — the phone doesn't store them, so echoing its
+        // hardcoded "chat"/false would silently strip a server-side task/voice/
+        // archived flag (and orphan voice-memory's find-or-create thread).
+        set: {
+          title: sql`excluded.title`,
+          model: sql`excluded.model`,
+          pinned: sql`excluded.pinned`,
+          updatedAt: sql`excluded.updated_at`,
+          changeSeq: sql`nextval('web.conversation_change_seq')`,
+        },
+        // LWW + ownership: only overwrite when the client row is strictly newer
+        // AND the existing row is this user's (defense-in-depth vs the route guard).
+        setWhere: sql`excluded.updated_at > ${schema.conversations.updatedAt} and ${schema.conversations.userId} = ${userId}`,
+      })
+      .returning({ id: schema.conversations.id, changeSeq: schema.conversations.changeSeq });
+    if (applied[0]) out.push({ id: applied[0].id, changeSeq: applied[0].changeSeq, applied: true });
+    else out.push({ id: r.id, changeSeq: 0, applied: false }); // LWW-rejected → phone should pull
+  }
+  return out;
+}
+
+/**
+ * Insert pushed messages (append-only union). Only accepts messages whose
+ * conversation is owned by `userId`. `ON CONFLICT (id) DO NOTHING` makes re-push
+ * a no-op. Bumps each touched conversation's change_seq. Returns the ids that
+ * were actually inserted (new to the server).
+ */
+export async function upsertMessages(
+  userId: string,
+  rows: SyncMessageInput[],
+  exec: DbExecutor = db as DbExecutor,
+): Promise<string[]> {
+  if (!db || rows.length === 0) return [];
+  const valid = rows.filter((m) => m?.id && m?.conversationId && (m.role === "user" || m.role === "assistant"));
+  if (valid.length === 0) return [];
+  const convIds = [...new Set(valid.map((m) => m.conversationId))];
+  const owned = await exec
+    .select({ id: schema.conversations.id })
+    .from(schema.conversations)
+    .where(and(inArray(schema.conversations.id, convIds), eq(schema.conversations.userId, userId)));
+  const ownedSet = new Set(owned.map((o) => o.id));
+  const accepted = valid.filter((m) => ownedSet.has(m.conversationId));
+  if (accepted.length === 0) return [];
+
+  const inserted = await exec
+    .insert(schema.messages)
+    .values(
+      accepted.map((m) => ({
+        id: m.id,
+        conversationId: m.conversationId,
+        role: m.role,
+        content: m.parts as UIMessage["parts"],
+        ...(m.clientCreatedAt ? { createdAt: new Date(m.clientCreatedAt) } : {}),
+        tokensIn: m.tokensIn ?? null,
+        tokensOut: m.tokensOut ?? null,
+        stopReason: m.stopReason ?? null,
+      })),
+    )
+    .onConflictDoNothing({ target: schema.messages.id })
+    .returning({ id: schema.messages.id });
+
+  // Bump the pull cursor ONLY on conversations that actually gained a row (not
+  // every conversation in the batch) — avoids cursor churn that would make other
+  // devices re-download unchanged threads.
+  const insertedIds = new Set(inserted.map((r) => r.id));
+  const touched = [...new Set(accepted.filter((m) => insertedIds.has(m.id)).map((m) => m.conversationId))];
+  if (touched.length > 0) {
+    await exec
+      .update(schema.conversations)
+      .set({ changeSeq: sql`nextval('web.conversation_change_seq')` })
+      .where(inArray(schema.conversations.id, touched));
+  }
+  return inserted.map((r) => r.id);
+}
+
+/**
+ * Soft-delete conversations pushed as tombstones from a device. Sets deleted_at
+ * + bumps change_seq so the delete propagates via the pull. Owned-only,
+ * idempotent (skips already-deleted rows).
+ */
+export async function softDeleteConversations(
+  userId: string,
+  ids: string[],
+  exec: DbExecutor = db as DbExecutor,
+): Promise<void> {
+  if (!db || ids.length === 0) return;
+  await exec
+    .update(schema.conversations)
+    .set({ deletedAt: sql`now()`, changeSeq: sql`nextval('web.conversation_change_seq')` })
+    .where(
+      and(
+        inArray(schema.conversations.id, ids),
+        eq(schema.conversations.userId, userId),
+        isNull(schema.conversations.deletedAt),
+      ),
+    );
+}
+
+/**
+ * Soft-delete messages pushed as tombstones. Owned-only (via the parent
+ * conversation), idempotent; bumps each affected conversation's change_seq so
+ * the deletion is picked up by the pull (which excludes deleted messages).
+ */
+export async function softDeleteMessages(
+  userId: string,
+  ids: string[],
+  exec: DbExecutor = db as DbExecutor,
+): Promise<void> {
+  if (!db || ids.length === 0) return;
+  const rows = await exec
+    .select({ id: schema.messages.id, conversationId: schema.messages.conversationId })
+    .from(schema.messages)
+    .innerJoin(schema.conversations, eq(schema.messages.conversationId, schema.conversations.id))
+    .where(
+      and(
+        inArray(schema.messages.id, ids),
+        eq(schema.conversations.userId, userId),
+        isNull(schema.messages.deletedAt),
+      ),
+    );
+  if (rows.length === 0) return;
+  await exec
+    .update(schema.messages)
+    .set({ deletedAt: sql`now()` })
+    .where(inArray(schema.messages.id, rows.map((r) => r.id)));
+  await exec
+    .update(schema.conversations)
+    .set({ changeSeq: sql`nextval('web.conversation_change_seq')` })
+    .where(inArray(schema.conversations.id, [...new Set(rows.map((r) => r.conversationId))]));
 }
 
 export function toUIMessages(
