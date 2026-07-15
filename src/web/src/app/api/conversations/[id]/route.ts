@@ -1,5 +1,6 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
+import { ensureWebSchema } from "@/lib/db/ensure-schema";
 import { toUIMessages } from "@/lib/chat/persist";
 import { requireUserId, Unauthenticated } from "@/lib/auth-helpers";
 
@@ -122,9 +123,16 @@ export async function PATCH(
     );
   }
 
+  // Bump updatedAt + change_seq so the metadata edit is picked up by the
+  // mobile-sync pull cursor (ensureWebSchema guarantees the sequence exists).
+  await ensureWebSchema();
   await db
     .update(schema.conversations)
-    .set(updates)
+    .set({
+      ...updates,
+      updatedAt: new Date(),
+      changeSeq: sql`nextval('web.conversation_change_seq')`,
+    })
     .where(
       and(
         eq(schema.conversations.id, id),

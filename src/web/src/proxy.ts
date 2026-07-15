@@ -174,6 +174,11 @@ const SELF_AUTH_POST_PATTERNS: RegExp[] = [
   // GET. The handler is the only thing that talks to the internal honcho API
   // and fails soft when HONCHO_BASE_URL is unset.
   /^\/api\/recall$/,
+  // Two-way mobile sync — the phone→web push leg. The Android SyncWorker POSTs
+  // its dirty conversations + messages with a per-user bridge token (jbr_);
+  // the handler self-auths via requireUserIdOrSharedLocal and scopes every
+  // write to that user. POST-only (the GET pull routes get their own entries).
+  /^\/api\/sync\/push$/,
 ]
 
 // PATCH-only: the REPL bridge's session title sync. Same in-handler
@@ -206,6 +211,11 @@ const SELF_AUTH_GET_PATTERNS: RegExp[] = [
   // (a dedicated shared secret, NOT a user session). Deployed instances behind
   // Cloudflare Access must also exclude this path (like /api/bridge/*).
   /^\/api\/scheduled\/voice-pending$/,
+  // Two-way mobile sync — the web→phone pull leg. The Android SyncWorker GETs
+  // changed conversations + their messages with a per-user bridge token;
+  // requireUserIdOrSharedLocal scopes both to that user. GET-only (push is POST).
+  /^\/api\/sync\/conversations$/,
+  /^\/api\/sync\/conversations\/[^/]+\/messages$/,
   // Scheduled-task LIST for the JARVIS voice `scheduled` tool. Self-auths
   // in-handler (resolveScheduledCaller: session OR JARVIS_SCHEDULED_VOICE_TOKEN).
   // GET-only — create/edit/delete stay session-only behind the shared gate.
