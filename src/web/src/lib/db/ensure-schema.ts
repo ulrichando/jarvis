@@ -20,6 +20,11 @@ export async function ensureWebSchema(): Promise<void> {
     await db.execute(
       sql`ALTER TABLE web.conversations ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'chat'`,
     );
+    // One continuous 'voice' conversation per user — backs the find-or-create
+    // in /api/voice-memory so a concurrent racer can't insert a duplicate.
+    await db.execute(
+      sql`CREATE UNIQUE INDEX IF NOT EXISTS conversations_voice_user_uniq ON web.conversations (user_id) WHERE kind = 'voice'`,
+    );
   } catch (err) {
     // Never let a schema-ensure failure take down the route — log and move on.
     // (Re-arm so a transient error retries on the next call.)

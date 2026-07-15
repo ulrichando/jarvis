@@ -160,6 +160,11 @@ const SELF_AUTH_POST_PATTERNS: RegExp[] = [
   // in-handler (resolveScheduledCaller: session OR JARVIS_SCHEDULED_VOICE_TOKEN).
   // Scoped to /run only — the sibling PATCH/DELETE on /[id] stay session-only.
   /^\/api\/scheduled\/[^/]+\/run$/,
+  // Voice-agent cloud conversation memory (turn append). Self-auths in-handler:
+  // better-auth session OR the voice-agent proxy-JWT service token
+  // (verifyProxyToken, sub === "voice-agent" mandatory). Method-scoped like
+  // /api/scheduled/voice-pending — never the blanket SELF_AUTH_PATTERNS.
+  /^\/api\/voice-memory$/,
 ]
 
 // PATCH-only: the REPL bridge's session title sync. Same in-handler
@@ -196,6 +201,10 @@ const SELF_AUTH_GET_PATTERNS: RegExp[] = [
   // in-handler (resolveScheduledCaller: session OR JARVIS_SCHEDULED_VOICE_TOKEN).
   // GET-only — create/edit/delete stay session-only behind the shared gate.
   /^\/api\/scheduled$/,
+  // Voice-agent cloud conversation memory (history load). Self-auths in-handler:
+  // better-auth session OR the voice-agent proxy-JWT service token
+  // (verifyProxyToken, sub === "voice-agent" mandatory). Mirrors the POST entry.
+  /^\/api\/voice-memory$/,
 ]
 
 // Host header allowlist (DNS-rebinding defense, parallel to the bridge
