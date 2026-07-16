@@ -151,6 +151,24 @@ class FasterWhisperSTT(stt.STT):
             )
         return self._cpu_model
 
+    def _notify_switched_to_cpu(self, err: Exception) -> None:
+        """One desktop notification at the moment STT permanently drops to CPU.
+
+        Fires exactly once per process (at the sticky switch), so it can't
+        flood. Needed because, once we stop raising the wedge to the framework,
+        the normal provider-error notify path (jarvis_agent._notify_error) is
+        never reached — without this the user gets ZERO signal that speech
+        recognition silently moved onto the slow CPU path. Reuses the stt_gpu
+        classified message so the wording + 'run jarvis-cuda-recover' remedy
+        stay consistent with the surfacing path."""
+        try:
+            from pipeline.provider_errors import classify_provider_error
+            from pipeline.cron_delivery import notify
+            c = classify_provider_error(err, component="stt")
+            notify(c.notify_title, c.notify_body)
+        except Exception:
+            pass  # notify-send absent / headless — the log line is the signal
+
     def _transcribe_sync(self, model, wav: bytes, lang: str | None):
         segments, info = model.transcribe(
             io.BytesIO(wav),
@@ -246,6 +264,16 @@ class FasterWhisperSTT(stt.STT):
                                 self._device = "cpu"
                                 self._compute_type = "int8"  # float16 is GPU-only
                                 self._model = None  # rebuild on CPU next clip
+                                # Signal the user ONCE. After the switch we no
+                                # longer raise the wedge, so the framework's
+                                # notify path never fires — this is the only
+                                # heads-up that STT dropped to CPU + how to
+                                # restore the GPU. (Trade-off: in a rare
+                                # local-PRIMARY + cloud-fallback config this also
+                                # means we stay on CPU instead of cascading to a
+                                # cloud STT rung; acceptable — the live box is
+                                # local-only, and self-healing beats a flood.)
+                                self._notify_switched_to_cpu(e)
                         break
                     raise APIConnectionError(
                         f"faster-whisper local STT failed: {e}"

@@ -243,6 +243,24 @@ def test_sticky_disabled_never_switches_device(stt_with, monkeypatch):
     assert inst._cpu_fake.calls == 5
 
 
+def test_sticky_switch_notifies_user_exactly_once(stt_with, monkeypatch):
+    # Once the session sticks to CPU the wedge no longer surfaces to the
+    # framework's notify path, so the rung must fire the ONE heads-up itself —
+    # exactly once (no per-clip flood), with the stt_gpu wording + remedy.
+    monkeypatch.setenv("JARVIS_LOCAL_STT_GPU_STICKY_AFTER", "3")
+    calls = []
+    import pipeline.cron_delivery as cd
+    monkeypatch.setattr(cd, "notify", lambda title, body: calls.append((title, body)))
+    inst, fake = stt_with([RuntimeError(_CUDA_ERR)] * 9)  # 3 clips of wedges
+    for _ in range(3):
+        _recognize(inst)
+    assert inst._device == "cpu"
+    # Once at the switch (clip 3), NOT once per degraded clip — else this is 3.
+    assert len(calls) == 1
+    assert "GPU" in calls[0][0]                    # stt_gpu title
+    assert "jarvis-cuda-recover" in calls[0][1]    # the remedy is in the body
+
+
 def test_oom_on_cpu_device_surfaces_no_self_fallback(stt_with, monkeypatch):
     # Already on CPU → nothing to degrade to; surface honestly.
     inst, fake = stt_with([RuntimeError(_OOM_ERR)] * 10)
