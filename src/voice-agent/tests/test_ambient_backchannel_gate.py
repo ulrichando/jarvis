@@ -178,3 +178,45 @@ def test_gate_strips_youre_right_opener_in_stream():
 def test_gate_keeps_contentful_agreement():
     chunks = ["You're right that the cloud sync ", "is still catching up."]
     assert "".join(_run(chunks)) == "You're right that the cloud sync is still catching up."
+
+
+# ── network-error voicing decision (2026-07-16, fact-check major-fix) ─────────
+
+def test_lone_network_blip_is_silent():
+    st = [0, 0.0]
+    assert ja._network_error_should_voice(1000.0, st) is False  # 1st = swallow
+
+
+def test_second_network_failure_voices():
+    st = [0, 0.0]
+    ja._network_error_should_voice(1000.0, st)                  # 1st swallowed
+    assert ja._network_error_should_voice(1005.0, st) is True   # 2nd speaks
+
+
+def test_slow_outage_voices_even_when_failures_far_apart():
+    # THE regression the fact-check caught: failures 60s apart (> the old 45s
+    # window) must still escalate to spoken, not be swallowed forever.
+    st = [0, 0.0]
+    assert ja._network_error_should_voice(1000.0, st) is False  # 1st
+    assert ja._network_error_should_voice(1060.0, st) is True   # 2nd, 60s later
+    assert ja._network_error_should_voice(1120.0, st) is True   # keeps voicing
+
+
+def test_isolated_blips_beyond_reset_gap_stay_silent():
+    st = [0, 0.0]
+    assert ja._network_error_should_voice(1000.0, st) is False
+    # a blip long after the quiet gap → streak resets → fresh "first" → silent
+    assert ja._network_error_should_voice(1000.0 + 400.0, st) is False
+
+
+# ── strip edge cases from the fact-check ─────────────────────────────────────
+
+def test_strip_handles_curly_apostrophe():
+    assert ja._strip_sycophant_opener("You’re right — the timer is off.") \
+        == "The timer is off."
+
+
+def test_strip_preserves_hyphen_compound():
+    # 'right-handed' is a compound, not an opener — must not lose "-handed".
+    assert ja._strip_sycophant_opener("You're right-handed, so swap the buttons.") \
+        == "You're right-handed, so swap the buttons."
