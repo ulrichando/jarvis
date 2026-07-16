@@ -253,14 +253,15 @@ def _spoken_and_notify(category: str, provider: str, component: str) -> tuple[st
             f"Network error reaching {provider}{where_sfx} (connection refused / unreachable). Check connectivity; it retries automatically.",
         ),
         "stt_gpu": (
-            "My local speech-to-text hit a GPU error. I'll keep retrying — "
-            "if I keep missing you, the GPU may need a recovery.",
+            "My speech-to-text hit a GPU error, so I've fallen back to CPU "
+            "— a little slower, but I can still hear you.",
             "JARVIS — local speech-to-text GPU error",
-            "Local faster-whisper hit a transient CUDA error (GPU compute "
-            "contention with the local LLM sharing the card) — NOT a cloud "
-            "provider or network issue. It retries automatically; if it "
-            "persists, run bin/jarvis-cuda-recover or set "
-            "JARVIS_LOCAL_STT_DEVICE=cpu.",
+            "Local faster-whisper hit a CUDA error on the GPU — often the CUDA "
+            "context wedging after a suspend/resume, NOT a cloud provider or "
+            "network issue. It falls back to CPU automatically (and sticks to "
+            "CPU if it keeps failing). To restore GPU speed, run "
+            "bin/jarvis-cuda-recover and restart the agent, or set "
+            "JARVIS_LOCAL_STT_DEVICE=cpu to stay on CPU.",
         ),
         "server_error": (
             f"{provider} is having server trouble. It should recover shortly.",

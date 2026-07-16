@@ -981,10 +981,19 @@ def _notify_error(classified, *, min_interval: float = 60.0) -> None:
     if now - _ERR_NOTIFY_TS[0] < min_interval:
         return
     _ERR_NOTIFY_TS[0] = now
+    # Only user-action errors (out of credits / bad key / quota) get 'critical'
+    # urgency — that's resident (never auto-expires) on most daemons, which is
+    # right for "you must do something" but wrong for a transient, auto-healing
+    # blip: a recoverable error at critical urgency piles up dozens of identical
+    # resident toasts over a long failure (the STT-GPU-wedge flood). Recoverable
+    # errors are 'normal' (auto-expire), and the synchronous hint makes repeats
+    # REPLACE the previous one instead of stacking.
+    urgency = "critical" if not getattr(classified, "recoverable", True) else "normal"
     try:
         import subprocess as _sp
         _sp.Popen(
-            ["notify-send", "-u", "critical", "-t", "10000",
+            ["notify-send", "-u", urgency, "-t", "10000",
+             "-h", "string:x-canonical-private-synchronous:jarvis-provider-error",
              classified.notify_title, classified.notify_body],
             stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
         )

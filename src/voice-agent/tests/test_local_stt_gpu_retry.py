@@ -129,28 +129,32 @@ def test_two_blips_still_recover_within_default_budget(stt_with):
     assert getattr(fake, "reloaded", False) is True
 
 
-# ── bounded: a genuinely dead GPU still surfaces honestly ────────────────────
+# ── a wedged GPU degrades to CPU (no longer drops the clip) ──────────────────
 
-def test_persistent_cuda_error_surfaces_after_bounded_retries(stt_with):
-    failures = [RuntimeError(_CUDA_ERR)] * 10
-    inst, fake = stt_with(failures)
-    with pytest.raises(APIConnectionError) as ei:
-        _recognize(inst)
-    # 1 initial + JARVIS_LOCAL_STT_GPU_RETRIES(=2) retries, then SURFACE —
-    # never swallowed forever.
-    assert fake.calls == 3
-    assert "parallel_for failed" in str(ei.value)
-    # The model MUST be dropped for a fresh CUDA context before the final
-    # (surfaced) attempt — else a wedged context outlives the AgentSession.
+def test_persistent_non_oom_cuda_degrades_this_clip_to_cpu(stt_with):
+    # A wedged GPU (invalid device ordinal — the CUDA context lost after a
+    # laptop suspend) exhausts the bounded GPU retries, then transcribes THIS
+    # clip on CPU so the utterance survives instead of being dropped/surfaced.
+    inst, fake = stt_with([RuntimeError(_CUDA_ERR)] * 10)
+    ev = _recognize(inst)
+    assert ev.alternatives[0].text == "hello world"  # CPU fallback text
+    assert fake.calls == 3            # 1 initial + 2 GPU retries, bounded
+    assert inst._cpu_fake.calls == 1  # degraded to CPU
+    assert inst._device == "cuda"     # a single clip < sticky threshold
+    assert inst._gpu_wedge_streak == 1
+    # The model MUST be dropped for a fresh CUDA context before the final GPU
+    # attempt — else a wedged context outlives the reload path.
     assert getattr(fake, "reloaded", False) is True
 
 
 def test_retries_one_reloads_on_first_retry(stt_with):
-    # Boundary: retries=1 → the reload fires on the very first (and only) retry.
+    # Boundary: retries=1 → the reload fires on the very first (and only) retry,
+    # then the exhausted clip degrades to CPU.
     inst, fake = stt_with([RuntimeError(_CUDA_ERR)] * 10, retries="1")
-    with pytest.raises(APIConnectionError):
-        _recognize(inst)
+    ev = _recognize(inst)
+    assert ev.alternatives[0].text == "hello world"
     assert fake.calls == 2
+    assert inst._cpu_fake.calls == 1
     assert getattr(fake, "reloaded", False) is True
 
 
@@ -161,11 +165,14 @@ def test_non_gpu_error_is_not_retried(stt_with):
     assert fake.calls == 1  # no retry for non-transient errors — unchanged path
 
 
-def test_retry_knob_zero_disables_retries(stt_with):
-    inst, fake = stt_with([RuntimeError(_CUDA_ERR)], retries="0")
-    with pytest.raises(APIConnectionError):
-        _recognize(inst)
+def test_retry_knob_zero_disables_gpu_retries_then_cpu_fallback(stt_with):
+    # retries=0 → no GPU re-tries; the first wedge exhausts immediately and the
+    # clip degrades straight to CPU (utterance still survives).
+    inst, fake = stt_with([RuntimeError(_CUDA_ERR)] * 10, retries="0")
+    ev = _recognize(inst)
+    assert ev.alternatives[0].text == "hello world"
     assert fake.calls == 1
+    assert inst._cpu_fake.calls == 1
 
 
 # ── GPU OOM → one-shot CPU degrade (2026-07-11 live incident) ────────────────
@@ -194,14 +201,46 @@ def test_persistent_oom_falls_back_to_cpu_not_fatal(stt_with):
     assert inst._cpu_fake.calls == 1
 
 
-def test_persistent_non_oom_error_still_surfaces_no_cpu_fallback(stt_with):
-    # Part B triggers ONLY for OOM: cudaErrorInvalidDevice does not match
-    # _OOM_ERR_RE, so exhaustion surfaces as APIConnectionError as before.
-    inst, fake = stt_with([RuntimeError(_CUDA_ERR)] * 10)
-    with pytest.raises(APIConnectionError):
+# ── a persistently-wedged GPU sticks to CPU (the flood fix) ──────────────────
+
+def test_non_oom_wedge_sticks_to_cpu_after_threshold(stt_with, monkeypatch):
+    # The flood fix: a GPU that stays wedged clip after clip must stop being
+    # retried. After JARVIS_LOCAL_STT_GPU_STICKY_AFTER wedged clips the session
+    # switches to CPU permanently, so it stops re-hitting the dead GPU and
+    # re-firing the "speech-to-text GPU error" notification every clip.
+    monkeypatch.setenv("JARVIS_LOCAL_STT_GPU_STICKY_AFTER", "3")
+    # 3 clips × (1 initial + 2 retries) = 9 GPU attempts, all wedged.
+    inst, fake = stt_with([RuntimeError(_CUDA_ERR)] * 9)
+    for _ in range(3):
+        ev = _recognize(inst)
+        assert ev.alternatives[0].text == "hello world"  # CPU fallback each clip
+    assert inst._device == "cpu"          # stuck to CPU after the 3rd wedge
+    assert inst._compute_type == "int8"   # float16 is GPU-only
+    assert inst._cpu_fake.calls == 3      # one CPU transcription per wedged clip
+
+
+def test_gpu_success_resets_the_wedge_streak(stt_with, monkeypatch):
+    # A clean GPU clip between wedges clears the streak, so intermittent blips
+    # never accumulate into a spurious sticky-CPU switch.
+    monkeypatch.setenv("JARVIS_LOCAL_STT_GPU_STICKY_AFTER", "3")
+    inst, fake = stt_with([RuntimeError(_CUDA_ERR)] * 3)  # clip 1: 3 wedges
+    _recognize(inst)
+    assert inst._gpu_wedge_streak == 1
+    ev = _recognize(inst)                 # clip 2: queue empty → GPU succeeds
+    assert ev.alternatives[0].text == "hello world"
+    assert inst._gpu_wedge_streak == 0
+    assert inst._device == "cuda"
+
+
+def test_sticky_disabled_never_switches_device(stt_with, monkeypatch):
+    # STICKY_AFTER=0 opts out: every wedged clip still degrades to CPU, but the
+    # device stays cuda (for a box that wants the GPU retried indefinitely).
+    monkeypatch.setenv("JARVIS_LOCAL_STT_GPU_STICKY_AFTER", "0")
+    inst, fake = stt_with([RuntimeError(_CUDA_ERR)] * 30)
+    for _ in range(5):
         _recognize(inst)
-    assert fake.calls == 3
-    assert inst._cpu_fake.calls == 0
+    assert inst._device == "cuda"
+    assert inst._cpu_fake.calls == 5
 
 
 def test_oom_on_cpu_device_surfaces_no_self_fallback(stt_with, monkeypatch):

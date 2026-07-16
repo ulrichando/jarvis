@@ -69,6 +69,23 @@ def _gpu_retries() -> int:
         return 2
 
 
+def _gpu_sticky_after() -> int:
+    """Consecutive wedged clips before the session sticks to CPU (default 3).
+
+    An OOM is VRAM contention that may free, so it keeps retrying the GPU. But
+    a NON-OOM CUDA fault (``invalid device ordinal`` / cuDNN — typically the
+    driver/uvm context wedged after a laptop suspend) does NOT self-heal: every
+    subsequent clip re-hits the dead GPU, drops to CPU, and re-fires the error
+    notification. After this many wedged clips in a row we stop fighting the
+    GPU and run STT on CPU for the rest of the process — a `jarvis-cuda-recover`
+    + agent restart re-arms the GPU. Env-tunable via
+    JARVIS_LOCAL_STT_GPU_STICKY_AFTER (0 disables the sticky switch)."""
+    try:
+        return max(0, int(os.environ.get("JARVIS_LOCAL_STT_GPU_STICKY_AFTER", "3")))
+    except ValueError:
+        return 3
+
+
 class FasterWhisperSTT(stt.STT):
     """Local Whisper (faster-whisper) as a non-streaming livekit STT."""
 
@@ -90,6 +107,7 @@ class FasterWhisperSTT(stt.STT):
         self._model = None  # lazy-loaded WhisperModel
         self._cpu_model = None  # lazy CPU model for the GPU-OOM fallback
         self._load_lock = asyncio.Lock()
+        self._gpu_wedge_streak = 0  # consecutive non-OOM GPU-wedged clips
 
     @property
     def label(self) -> str:
@@ -175,17 +193,27 @@ class FasterWhisperSTT(stt.STT):
                 text, detected = await asyncio.to_thread(
                     self._transcribe_sync, model, wav, lang
                 )
+                self._gpu_wedge_streak = 0  # a clean success clears the streak
                 break
             except Exception as e:  # surface as a chain-cascadable error
                 blob = f"{type(e).__name__} {e}"
                 if attempt >= retries or not _TRANSIENT_GPU_ERR_RE.search(blob):
-                    if _OOM_ERR_RE.search(blob) and self._device != "cpu":
-                        # GPU OOM persists — degrade THIS clip only. Keep
-                        # self._device untouched so the next clip retries
-                        # the GPU (VRAM may have freed).
+                    transient_gpu = (
+                        bool(_TRANSIENT_GPU_ERR_RE.search(blob))
+                        and self._device != "cpu"
+                    )
+                    if transient_gpu:
+                        # A persistent GPU failure with retries exhausted —
+                        # either OOM (VRAM held by the local LLM) or a non-OOM
+                        # wedge (invalid device ordinal / cuDNN, e.g. the CUDA
+                        # context lost after a laptop suspend). Degrade THIS clip
+                        # to CPU so the utterance isn't dropped.
+                        is_oom = bool(_OOM_ERR_RE.search(blob))
+                        kind = "OOM" if is_oom else "wedge"
                         logger.warning(
-                            "[stt.local] GPU OOM persists — transcribing this "
-                            "clip on CPU (slow) so the utterance isn't dropped"
+                            "[stt.local] GPU %s persists — transcribing this "
+                            "clip on CPU (slow) so the utterance isn't dropped",
+                            kind,
                         )
                         try:
                             def _cpu_transcribe():
@@ -193,12 +221,32 @@ class FasterWhisperSTT(stt.STT):
                                     self._ensure_cpu_model(), wav, lang
                                 )
                             text, detected = await asyncio.to_thread(_cpu_transcribe)
-                            break
                         except Exception as cpu_e:
                             raise APIConnectionError(
-                                "faster-whisper local STT failed (GPU OOM; "
+                                f"faster-whisper local STT failed (GPU {kind}; "
                                 f"CPU fallback also failed): {cpu_e}"
                             ) from cpu_e
+                        # OOM may free, so keep the GPU for the next clip. A
+                        # non-OOM wedge does NOT self-heal — after enough clips
+                        # in a row, stick the whole session to CPU so we stop
+                        # re-hitting the dead GPU (and re-firing the notification
+                        # every clip, which is what spammed the desktop). A
+                        # jarvis-cuda-recover + agent restart re-arms the GPU.
+                        if not is_oom:
+                            self._gpu_wedge_streak += 1
+                            sticky_after = _gpu_sticky_after()
+                            if sticky_after and self._gpu_wedge_streak >= sticky_after:
+                                logger.error(
+                                    "[stt.local] GPU wedged %d clips running — "
+                                    "switching this session to CPU. Run "
+                                    "bin/jarvis-cuda-recover and restart the "
+                                    "agent to use the GPU again.",
+                                    self._gpu_wedge_streak,
+                                )
+                                self._device = "cpu"
+                                self._compute_type = "int8"  # float16 is GPU-only
+                                self._model = None  # rebuild on CPU next clip
+                        break
                     raise APIConnectionError(
                         f"faster-whisper local STT failed: {e}"
                     ) from e
