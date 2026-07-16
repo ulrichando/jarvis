@@ -909,19 +909,30 @@ async def entrypoint(ctx: JobContext) -> None:
     def _on_item(ev) -> None:
         item = ev.item
         if getattr(item, "role", None) == "assistant":
-            logger.info("[llm] agent replied: %r", item.text_content)
+            text = item.text_content
+            logger.info("[llm] agent replied: %r", text)
+            interrupted = getattr(item, "interrupted", False)
+            # Publish the FULL reply text up front (data channel, topic
+            # "agent.reply") so the phone can show the whole answer in gray and
+            # light each word to white as the synced TTS transcription reads it
+            # (Claude-style karaoke). Additive + best-effort: if the client
+            # ignores it, nothing changes.
+            if text and not interrupted:
+                task = asyncio.create_task(
+                    ctx.room.local_participant.publish_data(
+                        text.encode("utf-8"), reliable=True, topic="agent.reply"
+                    )
+                )
+                _pending.add(task)
+                task.add_done_callback(_pending.discard)
             # Skip barge-in fragments (interrupted=True): persisting cut-off
             # partials like "Your" would pollute the replayed memory; the
             # follow-up full reply is the turn worth remembering.
-            if (
-                user_id
-                and item.text_content
-                and not getattr(item, "interrupted", False)
-            ):
+            if user_id and text and not interrupted:
                 _append_turn(
                     user_id,
                     "assistant",
-                    item.text_content,
+                    text,
                     session_id=ctx.room.name,
                 )
 
