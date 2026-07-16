@@ -722,9 +722,17 @@ def _build_recall_tool(user_id: str):
 def prewarm(proc: JobProcess) -> None:
     """Load Silero VAD + the whisper model before the first job."""
     proc.userdata["vad"] = silero.VAD.load(
-        # Slightly longer than the default 0.55s — CPU whisper is
-        # finals-only, so premature end-of-speech costs a whole re-turn.
-        min_silence_duration=0.6,
+        # Endpointing: wait ~0.8s of silence before finalizing so a natural
+        # mid-sentence pause doesn't split one utterance into several chat
+        # turns (0.6 chopped continuous speech into fragments). CPU whisper is
+        # finals-only, so premature end-of-speech also costs a whole re-turn.
+        min_silence_duration=0.8,
+        # Require more confident speech to trigger at all — a hands-free mic in
+        # a noisy room otherwise wakes Silero on background audio (default 0.5),
+        # which then hands whisper non-speech to hallucinate on.
+        activation_threshold=0.6,
+        # Ignore sub-250ms blips (a click, a tap, a single cough).
+        min_speech_duration=0.25,
     )
     stt_inst = stt_local.build_stt()
     # Load the ctranslate2 model now so the first utterance doesn't pay
