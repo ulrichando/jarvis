@@ -766,29 +766,41 @@ async def _drain_pending_writes() -> None:
         await asyncio.gather(*list(_pending), return_exceptions=True)
 
 
-async def _resolve_tts_voice(room, participant, default_voice: str, timeout: float = 3.0) -> str:
-    """Voice-mode voice = the phone's selected Edge voice, delivered as the
-    `voice` participant attribute (Android LocalParticipant.updateAttributes) —
-    no token/route change needed. Caught via the room's attribute-changed event
-    (the participant object handed back by wait_for_participant does not reflect
-    later runtime updates), with a check of whatever is already set. Falls back
-    to the server default after `timeout`."""
-    def _voice_of(p):
-        return ((getattr(p, "attributes", None) or {}).get("voice") or "").strip()
+async def _resolve_tts_attrs(
+    room, participant, default_voice: str, default_rate: str = "+0%", timeout: float = 3.0,
+):
+    """Voice-mode voice AND speaking rate = the phone's selected Edge voice and
+    pace, delivered together as the `voice` and `rate` participant attributes
+    (Android LocalParticipant.updateAttributes) — no token/route change needed.
+    Caught via the room's attribute-changed event (the participant object handed
+    back by wait_for_participant does not reflect later runtime updates), with a
+    check of whatever is already set. Falls back to server defaults after
+    `timeout`. Returns (voice, rate)."""
+    def _attrs_of(p):
+        return dict(getattr(p, "attributes", None) or {})
 
-    logger.info("[job] initial attrs=%s", dict(getattr(participant, "attributes", {}) or {}))
-    v = _voice_of(participant)
+    def _pick(attrs):
+        return (attrs.get("voice") or "").strip(), (attrs.get("rate") or "").strip()
+
+    logger.info("[job] initial attrs=%s", _attrs_of(participant))
+    v, r = _pick(_attrs_of(participant))
     if v:
-        return v
+        return v, (r or default_rate)
 
     fut = asyncio.get_event_loop().create_future()
 
     def _on_changed(changed_attributes, changed_participant):
         try:
-            nv = ((changed_attributes or {}).get("voice") or "").strip() or _voice_of(changed_participant)
-            logger.info("[job] attrs changed (%s): voice=%s", getattr(changed_participant, "identity", "?"), nv)
+            # voice + rate are set in one updateAttributes call, so merge the
+            # event payload over whatever is already on the participant.
+            merged = {**_attrs_of(changed_participant), **dict(changed_attributes or {})}
+            nv, nr = _pick(merged)
+            logger.info(
+                "[job] attrs changed (%s): voice=%s rate=%s",
+                getattr(changed_participant, "identity", "?"), nv, nr,
+            )
             if nv and not fut.done():
-                fut.set_result(nv)
+                fut.set_result((nv, nr or default_rate))
         except Exception as e:  # never let a bad event kill the session
             logger.warning("[job] attr handler error: %s", e)
 
@@ -796,7 +808,7 @@ async def _resolve_tts_voice(room, participant, default_voice: str, timeout: flo
     try:
         return await asyncio.wait_for(fut, timeout=timeout)
     except asyncio.TimeoutError:
-        return default_voice
+        return default_voice, default_rate
 
 
 async def entrypoint(ctx: JobContext) -> None:
@@ -843,9 +855,12 @@ async def entrypoint(ctx: JobContext) -> None:
     # Voice-mode TTS voice = the phone's selected Edge voice (participant attr),
     # else the server default.
     default_voice = os.environ.get("VOICE_TTS_VOICE", tts_edge.DEFAULT_VOICE)
-    tts_voice = await _resolve_tts_voice(ctx.room, participant, default_voice)
+    default_rate = os.environ.get("VOICE_TTS_RATE", "+0%")
+    tts_voice, tts_rate = await _resolve_tts_attrs(
+        ctx.room, participant, default_voice, default_rate,
+    )
     logger.info(
-        "[job] tts voice=%s%s", tts_voice,
+        "[job] tts voice=%s rate=%s%s", tts_voice, tts_rate,
         "" if tts_voice == default_voice else " [from phone]",
     )
 
@@ -855,7 +870,7 @@ async def entrypoint(ctx: JobContext) -> None:
         # StreamAdapter with the VAD above.
         stt=ctx.proc.userdata["stt"],
         llm=_build_llm(model_override),
-        tts=tts_edge.EdgeTTS(voice=tts_voice),
+        tts=tts_edge.EdgeTTS(voice=tts_voice, rate=tts_rate),
         turn_handling={
             "interruption": {
                 "enabled": True,

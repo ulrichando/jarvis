@@ -272,3 +272,156 @@ describe('streaming tool-call assembly (Fix D)', () => {
     expect(events.at(-1)?.event).toBe('message_stop')
   })
 })
+
+// ── DeepSeek tool-call leak recovery (DSML / pipe markup in content) ────────
+describe('DeepSeek tool-call leak recovery', () => {
+  const toolUses = (events: Array<{ event: string; data: any }>) =>
+    events.filter(
+      e => e.event === 'content_block_start' && e.data.content_block?.type === 'tool_use',
+    )
+  const argsOf = (events: Array<{ event: string; data: any }>, index: number) => {
+    const d = events.find(
+      e =>
+        e.event === 'content_block_delta' &&
+        e.data.index === index &&
+        e.data.delta?.type === 'input_json_delta',
+    )
+    return d ? JSON.parse(d.data.delta.partial_json) : null
+  }
+  const stopReason = (events: Array<{ event: string; data: any }>) =>
+    events.find(e => e.event === 'message_delta')?.data.delta.stop_reason
+
+  // Double-bar DSML exactly as captured from production.
+  const DSML =
+    '<｜｜DSML｜｜tool_calls>\n' +
+    '<｜｜DSML｜｜invoke name="search_web">\n' +
+    '<｜｜DSML｜｜parameter name="query" string="true">2025 World\'s Strongest Man winner</｜｜DSML｜｜parameter>\n' +
+    '</｜｜DSML｜｜invoke>\n' +
+    '</｜｜DSML｜｜tool_calls>'
+
+  test('DSML markup leaked in content → tool_use (not spoken text)', async () => {
+    const events = await runStream(
+      [
+        { choices: [{ delta: { content: DSML } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ],
+      'deepseek-v4-flash',
+    )
+    const tu = toolUses(events)
+    expect(tu).toHaveLength(1)
+    expect(tu[0].data.content_block.name).toBe('search_web')
+    expect(argsOf(events, tu[0].data.index)).toEqual({
+      query: "2025 World's Strongest Man winner",
+    })
+    expect(textOf(events)).not.toContain('DSML')
+    expect(stopReason(events)).toBe('tool_use')
+  })
+
+  test('DSML split across many small chunks → still recovered', async () => {
+    const pieces: unknown[] = []
+    for (let i = 0; i < DSML.length; i += 5) {
+      pieces.push({ choices: [{ delta: { content: DSML.slice(i, i + 5) } }] })
+    }
+    pieces.push({ choices: [{ delta: {}, finish_reason: 'stop' }] })
+    const events = await runStream(pieces, 'deepseek-v4-flash')
+    const tu = toolUses(events)
+    expect(tu).toHaveLength(1)
+    expect(tu[0].data.content_block.name).toBe('search_web')
+    expect(textOf(events)).not.toContain('DSML')
+  })
+
+  test('preamble text before the markup is preserved', async () => {
+    const events = await runStream(
+      [
+        { choices: [{ delta: { content: 'Let me check. ' + DSML } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ],
+      'deepseek-v4-flash',
+    )
+    expect(textOf(events)).toBe('Let me check. ')
+    expect(toolUses(events)).toHaveLength(1)
+  })
+
+  test('single-bar DSML variant also recovered', async () => {
+    const single =
+      '<｜DSML｜invoke name="get_weather"><｜DSML｜parameter name="location" string="true">Paris</｜DSML｜parameter></｜DSML｜invoke>'
+    const events = await runStream(
+      [
+        { choices: [{ delta: { content: single } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ],
+      'deepseek-v4-flash',
+    )
+    const tu = toolUses(events)
+    expect(tu).toHaveLength(1)
+    expect(tu[0].data.content_block.name).toBe('get_weather')
+    expect(argsOf(events, tu[0].data.index)).toEqual({ location: 'Paris' })
+  })
+
+  test('pipe-delimited (V3/V3.1) format recovered', async () => {
+    const pipe =
+      '<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>search_web<｜tool▁sep｜>{"query":"weather"}<｜tool▁call▁end｜><｜tool▁calls▁end｜>'
+    const events = await runStream(
+      [
+        { choices: [{ delta: { content: pipe } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ],
+      'deepseek-v4-flash',
+    )
+    const tu = toolUses(events)
+    expect(tu).toHaveLength(1)
+    expect(tu[0].data.content_block.name).toBe('search_web')
+    expect(argsOf(events, tu[0].data.index)).toEqual({ query: 'weather' })
+  })
+
+  test('multiple DSML invokes → multiple tool_use blocks', async () => {
+    const multi =
+      '<｜DSML｜tool_calls>' +
+      '<｜DSML｜invoke name="search_web"><｜DSML｜parameter name="query" string="true">a</｜DSML｜parameter></｜DSML｜invoke>' +
+      '<｜DSML｜invoke name="search_web"><｜DSML｜parameter name="query" string="true">b</｜DSML｜parameter></｜DSML｜invoke>' +
+      '</｜DSML｜tool_calls>'
+    const events = await runStream(
+      [
+        { choices: [{ delta: { content: multi } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ],
+      'deepseek-v4-flash',
+    )
+    expect(toolUses(events)).toHaveLength(2)
+  })
+
+  test('normal text (no fullwidth bar) passes through unchanged', async () => {
+    const events = await runStream(
+      [
+        { choices: [{ delta: { content: 'The winner was Tom Stoltman.' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ],
+      'deepseek-v4-flash',
+    )
+    expect(textOf(events)).toBe('The winner was Tom Stoltman.')
+    expect(toolUses(events)).toHaveLength(0)
+  })
+
+  test('fullwidth bar but no valid tool markup → kept as text, no false tool_use', async () => {
+    const events = await runStream(
+      [
+        { choices: [{ delta: { content: 'a stray ｜ bar in prose' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ],
+      'deepseek-v4-flash',
+    )
+    expect(toolUses(events)).toHaveLength(0)
+    expect(textOf(events)).toContain('stray')
+  })
+
+  test('non-deepseek model bypasses the catcher entirely', async () => {
+    const events = await runStream(
+      [
+        { choices: [{ delta: { content: 'plain answer' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ],
+      'kimi-k2.6',
+    )
+    expect(textOf(events)).toBe('plain answer')
+  })
+})
