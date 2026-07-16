@@ -145,3 +145,36 @@ def test_no_session_ref_defends():
         assert asyncio.run(_collect()) == []
     finally:
         ja._active_session_for_telemetry[0] = prev
+
+
+# ── reflexive-agreement opener strip (2026-07-16: "keep saying I'm right") ────
+
+@pytest.mark.parametrize("text,expected", [
+    ("You're right — I was giving vague non-answers.", "I was giving vague non-answers."),
+    ("You're right, I was wrong about that.", "I was wrong about that."),
+    ("You're absolutely right — yes, it's off.", "Yes, it's off."),
+    ("you're right: the timer never fired.", "The timer never fired."),
+])
+def test_strip_sycophant_opener_removes_agreement(text, expected):
+    assert ja._strip_sycophant_opener(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "You're right that the timer is off",   # contentful — no punctuation after 'right'
+    "You're right.",                         # bare agreement, nothing follows
+    "The answer is 42.",                     # no opener at all
+    "Right away, opening Chrome.",            # sanctioned 'Right' ack, not 'you're right'
+])
+def test_strip_sycophant_opener_preserves_contentful(text):
+    assert ja._strip_sycophant_opener(text) == text
+
+
+def test_gate_strips_youre_right_opener_in_stream():
+    chunks = ["You're right — ", "I was giving vague ", "non-answers about it."]
+    out = "".join(_run(chunks))
+    assert out == "I was giving vague non-answers about it."
+
+
+def test_gate_keeps_contentful_agreement():
+    chunks = ["You're right that the cloud sync ", "is still catching up."]
+    assert "".join(_run(chunks)) == "You're right that the cloud sync is still catching up."
