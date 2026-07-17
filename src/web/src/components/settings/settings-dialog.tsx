@@ -144,6 +144,11 @@ export function SettingsDialog() {
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="Search"
+              // The provider API-key fields are type="password", which makes
+              // Chrome treat this dialog as a login form and autofill the saved
+              // email into the first text field (this search box). Opt out.
+              autoComplete="off"
+              name="settings-search"
               className="w-full rounded-lg border border-border/50 bg-card/50 py-1.5 pl-8 pr-3 text-[13px] outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-border focus:bg-card"
             />
           </div>
