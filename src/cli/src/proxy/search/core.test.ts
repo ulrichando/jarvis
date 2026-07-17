@@ -1,19 +1,25 @@
 import { describe, expect, test } from 'bun:test'
 import {
   bestSnippet,
+  bestSupportingPassage,
+  buildRewritePrompt,
   cleanResults,
   extractMainText,
   formatHitsAsDigest,
+  heuristicQueryRewrite,
   isBareHomepage,
   isJunkHit,
   isNavigationalMatch,
   isPubliclyRoutableUrl,
+  mergeHits,
   normalizeUrlKey,
   parseBraveWebResponse,
   parseDuckDuckGoHtml,
+  parseLlmQueryRewrite,
   parseSearxngResponse,
   registrableDomain,
   scoreHit,
+  stripCourtesyPrefix,
   tokenize,
   truncateAtWord,
   type RichHit,
@@ -298,8 +304,8 @@ describe('extractMainText', () => {
   })
 })
 
-describe('formatHitsAsDigest', () => {
-  test('numbered entries with url + content, and an answer-now instruction', () => {
+describe('formatHitsAsDigest — citation-grounded evidence', () => {
+  test('numbered entries with url + content, citation + abstention contract', () => {
     const digest = formatHitsAsDigest('my query', [
       hit({ title: 'A', url: 'https://a.com/x', content: 'Fetched body text.' }),
       hit({ title: 'B', url: 'https://b.com/y', snippet: 'only a snippet' }),
@@ -309,6 +315,157 @@ describe('formatHitsAsDigest', () => {
     expect(digest).toContain('Fetched body text.')
     expect(digest).toContain('[2] B')
     expect(digest).toContain('only a snippet')
-    expect(digest).toContain('cite the sources')
+    // Claude-style inline attribution with preserved URLs…
+    expect(digest).toContain('Attribute each substantive claim to its source')
+    expect(digest).toContain('Preserve the exact URLs')
+    // …and the abstention clause: no reliable evidence → say so, never invent.
+    expect(digest).toContain("couldn't find reliable sources")
+    expect(digest).toContain('do not search again')
+  })
+  test('caps the evidence at 8 numbered chunks', () => {
+    const many = Array.from({ length: 12 }, (_, i) =>
+      hit({ title: `T${i}`, url: `https://s${i}.com/p`, snippet: `s${i}` }),
+    )
+    const digest = formatHitsAsDigest('q', many)
+    expect(digest).toContain('[8] T7')
+    expect(digest).not.toContain('[9]')
+  })
+})
+
+describe('stripCourtesyPrefix / heuristicQueryRewrite — stage 1 (pure)', () => {
+  test('strips conversational courtesy prefixes', () => {
+    expect(
+      stripCourtesyPrefix('hey jarvis can you tell me about the weather in tokyo'),
+    ).toBe('the weather in tokyo')
+    expect(stripCourtesyPrefix('please look up the gdp of france')).toBe(
+      'the gdp of france',
+    )
+    expect(stripCourtesyPrefix('search the web for rust async traits')).toBe(
+      'rust async traits',
+    )
+  })
+  test('never strips a query down to nothing', () => {
+    expect(stripCourtesyPrefix('tell me')).toBe('tell me')
+  })
+  test('a plain retrieval query passes through untouched', () => {
+    expect(stripCourtesyPrefix('rust async traits 2026')).toBe('rust async traits 2026')
+    expect(heuristicQueryRewrite('rust async traits 2026')).toEqual([
+      'rust async traits 2026',
+    ])
+  })
+  test('splits an explicit two-question input', () => {
+    expect(
+      heuristicQueryRewrite('who won the champions league final? what was the score'),
+    ).toEqual(['who won the champions league final?', 'what was the score'])
+    expect(
+      heuristicQueryRewrite('what is the capital of australia and how many people live there'),
+    ).toEqual(['what is the capital of australia', 'how many people live there'])
+  })
+  test('plain conjunctions never split (conservative)', () => {
+    expect(heuristicQueryRewrite('research on ai and machine learning')).toEqual([
+      'research on ai and machine learning',
+    ])
+    expect(heuristicQueryRewrite('fish and chips near me')).toEqual([
+      'fish and chips near me',
+    ])
+  })
+  test('caps at maxQueries', () => {
+    const qs = heuristicQueryRewrite(
+      'what is a? what is b? what is c? what is d?',
+      2,
+    )
+    expect(qs.length).toBeLessThanOrEqual(2)
+  })
+  test('maxQueries 1 → single cleaned query', () => {
+    expect(heuristicQueryRewrite('who won? what was the score', 1)).toEqual([
+      'who won? what was the score',
+    ])
+  })
+})
+
+describe('parseLlmQueryRewrite', () => {
+  test('parses a JSON array (also when code-fenced)', () => {
+    expect(parseLlmQueryRewrite('["ai agents 2026", "agent frameworks"]', 'orig')).toEqual([
+      'ai agents 2026',
+      'agent frameworks',
+    ])
+    expect(
+      parseLlmQueryRewrite('```json\n["quantum computing"]\n```', 'orig'),
+    ).toEqual(['quantum computing'])
+  })
+  test('parses numbered/bulleted lines, skipping prose', () => {
+    expect(
+      parseLlmQueryRewrite(
+        'Here are the queries:\n1. brave search api pricing\n- searxng setup guide',
+        'orig',
+      ),
+    ).toEqual(['brave search api pricing', 'searxng setup guide'])
+  })
+  test('garbage degrades to the original query', () => {
+    expect(parseLlmQueryRewrite('', 'orig')).toEqual(['orig'])
+    expect(parseLlmQueryRewrite('   \n  ', 'orig')).toEqual(['orig'])
+  })
+  test('caps at maxQueries and dedups case-insensitively', () => {
+    expect(
+      parseLlmQueryRewrite('["a query", "A Query", "b query", "c query"]', 'orig', 2),
+    ).toEqual(['a query', 'b query'])
+  })
+})
+
+describe('buildRewritePrompt', () => {
+  test('embeds the question and the cap, demands a JSON array', () => {
+    const p = buildRewritePrompt('why is the sky blue', 2)
+    expect(p).toContain('why is the sky blue')
+    expect(p).toContain('at most 2')
+    expect(p).toContain('JSON array')
+  })
+})
+
+describe('mergeHits — multi-query merge', () => {
+  test('round-robins across lists and dedups url + domain', () => {
+    const merged = mergeHits(
+      [
+        [
+          hit({ title: 'A1', url: 'https://a.com/1' }),
+          hit({ title: 'A2', url: 'https://shared.com/x' }),
+        ],
+        [
+          hit({ title: 'B1', url: 'https://b.com/1' }),
+          hit({ title: 'B2', url: 'https://shared.com/x?utm_source=rss' }),
+          hit({ title: 'B3', url: 'https://c.com/1' }),
+        ],
+      ],
+      10,
+    )
+    expect(merged.map(h => h.title)).toEqual(['A1', 'B1', 'A2', 'B3'])
+  })
+  test('caps at max', () => {
+    const list = (n: string) =>
+      Array.from({ length: 5 }, (_, i) => hit({ title: `${n}${i}`, url: `https://${n}${i}.com/p` }))
+    expect(mergeHits([list('x'), list('y')], 4)).toHaveLength(4)
+  })
+})
+
+describe('bestSupportingPassage — cited_text selection', () => {
+  test('picks the content region with the best query overlap', () => {
+    const h = hit({
+      content: [
+        'Intro paragraph about nothing in particular, filler filler filler.',
+        'The launch date was confirmed as March 12 by the space agency officials.',
+        'Unrelated closing remarks and site boilerplate text goes here now.',
+      ].join('\n'),
+    })
+    const passage = bestSupportingPassage(h, 'when is the launch date', 200)
+    expect(passage).toContain('March 12')
+    expect(passage.startsWith('The launch date')).toBe(true)
+  })
+  test('falls back to snippets when there is no fetched content', () => {
+    const h = hit({ snippet: 'short teaser', extraSnippets: ['extra detail'] })
+    expect(bestSupportingPassage(h, 'anything', 200)).toBe('short teaser … extra detail')
+  })
+  test('no token overlap → leading content, capped', () => {
+    const h = hit({ content: 'word '.repeat(500) })
+    const p = bestSupportingPassage(h, 'zzz qqq', 100)
+    expect(p.length).toBeLessThanOrEqual(101)
   })
 })

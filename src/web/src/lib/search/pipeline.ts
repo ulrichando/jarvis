@@ -24,14 +24,39 @@
 //   SEARCH_FETCH_TIMEOUT_MS (2500) — per-page fetch timeout
 //   SEARCH_FETCH_BUDGET_MS  (4000) — overall content-fetch budget
 //   SEARCH_CONTENT_MAX_CHARS (4000) — extracted text cap per page
+//
+// Query rewriting (runResearchPipeline stage 1):
+//   SEARCH_QUERY_REWRITE (heuristic) — off | heuristic | llm
+//   SEARCH_REWRITE_MAX_QUERIES (2)   — decomposition cap (1..3); each extra
+//                                      query costs ~1.05s + quota on Brave's
+//                                      free tier (1 req/s serialization)
+//   SEARCH_REWRITE_TIMEOUT_MS (1500) — llm-rewrite budget; on timeout the
+//                                      heuristic queries are used instead
+//
+// Semantic rerank (runResearchPipeline stage 4; Cohere or Jina):
+//   RERANK_PROVIDER (auto)   — auto | cohere | jina | off. auto picks by
+//                              whichever key is set (Cohere preferred)
+//   COHERE_API_KEY / JINA_API_KEY — enables the stage; NO key → the
+//                              existing heuristic order is kept (no regression)
+//   RERANK_MODEL             — override (defaults: cohere rerank-v3.5,
+//                              jina jina-reranker-v2-base-multilingual)
+//   RERANK_TOP_N (8)         — results the rerank API scores/returns
+//   RERANK_TIMEOUT_MS (1200) — hard budget; timeout → heuristic order kept
+//   RERANK_MAX_PER_MINUTE (8)— client-side throttle (Cohere trial keys are
+//                              10 req/min); over budget → rerank skipped
 
 import {
+  bestSnippet,
+  buildRewritePrompt,
   cleanResults,
   extractMainText,
+  heuristicQueryRewrite,
   isPubliclyRoutableUrl,
   looksLikeDuckDuckGoBlockPage,
+  mergeHits,
   parseBraveWebResponse,
   parseDuckDuckGoHtml,
+  parseLlmQueryRewrite,
   parseSearxngResponse,
   type RichHit,
 } from "./core";
@@ -314,4 +339,315 @@ export async function enrichHitsWithContent(
     const text = i < texts.length ? texts[i] : null;
     return text ? { ...h, content: text } : h;
   });
+}
+
+// ── Query rewriting / decomposition ───────────────────────────────────────
+// Stage 1 of the research pass (the pattern Perplexity's pipeline opens
+// with: parse intent → formulate retrieval queries). The heuristic tier is
+// pure + instant (see core.ts); the optional LLM tier is injected by the
+// caller (the hub proxy reuses its provider path) and is hard-bounded — a
+// slow or failing rewrite degrades to the heuristic queries, never stalls
+// the search.
+
+export type QueryRewriteMode = "off" | "heuristic" | "llm";
+
+/** Caller-injected LLM call for `llm` mode. Must resolve to the raw
+ *  completion text; the pipeline enforces `timeoutMs` around it either way. */
+export type LlmRewriteFn = (prompt: string, timeoutMs: number) => Promise<string>;
+
+export type RewriteOptions = {
+  /** Default: env SEARCH_QUERY_REWRITE, else "heuristic". */
+  mode?: QueryRewriteMode;
+  /** Decomposition cap, clamped 1..3 (default env SEARCH_REWRITE_MAX_QUERIES or 2). */
+  maxQueries?: number;
+  /** LLM-rewrite budget (default env SEARCH_REWRITE_TIMEOUT_MS or 1500ms). */
+  timeoutMs?: number;
+  llmRewrite?: LlmRewriteFn;
+  log?: (message: string) => void;
+};
+
+function envRewriteMode(): QueryRewriteMode {
+  const v = (process.env.SEARCH_QUERY_REWRITE ?? "").trim().toLowerCase();
+  if (v === "off" || v === "0" || v === "false" || v === "none") return "off";
+  if (v === "llm") return "llm";
+  return "heuristic";
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${what} timed out after ${ms}ms`)),
+      ms,
+    );
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
+/**
+ * Turn the raw question into 1..N retrieval queries. `off` → [query]
+ * untouched (today's behavior exactly); `heuristic` → pure rewrite;
+ * `llm` → bounded LLM call, degrading to the heuristic queries on any
+ * failure/timeout or when no llmRewrite fn was injected.
+ */
+export async function expandQueries(
+  query: string,
+  opts: RewriteOptions = {},
+): Promise<string[]> {
+  const mode = opts.mode ?? envRewriteMode();
+  if (mode === "off") return [query];
+  const maxQueries = Math.max(
+    1,
+    Math.min(3, opts.maxQueries ?? envInt("SEARCH_REWRITE_MAX_QUERIES", 2)),
+  );
+  const heuristic = heuristicQueryRewrite(query, maxQueries);
+  if (mode !== "llm" || !opts.llmRewrite) return heuristic;
+
+  const timeoutMs = opts.timeoutMs ?? envInt("SEARCH_REWRITE_TIMEOUT_MS", 1500);
+  const log = opts.log ?? (() => {});
+  try {
+    const raw = await withTimeout(
+      opts.llmRewrite(buildRewritePrompt(query, maxQueries), timeoutMs),
+      timeoutMs,
+      "query rewrite",
+    );
+    return parseLlmQueryRewrite(raw, query, maxQueries);
+  } catch (e) {
+    log(`query rewrite failed: ${(e as Error).message} — using heuristic queries`);
+    return heuristic;
+  }
+}
+
+// ── Semantic rerank (Cohere Rerank / Jina Reranker) ───────────────────────
+// Stage 4: rescore the retrieved+extracted candidates by TRUE relevance to
+// the query with a cross-encoder rerank API — the standard enterprise-RAG
+// precision stage. Contracts implemented:
+//   Cohere: POST https://api.cohere.com/v2/rerank
+//     { model, query, documents: string[], top_n } → { results: [{ index,
+//     relevance_score }] }  (Bearer auth; trial keys: 10 req/min, ~1000/mo)
+//   Jina:   POST https://api.jina.ai/v1/rerank — same request shape plus
+//     return_documents:false → { results: [{ index, relevance_score }] }
+//     (Bearer auth; free keys: 10M tokens, ~100 req/min)
+// EVERY failure mode (no key, throttle, timeout, HTTP error, junk body)
+// returns the input order unchanged — the heuristic rerank remains the
+// floor, so a missing key is a no-op, not a regression.
+
+export type RerankProviderName = "cohere" | "jina";
+
+const COHERE_RERANK_ENDPOINT = "https://api.cohere.com/v2/rerank";
+const JINA_RERANK_ENDPOINT = "https://api.jina.ai/v1/rerank";
+
+const RERANK_DEFAULT_MODEL: Record<RerankProviderName, string> = {
+  cohere: "rerank-v3.5",
+  jina: "jina-reranker-v2-base-multilingual",
+};
+
+/** Pick the rerank provider: RERANK_PROVIDER=off disables; auto (default)
+ *  selects by whichever API key is present, Cohere first. */
+export function resolveRerankProvider(): {
+  name: RerankProviderName;
+  key: string;
+} | null {
+  const pref = (process.env.RERANK_PROVIDER ?? "auto").trim().toLowerCase();
+  if (pref === "off" || pref === "none" || pref === "0") return null;
+  const cohere = (process.env.COHERE_API_KEY ?? "").trim();
+  const jina = (process.env.JINA_API_KEY ?? "").trim();
+  if (pref === "cohere") return cohere ? { name: "cohere", key: cohere } : null;
+  if (pref === "jina") return jina ? { name: "jina", key: jina } : null;
+  if (cohere) return { name: "cohere", key: cohere };
+  if (jina) return { name: "jina", key: jina };
+  return null;
+}
+
+// Client-side sliding-window throttle (free tiers: Cohere trial 10 req/min).
+// Over budget → SKIP the rerank (keep heuristic order) rather than sleep —
+// sleeping would blow the latency budget for zero user-visible gain.
+export const __rerankTuningForTests = { windowMs: 60_000 };
+let rerankCallTimes: number[] = [];
+
+export function __resetRerankThrottleForTests(): void {
+  rerankCallTimes = [];
+}
+
+function rerankThrottled(maxPerMinute: number): boolean {
+  const now = Date.now();
+  rerankCallTimes = rerankCallTimes.filter(
+    (t) => now - t < __rerankTuningForTests.windowMs,
+  );
+  if (rerankCallTimes.length >= maxPerMinute) return true;
+  rerankCallTimes.push(now);
+  return false;
+}
+
+export type RerankOptions = {
+  /** Results the API scores/returns (default env RERANK_TOP_N or 8). */
+  topN?: number;
+  /** Hard budget (default env RERANK_TIMEOUT_MS or 1200ms). */
+  timeoutMs?: number;
+  log?: (message: string) => void;
+};
+
+/** Document text the reranker scores: title + extracted content (preferred)
+ *  or the search snippets. Capped — rerank pricing/latency scales with tokens. */
+function rerankDocText(hit: RichHit): string {
+  const body = hit.content ? hit.content.slice(0, 1200) : bestSnippet(hit, 600);
+  return body ? `${hit.title}\n${body}` : hit.title;
+}
+
+/**
+ * Reorder hits by semantic relevance to the query via the configured rerank
+ * API, attaching `rerankScore` to scored hits (unscored ones keep their
+ * relative order after the scored block). NEVER throws — any failure
+ * returns the input unchanged.
+ */
+export async function rerankHits(
+  query: string,
+  hits: RichHit[],
+  opts: RerankOptions = {},
+): Promise<RichHit[]> {
+  if (hits.length <= 1) return hits;
+  const resolved = resolveRerankProvider();
+  if (!resolved) return hits;
+  const log = opts.log ?? (() => {});
+
+  const maxPerMinute = envInt("RERANK_MAX_PER_MINUTE", 8);
+  if (rerankThrottled(maxPerMinute)) {
+    log(`rerank skipped: client throttle (${maxPerMinute}/min) — keeping heuristic order`);
+    return hits;
+  }
+
+  const timeoutMs = opts.timeoutMs ?? envInt("RERANK_TIMEOUT_MS", 1200);
+  const topN = Math.min(hits.length, Math.max(1, opts.topN ?? envInt("RERANK_TOP_N", 8)));
+  const model =
+    (process.env.RERANK_MODEL ?? "").trim() || RERANK_DEFAULT_MODEL[resolved.name];
+  const documents = hits.map(rerankDocText);
+  const body =
+    resolved.name === "cohere"
+      ? { model, query, documents, top_n: topN }
+      : { model, query, documents, top_n: topN, return_documents: false };
+
+  try {
+    const res = await fetch(
+      resolved.name === "cohere" ? COHERE_RERANK_ENDPOINT : JINA_RERANK_ENDPOINT,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${resolved.key}`,
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs),
+      },
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = (await res.json()) as {
+      results?: Array<{ index?: number; relevance_score?: number }>;
+    };
+    const results = Array.isArray(data?.results) ? data.results : [];
+    const ranked: RichHit[] = [];
+    const used = new Set<number>();
+    for (const r of results) {
+      const i = r?.index;
+      if (typeof i !== "number" || !Number.isInteger(i)) continue;
+      if (i < 0 || i >= hits.length || used.has(i)) continue;
+      used.add(i);
+      ranked.push(
+        typeof r.relevance_score === "number"
+          ? { ...hits[i], rerankScore: r.relevance_score }
+          : { ...hits[i] },
+      );
+    }
+    if (!ranked.length) return hits; // junk body — keep heuristic order
+    for (let i = 0; i < hits.length; i++) if (!used.has(i)) ranked.push(hits[i]);
+    return ranked;
+  } catch (e) {
+    log(`rerank failed (${resolved.name}): ${(e as Error).message} — keeping heuristic order`);
+    return hits;
+  }
+}
+
+// ── Full research pass ────────────────────────────────────────────────────
+
+export type ResearchOptions = PipelineOptions & {
+  /** Stage 1 config; default mode comes from SEARCH_QUERY_REWRITE. */
+  rewrite?: RewriteOptions;
+  /** LLM rewrite call for `llm` mode (shorthand for rewrite.llmRewrite). */
+  llmRewrite?: LlmRewriteFn;
+  /** false disables stage 4; an object tunes it. Default: on (a missing
+   *  rerank key already makes it a no-op). */
+  rerank?: boolean | RerankOptions;
+  /** false disables stage 3 (content fetch); an object tunes it. */
+  enrich?: EnrichOptions | false;
+};
+
+export type ResearchResult = PipelineResult & {
+  /** The retrieval queries actually executed (1..3). */
+  queries: string[];
+};
+
+/**
+ * The complete research pass, Perplexity-style:
+ *   1. query rewrite / decomposition   (bounded; off/heuristic are instant)
+ *   2. retrieval per query + merge     (Brave self-serializes ≥1.05s apart)
+ *   3. page-content enrichment         (parallel, per-page timeout + budget)
+ *   4. semantic rerank                 (Cohere/Jina; heuristic-order floor)
+ * With rewrite off/heuristic on a simple query, no rerank key, and default
+ * enrichment this is byte-for-byte the old search+enrich behavior.
+ */
+export async function runResearchPipeline(
+  query: string,
+  opts: ResearchOptions = {},
+): Promise<ResearchResult> {
+  const log = opts.log ?? (() => {});
+  const max = opts.maxResults ?? envInt("SEARCH_MAX_RESULTS", 8);
+  const pipeOpts: PipelineOptions = {
+    maxResults: max,
+    searchTimeoutMs: opts.searchTimeoutMs,
+    log,
+  };
+
+  // 1. Rewrite / decompose.
+  const queries = await expandQueries(query, {
+    ...(opts.rewrite ?? {}),
+    llmRewrite: opts.rewrite?.llmRewrite ?? opts.llmRewrite,
+    log: opts.rewrite?.log ?? log,
+  });
+
+  // 2. Retrieve (+ merge across sub-queries).
+  let hits: RichHit[];
+  let provider: SearchProvider;
+  if (queries.length === 1) {
+    ({ hits, provider } = await runSearchPipeline(queries[0], pipeOpts));
+  } else {
+    const settled = await Promise.allSettled(
+      queries.map((q) => runSearchPipeline(q, pipeOpts)),
+    );
+    const ok = settled.filter(
+      (s): s is PromiseFulfilledResult<PipelineResult> => s.status === "fulfilled",
+    );
+    if (!ok.length) throw (settled[0] as PromiseRejectedResult).reason;
+    provider = ok[0].value.provider;
+    hits = mergeHits(ok.map((r) => r.value.hits), max);
+  }
+
+  // 3. Enrich with page content.
+  if (opts.enrich !== false) {
+    hits = await enrichHitsWithContent(hits, opts.enrich ?? {});
+  }
+
+  // 4. Semantic rerank against the ORIGINAL question (full intent).
+  if (opts.rerank !== false) {
+    const rr = typeof opts.rerank === "object" ? opts.rerank : {};
+    hits = await rerankHits(query, hits, { ...rr, log: rr.log ?? log });
+  }
+
+  return { hits, provider, queries };
 }

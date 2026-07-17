@@ -195,3 +195,48 @@ describe('buildSyntheticWebSearchResponse — enriched synthetic message', () =>
     expect(msg.content.some((b: any) => b.type === 'text')).toBe(false)
   })
 })
+
+describe('enriched result items — the source-card contract', () => {
+  // The documented shape the Android parser consumes:
+  //   { type, title, url, snippet?, cited_text?, encrypted_content, page_age }
+  const hits = [
+    {
+      title: 'Launch report',
+      url: 'https://news.com/launch',
+      snippet: 'Rocket set for launch',
+      content:
+        'Filler intro line for the page, quite long and not that useful here.\n' +
+        'The launch happens on March 12 according to agency officials, weather permitting.\n' +
+        'Closing boilerplate for the page footer area.',
+    },
+    { title: 'Thin hit', url: 'https://thin.com/x', snippet: '' },
+  ]
+
+  test('each item carries snippet + cited_text alongside the spec fields', () => {
+    const msg = buildSyntheticWebSearchResponse('when is the launch', 'm', hits, false) as any
+    const items = msg.content.find((b: any) => b.type === 'web_search_tool_result').content
+    expect(items[0].type).toBe('web_search_result')
+    expect(items[0].title).toBe('Launch report')
+    expect(items[0].url).toBe('https://news.com/launch')
+    expect(items[0].snippet).toBe('Rocket set for launch')
+    // cited_text is the best supporting passage from the FETCHED content.
+    expect(items[0].cited_text).toContain('March 12')
+    expect(items[0].encrypted_content).toBe('')
+    expect(items[0].page_age).toBeNull()
+  })
+
+  test('optional fields are omitted (not empty) when there is nothing to say', () => {
+    const msg = buildSyntheticWebSearchResponse('q', 'm', hits, false) as any
+    const thin = msg.content.find((b: any) => b.type === 'web_search_tool_result').content[1]
+    expect('snippet' in thin).toBe(false)
+    expect('cited_text' in thin).toBe(false)
+    expect(thin.title).toBe('Thin hit')
+  })
+
+  test('digest text block carries the citation + abstention contract', () => {
+    const msg = buildSyntheticWebSearchResponse('when is the launch', 'm', hits, false) as any
+    const text = msg.content.find((b: any) => b.type === 'text')
+    expect(text.text).toContain('Attribute each substantive claim')
+    expect(text.text).toContain("couldn't find reliable sources")
+  })
+})

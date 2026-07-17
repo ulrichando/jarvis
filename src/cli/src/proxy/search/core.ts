@@ -28,6 +28,8 @@ export type RichHit = {
   engine?: string;
   /** Main article text fetched + extracted from the page (enrichment step). */
   content?: string;
+  /** Cohere/Jina rerank relevance (0..1); set only when a rerank API ran. */
+  rerankScore?: number;
 };
 
 // ── Small text utilities ──────────────────────────────────────────────────
@@ -477,12 +479,219 @@ export function extractMainText(html: string, maxChars = 4000): string {
   return truncateAtWord(deduped.join("\n"), maxChars);
 }
 
+// ── Query rewriting / decomposition (pure half) ───────────────────────────
+//
+// Perplexity-style stage 1: turn the user's raw question into 1–3 queries
+// that retrieve well. The heuristic layer is deliberately conservative —
+// it only (a) strips unambiguous conversational courtesy prefixes and
+// (b) splits inputs that contain TWO explicit questions. A simple query
+// passes through untouched, so single-query behavior never regresses.
+
+const COURTESY_PREFIXES: RegExp[] = [
+  /^(?:hey|hi|ok|okay)[,!]?\s+jarvis[,!]?\s+/i,
+  /^jarvis[,!]?\s+/i,
+  /^please\s+/i,
+  /^(?:can|could|would|will)\s+you\s+(?:please\s+)?/i,
+  /^(?:tell|show)\s+me\s+(?:about\s+)?/i,
+  /^(?:find\s+out|look\s+up)\s+(?:about\s+)?/i,
+  /^search(?:\s+the\s+web)?\s+for\s+/i,
+  /^(?:i(?:'d|\s+would)?\s+(?:like|want)\s+to\s+know|i\s+was\s+wondering)\s+(?:about\s+)?/i,
+];
+
+/** Strip conversational filler prefixes; never strips down to nothing. */
+export function stripCourtesyPrefix(query: string): string {
+  const original = query.trim();
+  let q = original;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const re of COURTESY_PREFIXES) {
+      const next = q.replace(re, "").trim();
+      if (next !== q) {
+        q = next;
+        changed = true;
+      }
+    }
+  }
+  // Too aggressive → keep the original (a query must still say something).
+  if (!q || (q.split(/\s+/).length < 2 && tokenize(q).length < 1)) return original;
+  return q;
+}
+
+// Interrogative words that mark the start of a second, separate question.
+const INTERROGATIVE_RE =
+  /(?:what|what's|when|where|who|whose|whom|how|why|which|is|are|was|were|does|do|did|can|will|should)/;
+
+/**
+ * Rewrite the raw question into 1..maxQueries retrieval queries. Splits
+ * ONLY on explicit multi-question markers ("…? …" or ", and how …") so
+ * "research on AI and ML" style conjunctions never split. Returns the
+ * cleaned single query when there is nothing to decompose.
+ */
+export function heuristicQueryRewrite(query: string, maxQueries = 3): string[] {
+  const cleaned = stripCourtesyPrefix(query);
+  if (maxQueries <= 1) return [cleaned];
+
+  // "who won? what was the score" — sentence boundary after a question mark.
+  let parts = cleaned
+    .split(/(?<=\?)\s+(?=\S)/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length === 1) {
+    // "what is X and how does Y work" — a second explicit interrogative.
+    const re = new RegExp(
+      `,?\\s+and\\s+(?:also\\s+)?(?=${INTERROGATIVE_RE.source}\\b)`,
+      "i",
+    );
+    const m = cleaned.split(re);
+    if (m.length > 1) parts = m.map((p) => p.trim()).filter(Boolean);
+  }
+
+  // Every fragment must stand alone as a query, or don't split at all.
+  const good = parts.filter(
+    (p) => p.split(/\s+/).length >= 3 && tokenize(p).length >= 1,
+  );
+  if (good.length <= 1) return [cleaned];
+
+  const out: string[] = [];
+  for (const p of good) {
+    const sub = stripCourtesyPrefix(p.replace(/^and\s+(?:also\s+)?/i, ""));
+    if (!out.some((e) => e.toLowerCase() === sub.toLowerCase())) out.push(sub);
+    if (out.length >= maxQueries) break;
+  }
+  return out.length ? out : [cleaned];
+}
+
+/** Compact prompt for the optional LLM rewrite stage (see pipeline.ts). */
+export function buildRewritePrompt(question: string, maxQueries: number): string {
+  return (
+    `Rewrite the user's question into at most ${maxQueries} short web-search ` +
+    `queries optimized for retrieval. Split compound questions into separate ` +
+    `queries; keep key names, numbers and dates; drop conversational filler. ` +
+    `Respond with ONLY a JSON array of query strings, nothing else.\n\n` +
+    `Question: ${question}`
+  );
+}
+
+/**
+ * Parse the LLM rewrite response: a JSON array (possibly code-fenced) or a
+ * plain/numbered list, one query per line. Anything unusable degrades to
+ * [original] — the rewrite stage can never lose the user's question.
+ */
+export function parseLlmQueryRewrite(
+  raw: string,
+  original: string,
+  maxQueries = 3,
+): string[] {
+  const out: string[] = [];
+  const push = (s: unknown) => {
+    if (typeof s !== "string" || out.length >= maxQueries) return;
+    const q = s
+      .trim()
+      .replace(/^\d+[.)]\s*/, "")
+      .replace(/^[-*]\s*/, "")
+      .replace(/^["'`]+|["'`]+$/g, "")
+      .trim();
+    if (!q || q.length > 200) return;
+    if (q.endsWith(":") || q.split(/\s+/).length > 15) return; // prose, not a query
+    if (tokenize(q).length === 0) return;
+    if (!out.some((e) => e.toLowerCase() === q.toLowerCase())) out.push(q);
+  };
+
+  const text = (raw ?? "").trim();
+  const jsonMatch = text.match(/\[[\s\S]*\]/);
+  if (jsonMatch) {
+    try {
+      const arr = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(arr)) for (const s of arr) push(s);
+    } catch {
+      // fall through to line parsing
+    }
+  }
+  if (!out.length) for (const line of text.split("\n")) push(line);
+  return out.length ? out : [original];
+}
+
+/**
+ * Merge per-query result lists (each already cleaned) round-robin, so every
+ * sub-question contributes its best hits first; dedup by exact URL and
+ * registrable domain; cap to max.
+ */
+export function mergeHits(lists: RichHit[][], max: number): RichHit[] {
+  const out: RichHit[] = [];
+  const seenUrl = new Set<string>();
+  const seenDomain = new Set<string>();
+  const longest = lists.reduce((n, l) => Math.max(n, l.length), 0);
+  for (let i = 0; i < longest && out.length < max; i++) {
+    for (const list of lists) {
+      if (out.length >= max) break;
+      const h = list[i];
+      if (!h) continue;
+      const urlKey = normalizeUrlKey(h.url);
+      if (seenUrl.has(urlKey)) continue;
+      const domain = registrableDomain(h.url);
+      if (seenDomain.has(domain)) continue;
+      seenUrl.add(urlKey);
+      seenDomain.add(domain);
+      out.push(h);
+    }
+  }
+  return out;
+}
+
 // ── LLM-facing formatting ─────────────────────────────────────────────────
 
 /**
- * One self-sufficient research digest: numbered entries with title, URL,
- * and real page content (or the best snippets). Written so the model can
- * answer + cite after ONE search instead of re-searching.
+ * The best supporting passage for a hit relative to the query: the
+ * extracted-content region with the highest query-token overlap (extended
+ * to fill maxChars), else the best snippet. This is what the gateway ships
+ * as `cited_text` on each result item — the plaintext analogue of the
+ * cited_text Anthropic's own web_search citations carry.
+ */
+export function bestSupportingPassage(
+  hit: RichHit,
+  query: string,
+  maxChars = 600,
+): string {
+  const content = (hit.content ?? "").trim();
+  if (!content) return bestSnippet(hit, maxChars);
+  const queryTokens = tokenize(query);
+  const lines = content
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length >= 40);
+  if (!lines.length || !queryTokens.length) return truncateAtWord(content, maxChars);
+
+  let bestIdx = 0;
+  let bestScore = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const lineTokens = new Set(tokenize(lines[i]));
+    let s = 0;
+    for (const t of queryTokens) if (lineTokens.has(t)) s++;
+    if (s > bestScore) {
+      bestScore = s;
+      bestIdx = i;
+    }
+  }
+  if (bestScore <= 0) return truncateAtWord(content, maxChars);
+
+  let out = lines[bestIdx];
+  for (let i = bestIdx + 1; i < lines.length && out.length < maxChars; i++) {
+    out += " " + lines[i];
+  }
+  return truncateAtWord(out.replace(/\s+/g, " "), maxChars);
+}
+
+/** Digest evidence cap: ~6–8 numbered chunks is the grounding sweet spot. */
+export const DIGEST_MAX_SOURCES = 8;
+
+/**
+ * One self-sufficient research digest: numbered evidence entries with
+ * title, URL, and real page content (or the best snippets), followed by
+ * the citation-grounding contract. Written so the model can answer + cite
+ * after ONE search instead of re-searching, in Claude's citation style
+ * (claims attributed to named, linked sources), and ABSTAIN instead of
+ * fabricating when the evidence is weak.
  */
 export function formatHitsAsDigest(
   query: string,
@@ -493,14 +702,19 @@ export function formatHitsAsDigest(
   parts.push(
     `Web search results for "${query}". Each entry: [n] title, URL, then extracted page content or search snippets.`,
   );
-  hits.forEach((h, i) => {
+  hits.slice(0, DIGEST_MAX_SOURCES).forEach((h, i) => {
     const body = h.content
       ? truncateAtWord(h.content, perHitChars)
       : bestSnippet(h, Math.min(perHitChars, 600));
     parts.push(`[${i + 1}] ${h.title}\nURL: ${h.url}${body ? `\n${body}` : ""}`);
   });
   parts.push(
-    "These results are sufficient to answer — synthesize from them and cite the sources you used as markdown links instead of searching again for the same question.",
+    [
+      "Ground your answer in these sources:",
+      "- Synthesize ONLY from the numbered sources above; they are sufficient — do not search again for the same question.",
+      '- Attribute each substantive claim to its source inline, e.g. "According to [title](url), …" or append ([title](url)) after the claim. Preserve the exact URLs; cite only sources you actually used.',
+      "- If the sources do not reliably answer part of the question, say plainly that you couldn't find reliable sources on that part — never fill the gap from memory or fabricate a citation.",
+    ].join("\n"),
   );
   return parts.join("\n\n");
 }

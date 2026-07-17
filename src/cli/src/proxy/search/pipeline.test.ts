@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   __braveTuningForTests,
+  __resetRerankThrottleForTests,
   enrichHitsWithContent,
+  expandQueries,
+  rerankHits,
+  resolveRerankProvider,
+  runResearchPipeline,
   runSearchPipeline,
   searchBrave,
 } from './pipeline'
@@ -10,18 +15,32 @@ import type { RichHit } from './core'
 const origFetch = globalThis.fetch
 const origTuning = { ...__braveTuningForTests }
 
+const SEARCH_ENV = [
+  'BRAVE_SEARCH_API_KEY',
+  'SEARXNG_URL',
+  'COHERE_API_KEY',
+  'JINA_API_KEY',
+  'RERANK_PROVIDER',
+  'RERANK_MODEL',
+  'RERANK_TOP_N',
+  'RERANK_TIMEOUT_MS',
+  'RERANK_MAX_PER_MINUTE',
+  'SEARCH_QUERY_REWRITE',
+  'SEARCH_REWRITE_MAX_QUERIES',
+  'SEARCH_REWRITE_TIMEOUT_MS',
+]
+
 beforeEach(() => {
   // Don't sleep real seconds in tests; production keeps 1050/1100ms.
   __braveTuningForTests.minIntervalMs = 1
   __braveTuningForTests.retryDelayMs = 1
-  delete process.env.BRAVE_SEARCH_API_KEY
-  delete process.env.SEARXNG_URL
+  __resetRerankThrottleForTests()
+  for (const k of SEARCH_ENV) delete process.env[k]
 })
 afterEach(() => {
   globalThis.fetch = origFetch
   Object.assign(__braveTuningForTests, origTuning)
-  delete process.env.BRAVE_SEARCH_API_KEY
-  delete process.env.SEARXNG_URL
+  for (const k of SEARCH_ENV) delete process.env[k]
 })
 
 type MockResponse = {
@@ -253,5 +272,332 @@ describe('enrichHitsWithContent', () => {
     }))
     const out = await enrichHitsWithContent(hits, { pages: 1, timeoutMs: 200, budgetMs: 500 })
     expect(out[0]?.content).toBeUndefined()
+  })
+})
+
+describe('resolveRerankProvider — key/env selection', () => {
+  test('no keys → null (heuristic rerank keeps working)', () => {
+    expect(resolveRerankProvider()).toBeNull()
+  })
+  test('auto picks Cohere first, then Jina', () => {
+    process.env.COHERE_API_KEY = 'ck'
+    process.env.JINA_API_KEY = 'jk'
+    expect(resolveRerankProvider()).toEqual({ name: 'cohere', key: 'ck' })
+    delete process.env.COHERE_API_KEY
+    expect(resolveRerankProvider()).toEqual({ name: 'jina', key: 'jk' })
+  })
+  test('explicit RERANK_PROVIDER wins over auto order', () => {
+    process.env.COHERE_API_KEY = 'ck'
+    process.env.JINA_API_KEY = 'jk'
+    process.env.RERANK_PROVIDER = 'jina'
+    expect(resolveRerankProvider()).toEqual({ name: 'jina', key: 'jk' })
+  })
+  test('an explicit provider without its key → null (no cross-provider surprise)', () => {
+    process.env.JINA_API_KEY = 'jk'
+    process.env.RERANK_PROVIDER = 'cohere'
+    expect(resolveRerankProvider()).toBeNull()
+  })
+  test('RERANK_PROVIDER=off disables even with keys', () => {
+    process.env.COHERE_API_KEY = 'ck'
+    process.env.RERANK_PROVIDER = 'off'
+    expect(resolveRerankProvider()).toBeNull()
+  })
+})
+
+describe('rerankHits — semantic rerank with heuristic-order floor', () => {
+  const hits: RichHit[] = [
+    { title: 'A', url: 'https://a.com/x', snippet: 'about a' },
+    { title: 'B', url: 'https://b.com/y', snippet: 'about b', content: 'B page body text' },
+    { title: 'C', url: 'https://c.com/z', snippet: 'about c' },
+  ]
+
+  test('no key → no network call, order unchanged', async () => {
+    const calls = mockFetch(() => ({ json: {} }))
+    const out = await rerankHits('q', hits)
+    expect(calls).toHaveLength(0)
+    expect(out).toEqual(hits)
+  })
+
+  test('Cohere: sends the documented v2 body and reorders by relevance_score', async () => {
+    process.env.COHERE_API_KEY = 'ck'
+    let sawUrl = ''
+    let sawAuth = ''
+    let sawBody: any = null
+    mockFetch((url, init) => {
+      sawUrl = url
+      sawAuth = new Headers(init?.headers).get('Authorization') ?? ''
+      sawBody = JSON.parse(String(init?.body))
+      return {
+        json: {
+          results: [
+            { index: 2, relevance_score: 0.98 },
+            { index: 0, relevance_score: 0.41 },
+            { index: 1, relevance_score: 0.07 },
+          ],
+        },
+      }
+    })
+    const out = await rerankHits('which one is c', hits)
+    expect(sawUrl).toBe('https://api.cohere.com/v2/rerank')
+    expect(sawAuth).toBe('Bearer ck')
+    expect(sawBody.model).toBe('rerank-v3.5')
+    expect(sawBody.query).toBe('which one is c')
+    expect(sawBody.documents).toHaveLength(3)
+    expect(sawBody.documents[1]).toContain('B page body text') // content beats snippet
+    expect(sawBody.top_n).toBe(3)
+    expect(out.map(h => h.title)).toEqual(['C', 'A', 'B'])
+    expect(out[0]?.rerankScore).toBe(0.98)
+  })
+
+  test('Jina: hits the jina endpoint with return_documents:false', async () => {
+    process.env.JINA_API_KEY = 'jk'
+    let sawUrl = ''
+    let sawBody: any = null
+    mockFetch((url, init) => {
+      sawUrl = url
+      sawBody = JSON.parse(String(init?.body))
+      return { json: { results: [{ index: 1, relevance_score: 0.9 }] } }
+    })
+    const out = await rerankHits('q', hits)
+    expect(sawUrl).toBe('https://api.jina.ai/v1/rerank')
+    expect(sawBody.model).toBe('jina-reranker-v2-base-multilingual')
+    expect(sawBody.return_documents).toBe(false)
+    // Scored hit first; unscored keep their relative order after it.
+    expect(out.map(h => h.title)).toEqual(['B', 'A', 'C'])
+  })
+
+  test('HTTP error → original order (graceful fallback)', async () => {
+    process.env.COHERE_API_KEY = 'ck'
+    mockFetch(() => ({ ok: false, status: 429 }))
+    const out = await rerankHits('q', hits)
+    expect(out).toEqual(hits)
+  })
+
+  test('junk body (no results) → original order', async () => {
+    process.env.COHERE_API_KEY = 'ck'
+    mockFetch(() => ({ json: { results: [{ index: 99 }, { index: -1 }] } }))
+    const out = await rerankHits('q', hits)
+    expect(out).toEqual(hits)
+  })
+
+  test('a hung API is cut by the timeout, order unchanged', async () => {
+    process.env.COHERE_API_KEY = 'ck'
+    mockFetch(async (_url, init) => {
+      await new Promise<void>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+      })
+      return { json: {} }
+    })
+    const t0 = Date.now()
+    const out = await rerankHits('q', hits, { timeoutMs: 100 })
+    expect(Date.now() - t0).toBeLessThan(1500)
+    expect(out).toEqual(hits)
+  })
+
+  test('client throttle: over RERANK_MAX_PER_MINUTE calls are skipped', async () => {
+    process.env.COHERE_API_KEY = 'ck'
+    process.env.RERANK_MAX_PER_MINUTE = '1'
+    const calls = mockFetch(() => ({
+      json: { results: [{ index: 0, relevance_score: 1 }] },
+    }))
+    await rerankHits('q', hits)
+    const out2 = await rerankHits('q', hits)
+    expect(calls).toHaveLength(1) // second call never hit the network
+    expect(out2).toEqual(hits)
+  })
+
+  test('single hit → no call (nothing to reorder)', async () => {
+    process.env.COHERE_API_KEY = 'ck'
+    const calls = mockFetch(() => ({ json: {} }))
+    await rerankHits('q', [hits[0]])
+    expect(calls).toHaveLength(0)
+  })
+})
+
+describe('expandQueries — stage 1 orchestration', () => {
+  test('mode off → the untouched original, always', async () => {
+    expect(
+      await expandQueries('hey jarvis what is x? and what is y', { mode: 'off' }),
+    ).toEqual(['hey jarvis what is x? and what is y'])
+  })
+  test('SEARCH_QUERY_REWRITE=off honored from env', async () => {
+    process.env.SEARCH_QUERY_REWRITE = 'off'
+    expect(await expandQueries('hey jarvis tell me about rust')).toEqual([
+      'hey jarvis tell me about rust',
+    ])
+  })
+  test('default heuristic: simple query stays single', async () => {
+    expect(await expandQueries('rust async traits 2026')).toEqual([
+      'rust async traits 2026',
+    ])
+  })
+  test('llm mode uses the injected rewriter', async () => {
+    const out = await expandQueries('what is x and how does y work', {
+      mode: 'llm',
+      llmRewrite: async () => '["x definition", "y mechanism"]',
+    })
+    expect(out).toEqual(['x definition', 'y mechanism'])
+  })
+  test('llm failure → heuristic queries (never lost)', async () => {
+    const out = await expandQueries('who won the final? what was the score', {
+      mode: 'llm',
+      llmRewrite: async () => {
+        throw new Error('upstream down')
+      },
+    })
+    expect(out).toEqual(['who won the final?', 'what was the score'])
+  })
+  test('a slow llm rewrite is timed out and degrades to heuristic', async () => {
+    const t0 = Date.now()
+    const out = await expandQueries('simple question here', {
+      mode: 'llm',
+      timeoutMs: 50,
+      llmRewrite: () => new Promise(resolve => setTimeout(() => resolve('["late"]'), 5000)),
+    })
+    expect(Date.now() - t0).toBeLessThan(1000)
+    expect(out).toEqual(['simple question here'])
+  })
+  test('llm mode without an injected fn → heuristic', async () => {
+    process.env.SEARCH_QUERY_REWRITE = 'llm'
+    expect(await expandQueries('plain query text')).toEqual(['plain query text'])
+  })
+})
+
+describe('runResearchPipeline — full pass + no-key regression proofs', () => {
+  const searxHits = (...titles: string[]) => ({
+    json: {
+      results: titles.map((t, i) => ({
+        title: t,
+        url: `https://${t.toLowerCase().replace(/\s+/g, '')}.com/p${i}`,
+        content: `${t} body`,
+      })),
+    },
+  })
+
+  test('keyless simple query: exactly one search, no rerank/rewrite calls (today’s behavior)', async () => {
+    process.env.SEARXNG_URL = 'http://searx.local'
+    const calls = mockFetch(url => {
+      if (url.includes('searx.local')) return searxHits('Alpha result')
+      return { text: '' }
+    })
+    const { hits, provider, queries } = await runResearchPipeline('alpha result', {
+      enrich: false,
+    })
+    expect(provider).toBe('searxng')
+    expect(queries).toEqual(['alpha result'])
+    expect(hits[0]?.title).toBe('Alpha result')
+    // ONLY the one search request — no rerank endpoint, no rewrite call.
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toContain('searx.local')
+  })
+
+  test('rewrite off → the search runs the EXACT raw query', async () => {
+    process.env.SEARXNG_URL = 'http://searx.local'
+    const calls = mockFetch(() => searxHits('R'))
+    await runResearchPipeline('hey jarvis please look up cats', {
+      rewrite: { mode: 'off' },
+      enrich: false,
+    })
+    expect(decodeURIComponent(calls[0])).toContain('hey jarvis please look up cats')
+  })
+
+  test('compound question → two searches, merged + domain-deduped', async () => {
+    process.env.SEARXNG_URL = 'http://searx.local'
+    const calls = mockFetch(url => {
+      if (decodeURIComponent(url).includes('capital of australia')) {
+        return searxHits('Canberra guide', 'Shared site')
+      }
+      return searxHits('Population stats', 'Shared site')
+    })
+    const { hits, queries } = await runResearchPipeline(
+      'what is the capital of australia and how many people live there',
+      { enrich: false },
+    )
+    expect(queries).toEqual([
+      'what is the capital of australia',
+      'how many people live there',
+    ])
+    expect(calls.filter(u => u.includes('searx.local'))).toHaveLength(2)
+    const titles = hits.map(h => h.title)
+    expect(titles).toContain('Canberra guide')
+    expect(titles).toContain('Population stats')
+    expect(titles.filter(t => t === 'Shared site')).toHaveLength(1) // deduped
+  })
+
+  test('one sub-query failing does not sink the other', async () => {
+    process.env.SEARXNG_URL = 'http://searx.local'
+    mockFetch(url => {
+      const q = decodeURIComponent(url)
+      if (q.includes('searx.local') && q.includes('capital of australia')) {
+        return searxHits('Canberra guide')
+      }
+      return { ok: false, status: 500 }
+    })
+    const { hits } = await runResearchPipeline(
+      'what is the capital of australia and how many people live there',
+      { enrich: false },
+    )
+    expect(hits.map(h => h.title)).toContain('Canberra guide')
+  })
+
+  test('with a Cohere key the final order is the reranked one', async () => {
+    process.env.SEARXNG_URL = 'http://searx.local'
+    process.env.COHERE_API_KEY = 'ck'
+    mockFetch((url, init) => {
+      if (url.includes('searx.local')) {
+        return searxHits('Alpha piece', 'Beta piece')
+      }
+      if (url.includes('api.cohere.com')) {
+        // Score by document CONTENT (the pre-rerank heuristic order is an
+        // implementation detail): Beta is the semantically relevant one.
+        const body = JSON.parse(String(init?.body))
+        const beta = body.documents.findIndex((d: string) => d.includes('Beta piece'))
+        const alpha = body.documents.findIndex((d: string) => d.includes('Alpha piece'))
+        return {
+          json: {
+            results: [
+              { index: beta, relevance_score: 0.95 },
+              { index: alpha, relevance_score: 0.2 },
+            ],
+          },
+        }
+      }
+      return { text: '' }
+    })
+    const { hits } = await runResearchPipeline('some query words', { enrich: false })
+    expect(hits.map(h => h.title)).toEqual(['Beta piece', 'Alpha piece'])
+    expect(hits[0]?.rerankScore).toBe(0.95)
+    expect(hits[1]?.rerankScore).toBe(0.2)
+  })
+
+  test('rerank API failure keeps the heuristic order (no regression)', async () => {
+    process.env.SEARXNG_URL = 'http://searx.local'
+    process.env.COHERE_API_KEY = 'ck'
+    mockFetch(url => {
+      if (url.includes('searx.local')) return searxHits('Kept first', 'Kept second')
+      if (url.includes('api.cohere.com')) return { ok: false, status: 500 }
+      return { text: '' }
+    })
+    const { hits } = await runResearchPipeline('kept query', { enrich: false })
+    expect(hits.map(h => h.title)).toEqual(['Kept first', 'Kept second'])
+  })
+
+  test('rerank: false never touches the rerank endpoint even with a key', async () => {
+    process.env.SEARXNG_URL = 'http://searx.local'
+    process.env.COHERE_API_KEY = 'ck'
+    const calls = mockFetch(url => {
+      if (url.includes('searx.local')) return searxHits('Only hit here')
+      return { text: '' }
+    })
+    await runResearchPipeline('only hit', { enrich: false, rerank: false })
+    expect(calls.some(u => u.includes('cohere'))).toBe(false)
+  })
+
+  test('every backend failing still throws (semantics preserved)', async () => {
+    process.env.SEARXNG_URL = 'http://searx.local'
+    mockFetch(() => ({ ok: false, status: 500 }))
+    await expect(
+      runResearchPipeline('any query at all', { enrich: false }),
+    ).rejects.toThrow()
   })
 })
