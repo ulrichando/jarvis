@@ -225,7 +225,7 @@ export async function runSearchPipeline(
   query: string,
   opts: PipelineOptions = {},
 ): Promise<PipelineResult> {
-  const max = opts.maxResults ?? envInt("SEARCH_MAX_RESULTS", 8);
+  const max = opts.maxResults ?? envInt("SEARCH_MAX_RESULTS", 15);
   const searchTimeoutMs = opts.searchTimeoutMs ?? 8000;
   const log = opts.log ?? (() => {});
   const errors: string[] = [];
@@ -525,7 +525,7 @@ export async function rerankHits(
   }
 
   const timeoutMs = opts.timeoutMs ?? envInt("RERANK_TIMEOUT_MS", 1200);
-  const topN = Math.min(hits.length, Math.max(1, opts.topN ?? envInt("RERANK_TOP_N", 8)));
+  const topN = Math.min(hits.length, Math.max(1, opts.topN ?? envInt("RERANK_TOP_N", 15)));
   const model =
     (process.env.RERANK_MODEL ?? "").trim() || RERANK_DEFAULT_MODEL[resolved.name];
   const documents = hits.map(rerankDocText);
@@ -607,7 +607,7 @@ export async function runResearchPipeline(
   opts: ResearchOptions = {},
 ): Promise<ResearchResult> {
   const log = opts.log ?? (() => {});
-  const max = opts.maxResults ?? envInt("SEARCH_MAX_RESULTS", 8);
+  const max = opts.maxResults ?? envInt("SEARCH_MAX_RESULTS", 15);
   const pipeOpts: PipelineOptions = {
     maxResults: max,
     searchTimeoutMs: opts.searchTimeoutMs,
