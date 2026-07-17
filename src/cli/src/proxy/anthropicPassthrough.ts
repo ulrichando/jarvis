@@ -23,6 +23,11 @@
  */
 import type { Provider } from './providers.js'
 import type { RequestLog } from './logger.js'
+import {
+  applyConnectorPayload,
+  mcpConnectorEnabled,
+  readEnabledRemoteConnectors,
+} from './mcpConnectors.js'
 
 const ANTHROPIC_VERSION =
   process.env.JARVIS_ANTHROPIC_VERSION ?? '2023-06-01'
@@ -117,6 +122,32 @@ export async function forwardAnthropicNative(
   const upstreamReq = { ...anthropicReq, model: provider.model }
   const url = `${provider.baseUrl}/messages`
   const headers = buildUpstreamHeaders(incomingHeaders, provider.apiKey)
+
+  // MCP connectors, the Claude.ai way: when enabled, attach the box's
+  // ~/.jarvis connectors as Anthropic's server-side MCP connector so a thin
+  // client (the JARVIS mobile app) gets connector tools with no client-side MCP
+  // loop — Anthropic runs them and streams mcp_tool_use/mcp_tool_result back.
+  // Best-effort: a connector read/parse failure must never break the chat.
+  // Skipped if the caller already supplied its own mcp_servers (respect it).
+  if (
+    mcpConnectorEnabled() &&
+    !(Array.isArray(upstreamReq.mcp_servers) && upstreamReq.mcp_servers.length)
+  ) {
+    try {
+      const payload = await readEnabledRemoteConnectors()
+      applyConnectorPayload(upstreamReq, headers, payload)
+      if (payload.servers.length) {
+        console.log(
+          `[jarvis-proxy] [${requestId.slice(0, 8)}] MCP connector: attached ` +
+          `${payload.servers.length} server(s) [${payload.servers.map(s => s.name).join(', ')}]`,
+        )
+      }
+    } catch (e: any) {
+      console.warn(
+        `[jarvis-proxy] [${requestId.slice(0, 8)}] MCP connector inject skipped: ${e?.message ?? e}`,
+      )
+    }
+  }
 
   console.log(
     `[jarvis-proxy] [${requestId.slice(0, 8)}] CLI="${anthropicReq.model ?? '(default)'}" → ` +
