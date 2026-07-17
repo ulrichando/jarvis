@@ -20,7 +20,9 @@ COPY scripts/ ./scripts/
 #    (override VOICE_STT_MODEL / VOICE_STT_INTERIM_MODEL at runtime ->
 #    that model downloads once to the container fs instead)
 ARG STT_MODEL=small.en
-ARG STT_INTERIM_MODEL=tiny.en
+# base.en interim: cleaner live transcription than tiny.en (~2x CPU) — the
+# confirmed quality bar on the deployed box; bake it so rebuilds don't re-download.
+ARG STT_INTERIM_MODEL=base.en
 RUN python agent.py download-files && \
     python -c "from faster_whisper import WhisperModel; WhisperModel('${STT_MODEL}', device='cpu', compute_type='int8'); WhisperModel('${STT_INTERIM_MODEL}', device='cpu', compute_type='int8')"
 
