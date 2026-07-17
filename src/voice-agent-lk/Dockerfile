@@ -17,7 +17,7 @@ COPY scripts/ ./scripts/
 #  - livekit plugin assets (Silero VAD onnx etc.)
 #  - the default faster-whisper model (override VOICE_STT_MODEL at
 #    runtime -> that model downloads once to the container fs instead)
-ARG STT_MODEL=small.en
+ARG STT_MODEL=base.en
 RUN python agent.py download-files && \
     python -c "from faster_whisper import WhisperModel; WhisperModel('${STT_MODEL}', device='cpu', compute_type='int8')"
 
