@@ -19,6 +19,10 @@ Env (see .env.example):
                             (default http://127.0.0.1:80)
   VOICE_LLM_MODEL         — default claude-sonnet-4-6 (gateway registry id)
   VOICE_STT_MODEL         — default base.en (faster-whisper, cpu/int8)
+  VOICE_STT_STREAMING     — 1 (default): live type-as-you-speak interim
+                            transcripts; 0 = proven finals-only path
+  VOICE_STT_INTERIM_MODEL / _INTERVAL / _WINDOW — interim decode knobs
+                            (see stt_local.build_stt)
   VOICE_TTS_VOICE         — default en-GB-RyanNeural (matches Android)
   VOICE_GREETING          — optional spoken line when a user joins
 """
@@ -102,15 +106,19 @@ _pending: set[asyncio.Task] = set()
 _active_room = None
 
 
-def _publish_tool_event(tool: str, status: str, query: str = "") -> None:
+def _publish_tool_event(tool: str, status: str, query: str = "", sources=None) -> None:
     """Fire-and-forget: tell the phone a tool started/finished (LiveKit data,
-    topic `agent.tool`) so voice mode can show a "Searching the web…" indicator
-    like text chat, instead of a silent pause while the agent researches."""
+    topic `agent.tool`) so voice mode can show a "Searching the web" indicator
+    like text chat, instead of a silent pause while the agent researches. On the
+    "done" event `sources` carries the [{title, url}] hits so the phone can show
+    the same source bubbles as a chat search."""
     room = _active_room
     if room is None:
         return
     try:
-        payload = json.dumps({"tool": tool, "status": status, "query": query}).encode("utf-8")
+        payload = json.dumps(
+            {"tool": tool, "status": status, "query": query, "sources": sources or []}
+        ).encode("utf-8")
     except Exception:
         return
     task = asyncio.create_task(
@@ -385,6 +393,7 @@ async def search_web(query: str) -> str:
         query: A concise web search query capturing what to look up.
     """
     _publish_tool_event("web_search", "searching", query)
+    collected_sources = []
     try:
         token = proxy_token.mint_from_env(sub="voice-agent")
         url = f"{WEB_URL}/api/voice-search"
@@ -405,8 +414,11 @@ async def search_web(query: str) -> str:
         for h in hits[:6]:
             title = (h.get("title") or "").strip()
             snippet = (h.get("snippet") or "").strip()
+            src_url = (h.get("url") or "").strip()
             if not title:
                 continue
+            if src_url:
+                collected_sources.append({"title": title, "url": src_url})
             lines.append(f"- {title}: {snippet}" if snippet else f"- {title}")
         logger.info("[search] %d result(s) for %r", len(lines), query)
         return f"Web results for '{query}':\n" + "\n".join(lines)
@@ -414,7 +426,7 @@ async def search_web(query: str) -> str:
         logger.warning("[search] failed for %r: %s", query, e)
         return "Web search failed; answer from what you know and say you couldn't search the web."
     finally:
-        _publish_tool_event("web_search", "done", query)
+        _publish_tool_event("web_search", "done", query, collected_sources)
 
 
 async def _post_turn(user_id: str, role: str, text: str) -> None:
@@ -759,8 +771,11 @@ def prewarm(proc: JobProcess) -> None:
         # Ignore sub-250ms blips (a click, a tap, a single cough).
         min_speech_duration=0.25,
     )
-    stt_inst = stt_local.build_stt()
-    # Load the ctranslate2 model now so the first utterance doesn't pay
+    # The streaming STT (VOICE_STT_STREAMING=1, default) opens its own
+    # Silero stream off this same VAD instance for utterance boundaries —
+    # silero VADStreams share one ONNX session, each with private state.
+    stt_inst = stt_local.build_stt(vad=proc.userdata["vad"])
+    # Load the ctranslate2 model(s) now so the first utterance doesn't pay
     # the load cost (the weights are baked into the docker image).
     stt_inst.preload()
     proc.userdata["stt"] = stt_inst
@@ -921,8 +936,11 @@ async def entrypoint(ctx: JobContext) -> None:
 
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
-        # Non-streaming STT: AgentSession auto-wraps it in a
-        # StreamAdapter with the VAD above.
+        # Streaming STT (default): declares streaming=True, so AgentSession
+        # uses its .stream() directly and emits live INTERIM_TRANSCRIPTs
+        # (the phone renders them as the self-revising user partial).
+        # With VOICE_STT_STREAMING=0 it's the old non-streaming STT and
+        # AgentSession auto-wraps it in a StreamAdapter with the VAD above.
         stt=ctx.proc.userdata["stt"],
         llm=_build_llm(model_override),
         tts=tts_edge.EdgeTTS(voice=tts_voice, rate=tts_rate, on_speech=_publish_speech),
@@ -933,8 +951,11 @@ async def entrypoint(ctx: JobContext) -> None:
                 # LiveKit Cloud's adaptive-interruption gateway first,
                 # which self-hosted LiveKit doesn't have.
                 "mode": "vad",
-                # min_words > 0 needs STT partials to fire; our whisper
-                # rung is finals-only, so gate on VAD duration alone.
+                # Gate barge-in on VAD duration alone (min_words: 0):
+                # streaming interims exist now, but word-gated interruption
+                # would add interim-decode latency (~0.5-1s) to every
+                # barge-in, and with VOICE_STT_STREAMING=0 there are no
+                # partials at all. VAD-only keeps both modes identical.
                 # The phone's WebRTC AEC keeps agent echo out of the mic.
                 "min_duration": 0.55,
                 "min_words": 0,
