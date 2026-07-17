@@ -1,0 +1,42 @@
+# docker-compose.override.yml — the SANCTIONED home for box-local compose config.
+#
+# Copy to docker-compose.override.yml (gitignored — see src/web/.gitignore) and
+# keep ONLY environment-specific deltas here. Compose auto-merges this file into
+# docker-compose.yml on every `docker compose` invocation:
+#   - `environment:` maps DEEP-MERGE (your keys are added; base keys survive;
+#     same-key entries here win),
+#   - `volumes:` lists APPEND (entries merge by container target path — a new
+#     target is added, a matching target is replaced).
+#
+# WHY THIS FILE EXISTS: the VPS continuous deploy (scripts/vps/deploy-poll.sh)
+# does `git merge --ff-only origin/master` and REFUSES to deploy while any
+# tracked file is locally edited. Hand-editing docker-compose.yml (or any
+# tracked file) on the box wedges every subsequent deploy until someone
+# reconciles by hand — this happened with the 2026-07 MCP-connector hand-apply.
+# The rules (docs/runbook/deploy-online.md §6/§6a):
+#   * tracked files stay canonical (byte-identical to origin/master);
+#   * box-local config lives HERE or in .env.production (both gitignored);
+#   * features ship via PR — never hand-applied onto prod tracked files.
+#
+# Worked example below = the real VPS override as of 2026-07: the web app's
+# read-only repo mount + the Anthropic MCP-connector wiring for the hub
+# (feature code ships tracked via src/cli/src/proxy/mcpConnectors.ts; only this
+# box-specific mount + enable flag live here). Delete what you don't need.
+
+services:
+  # Give the web app read-only access to the deployed repo checkout.
+  web:
+    volumes:
+      - /opt/jarvis:/opt/jarvis:ro
+    environment:
+      JARVIS_REPO_ROOT: /opt/jarvis
+
+  # Anthropic MCP connector for thin mobile clients (mcpConnectors.ts):
+  # the connector list is HOST data at /root/jarvis-mcp/mcp.json, mounted
+  # read-only; the tracked code path stays inert unless JARVIS_MCP_CONNECTOR=1.
+  hub:
+    volumes:
+      - /root/jarvis-mcp:/opt/mcp:ro
+    environment:
+      JARVIS_MCP_CONNECTOR: "1"
+      JARVIS_MCP_DIR: /opt/mcp

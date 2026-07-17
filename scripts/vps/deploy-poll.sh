@@ -103,7 +103,13 @@ fi
 log "deploying $OLD -> $NEW"
 if ! git merge --ff-only "$NEW" >>"$LOG" 2>&1; then
   echo "$NEW" >"$STATE_DIR/failed-sha"
-  notify "jarvis-deploy: FAILED — ff-only merge refused (dirty/diverged tree at $REPO); reconcile manually. Box-local tweaks belong in docker-compose.override.yml / .env.production, never tracked files."
+  # Name the offending paths so the wedge is self-diagnosing from the alert
+  # alone (the 2026-07 MCP hand-apply sat undiagnosed behind a generic
+  # message). Tracked edits always block ff-only; untracked files block it
+  # only when the incoming merge wants to write them — porcelain shows both.
+  # Bounded + flattened for the one-line notify; empty ⇒ a diverged HEAD.
+  DIRTY=$(git status --porcelain 2>/dev/null | head -20 | tr '\n' ';' || true)
+  notify "jarvis-deploy: FAILED — ff-only merge refused (dirty/diverged tree at $REPO): [${DIRTY:-no dirty files — diverged HEAD?}] Reconcile per docs/runbook/deploy-online.md §6a. Box-local tweaks belong in docker-compose.override.yml / .env.production, never tracked files."
   exit 1
 fi
 
