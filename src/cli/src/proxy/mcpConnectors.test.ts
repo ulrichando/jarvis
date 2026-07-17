@@ -2,8 +2,10 @@ import { describe, expect, test } from 'bun:test'
 
 import {
   applyConnectorPayload,
+  applyToolAccessMode,
   buildConnectorPayload,
   MCP_CONNECTOR_BETA,
+  parseToolAccessMode,
 } from './mcpConnectors.js'
 
 describe('buildConnectorPayload', () => {
@@ -60,6 +62,20 @@ describe('buildConnectorPayload', () => {
     expect(buildConnectorPayload(undefined)).toEqual({ servers: [], toolsets: [] })
     expect(buildConnectorPayload({})).toEqual({ servers: [], toolsets: [] })
   })
+
+  test('deny list → toolset configs disabling just those tools (read-only lockdown)', () => {
+    const { toolsets } = buildConnectorPayload({
+      ock: { transport: 'http', url: 'https://x/mcp', deny: ['errors_delete', 'errors_update_status', ''] },
+      plain: { transport: 'http', url: 'https://y/mcp' },
+    } as any)
+    const ock = toolsets.find(t => t.mcp_server_name === 'ock')!
+    expect(ock.configs).toEqual({
+      errors_delete: { enabled: false },
+      errors_update_status: { enabled: false },
+    })
+    // No deny → bare toolset, no configs key.
+    expect(toolsets.find(t => t.mcp_server_name === 'plain')!.configs).toBeUndefined()
+  })
 })
 
 describe('applyConnectorPayload', () => {
@@ -96,5 +112,57 @@ describe('applyConnectorPayload', () => {
     })
     expect(headers['anthropic-beta']).toBe(MCP_CONNECTOR_BETA) // no duplicate
     expect(req.tools).toEqual([{ type: 'mcp_toolset', mcp_server_name: 'g' }])
+  })
+})
+
+describe('parseToolAccessMode', () => {
+  test('valid modes (case-insensitive) + default to auto', () => {
+    expect(parseToolAccessMode('on_demand')).toBe('on_demand')
+    expect(parseToolAccessMode('ALWAYS')).toBe('always')
+    expect(parseToolAccessMode('auto')).toBe('auto')
+    expect(parseToolAccessMode('')).toBe('auto')
+    expect(parseToolAccessMode(null)).toBe('auto')
+    expect(parseToolAccessMode('nonsense')).toBe('auto')
+  })
+})
+
+describe('applyToolAccessMode', () => {
+  const sample = (): any => ({
+    tools: [
+      { name: 'ui_tap' },                                                                     // device tool
+      { type: 'mcp_toolset', mcp_server_name: 'ock', configs: { errors_delete: { enabled: false } } },
+      { type: 'web_search_20250305', name: 'web_search' },                                    // server tool
+    ],
+  })
+
+  test('always / auto → unchanged', () => {
+    const a = sample(); applyToolAccessMode(a, 'always')
+    expect(a.tools[0].defer_loading).toBeUndefined()
+    expect(a.tools).toHaveLength(3)
+    const b = sample(); applyToolAccessMode(b, 'auto')
+    expect(b.tools).toHaveLength(3)
+  })
+
+  test('on_demand → defers device + mcp_toolset (configs kept), leaves server tool, appends search', () => {
+    const r = sample(); applyToolAccessMode(r, 'on_demand')
+    expect(r.tools[0]).toEqual({ name: 'ui_tap', defer_loading: true })
+    expect(r.tools[1].default_config).toEqual({ defer_loading: true })
+    expect(r.tools[1].configs).toEqual({ errors_delete: { enabled: false } }) // read-only lockdown preserved
+    expect(r.tools[2]).toEqual({ type: 'web_search_20250305', name: 'web_search' }) // server tool untouched
+    const last = r.tools[r.tools.length - 1]
+    expect(last).toEqual({ type: 'tool_search_tool_bm25_20251119', name: 'tool_search_tool_bm25' })
+    expect(last.defer_loading).toBeUndefined() // search tool must stay non-deferred
+  })
+
+  test('on_demand with nothing deferrable → no search added', () => {
+    const r: any = { tools: [{ type: 'web_search_20250305', name: 'web_search' }] }
+    applyToolAccessMode(r, 'on_demand')
+    expect(r.tools).toHaveLength(1)
+  })
+
+  test('on_demand with no tools → no-op', () => {
+    const r: any = {}
+    applyToolAccessMode(r, 'on_demand')
+    expect(r.tools).toBeUndefined()
   })
 })

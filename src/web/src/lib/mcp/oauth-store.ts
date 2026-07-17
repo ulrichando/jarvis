@@ -14,7 +14,10 @@ import type {
 // chmod 600. Two sections:
 //   - pending: in-flight authorizations keyed by the OAuth `state` (short-lived).
 //   - servers: completed auth keyed by the mcp.json server name (for refresh).
-const FILE = path.join(os.homedir(), ".jarvis", "mcp-oauth.json");
+// Shares the connector config dir with store.ts (JARVIS_MCP_DIR override) so the
+// web app and the hub proxy read the same OAuth-token file. Defaults to ~/.jarvis.
+const DIR = process.env.JARVIS_MCP_DIR?.trim() || path.join(os.homedir(), ".jarvis");
+const FILE = path.join(DIR, "mcp-oauth.json");
 const PENDING_TTL_MS = 10 * 60_000;
 
 export type Transport = "http" | "sse";

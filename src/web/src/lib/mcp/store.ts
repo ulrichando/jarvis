@@ -10,7 +10,11 @@ import path from "node:path";
 // `disabled`/`enabled` flag, so add/remove/toggle here are picked up on its next
 // restart (the web chat reads this file per-turn, so it sees changes immediately).
 // Machine-global (single-user box), not keyed per web user.
-const FILE = path.join(os.homedir(), ".jarvis", "mcp.json");
+// JARVIS_MCP_DIR relocates the connector config dir so the web app and the CLI
+// proxy (hub) can share ONE file — a single source of truth for what the mobile
+// gateway actually injects. Defaults to ~/.jarvis (the voice agent's file).
+const DIR = process.env.JARVIS_MCP_DIR?.trim() || path.join(os.homedir(), ".jarvis");
+const FILE = path.join(DIR, "mcp.json");
 
 export type McpTransport = "http" | "sse" | "stdio";
 
