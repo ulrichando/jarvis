@@ -19,11 +19,14 @@ the openai TTS plugin uses for its mp3 mode.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import edge_tts
 from livekit.agents import tts
 from livekit.agents.types import DEFAULT_API_CONNECT_OPTIONS, APIConnectOptions
 from livekit.agents.utils import shortuuid
+
+logger = logging.getLogger("voice-agent.tts")
 
 __all__ = ["EdgeTTS", "SAMPLE_RATE", "NUM_CHANNELS", "DEFAULT_VOICE"]
 
@@ -43,6 +46,7 @@ class EdgeTTS(tts.TTS):
         rate: str = "+0%",
         volume: str = "+0%",
         pitch: str = "+0Hz",
+        on_speech=None,
     ) -> None:
         super().__init__(
             capabilities=tts.TTSCapabilities(streaming=False),
@@ -53,6 +57,10 @@ class EdgeTTS(tts.TTS):
         self._rate = rate
         self._volume = volume
         self._pitch = pitch
+        # Optional callback(text: str, words: list[{"t": word, "ms": offset})
+        # invoked once per utterance with edge-tts word-boundary timings — lets
+        # the phone light each word white as it's spoken (karaoke read-along).
+        self._on_speech = on_speech
 
     @property
     def model(self) -> str:
@@ -101,10 +109,50 @@ class _EdgeTTSChunkedStream(tts.ChunkedStream):
             pitch=edge_tts_obj._pitch,
         )
 
+        # edge-tts 7.x emits SentenceBoundary (offset + duration + text, in
+        # 100-ns ticks), not per-word timing. Interpolate word start-times across
+        # each sentence's spoken span (weighted by character length) so the phone
+        # can light each word white roughly as it's said. ms are relative to this
+        # utterance's audio start; the phone stamps absolute targets on arrival.
+        sentences: list[dict] = []
+        sent = False
+
+        def _emit_words() -> None:
+            nonlocal sent
+            if sent or self._tts._on_speech is None:  # type: ignore[attr-defined]
+                return
+            sent = True
+            words: list[dict] = []
+            for s in sentences:
+                toks = s["text"].split()
+                total = sum(len(t) for t in toks) or 1
+                acc = 0
+                for t in toks:
+                    words.append({"t": t, "ms": s["off"] + int(acc / total * s["dur"])})
+                    acc += len(t) + 1
+            # Total spoken span of THIS utterance (last sentence end). Sent so the
+            # phone can lay consecutive utterances on one timeline — synthesis is
+            # faster than playback, so packets arrive batched but audio is
+            # sequential.
+            dur = max((s["off"] + s["dur"] for s in sentences), default=0)
+            try:
+                self._tts._on_speech(text, words, dur)  # type: ignore[attr-defined]
+            except Exception as e:  # never let telemetry break synthesis
+                logger.warning("[tts] on_speech callback failed: %s", e)
+
         try:
             async for chunk in communicate.stream():
                 if chunk["type"] == "audio":
                     output_emitter.push(chunk["data"])
+                elif chunk["type"] == "SentenceBoundary":
+                    sentences.append(
+                        {
+                            "off": int(chunk.get("offset", 0)) // 10_000,
+                            "dur": int(chunk.get("duration", 0)) // 10_000,
+                            "text": chunk.get("text", ""),
+                        }
+                    )
+            _emit_words()  # all sentence timings known — publish the word list
             output_emitter.flush()
         except asyncio.CancelledError:
             raise

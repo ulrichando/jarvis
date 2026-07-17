@@ -872,13 +872,31 @@ async def entrypoint(ctx: JobContext) -> None:
         "" if tts_voice == default_voice else " [from phone]",
     )
 
+    def _publish_speech(text: str, words: list[dict], dur: int = 0) -> None:
+        # Push the reply text + per-word timings (from edge-tts) to the phone so
+        # it can light each word white as JARVIS speaks it (karaoke read-along).
+        # Fired from the TTS at synthesis time — near the start of playback,
+        # unlike conversation_item_added which fires after the turn ends. `dur`
+        # is this utterance's spoken span so the phone can chain utterances.
+        try:
+            payload = json.dumps({"text": text, "words": words, "dur": dur}).encode("utf-8")
+        except Exception:
+            return
+        task = asyncio.create_task(
+            ctx.room.local_participant.publish_data(
+                payload, reliable=True, topic="agent.speech"
+            )
+        )
+        _pending.add(task)
+        task.add_done_callback(_pending.discard)
+
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
         # Non-streaming STT: AgentSession auto-wraps it in a
         # StreamAdapter with the VAD above.
         stt=ctx.proc.userdata["stt"],
         llm=_build_llm(model_override),
-        tts=tts_edge.EdgeTTS(voice=tts_voice, rate=tts_rate),
+        tts=tts_edge.EdgeTTS(voice=tts_voice, rate=tts_rate, on_speech=_publish_speech),
         turn_handling={
             "interruption": {
                 "enabled": True,
@@ -912,19 +930,9 @@ async def entrypoint(ctx: JobContext) -> None:
             text = item.text_content
             logger.info("[llm] agent replied: %r", text)
             interrupted = getattr(item, "interrupted", False)
-            # Publish the FULL reply text up front (data channel, topic
-            # "agent.reply") so the phone can show the whole answer in gray and
-            # light each word to white as the synced TTS transcription reads it
-            # (Claude-style karaoke). Additive + best-effort: if the client
-            # ignores it, nothing changes.
-            if text and not interrupted:
-                task = asyncio.create_task(
-                    ctx.room.local_participant.publish_data(
-                        text.encode("utf-8"), reliable=True, topic="agent.reply"
-                    )
-                )
-                _pending.add(task)
-                task.add_done_callback(_pending.discard)
+            # (Karaoke full-text + word timings are published from the TTS via
+            # _publish_speech at synthesis time, not here — this event fires too
+            # late, after the turn has finished speaking.)
             # Skip barge-in fragments (interrupted=True): persisting cut-off
             # partials like "Your" would pollute the replayed memory; the
             # follow-up full reply is the turn worth remembering.
