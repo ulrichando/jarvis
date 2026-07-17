@@ -125,7 +125,10 @@ class _EdgeTTSChunkedStream(tts.ChunkedStream):
             words: list[dict] = []
             for s in sentences:
                 toks = s["text"].split()
-                total = sum(len(t) for t in toks) or 1
+                # Denominator must count the inter-word spaces too (acc adds +1
+                # per word), else acc/total exceeds 1 before the last word and
+                # highlighting runs late / non-monotonic across sentences.
+                total = (sum(len(t) + 1 for t in toks) - 1) or 1
                 acc = 0
                 for t in toks:
                     words.append({"t": t, "ms": s["off"] + int(acc / total * s["dur"])})
