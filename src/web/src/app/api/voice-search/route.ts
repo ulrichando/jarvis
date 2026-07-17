@@ -2,7 +2,12 @@ import { getUserId } from "@/lib/auth-helpers";
 import { verifyProxyToken } from "@/lib/bridge/proxyJwt";
 import { getOrCreateProxyJwtSecret } from "@/lib/bridge/proxySecret";
 import { bestSnippet } from "@/lib/search/core";
-import { enrichHitsWithContent, runSearchPipeline } from "@/lib/search/pipeline";
+import {
+  enrichHitsWithContent,
+  rerankHits,
+  runResearchPipeline,
+  type QueryRewriteMode,
+} from "@/lib/search/pipeline";
 
 export const runtime = "nodejs";
 
@@ -19,6 +24,13 @@ export const runtime = "nodejs";
 // by default and answers in ~1s. Only the keyless fallback — whose snippets
 // are thin — fetches the top pages, in parallel under a hard ~2s budget.
 // Override with VOICE_SEARCH_FETCH_PAGES / VOICE_SEARCH_FETCH_TIMEOUT_MS.
+//
+// The heavier research stages are OPT-IN for voice so it never gets slower:
+//   VOICE_SEARCH_QUERY_REWRITE (off)  — off | heuristic (llm is chat-only;
+//     heuristic is pure string work, effectively free)
+//   VOICE_SEARCH_RERANK (0)           — 1 enables Cohere/Jina semantic rerank
+//     AFTER content enrichment, hard-capped at VOICE_SEARCH_RERANK_TIMEOUT_MS
+//     (700ms default); any miss keeps the heuristic order.
 //
 // Auth: better-auth session OR the voice-agent proxy-JWT service token
 // (verifyProxyToken, sub === "voice-agent"). proxy.ts allowlists this in
@@ -61,18 +73,37 @@ export async function GET(req: Request) {
   }
 
   try {
-    const { hits, provider } = await runSearchPipeline(q, {
+    const log = (m: string) => console.warn(`[voice-search] ${m}`);
+    // Rewrite defaults to OFF for voice (the query already comes from the
+    // agent's LLM); "heuristic" is the only opt-in — it is pure string work.
+    const rewriteMode: QueryRewriteMode =
+      (process.env.VOICE_SEARCH_QUERY_REWRITE ?? "").trim().toLowerCase() ===
+      "heuristic"
+        ? "heuristic"
+        : "off";
+    // Enrichment pages depend on the provider (Brave snippets need no fetch),
+    // so run retrieval alone here and do enrich → rerank manually below.
+    const { hits, provider } = await runResearchPipeline(q, {
       maxResults: MAX_RESULTS,
       searchTimeoutMs: SEARCH_TIMEOUT_MS,
-      log: (m) => console.warn(`[voice-search] ${m}`),
+      log,
+      rewrite: { mode: rewriteMode },
+      enrich: false,
+      rerank: false,
     });
     const pages = envInt("VOICE_SEARCH_FETCH_PAGES", provider === "brave" ? 0 : 2);
-    const enriched = await enrichHitsWithContent(hits, {
+    let enriched = await enrichHitsWithContent(hits, {
       pages,
       timeoutMs: envInt("VOICE_SEARCH_FETCH_TIMEOUT_MS", 2000),
       budgetMs: envInt("VOICE_SEARCH_FETCH_TIMEOUT_MS", 2000) + 500,
       maxChars: CONTENT_MAX_CHARS,
     });
+    if (/^(1|true|yes|on)$/i.test((process.env.VOICE_SEARCH_RERANK ?? "").trim())) {
+      enriched = await rerankHits(q, enriched, {
+        timeoutMs: envInt("VOICE_SEARCH_RERANK_TIMEOUT_MS", 700),
+        log,
+      });
+    }
     return Response.json({
       hits: enriched.map((h) => ({
         title: h.title,

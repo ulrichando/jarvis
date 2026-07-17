@@ -7,24 +7,32 @@
 // this proxy to a non-Anthropic provider, no search ever runs and the UI reports
 // "Did 0 searches".
 //
-// We intercept the request at the proxy and run the real search pipeline
-// (src/proxy/search/): Brave Search API when BRAVE_SEARCH_API_KEY is set,
-// falling back to SearXNG → DuckDuckGo keyless — then clean/dedup/rerank the
-// hits, fetch the top pages for real content, and synthesize the Anthropic
-// streaming events the client already knows how to parse. Alongside the
-// spec-shaped web_search_result blocks (title/url the phone renders as source
-// bubbles) we emit a trailing `text` block carrying the content digest — the
-// CLI's WebSearchTool folds trailing text into the tool result, so the model
-// finally sees page text instead of bare links and answers after ONE search.
+// We intercept the request at the proxy and run the real research pipeline
+// (src/proxy/search/): query rewrite/decomposition → Brave Search API when
+// BRAVE_SEARCH_API_KEY is set (falling back to SearXNG → DuckDuckGo keyless)
+// → clean/dedup → fetch the top pages for real content → semantic rerank
+// (Cohere/Jina when keyed, heuristic otherwise) — then synthesize the
+// Anthropic streaming events the client already knows how to parse.
+// Alongside the spec-shaped web_search_result blocks (title/url/snippet/
+// cited_text the phone renders as rich source cards) we emit a trailing
+// `text` block carrying the citation-grounded evidence digest — the CLI's
+// WebSearchTool folds trailing text into the tool result, so the model sees
+// numbered page evidence, cites inline, and answers after ONE search.
 
-import { bestSnippet, formatHitsAsDigest, type RichHit } from './search/core.js'
 import {
-  enrichHitsWithContent,
+  bestSnippet,
+  bestSupportingPassage,
+  formatHitsAsDigest,
+  type RichHit,
+} from './search/core.js'
+import {
+  runResearchPipeline,
   runSearchPipeline,
   searchDuckDuckGo as pipelineSearchDuckDuckGo,
   searchSearxng as pipelineSearchSearxng,
   type SearchProvider,
 } from './search/pipeline.js'
+import { getProvider, getProviderForModel } from './providers.js'
 
 export { parseDuckDuckGoHtml } from './search/core.js'
 export type { RichHit, SearchProvider }
@@ -58,13 +66,78 @@ async function webSearchWithProvider(
 
 export type WebResearchResult = { hits: RichHit[]; provider: SearchProvider }
 
-// Full research pass: search + clean, then fetch the top pages in parallel
-// (per-page timeout + overall budget — see search/pipeline.ts) so the model
-// gets real article text, not 90-char snippets.
+// ── Optional LLM query rewrite (SEARCH_QUERY_REWRITE=llm) ─────────────────
+// One small completion through the SAME provider path the proxy already
+// routes chat through. SEARCH_REWRITE_MODEL picks a registry model id
+// (ideally something small/fast); unset = the default provider. The
+// pipeline bounds the call with SEARCH_REWRITE_TIMEOUT_MS and falls back
+// to the heuristic queries on any failure, so this can never stall a search.
+async function llmQueryRewrite(prompt: string, timeoutMs: number): Promise<string> {
+  const modelId = (process.env.SEARCH_REWRITE_MODEL ?? '').trim()
+  const provider = (modelId ? getProviderForModel(modelId) : null) ?? getProvider()
+
+  if (provider.name === 'anthropic') {
+    // Anthropic speaks /v1/messages, not the OpenAI chat-completions shape.
+    const res = await fetch(`${provider.baseUrl}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': provider.apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: provider.model,
+        max_tokens: 200,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!res.ok) throw new Error(`rewrite upstream HTTP ${res.status}`)
+    const data: any = await res.json()
+    const text = Array.isArray(data?.content)
+      ? data.content
+          .filter((b: any) => b?.type === 'text')
+          .map((b: any) => b?.text ?? '')
+          .join('')
+      : ''
+    if (!text) throw new Error('rewrite upstream returned no text')
+    return text
+  }
+
+  const res = await fetch(`${provider.baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${provider.apiKey}`,
+    },
+    body: JSON.stringify({
+      model: provider.model,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 200,
+      temperature: 0,
+      stream: false,
+    }),
+    signal: AbortSignal.timeout(timeoutMs),
+  })
+  if (!res.ok) throw new Error(`rewrite upstream HTTP ${res.status}`)
+  const data: any = await res.json()
+  const text = data?.choices?.[0]?.message?.content
+  if (typeof text !== 'string' || !text) throw new Error('rewrite upstream returned no text')
+  return text
+}
+
+// Full research pass (chat/CLI/web): query rewrite → search per query +
+// merge → parallel page fetch → semantic rerank when a Cohere/Jina key is
+// set. Every stage is bounded and degrades to the previous behavior — see
+// search/pipeline.ts runResearchPipeline.
 export async function webResearch(query: string): Promise<WebResearchResult> {
-  const { hits, provider } = await webSearchWithProvider(query)
-  const enriched = await enrichHitsWithContent(hits)
-  return { hits: enriched, provider }
+  const wantsLlmRewrite =
+    (process.env.SEARCH_QUERY_REWRITE ?? '').trim().toLowerCase() === 'llm'
+  const { hits, provider } = await runResearchPipeline(query, {
+    log: m => console.warn(`[jarvis-proxy] ${m}`),
+    ...(wantsLlmRewrite ? { llmRewrite: llmQueryRewrite } : {}),
+  })
+  return { hits, provider }
 }
 
 // ── Detect a WebSearchTool inner request ──────────────────────────────────
@@ -116,18 +189,28 @@ function randomId(prefix: string): string {
   return prefix + Math.random().toString(36).slice(2, 14)
 }
 
-// Spec-shaped web_search_result items. `snippet` is a jarvis extension the
-// official shape doesn't carry — existing clients (CLI WebSearchTool, the
-// Android chat) parse only {title,url} with unknown-key tolerance, so it's
-// forward-compatible enrichment, not a break.
-function webSearchResultItems(hits: RichHit[]): unknown[] {
+// Spec-shaped web_search_result items, enriched for rich source cards.
+// The official Anthropic shape is {type, title, url, encrypted_content,
+// page_age}; jarvis adds two DOCUMENTED plaintext extensions:
+//   snippet    — short teaser (≤300 chars) from the search backend
+//   cited_text — the best supporting passage (≤600 chars) for the query,
+//                chosen from the fetched page content (falls back to the
+//                search snippets when no page was fetched); the plaintext
+//                analogue of the cited_text Anthropic's own web_search
+//                citations carry (theirs is capped at 150 chars).
+// Existing clients (CLI WebSearchTool, the Android chat) parse {title,url}
+// with unknown-key tolerance, so both are forward-compatible enrichment,
+// not a break.
+function webSearchResultItems(query: string, hits: RichHit[]): unknown[] {
   return hits.slice(0, 10).map(h => {
     const snippet = bestSnippet(h, 300)
+    const citedText = bestSupportingPassage(h, query, 600)
     return {
       type: 'web_search_result',
       title: h.title,
       url: h.url,
       ...(snippet ? { snippet } : {}),
+      ...(citedText ? { cited_text: citedText } : {}),
       encrypted_content: '',
       page_age: null,
     }
@@ -200,7 +283,7 @@ export async function writeSyntheticWebSearchStream(
   const resultContent =
     provider === 'failed'
       ? { type: 'web_search_tool_result_error', error_code: 'unavailable' }
-      : webSearchResultItems(hits)
+      : webSearchResultItems(query, hits)
 
   send('content_block_start', {
     type: 'content_block_start',
@@ -260,7 +343,7 @@ export function buildSyntheticWebSearchResponse(
       tool_use_id: toolUseId,
       content: failed
         ? { type: 'web_search_tool_result_error', error_code: 'unavailable' }
-        : webSearchResultItems(hits),
+        : webSearchResultItems(query, hits),
     },
   ]
   if (!failed && hits.length > 0) {

@@ -79,7 +79,10 @@ realtime voice call, so:
 - You can look things up on the web with the search tool. Use it for current
   events, prices, weather, or any fact you're unsure of — never claim you have
   no internet access or can't check. After searching, answer in one or two
-  spoken sentences; don't read out links or lists.
+  spoken sentences grounded in the results: name the source naturally when it
+  adds trust ("according to the BBC"), never read out URLs, lists, or bracket
+  numbers, and if the results don't really answer the question, say you
+  couldn't find solid information rather than guessing.
 """
 
 # ── Cross-session memory ────────────────────────────────────────────────────
@@ -111,8 +114,9 @@ def _publish_tool_event(tool: str, status: str, query: str = "", sources=None) -
     """Fire-and-forget: tell the phone a tool started/finished (LiveKit data,
     topic `agent.tool`) so voice mode can show a "Searching the web" indicator
     like text chat, instead of a silent pause while the agent researches. On the
-    "done" event `sources` carries the [{title, url}] hits so the phone can show
-    the same source bubbles as a chat search."""
+    "done" event `sources` carries the [{title, url, snippet?}] hits so the
+    phone can show the same source cards as a chat search (snippet is an
+    additive enrichment — old clients that read only {title, url} ignore it)."""
     room = _active_room
     if room is None:
         return
@@ -446,17 +450,28 @@ async def search_web(query: str) -> str:
             src_url = (h.get("url") or "").strip()
             if not title:
                 continue
-            if src_url:
-                collected_sources.append({"title": title, "url": src_url})
             body = " ".join(body.split())[:_SEARCH_EXCERPT_CHARS]
+            if src_url:
+                # snippet: additive enrichment for the phone's source cards
+                # (parsers use opt-getters, unknown keys are ignored by old
+                # clients). Keep {title, url} exactly as before.
+                source = {"title": title, "url": src_url}
+                if body:
+                    source["snippet"] = body[:200]
+                collected_sources.append(source)
             lines.append(f"{i}. {title}" + (f" — {body}" if body else ""))
         logger.info("[search] %d result(s) for %r", len(lines), query)
         result = (
             f"Web results for '{query}':\n"
             + "\n".join(lines)
-            + "\n\nAnswer the user's question now from these results in one or "
-            "two spoken sentences (no URLs, no lists). These results are "
-            "current — do not call search_web again for this question."
+            + "\n\nAnswer the user's question now in one or two spoken "
+            "sentences, grounded ONLY in these results. Attribute the key "
+            "fact to its source naturally by name (e.g. \"according to "
+            "Reuters\") — never read out URLs, lists, or result numbers. If "
+            "these results don't actually answer the question, say you "
+            "couldn't find solid information on it instead of guessing. The "
+            "results are current — do not call search_web again for this "
+            "question."
         )
         if len(_search_cache) >= _SEARCH_CACHE_MAX:
             oldest = min(_search_cache, key=lambda k: _search_cache[k][0])

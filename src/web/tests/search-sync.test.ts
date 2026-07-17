@@ -89,3 +89,61 @@ describe('search core under the web runtime', () => {
     }
   })
 })
+
+// Runtime-parity smoke for the NEW research stages under node/vitest (the
+// deep suites live beside the canonical copy in src/cli, under bun): the
+// no-key fallbacks must hold in this runtime too.
+describe('research stages under the web runtime', () => {
+  const ENV = [
+    'BRAVE_SEARCH_API_KEY',
+    'SEARXNG_URL',
+    'COHERE_API_KEY',
+    'JINA_API_KEY',
+    'RERANK_PROVIDER',
+    'SEARCH_QUERY_REWRITE',
+  ] as const
+
+  test('no rerank key → rerankHits is a pure no-op (no fetch, same order)', async () => {
+    const saved = ENV.map((k) => [k, process.env[k]] as const)
+    for (const k of ENV) delete process.env[k]
+    const origFetch = globalThis.fetch
+    const calls: string[] = []
+    globalThis.fetch = (async (url: unknown) => {
+      calls.push(String(url))
+      return { ok: true, status: 200, json: async () => ({}) } as unknown as Response
+    }) as typeof fetch
+    try {
+      const { rerankHits } = await import('@/lib/search/pipeline')
+      const hits = [
+        { title: 'A', url: 'https://a.com/x', snippet: 'sa' },
+        { title: 'B', url: 'https://b.com/y', snippet: 'sb' },
+      ]
+      const out = await rerankHits('q', hits)
+      expect(out).toEqual(hits)
+      expect(calls).toEqual([])
+    } finally {
+      globalThis.fetch = origFetch
+      for (const [k, v] of saved) {
+        if (v !== undefined) process.env[k] = v
+        else delete process.env[k]
+      }
+    }
+  })
+
+  test('query rewrite: off passes through, heuristic splits compound questions', async () => {
+    const savedMode = process.env.SEARCH_QUERY_REWRITE
+    delete process.env.SEARCH_QUERY_REWRITE
+    try {
+      const { expandQueries } = await import('@/lib/search/pipeline')
+      expect(await expandQueries('raw query untouched', { mode: 'off' })).toEqual([
+        'raw query untouched',
+      ])
+      expect(
+        await expandQueries('what is the capital of australia and how many people live there'),
+      ).toEqual(['what is the capital of australia', 'how many people live there'])
+    } finally {
+      if (savedMode !== undefined) process.env.SEARCH_QUERY_REWRITE = savedMode
+      else delete process.env.SEARCH_QUERY_REWRITE
+    }
+  })
+})
