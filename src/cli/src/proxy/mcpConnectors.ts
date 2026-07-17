@@ -191,3 +191,49 @@ export function applyConnectorPayload(
   betas.add(MCP_CONNECTOR_BETA)
   headers[key] = [...betas].join(',')
 }
+
+// ── Tool access (the phone's Auto / On demand / Always available sheet) ──────
+// Maps to Anthropic deferred tool-loading + tool search (both GA — no beta
+// header). "Always"/"Auto" = eager (today's behavior); "On demand" defers every
+// tool and adds a tool_search tool so Claude loads only what it needs per turn.
+
+export type ToolAccessMode = 'auto' | 'on_demand' | 'always'
+
+/** Parse the phone's `x-jarvis-tool-access` header → a valid mode (default auto). */
+export function parseToolAccessMode(v: string | null | undefined): ToolAccessMode {
+  const s = (v ?? '').trim().toLowerCase()
+  return s === 'on_demand' || s === 'always' ? s : 'auto'
+}
+
+/**
+ * Apply the tool-access mode to the outbound request (in place). Call AFTER
+ * applyConnectorPayload so the mcp_toolset entries already exist to defer.
+ *
+ * - `always` / `auto` → no change (eager loading, today's behavior).
+ * - `on_demand` → defer EVERY tool and append a `tool_search_tool_bm25` so Claude
+ *   discovers tools on demand:
+ *     • client/device tools (custom `{name,…}`, no `type`) → `defer_loading: true`
+ *     • each `mcp_toolset` → `default_config.defer_loading: true` (configs preserved)
+ *     • server tools (a `type` other than mcp_toolset) are left untouched
+ *   The search tool itself stays non-deferred (Anthropic requires ≥1 non-deferred).
+ *   No-op if there was nothing deferrable.
+ */
+export function applyToolAccessMode(req: any, mode: ToolAccessMode): void {
+  if (mode !== 'on_demand') return
+  const tools: any[] = Array.isArray(req.tools) ? req.tools : []
+  let deferred = 0
+  for (const t of tools) {
+    if (!t || typeof t !== 'object') continue
+    if (t.type === 'mcp_toolset') {
+      t.default_config = { ...(t.default_config ?? {}), defer_loading: true }
+      deferred++
+    } else if (!t.type) {
+      t.defer_loading = true
+      deferred++
+    }
+  }
+  if (deferred > 0) {
+    tools.push({ type: 'tool_search_tool_bm25_20251119', name: 'tool_search_tool_bm25' })
+    req.tools = tools
+  }
+}

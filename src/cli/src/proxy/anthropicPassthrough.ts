@@ -25,7 +25,9 @@ import type { Provider } from './providers.js'
 import type { RequestLog } from './logger.js'
 import {
   applyConnectorPayload,
+  applyToolAccessMode,
   mcpConnectorEnabled,
+  parseToolAccessMode,
   readEnabledRemoteConnectors,
 } from './mcpConnectors.js'
 
@@ -148,6 +150,11 @@ export async function forwardAnthropicNative(
       )
     }
   }
+
+  // Tool access mode (phone's Auto / On demand / Always sheet). Runs after
+  // connector injection so mcp_toolset entries exist to defer. Header-driven and
+  // safe: absent / auto / always → no-op; only on_demand rewrites the tools.
+  applyToolAccessMode(upstreamReq, parseToolAccessMode(incomingHeaders.get('x-jarvis-tool-access')))
 
   console.log(
     `[jarvis-proxy] [${requestId.slice(0, 8)}] CLI="${anthropicReq.model ?? '(default)'}" → ` +
