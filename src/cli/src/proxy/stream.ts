@@ -2,7 +2,7 @@
 // and writes it to a ReadableStream controller.
 
 import { setReasoning } from './reasoning-cache.js'
-import { ThinkTagStripper, modelLeaksThinkTags } from './convert.js'
+import { ThinkTagStripper, modelLeaksThinkTags, DeepSeekToolLeakCatcher } from './convert.js'
 
 const HEARTBEAT_INTERVAL_MS = 5000
 
@@ -99,6 +99,11 @@ export async function convertOpenAIStreamToAnthropic(
   // Filter them on the fly so the CLI never sees the reasoning text.
   const thinkStripper = modelLeaksThinkTags(model) ? new ThinkTagStripper() : null
 
+  // Recover DeepSeek tool calls that leak into the text channel as template
+  // markup (see DeepSeekToolLeakCatcher). Gated to deepseek models; internally
+  // a no-op unless the fullwidth-bar special token actually appears.
+  const dsmlCatcher = /deepseek/i.test(model) ? new DeepSeekToolLeakCatcher() : null
+
   // Send message_start
   send('message_start', {
     type: 'message_start',
@@ -180,7 +185,8 @@ export async function convertOpenAIStreamToAnthropic(
         // dropped silently; chunks spanning the close tag emit only
         // the post-think portion.
         if (delta.content) {
-          const visible = thinkStripper ? thinkStripper.feed(delta.content) : delta.content
+          let visible = thinkStripper ? thinkStripper.feed(delta.content) : delta.content
+          if (dsmlCatcher && visible) visible = dsmlCatcher.feed(visible)
           if (visible) {
             if (state.textBlockIndex === null) {
               state.textBlockIndex = state.nextContentIndex++
@@ -299,6 +305,57 @@ export async function convertOpenAIStreamToAnthropic(
           index: state.textBlockIndex,
           delta: { type: 'text_delta', text: tail },
         })
+      }
+    }
+
+    // Recover any DeepSeek tool call that leaked into the text channel as
+    // template markup: re-emit it as a proper tool_use block so the tool runs
+    // instead of being spoken. Leftover non-markup text is flushed as text.
+    if (dsmlCatcher) {
+      const { text: leftover, calls } = dsmlCatcher.end()
+      if (leftover) {
+        if (state.textBlockIndex === null) {
+          state.textBlockIndex = state.nextContentIndex++
+          send('content_block_start', {
+            type: 'content_block_start',
+            index: state.textBlockIndex,
+            content_block: { type: 'text', text: '' },
+          })
+        }
+        send('content_block_delta', {
+          type: 'content_block_delta',
+          index: state.textBlockIndex,
+          delta: { type: 'text_delta', text: leftover },
+        })
+      }
+      if (calls.length > 0) {
+        // Close the text block before opening tool blocks (Anthropic ordering).
+        if (state.textBlockIndex !== null) {
+          send('content_block_stop', { type: 'content_block_stop', index: state.textBlockIndex })
+          state.textBlockIndex = null
+        }
+        calls.forEach((call, n) => {
+          const contentIndex = state.nextContentIndex++
+          send('content_block_start', {
+            type: 'content_block_start',
+            index: contentIndex,
+            content_block: {
+              type: 'tool_use',
+              id: `call_${state.messageId}_dsml_${n}`,
+              name: call.name,
+              input: {},
+            },
+          })
+          send('content_block_delta', {
+            type: 'content_block_delta',
+            index: contentIndex,
+            delta: { type: 'input_json_delta', partial_json: call.argsJson },
+          })
+          send('content_block_stop', { type: 'content_block_stop', index: contentIndex })
+        })
+        state.emittedVisible = true
+        // Terminal stop_reason must be tool_use so the CLI/agent runs the calls.
+        finalFinishReason = 'tool_calls'
       }
     }
 

@@ -97,6 +97,28 @@ _SEARCH_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=12)
 # weak refs to tasks — without this a pending POST can be garbage-collected).
 _pending: set[asyncio.Task] = set()
 
+# The active room, set at entrypoint start so module-level tools (search_web)
+# can push tool-status events to the phone. None until a job connects.
+_active_room = None
+
+
+def _publish_tool_event(tool: str, status: str, query: str = "") -> None:
+    """Fire-and-forget: tell the phone a tool started/finished (LiveKit data,
+    topic `agent.tool`) so voice mode can show a "Searching the web…" indicator
+    like text chat, instead of a silent pause while the agent researches."""
+    room = _active_room
+    if room is None:
+        return
+    try:
+        payload = json.dumps({"tool": tool, "status": status, "query": query}).encode("utf-8")
+    except Exception:
+        return
+    task = asyncio.create_task(
+        room.local_participant.publish_data(payload, reliable=True, topic="agent.tool")
+    )
+    _pending.add(task)
+    task.add_done_callback(_pending.discard)
+
 # Serializes cloud turn writes so a user/assistant pair can't commit inverted
 # when their fire-and-forget tasks interleave (asyncio.Lock wakes waiters
 # FIFO, so posts land in emission order).
@@ -362,6 +384,7 @@ async def search_web(query: str) -> str:
     Args:
         query: A concise web search query capturing what to look up.
     """
+    _publish_tool_event("web_search", "searching", query)
     try:
         token = proxy_token.mint_from_env(sub="voice-agent")
         url = f"{WEB_URL}/api/voice-search"
@@ -390,6 +413,8 @@ async def search_web(query: str) -> str:
     except Exception as e:
         logger.warning("[search] failed for %r: %s", query, e)
         return "Web search failed; answer from what you know and say you couldn't search the web."
+    finally:
+        _publish_tool_event("web_search", "done", query)
 
 
 async def _post_turn(user_id: str, role: str, text: str) -> None:
@@ -722,9 +747,17 @@ def _build_recall_tool(user_id: str):
 def prewarm(proc: JobProcess) -> None:
     """Load Silero VAD + the whisper model before the first job."""
     proc.userdata["vad"] = silero.VAD.load(
-        # Slightly longer than the default 0.55s — CPU whisper is
-        # finals-only, so premature end-of-speech costs a whole re-turn.
-        min_silence_duration=0.6,
+        # Endpointing: wait ~0.8s of silence before finalizing so a natural
+        # mid-sentence pause doesn't split one utterance into several chat
+        # turns (0.6 chopped continuous speech into fragments). CPU whisper is
+        # finals-only, so premature end-of-speech also costs a whole re-turn.
+        min_silence_duration=0.8,
+        # Require more confident speech to trigger at all — a hands-free mic in
+        # a noisy room otherwise wakes Silero on background audio (default 0.5),
+        # which then hands whisper non-speech to hallucinate on.
+        activation_threshold=0.6,
+        # Ignore sub-250ms blips (a click, a tap, a single cough).
+        min_speech_duration=0.25,
     )
     stt_inst = stt_local.build_stt()
     # Load the ctranslate2 model now so the first utterance doesn't pay
@@ -766,29 +799,41 @@ async def _drain_pending_writes() -> None:
         await asyncio.gather(*list(_pending), return_exceptions=True)
 
 
-async def _resolve_tts_voice(room, participant, default_voice: str, timeout: float = 3.0) -> str:
-    """Voice-mode voice = the phone's selected Edge voice, delivered as the
-    `voice` participant attribute (Android LocalParticipant.updateAttributes) —
-    no token/route change needed. Caught via the room's attribute-changed event
-    (the participant object handed back by wait_for_participant does not reflect
-    later runtime updates), with a check of whatever is already set. Falls back
-    to the server default after `timeout`."""
-    def _voice_of(p):
-        return ((getattr(p, "attributes", None) or {}).get("voice") or "").strip()
+async def _resolve_tts_attrs(
+    room, participant, default_voice: str, default_rate: str = "+0%", timeout: float = 3.0,
+):
+    """Voice-mode voice AND speaking rate = the phone's selected Edge voice and
+    pace, delivered together as the `voice` and `rate` participant attributes
+    (Android LocalParticipant.updateAttributes) — no token/route change needed.
+    Caught via the room's attribute-changed event (the participant object handed
+    back by wait_for_participant does not reflect later runtime updates), with a
+    check of whatever is already set. Falls back to server defaults after
+    `timeout`. Returns (voice, rate)."""
+    def _attrs_of(p):
+        return dict(getattr(p, "attributes", None) or {})
 
-    logger.info("[job] initial attrs=%s", dict(getattr(participant, "attributes", {}) or {}))
-    v = _voice_of(participant)
+    def _pick(attrs):
+        return (attrs.get("voice") or "").strip(), (attrs.get("rate") or "").strip()
+
+    logger.info("[job] initial attrs=%s", _attrs_of(participant))
+    v, r = _pick(_attrs_of(participant))
     if v:
-        return v
+        return v, (r or default_rate)
 
     fut = asyncio.get_event_loop().create_future()
 
     def _on_changed(changed_attributes, changed_participant):
         try:
-            nv = ((changed_attributes or {}).get("voice") or "").strip() or _voice_of(changed_participant)
-            logger.info("[job] attrs changed (%s): voice=%s", getattr(changed_participant, "identity", "?"), nv)
+            # voice + rate are set in one updateAttributes call, so merge the
+            # event payload over whatever is already on the participant.
+            merged = {**_attrs_of(changed_participant), **dict(changed_attributes or {})}
+            nv, nr = _pick(merged)
+            logger.info(
+                "[job] attrs changed (%s): voice=%s rate=%s",
+                getattr(changed_participant, "identity", "?"), nv, nr,
+            )
             if nv and not fut.done():
-                fut.set_result(nv)
+                fut.set_result((nv, nr or default_rate))
         except Exception as e:  # never let a bad event kill the session
             logger.warning("[job] attr handler error: %s", e)
 
@@ -796,11 +841,15 @@ async def _resolve_tts_voice(room, participant, default_voice: str, timeout: flo
     try:
         return await asyncio.wait_for(fut, timeout=timeout)
     except asyncio.TimeoutError:
-        return default_voice
+        return default_voice, default_rate
 
 
 async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
+    # Expose the room to module-level tools (search_web) so they can push
+    # tool-status events (e.g. web search) to the phone for a live indicator.
+    global _active_room
+    _active_room = ctx.room
     ctx.add_shutdown_callback(_drain_pending_writes)
     # Identity from the signed LiveKit token (route.ts sets identity=userId),
     # not the room-name string — so memory can't be keyed on another user even
@@ -843,11 +892,32 @@ async def entrypoint(ctx: JobContext) -> None:
     # Voice-mode TTS voice = the phone's selected Edge voice (participant attr),
     # else the server default.
     default_voice = os.environ.get("VOICE_TTS_VOICE", tts_edge.DEFAULT_VOICE)
-    tts_voice = await _resolve_tts_voice(ctx.room, participant, default_voice)
+    default_rate = os.environ.get("VOICE_TTS_RATE", "+0%")
+    tts_voice, tts_rate = await _resolve_tts_attrs(
+        ctx.room, participant, default_voice, default_rate,
+    )
     logger.info(
-        "[job] tts voice=%s%s", tts_voice,
+        "[job] tts voice=%s rate=%s%s", tts_voice, tts_rate,
         "" if tts_voice == default_voice else " [from phone]",
     )
+
+    def _publish_speech(text: str, words: list[dict], dur: int = 0) -> None:
+        # Push the reply text + per-word timings (from edge-tts) to the phone so
+        # it can light each word white as JARVIS speaks it (karaoke read-along).
+        # Fired from the TTS at synthesis time — near the start of playback,
+        # unlike conversation_item_added which fires after the turn ends. `dur`
+        # is this utterance's spoken span so the phone can chain utterances.
+        try:
+            payload = json.dumps({"text": text, "words": words, "dur": dur}).encode("utf-8")
+        except Exception:
+            return
+        task = asyncio.create_task(
+            ctx.room.local_participant.publish_data(
+                payload, reliable=True, topic="agent.speech"
+            )
+        )
+        _pending.add(task)
+        task.add_done_callback(_pending.discard)
 
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
@@ -855,7 +925,7 @@ async def entrypoint(ctx: JobContext) -> None:
         # StreamAdapter with the VAD above.
         stt=ctx.proc.userdata["stt"],
         llm=_build_llm(model_override),
-        tts=tts_edge.EdgeTTS(voice=tts_voice),
+        tts=tts_edge.EdgeTTS(voice=tts_voice, rate=tts_rate, on_speech=_publish_speech),
         turn_handling={
             "interruption": {
                 "enabled": True,
@@ -886,19 +956,20 @@ async def entrypoint(ctx: JobContext) -> None:
     def _on_item(ev) -> None:
         item = ev.item
         if getattr(item, "role", None) == "assistant":
-            logger.info("[llm] agent replied: %r", item.text_content)
+            text = item.text_content
+            logger.info("[llm] agent replied: %r", text)
+            interrupted = getattr(item, "interrupted", False)
+            # (Karaoke full-text + word timings are published from the TTS via
+            # _publish_speech at synthesis time, not here — this event fires too
+            # late, after the turn has finished speaking.)
             # Skip barge-in fragments (interrupted=True): persisting cut-off
             # partials like "Your" would pollute the replayed memory; the
             # follow-up full reply is the turn worth remembering.
-            if (
-                user_id
-                and item.text_content
-                and not getattr(item, "interrupted", False)
-            ):
+            if user_id and text and not interrupted:
                 _append_turn(
                     user_id,
                     "assistant",
-                    item.text_content,
+                    text,
                     session_id=ctx.room.name,
                 )
 

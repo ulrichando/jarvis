@@ -100,9 +100,27 @@ class FasterWhisperSTT(stt.STT):
             io.BytesIO(wav),
             language=lang,
             beam_size=1,  # greedy — latency matters more than the last WER point
-            vad_filter=False,  # Silero VAD already gated this audio upstream
+            # Whisper hallucinates confident text on non-speech audio (a cough,
+            # breathing, background TV/voices) — a hands-free open mic feeds it
+            # plenty, and each hallucination lands as its own chat bubble. Defence
+            # in depth on top of the session's Silero endpointing:
+            #   - vad_filter: whisper's own VAD trims non-speech spans per clip
+            #   - no_speech / log_prob / compression thresholds: whisper's built-in
+            #     "this isn't speech" gates
+            #   - condition_on_previous_text=False: each clip is independent, so a
+            #     hallucination can't seed a loop ("Thank you. Thank you. …")
+            vad_filter=True,
+            no_speech_threshold=0.6,
+            log_prob_threshold=-1.0,
+            compression_ratio_threshold=2.4,
+            condition_on_previous_text=False,
         )
-        text = "".join(seg.text for seg in segments).strip()
+        # Final guard: drop any segment whisper itself is unsure is speech. This
+        # is what kills the ambient "Okay.", "you", "It's not beautiful" bubbles
+        # that slip past the combined-threshold rule above. If everything is
+        # dropped, text == "" and the agent persists no turn.
+        kept = [seg.text for seg in segments if seg.no_speech_prob < 0.6]
+        text = "".join(kept).strip()
         return text, getattr(info, "language", None)
 
     async def _recognize_impl(

@@ -817,6 +817,62 @@ def _is_bare_filler_reply(text: str) -> bool:
     return bool(norm) and norm in _FILLER_LEMMAS
 
 
+# Reflexive-agreement opener strip (2026-07-16). The non-thinking pin opens
+# nearly every reply agreeing — "You're right —" / "You're absolutely right, …"
+# (live complaint: "jarvis keep saying I'm right"). soul.md forbids the whole
+# family (incl. bare "Right,"/"Good point"); this deterministic backstop strips
+# ONLY the "you're right" agreement clause — bare "Right,"/"Exactly" openers are
+# left to the prompt (stripping them risks the sanctioned "Right away." ack).
+# Conservative: only fires when a clause-closing separator (comma / dash / period
+# / colon / !) follows, so contentful agreement like "You're right that the timer
+# is off" (a word after "right") and "right-handed" (hyphen, a compound) are kept,
+# as is a bare "You're right." with nothing after it. Curly apostrophe included —
+# the LLM emits U+2019.
+_SYCOPHANT_OPENER_RE = re.compile(
+    r"^\s*(?:you['’]?re|you are)\s+"
+    r"(?:absolutely\s+|totally\s+|completely\s+|quite\s+|so\s+|100%?\s+)?"
+    r"right\s*[,.:;!—–]+\s*",
+    re.I,
+)
+# Head chars to buffer before flushing — long enough to hold the opener clause
+# (longest ~"you're completely right — " ≈ 26) with margin, short enough to keep
+# first-word latency on the unbuffered BANTER/EMOTIONAL routes negligible.
+_SYCOPHANT_HEAD_LEN = 40
+
+
+def _strip_sycophant_opener(text: str) -> str:
+    """Drop a leading "You're right —" style agreement opener, keeping the
+    real content after it (re-capitalized). Returns the text unchanged when
+    there's no such opener, or when nothing contentful follows it."""
+    m = _SYCOPHANT_OPENER_RE.match(text or "")
+    if not m:
+        return text
+    rest = text[m.end():].lstrip()
+    if not rest:
+        return text  # opener was the whole reply — leave it for the bare-filler path
+    return rest[:1].upper() + rest[1:]
+
+
+# Network-error voicing decision (2026-07-16). A lone 'network' blip — a 2-second
+# DeepSeek/WiFi hiccup the FallbackAdapter recovers from — should NOT be voiced
+# ("I can't reach DeepSeek"); a real outage should. `state` is a mutable
+# [consecutive_count, last_ts] shared across calls. We COUNT consecutive network
+# failures, resetting the streak only after `reset_gap` seconds with no failure
+# (= recovered). The first failure of a streak stays silent; the 2nd+ voices.
+# Count-based, NOT a fixed window: an earlier time-window version silently
+# swallowed a slow outage whose failures landed > window apart (each looked like
+# a fresh "first blip"), leaving the user with no signal at all — worse than
+# always speaking.
+def _network_error_should_voice(
+    now: float, state: list, reset_gap: float = 300.0
+) -> bool:
+    if now - state[1] > reset_gap:
+        state[0] = 0
+    state[1] = now
+    state[0] += 1
+    return state[0] >= 2
+
+
 def _turn_is_addressed(user_text: str) -> bool:
     """Same directedness bar as _should_sync_memory_item: an explicit
     "Jarvis" vocative / wake phrase on THIS turn, or a live directed
@@ -4238,18 +4294,30 @@ async def suppress_ambient_backchannel(text):
         return
     buffer = ""
     buffering = True
+    # Buffer enough head to catch a "You're right —" opener (longer than the
+    # bare-filler window) before flushing the tail through.
+    _head_len = max(_BACKCHANNEL_MAX_LEN, _SYCOPHANT_HEAD_LEN)
     async for chunk in text:
         if buffering:
             buffer += chunk
-            if len(buffer) > _BACKCHANNEL_MAX_LEN:
-                # Too long to be a bare filler — flush, then pass through.
-                yield buffer
+            if len(buffer) > _head_len:
+                # Past the bare-filler + opener window — strip a leading
+                # agreement opener, flush, then pass the tail through.
+                head = _strip_sycophant_opener(buffer)
+                if head:
+                    yield head
                 buffering = False
+                buffer = ""
         else:
             yield chunk
     if not buffering or not buffer:
         return
-    # End-of-stream with a tiny reply: the only candidate shape.
+    # End-of-stream with a small reply. Strip a "You're right —" opener FIRST so
+    # what's left ("...okay.") is judged for bare-filler suppression, not the
+    # opener-prefixed whole.
+    buffer = _strip_sycophant_opener(buffer)
+    if not buffer:
+        return
     if _is_bare_filler_reply(buffer):
         sess = _active_session_for_telemetry[0]
         user_text = str(getattr(sess, "_jarvis_last_user_text", "") or "")
@@ -5565,6 +5633,13 @@ def _register_session_error_handlers(session) -> None:
     # Throttle the LLM-error fallback voice so a flapping bug doesn't
     # spam "had trouble, try again" every 200ms during retry loops.
     _llm_fallback_last_ts = [0.0]
+    # Transient-network suppression (2026-07-16): a lone 'network' blip (a
+    # 2-second DeepSeek/WiFi hiccup the cascade recovers from) should NOT be
+    # voiced as "I can't reach DeepSeek"; the 2nd+ consecutive network failure
+    # (streak reset after a quiet gap) does — see _network_error_should_voice.
+    # Non-network categories (credits/auth/quota) are not transient and speak on
+    # the first hit. State: [consecutive network-failure count, last_ts].
+    _llm_net_fail = [0, 0.0]
 
     @session.on("error")
     def _on_error(ev) -> None:
@@ -5625,12 +5700,23 @@ def _register_session_error_handlers(session) -> None:
                 now_ts = time.time()
                 if now_ts - _llm_fallback_last_ts[0] <= 15.0:
                     return
-                _llm_fallback_last_ts[0] = now_ts
                 classified = classify_provider_error(
                     err,
                     model=_active_voice_model(),
                     component="stt" if "stt_error" in (str(err) or "") else "llm",
                 )
+                # Swallow a lone transient network blip; voice the 2nd+
+                # consecutive network failure (a real outage, not a hiccup the
+                # cascade already recovered). Gap-immune — see the helper.
+                if classified.category == "network":
+                    if not _network_error_should_voice(now_ts, _llm_net_fail):
+                        logger.info(
+                            "[provider-error] transient %s network blip — not "
+                            "voicing (speaks on the next failure if it persists): %s",
+                            classified.provider, str(err)[:120],
+                        )
+                        return
+                _llm_fallback_last_ts[0] = now_ts
                 try:
                     session.say(classified.spoken, allow_interruptions=True)
                 except Exception as say_err:

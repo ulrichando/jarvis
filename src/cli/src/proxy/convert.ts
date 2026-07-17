@@ -157,6 +157,128 @@ export function modelLeaksThinkTags(modelId: string): boolean {
   return modelId.includes('qwen')
 }
 
+// ── DeepSeek tool-call leak recovery ──────────────────────────────────────
+//
+// DeepSeek (V3/V3.1/V3.2/V4) encodes tool calls with special chat-template
+// tokens. Its API normally parses them back into the OpenAI `tool_calls`
+// field, but INTERMITTENTLY (streaming + many tools + multi-turn tool loops)
+// the upstream parser misses and the raw markup leaks into `content` — where
+// the gateway would otherwise forward it as visible/spoken text and the tool
+// never runs. This catcher detects the leak and rebuilds a structured tool_use.
+//
+// Gated on the fullwidth vertical bar U+FF5C ('｜') — DeepSeek's special-token
+// delimiter, which never appears in normal English output — so any response
+// WITHOUT a leak passes through byte-for-byte unchanged.
+//
+// Two grammars are handled (｜ = U+FF5C, ▁ = U+2581):
+//   • DSML (V3.2/V4):  <｜DSML｜invoke name="X"><｜DSML｜parameter name="k" string="true">v</…parameter></…invoke>
+//   • pipe (V3/V3.1):  <｜tool▁call▁begin｜>NAME<｜tool▁sep｜>{json}<｜tool▁call▁end｜>
+// Bar count around DSML/tags is matched tolerantly (｜+) because observed
+// output has varied between one and two bars.
+
+const FW = '｜' // ｜ fullwidth vertical line
+const UL = '▁' // ▁ SentencePiece word-boundary marker
+
+export type ParsedToolCall = { name: string; argsJson: string }
+
+export function parseDeepSeekToolMarkup(text: string): ParsedToolCall[] {
+  const calls: ParsedToolCall[] = []
+
+  // DSML invoke/parameter (V3.2 `function_calls` / V4 `tool_calls` wrappers).
+  const invokeRe = new RegExp(
+    `<${FW}+(?:DSML${FW}+)?invoke\\s+name="([^"]+)"\\s*>([\\s\\S]*?)<\\/${FW}+(?:DSML${FW}+)?invoke>`,
+    'g',
+  )
+  const paramRe = new RegExp(
+    `<${FW}+(?:DSML${FW}+)?parameter\\s+name="([^"]+)"(?:\\s+string="(true|false)")?[^>]*>([\\s\\S]*?)<\\/${FW}+(?:DSML${FW}+)?parameter>`,
+    'g',
+  )
+  let m: RegExpExecArray | null
+  while ((m = invokeRe.exec(text)) !== null) {
+    const name = m[1]
+    const body = m[2]
+    const args: Record<string, unknown> = {}
+    paramRe.lastIndex = 0
+    let p: RegExpExecArray | null
+    while ((p = paramRe.exec(body)) !== null) {
+      const key = p[1]
+      const isString = p[2] !== 'false' // string="true" or attr absent → literal string
+      const val = p[3]
+      if (isString) args[key] = val
+      else {
+        try { args[key] = JSON.parse(val) } catch { args[key] = val }
+      }
+    }
+    calls.push({ name, argsJson: JSON.stringify(args) })
+  }
+  if (calls.length > 0) return calls
+
+  // Pipe-delimited (V3/R1/V3.1): NAME<sep>args, chained inside begin/end.
+  const pipeRe = new RegExp(
+    `<${FW}tool${UL}call${UL}begin${FW}>([\\s\\S]*?)<${FW}tool${UL}sep${FW}>([\\s\\S]*?)<${FW}tool${UL}call${UL}end${FW}>`,
+    'g',
+  )
+  let pm: RegExpExecArray | null
+  while ((pm = pipeRe.exec(text)) !== null) {
+    let name = pm[1].trim()
+    let argsRaw = pm[2].trim()
+    // V3/R1 inner shape: "type\nNAME\n```json\n{...}\n```". Best-effort unwrap.
+    const fence = argsRaw.match(/```(?:json)?\s*([\s\S]*?)```/)
+    if (fence) argsRaw = fence[1].trim()
+    if (name.includes('\n')) name = name.split('\n').pop()!.trim()
+    calls.push({ name, argsJson: argsRaw || '{}' })
+  }
+  return calls
+}
+
+export class DeepSeekToolLeakCatcher {
+  private capturing = false
+  private captured = ''
+  private tail = '' // held-back trailing '<' that could precede a bar next chunk
+
+  /** Feed a visible-text chunk; returns text safe to emit. Suspected tool
+   *  markup is captured internally (returns '') until [end]. */
+  feed(chunk: string): string {
+    let s = this.tail + chunk
+    this.tail = ''
+    if (this.capturing) {
+      this.captured += s
+      return ''
+    }
+    const i = s.indexOf(FW)
+    if (i === -1) {
+      // No special-token signal. Hold back a lone trailing '<' (could be the
+      // '<' of a marker whose bar arrives in the next chunk).
+      if (s.endsWith('<')) {
+        this.tail = '<'
+        s = s.slice(0, -1)
+      }
+      return s
+    }
+    // Special token seen — start capturing at the marker (back up over its '<').
+    let start = i
+    if (start > 0 && s[start - 1] === '<') start -= 1
+    this.capturing = true
+    this.captured = s.slice(start)
+    return s.slice(0, start)
+  }
+
+  /** Stream ended. Returns leftover TEXT to emit plus recovered tool calls.
+   *  If the captured markup parsed to nothing it was a false alarm → return it
+   *  as text so real content is never swallowed. */
+  end(): { text: string; calls: ParsedToolCall[] } {
+    const flushTail = this.tail
+    this.tail = ''
+    if (!this.capturing) return { text: flushTail, calls: [] }
+    this.capturing = false
+    const captured = this.captured
+    this.captured = ''
+    const calls = parseDeepSeekToolMarkup(captured)
+    if (calls.length === 0) return { text: flushTail + captured, calls: [] }
+    return { text: flushTail, calls }
+  }
+}
+
 // ── Convert a single Anthropic content block to text ─────────────────────
 
 function contentToText(content: unknown): string {

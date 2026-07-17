@@ -116,6 +116,9 @@ services:
       JARVIS_PROXY_AUTH_REQUIRED: "1"
       JARVIS_PROXY_PORT: "4000"
       JARVIS_PROVIDER: "${JARVIS_PROVIDER:-deepseek}"
+      # The proxy's web_search runs SearXNG; without this it throws
+      # "unavailable" and the gateway search silently fails.
+      SEARXNG_URL: "http://searxng:8080"
     expose: ["4000"]
     # Host-loopback publish so the host's cloudflared tunnel reaches this
     # container at proxy.0wlan.com → localhost:4000 (never the public interface).

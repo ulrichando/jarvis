@@ -27,19 +27,29 @@ search:
     - json
 
 # Engine overrides (merged by name over the shipped defaults). The stock general
-# engines all CAPTCHA / rate-limit datacenter IPs — from the VPS on 2026-07-02 a
-# default search returned ZERO results (brave "too many requests", duckduckgo +
-# startpage "CAPTCHA"). Pin the general web engines to the ones that actually
-# answer from this IP (bing / mojeek / qwant each verified returning results;
-# the curated aggregate went 0 → 29) and disable the blockers. Re-tune here if a
-# provider starts blocking too — probe with `&engines=<name>` against the JSON API.
+# engines all CAPTCHA / rate-limit datacenter IPs. Re-probed 2026-07-17 with
+# `&engines=<name>` against the JSON API (two queries each): only bing and mwmbl
+# return results from this IP. mojeek + qwant went dead since the 2026-07-02
+# tuning ("Suspended: access denied" — they time out on every query, previously
+# adding ~3s of latency per search). google and wikidata are enabled in the
+# SHIPPED defaults and are also dead from this IP, so they need explicit
+# disables here. wikipedia (infobox-only) still works and stays on via the
+# defaults. marginalia is inactive upstream (needs an API key); yahoo/presearch
+# are dead AND already disabled by default, so no override needed.
+# Re-tune here if a provider starts blocking too — probe with `&engines=<name>`.
 engines:
   - name: bing
     disabled: false
+  - name: mwmbl
+    disabled: false
   - name: mojeek
-    disabled: false
+    disabled: true
   - name: qwant
-    disabled: false
+    disabled: true
+  - name: google
+    disabled: true
+  - name: wikidata
+    disabled: true
   - name: duckduckgo
     disabled: true
   - name: brave
