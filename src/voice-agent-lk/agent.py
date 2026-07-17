@@ -32,6 +32,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 import aiohttp
@@ -381,6 +382,20 @@ async def _load_conversation(user_id: str, conversation_id: str) -> list[dict]:
         return await _load_history(user_id)
 
 
+# Anti-loop memo for search_web: an LLM that isn't satisfied with results
+# tends to re-issue the SAME query (the old "stuck searching" failure). A
+# short-TTL cache makes the repeat instant + quota-free, and the cached text
+# itself tells the model to answer rather than search again.
+_SEARCH_CACHE_TTL_S = 120.0
+_SEARCH_CACHE_MAX = 16
+_search_cache: dict[str, tuple[float, str, list]] = {}
+
+# Per-hit excerpt budget in the tool result. The route returns fetched page
+# content (~1500 chars) when available; a voice answer is 1-2 sentences, so
+# ~450 chars x 6 hits is plenty of grounding without slowing the LLM.
+_SEARCH_EXCERPT_CHARS = 450
+
+
 @function_tool
 async def search_web(query: str) -> str:
     """Search the web for current, real-time, or factual information — news,
@@ -388,10 +403,19 @@ async def search_web(query: str) -> str:
     newer than your training. Call this whenever the user asks something that
     needs up-to-date or external information, then answer conversationally from
     the results in one or two spoken sentences (never read out URLs or lists).
+    Search ONCE per question — the results include page content and are enough
+    to answer from; only search again if the user asks something new.
 
     Args:
         query: A concise web search query capturing what to look up.
     """
+    cache_key = " ".join(query.lower().split())
+    cached = _search_cache.get(cache_key)
+    if cached and (time.monotonic() - cached[0]) < _SEARCH_CACHE_TTL_S:
+        logger.info("[search] cache hit for %r", query)
+        _publish_tool_event("web_search", "done", query, cached[2])
+        return cached[1]
+
     _publish_tool_event("web_search", "searching", query)
     collected_sources = []
     try:
@@ -409,19 +433,36 @@ async def search_web(query: str) -> str:
                 data = await resp.json()
         hits = data.get("hits", []) if isinstance(data, dict) else []
         if not hits:
-            return f"No web results for '{query}'."
+            return (
+                f"No web results for '{query}'. Answer from what you know and "
+                "say you couldn't find anything on the web — don't retry the "
+                "same search."
+            )
         lines = []
-        for h in hits[:6]:
+        for i, h in enumerate(hits[:6], 1):
             title = (h.get("title") or "").strip()
-            snippet = (h.get("snippet") or "").strip()
+            # Fetched page content when the route provides it, else the snippet.
+            body = (h.get("content") or "").strip() or (h.get("snippet") or "").strip()
             src_url = (h.get("url") or "").strip()
             if not title:
                 continue
             if src_url:
                 collected_sources.append({"title": title, "url": src_url})
-            lines.append(f"- {title}: {snippet}" if snippet else f"- {title}")
+            body = " ".join(body.split())[:_SEARCH_EXCERPT_CHARS]
+            lines.append(f"{i}. {title}" + (f" — {body}" if body else ""))
         logger.info("[search] %d result(s) for %r", len(lines), query)
-        return f"Web results for '{query}':\n" + "\n".join(lines)
+        result = (
+            f"Web results for '{query}':\n"
+            + "\n".join(lines)
+            + "\n\nAnswer the user's question now from these results in one or "
+            "two spoken sentences (no URLs, no lists). These results are "
+            "current — do not call search_web again for this question."
+        )
+        if len(_search_cache) >= _SEARCH_CACHE_MAX:
+            oldest = min(_search_cache, key=lambda k: _search_cache[k][0])
+            del _search_cache[oldest]
+        _search_cache[cache_key] = (time.monotonic(), result, collected_sources)
+        return result
     except Exception as e:
         logger.warning("[search] failed for %r: %s", query, e)
         return "Web search failed; answer from what you know and say you couldn't search the web."
