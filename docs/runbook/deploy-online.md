@@ -134,6 +134,37 @@ Ops: log at `/var/log/jarvis-deploy.log` · pause:
 `systemctl disable --now jarvis-deploy-poll.timer` · manual rollback:
 `git -C /opt/jarvis reset --hard <sha>` then rebuild per §3.
 
+### 6a. Box-local config lives in overrides — and how to un-wedge an ff-only tree
+
+**The invariant:** every tracked file in `/opt/jarvis` stays byte-identical to
+`origin/master`. Anything environment-specific goes in the two gitignored
+files — `src/web/docker-compose.override.yml` (compose deltas: extra mounts,
+extra env, per-box flags — see the tracked
+[`docker-compose.override.yml.example`](../../src/web/docker-compose.override.yml.example)
+for the pattern + merge semantics) or `src/web/.env.production` (secrets,
+interpolated values). Features ship via PR, **never** by hand-editing tracked
+files on the box: a single hand-applied edit silently blocks *every* future
+deploy (the ff-only merge refuses), and whatever was hand-applied is one
+`reset --hard` away from vanishing.
+
+**If the tree is already wedged** (alert says "ff-only merge refused"):
+1. Diagnose: `cd /opt/jarvis && git status --porcelain && git diff` — identify
+   every modified tracked file and every untracked file the incoming merge
+   would overwrite. Back them all up (`cp` to `/root/`, plus `git diff >
+   /root/wedge.patch`).
+2. Preserve intent, not bytes: move compose/env deltas into the override files
+   above; if actual *code* was hand-applied, get it merged to master via PR
+   first (diff the box copy against the branch to prove they're identical).
+3. Only then clean: `git checkout -- <modified tracked files>`, delete
+   untracked files that the merge will recreate (verify identical content
+   first), confirm `git status --porcelain` is quiet.
+4. Clear the latch (`rm -f /var/lib/jarvis-deploy/failed-sha`) and trigger:
+   `systemctl start --no-block jarvis-deploy-poll.service`; watch
+   `/var/log/jarvis-deploy.log` for the ff-merge + health gate, then verify the
+   override took effect (`docker compose --env-file .env.production config`).
+Stop the timer (`systemctl stop jarvis-deploy-poll.timer`) for the duration of
+steps 1–3 so a poll tick can't race the reconcile; restart it after.
+
 ## The pty terminal — now authenticated at the socket
 The `/code` terminal (`scripts/pty-server.mjs`, port 8772) is a raw PTY shell.
 It is fronted by Caddy `/pty` (TLS + Cloudflare Access + app login) and bound to
