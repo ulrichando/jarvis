@@ -45,9 +45,9 @@ struct SpeechLabel(Mutex<Option<MenuItem<Wry>>>);
 /// TTS voice changes.
 struct TtsLabel(Mutex<Option<MenuItem<Wry>>>);
 
-/// All five TTS voice menu items, stored so switch_tts_provider can
+/// The online (Edge) TTS voice menu items, stored so switch_tts_provider can
 /// add/remove the "✓ " prefix to reflect the active selection.
-/// Ordered to match TTS_VOICES.
+/// Ordered to match ONLINE_TTS_VOICES.
 struct TtsVoiceItems(Mutex<Vec<MenuItem<Wry>>>);
 
 /// Speech / Tool model menu items, stored as (model-id, plain label, item)
@@ -1356,13 +1356,27 @@ fn switch_cli_model(app: &tauri::AppHandle, id: &'static str) {
 /// ~/.jarvis/tts-provider; the agent's build_tts_chain selects the engine from
 /// the spec prefix. On-device Kokoro
 /// voices live in KOKORO_VOICE_CHOICES, listed separately under their own header.
+/// Mirrors the mobile app's catalog (jarvis-android EdgeTtsVoice.kt) and
+/// TTS_PROVIDERS_AVAILABLE in voice_client_tray_config.py — the 15 en-GB/en-US
+/// voices the free edge-tts endpoint actually serves. Male first (JARVIS tone),
+/// then female. Keep the "Name  (region gender)" shape so tts_provider_pretty
+/// (splits on '(') resolves to "Edge · Name". Keep all three lists in sync.
 const ONLINE_TTS_VOICES: &[(&str, &str, &str)] = &[
+    ("edge:en-GB-RyanNeural",        "Ryan  (UK male)",        "edge"),
+    ("edge:en-GB-ThomasNeural",      "Thomas  (UK male)",      "edge"),
     ("edge:en-US-GuyNeural",         "Guy  (US male)",         "edge"),
     ("edge:en-US-ChristopherNeural", "Christopher  (US male)", "edge"),
-    ("edge:en-US-JennyNeural",       "Jenny  (US female)",     "edge"),
-    ("edge:en-US-AriaNeural",        "Aria  (US female)",      "edge"),
-    ("edge:en-GB-RyanNeural",        "Ryan  (UK male)",        "edge"),
+    ("edge:en-US-EricNeural",        "Eric  (US male)",        "edge"),
+    ("edge:en-US-AndrewNeural",      "Andrew  (US male)",      "edge"),
+    ("edge:en-US-BrianNeural",       "Brian  (US male)",       "edge"),
+    ("edge:en-US-RogerNeural",       "Roger  (US male)",       "edge"),
     ("edge:en-GB-SoniaNeural",       "Sonia  (UK female)",     "edge"),
+    ("edge:en-GB-LibbyNeural",       "Libby  (UK female)",     "edge"),
+    ("edge:en-US-AriaNeural",        "Aria  (US female)",      "edge"),
+    ("edge:en-US-JennyNeural",       "Jenny  (US female)",     "edge"),
+    ("edge:en-US-AvaNeural",         "Ava  (US female)",       "edge"),
+    ("edge:en-US-EmmaNeural",        "Emma  (US female)",      "edge"),
+    ("edge:en-US-MichelleNeural",    "Michelle  (US female)",  "edge"),
 ];
 
 /// Map a TTS provider:voice spec to a short pretty label for the tray.
