@@ -29,6 +29,7 @@ Env (see .env.example):
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import logging
 import os
@@ -989,6 +990,18 @@ async def entrypoint(ctx: JobContext) -> None:
     if user_id:
         tool_lines.append("remember facts about the user across calls (long-term memory)")
         tool_lines.append("recall details from your past conversations with this user")
+    # Anchor the model to the present. Without a date it assumes its training
+    # cutoff and answers time-sensitive questions from stale memory (e.g. an old
+    # model version) even after searching. Server time (UTC) — close enough to
+    # frame "current" correctly.
+    today = datetime.datetime.now().strftime("%A, %B %d, %Y")
+    instructions = instructions + (
+        f"\n\nToday's date is {today}. Your training knowledge has a cutoff and is "
+        "likely out of date. For anything time-sensitive — current events, the latest "
+        "model or software versions, prices, or who currently holds a role — trust your "
+        "web search results (they are current as of today) over your own memory, and if "
+        "you haven't searched, say so or search before stating a current fact.\n"
+    )
     instructions = instructions + (
         "\n\n[Your current runtime configuration — answer accurately and briefly IF the user "
         "asks about your setup, model, voice, or capabilities; otherwise don't mention it.]\n"
