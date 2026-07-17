@@ -60,6 +60,20 @@ describe('buildConnectorPayload', () => {
     expect(buildConnectorPayload(undefined)).toEqual({ servers: [], toolsets: [] })
     expect(buildConnectorPayload({})).toEqual({ servers: [], toolsets: [] })
   })
+
+  test('deny list → toolset configs disabling just those tools (read-only lockdown)', () => {
+    const { toolsets } = buildConnectorPayload({
+      ock: { transport: 'http', url: 'https://x/mcp', deny: ['errors_delete', 'errors_update_status', ''] },
+      plain: { transport: 'http', url: 'https://y/mcp' },
+    } as any)
+    const ock = toolsets.find(t => t.mcp_server_name === 'ock')!
+    expect(ock.configs).toEqual({
+      errors_delete: { enabled: false },
+      errors_update_status: { enabled: false },
+    })
+    // No deny → bare toolset, no configs key.
+    expect(toolsets.find(t => t.mcp_server_name === 'plain')!.configs).toBeUndefined()
+  })
 })
 
 describe('applyConnectorPayload', () => {

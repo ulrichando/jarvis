@@ -45,6 +45,8 @@ type McpSpec = {
   headers?: Record<string, string>
   disabled?: boolean
   enabled?: boolean
+  /** Tool names to disable on this server (denylist / read-only lockdown). */
+  deny?: string[]
   [k: string]: unknown
 }
 type OAuthShape = {
@@ -63,6 +65,8 @@ export type AnthropicMcpServer = {
 export type AnthropicMcpToolset = {
   type: 'mcp_toolset'
   mcp_server_name: string
+  /** Per-tool overrides — used to disable specific tools (read-only lockdown). */
+  configs?: Record<string, { enabled: boolean }>
 }
 export type ConnectorPayload = {
   servers: AnthropicMcpServer[]
@@ -85,6 +89,19 @@ function bearerFromHeaders(headers?: Record<string, string>): string | undefined
   const authz = headers?.Authorization ?? headers?.authorization
   if (authz && /^bearer /i.test(authz)) return authz.slice(7).trim()
   return undefined
+}
+
+// Build the toolset for a server. A `deny` list (tool names) disables just
+// those tools via per-tool `configs` (denylist — everything else stays enabled).
+function buildToolset(name: string, spec: McpSpec): AnthropicMcpToolset {
+  const ts: AnthropicMcpToolset = { type: 'mcp_toolset', mcp_server_name: name }
+  const deny = Array.isArray(spec.deny)
+    ? spec.deny.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+    : []
+  if (deny.length) {
+    ts.configs = Object.fromEntries(deny.map(t => [t, { enabled: false }]))
+  }
+  return ts
 }
 
 // Mirrors oauth-store.isExpired (60s skew). No expires_in ⇒ treat as valid.
@@ -119,7 +136,7 @@ export function buildConnectorPayload(
       url: spec.url!.trim(),
       ...(token ? { authorization_token: token } : {}),
     })
-    out.toolsets.push({ type: 'mcp_toolset', mcp_server_name: name })
+    out.toolsets.push(buildToolset(name, spec))
   }
   return out
 }
