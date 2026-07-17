@@ -1,4 +1,4 @@
-// DuckDuckGo-backed short-circuit for Anthropic's server-side web_search tool.
+// Web-search short-circuit for Anthropic's server-side web_search tool.
 //
 // The first-party WebSearchTool (src/tools/WebSearchTool) sends an Anthropic
 // request carrying a tool schema of { type: 'web_search_20250305', ... } and
@@ -7,149 +7,64 @@
 // this proxy to a non-Anthropic provider, no search ever runs and the UI reports
 // "Did 0 searches".
 //
-// We intercept the request at the proxy, execute a real DDG HTML search
-// ourselves, and synthesize the Anthropic streaming events the client already
-// knows how to parse.
+// We intercept the request at the proxy and run the real search pipeline
+// (src/proxy/search/): Brave Search API when BRAVE_SEARCH_API_KEY is set,
+// falling back to SearXNG → DuckDuckGo keyless — then clean/dedup/rerank the
+// hits, fetch the top pages for real content, and synthesize the Anthropic
+// streaming events the client already knows how to parse. Alongside the
+// spec-shaped web_search_result blocks (title/url the phone renders as source
+// bubbles) we emit a trailing `text` block carrying the content digest — the
+// CLI's WebSearchTool folds trailing text into the tool result, so the model
+// finally sees page text instead of bare links and answers after ONE search.
+
+import { bestSnippet, formatHitsAsDigest, type RichHit } from './search/core.js'
+import {
+  enrichHitsWithContent,
+  runSearchPipeline,
+  searchDuckDuckGo as pipelineSearchDuckDuckGo,
+  searchSearxng as pipelineSearchSearxng,
+  type SearchProvider,
+} from './search/pipeline.js'
+
+export { parseDuckDuckGoHtml } from './search/core.js'
+export type { RichHit, SearchProvider }
 
 export type SearchHit = { title: string; url: string }
 
-const DDG_ENDPOINT = 'https://html.duckduckgo.com/html/'
-const USER_AGENT =
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-
-// Primary backend: self-hosted SearXNG (same SEARXNG_URL the voice stack uses).
-// The DuckDuckGo HTML endpoint CAPTCHA-blocks datacenter/VPS IPs — the voice
-// stack already hit this and moved to SearXNG; the CLI proxy was left on DDG.
-export async function searchSearxng(query: string): Promise<SearchHit[]> {
-  const base = (process.env.SEARXNG_URL ?? '').trim().replace(/\/+$/, '')
-  if (!base) throw new Error('SEARXNG_URL not set')
-  // SearXNG needs `search.formats: [html, json]` server-side or /search?format=json 403s.
-  const url = `${base}/search?q=${encodeURIComponent(query)}&format=json&pageno=1`
-  const res = await fetch(url, { headers: { Accept: 'application/json' } })
-  if (!res.ok) throw new Error(`SearXNG HTTP ${res.status}`)
-  const data: any = await res.json()
-  const results = Array.isArray(data?.results) ? data.results : []
-  return results
-    .map((r: any) => ({
-      title: String(r?.title ?? '').trim(),
-      url: String(r?.url ?? '').trim(),
-    }))
-    .filter((h: SearchHit) => h.title && h.url)
-    .slice(0, 10)
+// Back-compat single-arg wrappers (the historical exports of this module).
+export async function searchSearxng(query: string): Promise<RichHit[]> {
+  return pipelineSearchSearxng(query)
 }
 
-// A DuckDuckGo anti-bot / CAPTCHA interstitial returns HTTP 200 with NO result
-// anchors — so an empty parse looked like a clean "0 results". Detect the block
-// page by its markers so the caller can report the search as FAILED (the model
-// then knows the search was blocked, not that the web has nothing).
-function looksLikeDuckDuckGoBlockPage(html: string): boolean {
-  const h = html.toLowerCase()
-  return (
-    h.includes('anomaly') ||
-    h.includes('challenge-form') ||
-    h.includes('detected unusual') ||
-    h.includes('unusual traffic') ||
-    h.includes('are you a robot') ||
-    h.includes('captcha')
-  )
+export async function searchDuckDuckGo(query: string): Promise<RichHit[]> {
+  return pipelineSearchDuckDuckGo(query)
 }
 
-export async function searchDuckDuckGo(query: string): Promise<SearchHit[]> {
-  const url = `${DDG_ENDPOINT}?q=${encodeURIComponent(query)}`
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'User-Agent': USER_AGENT,
-      'Accept': 'text/html,application/xhtml+xml',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: `q=${encodeURIComponent(query)}&b=&kl=us-en`,
+// Top-level entry: Brave when keyed, else SearXNG when configured, else
+// DuckDuckGo — cleaned/deduped/reranked. Throws only when every backend
+// fails — callers surface that as a web_search_tool_result_error (not a
+// silent empty).
+export async function webSearch(query: string): Promise<RichHit[]> {
+  return (await webSearchWithProvider(query)).hits
+}
+
+async function webSearchWithProvider(
+  query: string,
+): Promise<{ hits: RichHit[]; provider: SearchProvider }> {
+  return runSearchPipeline(query, {
+    log: m => console.warn(`[jarvis-proxy] ${m}`),
   })
-  if (!res.ok) throw new Error(`DuckDuckGo HTTP ${res.status}`)
-  const html = await res.text()
-  const hits = parseDuckDuckGoHtml(html)
-  if (hits.length === 0 && looksLikeDuckDuckGoBlockPage(html)) {
-    // THROW rather than return [] — a blocked search must not masquerade as
-    // "no results exist" (the exact silent-failure the sweep flagged).
-    throw new Error('DuckDuckGo returned an anti-bot/CAPTCHA page (search blocked)')
-  }
-  return hits
 }
 
-// Top-level entry the proxy uses: prefer SearXNG when configured, fall back to
-// DuckDuckGo. Throws if the chosen backend(s) fail — callers surface that as a
-// web_search_tool_result_error (not a silent empty).
-export async function webSearch(query: string): Promise<SearchHit[]> {
-  if ((process.env.SEARXNG_URL ?? '').trim()) {
-    try {
-      return await searchSearxng(query)
-    } catch (e) {
-      console.warn(
-        '[jarvis-proxy] SearXNG search failed, falling back to DuckDuckGo:',
-        (e as Error).message,
-      )
-    }
-  }
-  return searchDuckDuckGo(query)
-}
+export type WebResearchResult = { hits: RichHit[]; provider: SearchProvider }
 
-export function parseDuckDuckGoHtml(html: string): SearchHit[] {
-  const hits: SearchHit[] = []
-  const seen = new Set<string>()
-  const anchorRe =
-    /<a[^>]+class="[^"]*\bresult__a\b[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi
-
-  let m: RegExpExecArray | null
-  while ((m = anchorRe.exec(html)) !== null) {
-    const href = decodeHtmlEntities(m[1])
-    const titleHtml = m[2]
-    const url = unwrapDuckDuckGoRedirect(href)
-    const title = decodeHtmlEntities(stripTags(titleHtml)).replace(/\s+/g, ' ').trim()
-    if (!url || !title) continue
-    if (seen.has(url)) continue
-    seen.add(url)
-    hits.push({ title, url })
-  }
-  return hits
-}
-
-function unwrapDuckDuckGoRedirect(href: string): string {
-  try {
-    const absolute = href.startsWith('//') ? 'https:' + href : href
-    const parsed = new URL(absolute, 'https://duckduckgo.com/')
-    const uddg = parsed.searchParams.get('uddg')
-    if (uddg) return decodeURIComponent(uddg)
-    return parsed.toString()
-  } catch {
-    return href
-  }
-}
-
-function stripTags(s: string): string {
-  // Loop until stable — a single pass lets `<<a>script>` collapse into a fresh
-  // `<script>` tag (js/incomplete-multi-character-sanitization).
-  let prev: string
-  do {
-    prev = s
-    s = s.replace(/<[^>]+>/g, '')
-  } while (s !== prev)
-  return s
-}
-
-function decodeHtmlEntities(s: string): string {
-  // Decode &amp; LAST: doing it first turns `&amp;lt;` into `&lt;` then `<`
-  // (double-decoding). Last keeps `&amp;lt;` → `&lt;` (js/double-escaping).
-  return s
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&#x27;/gi, "'")
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
-    .replace(/&amp;/g, '&')
+// Full research pass: search + clean, then fetch the top pages in parallel
+// (per-page timeout + overall budget — see search/pipeline.ts) so the model
+// gets real article text, not 90-char snippets.
+export async function webResearch(query: string): Promise<WebResearchResult> {
+  const { hits, provider } = await webSearchWithProvider(query)
+  const enriched = await enrichHitsWithContent(hits)
+  return { hits: enriched, provider }
 }
 
 // ── Detect a WebSearchTool inner request ──────────────────────────────────
@@ -201,11 +116,29 @@ function randomId(prefix: string): string {
   return prefix + Math.random().toString(36).slice(2, 14)
 }
 
+// Spec-shaped web_search_result items. `snippet` is a jarvis extension the
+// official shape doesn't carry — existing clients (CLI WebSearchTool, the
+// Android chat) parse only {title,url} with unknown-key tolerance, so it's
+// forward-compatible enrichment, not a break.
+function webSearchResultItems(hits: RichHit[]): unknown[] {
+  return hits.slice(0, 10).map(h => {
+    const snippet = bestSnippet(h, 300)
+    return {
+      type: 'web_search_result',
+      title: h.title,
+      url: h.url,
+      ...(snippet ? { snippet } : {}),
+      encrypted_content: '',
+      page_age: null,
+    }
+  })
+}
+
 export async function writeSyntheticWebSearchStream(
   query: string,
   model: string,
   controller: ReadableStreamDefaultController<Uint8Array>,
-): Promise<void> {
+): Promise<SearchProvider | 'failed'> {
   const enc = new TextEncoder()
   const send = (event: string, data: unknown) => {
     controller.enqueue(enc.encode(sseEvent(event, data)))
@@ -252,26 +185,22 @@ export async function writeSyntheticWebSearchStream(
   })
   send('content_block_stop', { type: 'content_block_stop', index: 0 })
 
-  // 2. Execute the actual search
-  let hits: SearchHit[] = []
-  let failed = false
+  // 2. Execute the actual research pass (search + content fetch).
+  let hits: RichHit[] = []
+  let provider: SearchProvider | 'failed' = 'failed'
   try {
-    hits = await webSearch(query)
+    const result = await webResearch(query)
+    hits = result.hits
+    provider = result.provider
   } catch (e) {
     console.error('[jarvis-proxy] web search failed:', e)
-    failed = true
   }
 
   // 3. web_search_tool_result block
-  const resultContent = failed
-    ? { type: 'web_search_tool_result_error', error_code: 'unavailable' }
-    : hits.slice(0, 10).map(h => ({
-        type: 'web_search_result',
-        title: h.title,
-        url: h.url,
-        encrypted_content: '',
-        page_age: null,
-      }))
+  const resultContent =
+    provider === 'failed'
+      ? { type: 'web_search_tool_result_error', error_code: 'unavailable' }
+      : webSearchResultItems(hits)
 
   send('content_block_start', {
     type: 'content_block_start',
@@ -284,50 +213,66 @@ export async function writeSyntheticWebSearchStream(
   })
   send('content_block_stop', { type: 'content_block_stop', index: 1 })
 
-  // 4. Close the message
+  // 4. Trailing text block: the research digest (titles + page content +
+  //    urls). WebSearchTool folds text-after-results into the tool result,
+  //    so this is what lets the model answer from ONE search.
+  if (provider !== 'failed' && hits.length > 0) {
+    send('content_block_start', {
+      type: 'content_block_start',
+      index: 2,
+      content_block: { type: 'text', text: '' },
+    })
+    send('content_block_delta', {
+      type: 'content_block_delta',
+      index: 2,
+      delta: { type: 'text_delta', text: formatHitsAsDigest(query, hits) },
+    })
+    send('content_block_stop', { type: 'content_block_stop', index: 2 })
+  }
+
+  // 5. Close the message
   send('message_delta', {
     type: 'message_delta',
     delta: { stop_reason: 'end_turn', stop_sequence: null },
     usage: { output_tokens: 0 },
   })
   send('message_stop', { type: 'message_stop' })
+
+  return provider
 }
 
 export function buildSyntheticWebSearchResponse(
   query: string,
   model: string,
-  hits: SearchHit[],
+  hits: RichHit[],
   failed: boolean,
 ): unknown {
   const toolUseId = randomId('srvtoolu_')
-  const content = failed
-    ? { type: 'web_search_tool_result_error', error_code: 'unavailable' }
-    : hits.slice(0, 10).map(h => ({
-        type: 'web_search_result',
-        title: h.title,
-        url: h.url,
-        encrypted_content: '',
-        page_age: null,
-      }))
+  const content: unknown[] = [
+    {
+      type: 'server_tool_use',
+      id: toolUseId,
+      name: 'web_search',
+      input: { query },
+    },
+    {
+      type: 'web_search_tool_result',
+      tool_use_id: toolUseId,
+      content: failed
+        ? { type: 'web_search_tool_result_error', error_code: 'unavailable' }
+        : webSearchResultItems(hits),
+    },
+  ]
+  if (!failed && hits.length > 0) {
+    content.push({ type: 'text', text: formatHitsAsDigest(query, hits) })
+  }
 
   return {
     id: randomId('msg_'),
     type: 'message',
     role: 'assistant',
     model,
-    content: [
-      {
-        type: 'server_tool_use',
-        id: toolUseId,
-        name: 'web_search',
-        input: { query },
-      },
-      {
-        type: 'web_search_tool_result',
-        tool_use_id: toolUseId,
-        content,
-      },
-    ],
+    content,
     stop_reason: 'end_turn',
     stop_sequence: null,
     usage: { input_tokens: 0, output_tokens: 0 },

@@ -9,8 +9,9 @@ import { classifyChatCompletionsRequest, buildHubConfig } from './hubGateway.js'
 import {
   buildSyntheticWebSearchResponse,
   extractWebSearchQuery,
-  webSearch,
+  webResearch,
   writeSyntheticWebSearchStream,
+  type RichHit,
 } from './webSearch.js'
 import { verifyProxyToken } from './proxyJwt.js'
 import { readKeysEnvValue } from '../utils/jarvisKeysEnv.js'
@@ -245,8 +246,8 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
       const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
           try {
-            await writeSyntheticWebSearchStream(webSearchQuery, model, controller)
-            finish({ provider: 'web_search', upstream_model: 'duckduckgo' })
+            const used = await writeSyntheticWebSearchStream(webSearchQuery, model, controller)
+            finish({ provider: 'web_search', upstream_model: used })
           } catch (e) {
             console.error('[jarvis-proxy] web_search stream error:', e)
             finish({ provider: 'web_search', error_type: 'web_search_error', error_message: (e as Error).message })
@@ -264,17 +265,20 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
       })
     }
 
-    let hits: Awaited<ReturnType<typeof webSearch>> = []
+    let hits: RichHit[] = []
     let failed = false
+    let searchProvider = 'unavailable'
     try {
-      hits = await webSearch(webSearchQuery)
+      const result = await webResearch(webSearchQuery)
+      hits = result.hits
+      searchProvider = result.provider
     } catch (e) {
       console.error('[jarvis-proxy] web search failed:', e)
       failed = true
     }
     finish({
       provider: 'web_search',
-      upstream_model: (process.env.SEARXNG_URL ?? '').trim() ? 'searxng' : 'duckduckgo',
+      upstream_model: searchProvider,
       error_type: failed ? 'web_search_failed' : null,
     })
     return new Response(
