@@ -202,7 +202,7 @@ function randomId(prefix: string): string {
 // with unknown-key tolerance, so both are forward-compatible enrichment,
 // not a break.
 function webSearchResultItems(query: string, hits: RichHit[]): unknown[] {
-  return hits.slice(0, 10).map(h => {
+  return hits.slice(0, 20).map(h => {
     const snippet = bestSnippet(h, 300)
     const citedText = bestSupportingPassage(h, query, 600)
     return {
