@@ -97,6 +97,28 @@ _SEARCH_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=12)
 # weak refs to tasks — without this a pending POST can be garbage-collected).
 _pending: set[asyncio.Task] = set()
 
+# The active room, set at entrypoint start so module-level tools (search_web)
+# can push tool-status events to the phone. None until a job connects.
+_active_room = None
+
+
+def _publish_tool_event(tool: str, status: str, query: str = "") -> None:
+    """Fire-and-forget: tell the phone a tool started/finished (LiveKit data,
+    topic `agent.tool`) so voice mode can show a "Searching the web…" indicator
+    like text chat, instead of a silent pause while the agent researches."""
+    room = _active_room
+    if room is None:
+        return
+    try:
+        payload = json.dumps({"tool": tool, "status": status, "query": query}).encode("utf-8")
+    except Exception:
+        return
+    task = asyncio.create_task(
+        room.local_participant.publish_data(payload, reliable=True, topic="agent.tool")
+    )
+    _pending.add(task)
+    task.add_done_callback(_pending.discard)
+
 # Serializes cloud turn writes so a user/assistant pair can't commit inverted
 # when their fire-and-forget tasks interleave (asyncio.Lock wakes waiters
 # FIFO, so posts land in emission order).
@@ -362,6 +384,7 @@ async def search_web(query: str) -> str:
     Args:
         query: A concise web search query capturing what to look up.
     """
+    _publish_tool_event("web_search", "searching", query)
     try:
         token = proxy_token.mint_from_env(sub="voice-agent")
         url = f"{WEB_URL}/api/voice-search"
@@ -390,6 +413,8 @@ async def search_web(query: str) -> str:
     except Exception as e:
         logger.warning("[search] failed for %r: %s", query, e)
         return "Web search failed; answer from what you know and say you couldn't search the web."
+    finally:
+        _publish_tool_event("web_search", "done", query)
 
 
 async def _post_turn(user_id: str, role: str, text: str) -> None:
@@ -821,6 +846,10 @@ async def _resolve_tts_attrs(
 
 async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
+    # Expose the room to module-level tools (search_web) so they can push
+    # tool-status events (e.g. web search) to the phone for a live indicator.
+    global _active_room
+    _active_room = ctx.room
     ctx.add_shutdown_callback(_drain_pending_writes)
     # Identity from the signed LiveKit token (route.ts sets identity=userId),
     # not the room-name string — so memory can't be keyed on another user even
