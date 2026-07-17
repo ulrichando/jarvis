@@ -916,6 +916,33 @@ async def entrypoint(ctx: JobContext) -> None:
         "" if tts_voice == default_voice else " [from phone]",
     )
 
+    # ── Self-knowledge: tell JARVIS its own live runtime config so it can answer
+    # truthfully when the user asks what model / voice / capabilities it's using,
+    # instead of guessing. Built here where the model, STT, voice, and tool set
+    # are all resolved. It reflects reality (env + the actually-loaded STT), so it
+    # stays correct as config changes. Phrased to answer only when asked.
+    llm_model = model_override or os.environ.get("VOICE_LLM_MODEL", DEFAULT_LLM_MODEL)
+    stt_inst = ctx.proc.userdata["stt"]
+    stt_main = getattr(stt_inst, "_model_size", "whisper")
+    stt_streaming = bool(getattr(stt_inst.capabilities, "streaming", False))
+    stt_interim = getattr(stt_inst, "_interim_model_size", None) if stt_streaming else None
+    stt_desc = f"faster-whisper {stt_main} (on-device, CPU)"
+    if stt_interim:
+        stt_desc += f", with live word-by-word streaming transcription (interim model {stt_interim})"
+    tool_lines = ["search the web for current, real-time information"]
+    if user_id:
+        tool_lines.append("remember facts about the user across calls (long-term memory)")
+        tool_lines.append("recall details from your past conversations with this user")
+    instructions = instructions + (
+        "\n\n[Your current runtime configuration — answer accurately and briefly IF the user "
+        "asks about your setup, model, voice, or capabilities; otherwise don't mention it.]\n"
+        "- Mode: real-time voice call (self-hosted LiveKit).\n"
+        f"- Language model: {llm_model}, served through the JARVIS gateway.\n"
+        f"- Speech recognition: {stt_desc}.\n"
+        f"- Voice / text-to-speech: Microsoft Edge Neural voice {tts_voice}.\n"
+        "- Things you can do right now: " + "; ".join(tool_lines) + ".\n"
+    )
+
     def _publish_speech(text: str, words: list[dict], dur: int = 0) -> None:
         # Push the reply text + per-word timings (from edge-tts) to the phone so
         # it can light each word white as JARVIS speaks it (karaoke read-along).

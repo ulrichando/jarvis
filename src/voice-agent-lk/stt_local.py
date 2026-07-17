@@ -591,9 +591,11 @@ def build_stt(*, vad: VAD | None = None) -> FasterWhisperSTT:
         logger.info("[stt] armed: model=%s lang=%s (finals only)", model, lang or "auto")
         return inst
 
-    # English pinned -> tiny.en (fastest, better English WER than tiny);
-    # anything else -> multilingual tiny.
-    default_interim = "tiny.en" if lang == "en" else "tiny"
+    # English pinned -> base.en (the confirmed quality bar: noticeably cleaner
+    # live interims than tiny.en at ~2x CPU, still fast enough for the cadence on
+    # the shared box); anything else -> multilingual base. Override per-box with
+    # VOICE_STT_INTERIM_MODEL (tiny.en trades quality for CPU headroom).
+    default_interim = "base.en" if lang == "en" else "base"
     interim_model = (
         os.environ.get("VOICE_STT_INTERIM_MODEL", "").strip() or default_interim
     )
