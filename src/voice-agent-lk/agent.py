@@ -751,7 +751,7 @@ def prewarm(proc: JobProcess) -> None:
         # mid-sentence pause doesn't split one utterance into several chat
         # turns (0.6 chopped continuous speech into fragments). CPU whisper is
         # finals-only, so premature end-of-speech also costs a whole re-turn.
-        min_silence_duration=0.8,
+        min_silence_duration=0.5,
         # Require more confident speech to trigger at all — a hands-free mic in
         # a noisy room otherwise wakes Silero on background audio (default 0.5),
         # which then hands whisper non-speech to hallucinate on.
