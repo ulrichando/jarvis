@@ -1,11 +1,11 @@
-"""Tests for the clean tools batch 1: vuln_check, home_assistant, discord.
+"""Tests for the clean tools batch 1: vuln_check, discord.
 
 Proves each ported tool:
   (a) self-registers in registry.all_entries() after import,
   (b) produces a valid RawFunctionTool via load_all_livekit_tools(),
   (c) behaves correctly in smoke tests (no network, no external services).
 
-No credentials are needed. Tools gated by check_fn (HA, Discord) are
+No credentials are needed. Tools gated by check_fn (Discord) are
 tested at the schema/registration level; their handlers are exercised
 with missing-creds error paths only to avoid network calls.
 """
@@ -50,22 +50,6 @@ class TestSelfRegistration:
         import tools.vuln_check  # noqa: F401
         assert registry.get_entry("vuln_check") is not None
 
-    def test_ha_list_entities_registers(self):
-        import tools.home_assistant  # noqa: F401
-        assert registry.get_entry("ha_list_entities") is not None
-
-    def test_ha_get_state_registers(self):
-        import tools.home_assistant  # noqa: F401
-        assert registry.get_entry("ha_get_state") is not None
-
-    def test_ha_list_services_registers(self):
-        import tools.home_assistant  # noqa: F401
-        assert registry.get_entry("ha_list_services") is not None
-
-    def test_ha_call_service_registers(self):
-        import tools.home_assistant  # noqa: F401
-        assert registry.get_entry("ha_call_service") is not None
-
     def test_discord_registers(self):
         import tools.discord  # noqa: F401
         assert registry.get_entry("discord") is not None
@@ -75,11 +59,10 @@ class TestSelfRegistration:
         assert registry.get_entry("discord_admin") is not None
 
     def test_all_in_all_entries(self):
-        import tools.vuln_check, tools.home_assistant, tools.discord  # noqa: F401
+        import tools.vuln_check, tools.discord  # noqa: F401
         names = {e.name for e in registry.all_entries()}
         expected = {
             "vuln_check",
-            "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
             "discord", "discord_admin",
         }
         assert expected.issubset(names), f"Missing from registry: {expected - names}"
@@ -94,7 +77,7 @@ class TestLivekitAdaptation:
 
     @pytest.fixture(scope="class", autouse=True)
     def _ensure_imports(self):
-        import tools.vuln_check, tools.home_assistant, tools.discord  # noqa: F401
+        import tools.vuln_check, tools.discord  # noqa: F401
 
     def test_all_adapted_are_raw_function_tools(self):
         tools = adapter.load_all_livekit_tools()
@@ -106,19 +89,6 @@ class TestLivekitAdaptation:
         lk_tools = adapter.load_all_livekit_tools()
         names = {t.info.name for t in lk_tools}
         assert "vuln_check" in names
-
-    def test_ha_tools_NOT_in_adapted_when_no_token(self):
-        """HA tools must be suppressed (check_fn=False) when HASS_TOKEN is unset."""
-        import tools.home_assistant  # noqa: F401
-        # Ensure HASS_TOKEN is absent
-        saved = os.environ.pop("HASS_TOKEN", None)
-        try:
-            lk_tools = adapter.load_all_livekit_tools()
-            names = {t.info.name for t in lk_tools}
-            assert "ha_list_entities" not in names, "HA tools must be gated when no token"
-        finally:
-            if saved is not None:
-                os.environ["HASS_TOKEN"] = saved
 
     def test_discord_tools_NOT_in_adapted_when_no_token(self):
         """Discord tools must be suppressed when DISCORD_BOT_TOKEN is unset."""
@@ -273,60 +243,6 @@ class TestVulnCheckBehavior:
         assert "error" in result
 
 
-class TestHomeAssistantBehavior:
-    """ha_* handler smoke tests — no real HA needed."""
-
-    @pytest.fixture(autouse=True)
-    def _import_and_clear_token(self):
-        import tools.home_assistant  # noqa: F401
-        saved = os.environ.pop("HASS_TOKEN", None)
-        yield
-        if saved is not None:
-            os.environ["HASS_TOKEN"] = saved
-
-    def test_check_fn_false_when_no_token(self):
-        entry = registry.get_entry("ha_list_entities")
-        assert entry is not None
-        assert entry.check_fn is not None
-        assert entry.check_fn() is False
-
-    def test_check_fn_true_with_token(self):
-        os.environ["HASS_TOKEN"] = "test-token-xyz"
-        entry = registry.get_entry("ha_list_entities")
-        assert entry.check_fn() is True
-
-    def test_ha_get_state_invalid_entity_id(self):
-        """Handler should reject malformed entity_id without making a network call."""
-        import tools.home_assistant as ha_mod
-        result = json.loads(ha_mod._handle_get_state({"entity_id": "INVALID/FORMAT"}))
-        assert "error" in result
-
-    def test_ha_call_service_blocked_domain(self):
-        """shell_command domain must be blocked."""
-        import tools.home_assistant as ha_mod
-        result = json.loads(ha_mod._handle_call_service(
-            {"domain": "shell_command", "service": "run", "entity_id": "light.x"}
-        ))
-        assert "error" in result
-        assert "blocked" in result["error"].lower()
-
-    def test_ha_call_service_missing_domain(self):
-        import tools.home_assistant as ha_mod
-        result = json.loads(ha_mod._handle_call_service({"service": "turn_on"}))
-        assert "error" in result
-
-    def test_ha_call_service_invalid_json_data(self):
-        import tools.home_assistant as ha_mod
-        result = json.loads(ha_mod._handle_call_service(
-            {"domain": "light", "service": "turn_on", "data": "not-json{"}
-        ))
-        assert "error" in result
-
-    def test_requires_env_set(self):
-        entry = registry.get_entry("ha_list_entities")
-        assert "HASS_TOKEN" in entry.requires_env
-
-
 class TestDiscordBehavior:
     """discord handler smoke tests — no real Discord connection."""
 
@@ -399,7 +315,6 @@ class TestNoHermesTokens:
 
     _NEW_FILES = [
         _VA_ROOT / "tools" / "vuln_check.py",
-        _VA_ROOT / "tools" / "home_assistant.py",
         _VA_ROOT / "tools" / "discord.py",
     ]
 

@@ -68,11 +68,6 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
     "skill_view": "read",
     "skills_list": "read",
     "skill_manage": "edit",
-    # Home Assistant / external
-    "ha_list_entities": "fetch",
-    "ha_get_state": "fetch",
-    "ha_list_services": "fetch",
-    "ha_call_service": "execute",
 }
 
 
