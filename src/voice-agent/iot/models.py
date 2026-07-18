@@ -28,11 +28,11 @@ class Observation:
 
 @dataclass
 class Device:
-    ip: str
+    ip: str = ""
     mac: str | None = None
     hostname: str | None = None
     name: str = ""
-    type: str = "unknown"           # light|tv|speaker|thermostat|plug|hub|unknown
+    type: str = "unknown"           # light|tv|speaker|thermostat|plug|hub|fan|cover|unknown
     brand: str = ""
     protocol: list[str] = field(default_factory=list)
     controllable: Controllable = Controllable.UNKNOWN
@@ -40,9 +40,12 @@ class Device:
     first_seen: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
     raw: dict = field(default_factory=dict)
+    id: str = ""                    # stable non-network id (e.g. "ha:light.kitchen"); wins over mac/ip
 
     @property
     def key(self) -> str:
+        if self.id:
+            return self.id
         return self.mac if self.mac else f"ip:{self.ip}"
 
     def to_dict(self) -> dict:

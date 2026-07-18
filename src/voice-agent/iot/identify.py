@@ -3,8 +3,25 @@ from __future__ import annotations
 
 from iot.models import Controllable, Device, Observation
 
+
+def _lg_webos(o: Observation) -> bool:
+    """LG webOS TVs advertise Cast/AirPlay/UPnP with LG-specific fields:
+    _googlecast fn "[LG] webOS TV ...", _airplay manufacturer "LG", and a
+    UPnP server string containing "WebOS/x.y". Must outrank the generic
+    Google Cast rule or the TV is mis-branded as a Chromecast."""
+    blob = " ".join(str(v) for v in (o.service, o.hostname, o.data.get("fn"),
+                                     o.data.get("md"), o.data.get("server"))
+                    if v).lower()
+    if "webos" in blob or "[lg]" in blob:
+        return True
+    return ((o.service or "").startswith("_airplay")
+            and str(o.data.get("manufacturer", "")).lower().startswith("lg"))
+
+
 # (matcher, type, brand, controllable, hint). matcher(obs) -> bool.
+# Ordered — first match per observation wins, so specific rules go first.
 _RULES = [
+    (_lg_webos, "tv", "LG webOS", Controllable.LOCAL, "LG webOS"),
     (lambda o: (o.service or "").startswith("_roku._tcp") or o.service == "roku:ecp" or o.port == 8060,
      "tv", "Roku", Controllable.LOCAL, "Roku ECP"),
     (lambda o: (o.service or "").startswith("_hue._tcp"),
@@ -16,7 +33,7 @@ _RULES = [
     (lambda o: o.source == "tuya",
      "light", "Tuya (Smart Life)", Controllable.CLOUD_ONLY, "needs local key or Home Assistant"),
     (lambda o: o.port == 7345, "tv", "Vizio", Controllable.LOCAL, "Vizio SmartCast"),
-    (lambda o: o.port == 3001, "tv", "LG", Controllable.LOCAL, "LG webOS"),
+    (lambda o: o.port == 3001, "tv", "LG webOS", Controllable.LOCAL, "LG webOS"),
     (lambda o: o.port in (8001, 8002), "tv", "Samsung", Controllable.LOCAL, "Samsung Tizen"),
 ]
 
