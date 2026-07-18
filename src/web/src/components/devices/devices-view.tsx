@@ -1,22 +1,26 @@
 "use client";
 
 /**
- * Devices — the web view over the IoT discovery sidecar (via /api/iot/*).
+ * Devices — categorized control UI over the IoT sidecar (via /api/iot/*).
  *
- * Truthful by design: every device wears its controllability verdict as
- * state, and control buttons are DISABLED with the sidecar's `control_hint`
- * as the visible reason whenever a device isn't locally controllable.
- * Phase 1 is discovery-only — even "local" controls surface the sidecar's
- * real 501 answer instead of pretending to work.
+ * Phase 2: devices are grouped by category (TVs, Lights, Plugs, …) and each
+ * controllable device renders controls driven strictly by its `capabilities`
+ * list — power/on-off toggles, brightness/volume sliders, color, temperature
+ * steppers, media buttons, lazy app/input pickers. Truthful by design:
+ * devices without capabilities still list, wearing their `control_hint` as a
+ * muted reason instead of fake controls. 428 surfaces a Pair action (LG TV
+ * accept-prompt), 424 points at the Home Assistant panel below the list.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Blinds,
   ChevronRight,
   CircleHelp,
+  Fan,
+  Info,
   Lightbulb,
   Plug,
-  Power,
   Radar,
   RefreshCw,
   Router,
@@ -26,42 +30,56 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  caps,
+  deviceKey,
+  isControllable,
+  isWebosTv,
+  type IotDevice,
+} from "./api";
+import {
+  DeviceControls,
+  hasPowerControl,
+  PairButton,
+  PowerSwitch,
+  useDeviceCommand,
+} from "./device-controls";
+import { HomeAssistantPanel } from "./ha-connect";
 
-export type IotDevice = {
-  ip: string;
-  mac: string | null;
-  hostname: string | null;
-  name: string;
-  type: string;
-  brand: string;
-  protocol: string[];
-  controllable: "local" | "matter" | "cloud_only" | "unknown";
-  control_hint: string;
-  first_seen?: number;
-  last_seen?: number;
-};
+export { deviceKey };
+export type { IotDevice };
 
-/** Registry key, mirroring the sidecar's Device.key (MAC, else ip:<ip>). */
-export const deviceKey = (d: IotDevice): string => d.mac ?? `ip:${d.ip}`;
+// ── categories ─────────────────────────────────────────────────────────────
 
-const canControl = (d: IotDevice): boolean =>
-  d.controllable === "local" || d.controllable === "matter";
-
-const TYPE_META: Record<string, { label: string; icon: LucideIcon }> = {
+const CATEGORY_META: Record<string, { label: string; icon: LucideIcon }> = {
   tv: { label: "TVs", icon: Tv },
-  speaker: { label: "Speakers", icon: Speaker },
   light: { label: "Lights", icon: Lightbulb },
-  hub: { label: "Hubs & bridges", icon: Router },
   plug: { label: "Plugs", icon: Plug },
   thermostat: { label: "Thermostats", icon: Thermometer },
+  speaker: { label: "Speakers", icon: Speaker },
+  fan: { label: "Fans", icon: Fan },
+  cover: { label: "Covers", icon: Blinds },
+  hub: { label: "Hubs & bridges", icon: Router },
   unknown: { label: "Unidentified", icon: CircleHelp },
 };
 
-const typeMeta = (t: string) =>
-  TYPE_META[t] ?? { label: t.charAt(0).toUpperCase() + t.slice(1), icon: CircleHelp };
+const categoryMeta = (t: string) =>
+  CATEGORY_META[t] ?? {
+    label: t.charAt(0).toUpperCase() + t.slice(1),
+    icon: CircleHelp,
+  };
 
-// Canonical section order; anything unmapped lands before "unknown".
-const TYPE_ORDER = ["tv", "speaker", "light", "hub", "plug", "thermostat"];
+// Canonical section order; unmapped types land before "unknown".
+const CATEGORY_ORDER = [
+  "tv",
+  "light",
+  "plug",
+  "thermostat",
+  "speaker",
+  "fan",
+  "cover",
+  "hub",
+];
 
 export function groupByType(devices: IotDevice[]): [string, IotDevice[]][] {
   const groups = new Map<string, IotDevice[]>();
@@ -72,17 +90,24 @@ export function groupByType(devices: IotDevice[]): [string, IotDevice[]][] {
     groups.set(t, list);
   }
   const rank = (t: string) => {
-    const i = TYPE_ORDER.indexOf(t);
+    const i = CATEGORY_ORDER.indexOf(t);
     if (i >= 0) return i;
-    return t === "unknown" ? TYPE_ORDER.length + 1 : TYPE_ORDER.length;
+    return t === "unknown" ? CATEGORY_ORDER.length + 1 : CATEGORY_ORDER.length;
   };
   return [...groups.entries()]
     .map(([t, list]): [string, IotDevice[]] => [
       t,
-      [...list].sort((a, b) => a.name.localeCompare(b.name)),
+      // Controllable devices first within a section, then by name.
+      [...list].sort(
+        (a, b) =>
+          Number(isControllable(b)) - Number(isControllable(a)) ||
+          a.name.localeCompare(b.name),
+      ),
     ])
     .sort((a, b) => rank(a[0]) - rank(b[0]) || a[0].localeCompare(b[0]));
 }
+
+// ── controllability pill ───────────────────────────────────────────────────
 
 const CONTROL_META: Record<IotDevice["controllable"], { label: string; dot: string }> = {
   local: { label: "Local", dot: "bg-emerald-500" },
@@ -101,73 +126,92 @@ function ControlPill({ level }: { level: IotDevice["controllable"] }) {
   );
 }
 
-function DeviceRow({ device }: { device: IotDevice }) {
-  const [open, setOpen] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [sending, setSending] = useState(false);
-  const Icon = typeMeta(device.type).icon;
-  const controllable = canControl(device);
+// ── one device row ─────────────────────────────────────────────────────────
 
-  const sendPower = useCallback(async () => {
-    setSending(true);
-    setNotice(null);
-    try {
-      const res = await fetch(
-        `/api/iot/devices/${encodeURIComponent(deviceKey(device))}/command`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ action: "power" }),
-        },
-      );
-      const body = (await res.json()) as { error?: string };
-      // Phase 1: the sidecar answers 501 — show its real answer, don't fake success.
-      setNotice(body.error ?? (res.ok ? "Done" : `HTTP ${res.status}`));
-    } catch {
-      setNotice("IoT service unreachable");
-    } finally {
-      setSending(false);
-    }
-  }, [device]);
+function DeviceRow({
+  device,
+  onRefresh,
+}: {
+  device: IotDevice;
+  onRefresh: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [needsPairing, setNeedsPairing] = useState(false);
+  const Icon = categoryMeta(device.type).icon;
+  const controllable = isControllable(device);
+  const pairable = isWebosTv(device) || needsPairing;
+
+  const markNeedsPairing = useCallback(() => setNeedsPairing(true), []);
+  const run = useDeviceCommand(device, markNeedsPairing);
 
   return (
     <li className="group">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-muted/50"
-      >
-        <span className="grid size-8 shrink-0 place-items-center rounded-lg border border-border/40 bg-card text-muted-foreground">
-          <Icon className="size-4" />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13.5px] font-medium text-foreground">
-            {device.name || device.hostname || device.ip}
+      <div className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 transition-colors hover:bg-muted/50">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          aria-label={`${device.name || device.hostname || device.ip} — details`}
+          className="flex min-w-0 flex-1 items-center gap-3 text-left"
+        >
+          <span className="grid size-8 shrink-0 place-items-center rounded-lg border border-border/40 bg-card text-muted-foreground">
+            <Icon className="size-4" />
           </span>
-          <span className="block truncate text-[11.5px] text-muted-foreground">
-            {device.brand || "Unknown make"}
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[13.5px] font-medium text-foreground">
+              {device.name || device.hostname || device.ip}
+            </span>
+            <span className="block truncate text-[11.5px] text-muted-foreground">
+              {device.brand || "Unknown make"}
+            </span>
           </span>
-        </span>
-        <span className="hidden font-mono text-[11px] text-muted-foreground/80 sm:block">
-          {device.ip}
-        </span>
-        <ControlPill level={device.controllable} />
-        <ChevronRight
-          className={cn(
-            "size-3.5 shrink-0 text-muted-foreground/60 transition-transform",
-            open && "rotate-90",
-          )}
-        />
-      </button>
+          <span className="hidden font-mono text-[11px] text-muted-foreground/80 sm:block">
+            {device.ip}
+          </span>
+          <ControlPill level={device.controllable} />
+          <ChevronRight
+            className={cn(
+              "size-3.5 shrink-0 text-muted-foreground/60 transition-transform",
+              open && "rotate-90",
+            )}
+          />
+        </button>
+        {/* Quick power — sibling of the expand button (no nested interactives). */}
+        {controllable && hasPowerControl(device) && (
+          <PowerSwitch device={device} run={run} />
+        )}
+      </div>
 
       {open && (
         <div className="mx-3 mb-2 rounded-lg border border-border/40 bg-card/40 px-4 py-3">
-          <dl className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-[12px] sm:grid-cols-2">
+          {controllable ? (
+            <DeviceControls device={device} run={run} />
+          ) : (
+            <p className="flex items-start gap-1.5 text-[12px] text-muted-foreground">
+              <Info className="mt-0.5 size-3.5 shrink-0" />
+              {device.control_hint || "No local control path for this device yet."}
+            </p>
+          )}
+
+          {pairable && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/40 pt-3">
+              <PairButton device={device} onPaired={onRefresh} />
+              <span className="text-[11.5px] text-muted-foreground">
+                {needsPairing
+                  ? "This device asked for pairing — accept the prompt on its screen."
+                  : "First command on this TV needs a one-time pairing accept."}
+              </span>
+            </div>
+          )}
+
+          <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-1.5 border-t border-border/40 pt-3 text-[12px] sm:grid-cols-2">
             <Detail label="IP address" value={device.ip} mono />
             {device.mac && <Detail label="MAC" value={device.mac} mono />}
             {device.hostname && <Detail label="Hostname" value={device.hostname} mono />}
             {device.protocol.length > 0 && (
               <Detail label="Seen via" value={device.protocol.join(" · ")} />
+            )}
+            {caps(device).length > 0 && (
+              <Detail label="Capabilities" value={caps(device).join(" · ")} />
             )}
             {device.last_seen ? (
               <Detail
@@ -176,33 +220,6 @@ function DeviceRow({ device }: { device: IotDevice }) {
               />
             ) : null}
           </dl>
-
-          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/40 pt-3">
-            <button
-              aria-label={`Power — ${device.name || device.ip}`}
-              disabled={!controllable || sending}
-              onClick={controllable ? sendPower : undefined}
-              className={cn(
-                "inline-flex h-[28px] items-center gap-1.5 rounded-lg border px-2.5 text-[12px] transition-colors",
-                controllable
-                  ? "border-border/40 bg-card text-foreground hover:border-border"
-                  : "cursor-not-allowed border-border/30 bg-card/40 text-muted-foreground/50",
-              )}
-            >
-              <Power className="size-3.5" />
-              Power
-            </button>
-            {!controllable && (
-              <span className="text-[11.5px] text-muted-foreground">
-                {device.control_hint || "Not locally controllable"}
-              </span>
-            )}
-            {notice && (
-              <span role="status" className="text-[11.5px] text-amber-600 dark:text-amber-500">
-                {notice}
-              </span>
-            )}
-          </div>
         </div>
       )}
     </li>
@@ -220,6 +237,8 @@ function Detail({ label, value, mono }: { label: string; value: string; mono?: b
   );
 }
 
+// ── the page ───────────────────────────────────────────────────────────────
+
 export function DevicesView({ initialDevices }: { initialDevices?: IotDevice[] }) {
   const [devices, setDevices] = useState<IotDevice[]>(initialDevices ?? []);
   const [scanning, setScanning] = useState(false);
@@ -235,11 +254,15 @@ export function DevicesView({ initialDevices }: { initialDevices?: IotDevice[] }
         return;
       }
       setError(null);
-      setDevices(body.devices ?? []);
+      if (body.devices) setDevices(body.devices);
     } catch {
       setError("Could not reach the web API.");
     }
   }, []);
+
+  const refresh = useCallback(() => {
+    void load("/api/iot/devices");
+  }, [load]);
 
   // Initial inventory — skipped when the caller seeds the list (tests, SSR).
   useEffect(() => {
@@ -258,6 +281,10 @@ export function DevicesView({ initialDevices }: { initialDevices?: IotDevice[] }
   }, [load]);
 
   const groups = useMemo(() => groupByType(devices), [devices]);
+  const controllableCount = useMemo(
+    () => devices.filter(isControllable).length,
+    [devices],
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -271,6 +298,7 @@ export function DevicesView({ initialDevices }: { initialDevices?: IotDevice[] }
         {devices.length > 0 && (
           <span className="inline-flex items-center rounded-full border border-border/40 bg-card px-2.5 py-0.5 text-[11.5px] text-muted-foreground">
             {devices.length} on your network
+            {controllableCount > 0 && ` · ${controllableCount} controllable`}
           </span>
         )}
         <div className="flex-1" />
@@ -297,37 +325,40 @@ export function DevicesView({ initialDevices }: { initialDevices?: IotDevice[] }
               Loading devices…
             </p>
           ) : devices.length === 0 ? (
-            <div className="flex flex-col items-center gap-3 py-20 text-center">
+            <div className="flex flex-col items-center gap-3 py-16 text-center">
               <span className="grid size-12 place-items-center rounded-full border border-dashed border-border text-muted-foreground">
                 <Radar className="size-5" />
               </span>
               <p className="text-[13.5px] font-medium">No devices discovered yet</p>
               <p className="max-w-xs text-[12px] text-muted-foreground">
-                Hit Rescan to sweep the local network for TVs, lights, speakers, and hubs.
+                Hit Rescan to sweep the local network, or connect Home Assistant
+                below to bring in its lights, plugs, and thermostats.
               </p>
             </div>
           ) : (
-            <>
-              {groups.map(([type, list]) => (
+            groups.map(([type, list]) => {
+              const meta = categoryMeta(type);
+              const SectionIcon = meta.icon;
+              return (
                 <section key={type} className="mb-6">
-                  <h2 className="mb-1.5 flex items-baseline gap-2 px-3 text-[11px] font-medium tracking-[0.08em] text-muted-foreground/80 uppercase">
-                    {typeMeta(type).label}
+                  <h2 className="mb-1.5 flex items-center gap-2 px-3 text-[11px] font-medium tracking-[0.08em] text-muted-foreground/80 uppercase">
+                    <SectionIcon className="size-3.5 text-muted-foreground/60" />
+                    {meta.label}
                     <span className="font-mono text-[10px] text-muted-foreground/50 normal-case">
                       {list.length}
                     </span>
                   </h2>
                   <ul className="rounded-xl border border-border/40 bg-card/20">
                     {list.map((d) => (
-                      <DeviceRow key={deviceKey(d)} device={d} />
+                      <DeviceRow key={deviceKey(d)} device={d} onRefresh={refresh} />
                     ))}
                   </ul>
                 </section>
-              ))}
-              <p className="px-3 text-[11.5px] text-muted-foreground/70">
-                Discovery-only preview — device control arrives in Phase 2.
-              </p>
-            </>
+              );
+            })
           )}
+
+          <HomeAssistantPanel onSaved={refresh} />
         </div>
       </div>
     </div>
