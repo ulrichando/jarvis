@@ -246,10 +246,214 @@ type Body = {
   // Title for a template-launched task conversation ("Daily brief"), so the
   // sidebar shows the clean name instead of the long seed prompt.
   taskTitle?: string;
+  // Reasoning controls from the model picker. `thinking` opts in (default off);
+  // `effort` tunes depth. Mapped to per-provider reasoning options below.
+  effort?: "low" | "medium" | "high" | "extra" | "max";
+  thinking?: boolean;
 };
 
+type Effort = "low" | "medium" | "high" | "extra" | "max";
+
+// Thinking budget (tokens) by effort, shared by Anthropic + Google. OpenAI
+// takes a coarse low/medium/high instead of a token budget. All values are
+// ≥ Anthropic's 1024 API floor, so no re-flooring is needed downstream.
+const THINKING_BUDGET: Record<Effort, number> = {
+  low: 2048,
+  medium: 4096,
+  high: 8192,
+  extra: 16384,
+  max: 32768,
+};
+const OPENAI_EFFORT: Record<Effort, "low" | "medium" | "high"> = {
+  low: "low",
+  medium: "medium",
+  high: "high",
+  extra: "high",
+  max: "high",
+};
+// Adaptive-ONLY Anthropic models (live-probed 2026-07-18): they 400 on
+// thinking:{type:"enabled",budgetTokens} ("Use thinking.type.adaptive and
+// output_config.effort") AND on ANY temperature ("temperature is deprecated
+// for this model"). fable-5 additionally 400s on an explicit
+// thinking:{type:"disabled"} — thinking-OFF must omit the block entirely.
+// haiku-4-5 stays on enabled+budget (adaptive unsupported there); sonnet-4-6
+// stays on the proven enabled+budget path too.
+const ADAPTIVE_ANTHROPIC = new Set([
+  "claude-fable-5",
+  "claude-opus-4-8",
+  "claude-opus-4-7",
+]);
+// Picker effort → Anthropic effort for the adaptive models ("extra" is the
+// picker's name for Anthropic's "xhigh" tier).
+const ANTHROPIC_EFFORT: Record<
+  Effort,
+  "low" | "medium" | "high" | "xhigh" | "max"
+> = {
+  low: "low",
+  medium: "medium",
+  high: "high",
+  extra: "xhigh",
+  max: "max",
+};
+// Gemini 2.5 per-model thinkingBudget ceilings (API rejects values above).
+const GOOGLE_BUDGET_MAX_PRO = 32768;
+const GOOGLE_BUDGET_MAX_FLASH = 24576;
+
+// Thinking toggle → model swap. DeepSeek and Kimi expose reasoning as a
+// SEPARATE model, not a per-request flag, so the picker's Thinking toggle
+// swaps the non-reasoning pick to its reasoner sibling BEFORE model
+// resolution (see POST). Only known non-reasoning siblings are keys: an
+// explicit deepseek-reasoner / kimi-k2-thinking pick is untouched, the
+// swap can't double-apply (no target id is a key), and it composes with
+// the client's deepthink toggle (which already sends deepseek-reasoner).
+// deepseek-v4-pro is deliberately absent — it thinks on its own; don't
+// override an explicit pick of the top model.
+const THINKING_MODEL_SWAP: Record<string, string> = {
+  "deepseek-chat": "deepseek-reasoner",
+  "deepseek-v4-flash": "deepseek-reasoner",
+  "kimi-k2-instant": "kimi-k2-thinking",
+  "kimi-k2-agent": "kimi-k2-thinking",
+};
+
+/**
+ * Map the picker's effort + thinking toggle onto provider-specific reasoning
+ * controls. Per-provider semantics (SDK-shape + live-probe verified 2026-07-18):
+ *
+ * - anthropic — thinking is genuinely opt-in: OFF sends no thinking block.
+ *   Two request shapes by model: ADAPTIVE_ANTHROPIC models (fable-5,
+ *   opus-4-8/4-7) take thinking:{type:"adaptive"} + effort and reject
+ *   temperature outright; the rest (haiku-4-5, sonnet-4-6) take
+ *   enabled+budgetTokens. We never send an option a model rejects.
+ * - openai — gpt-5 / gpt-5-mini / o3 reason BY DEFAULT, so reasoningEffort
+ *   is applied unconditionally (effort must tune them even with the toggle
+ *   off — the toggle cannot disable their reasoning). Safe: the SDK only
+ *   forwards `reasoning` for reasoning-model ids.
+ * - google — Gemini 2.5 also thinks BY DEFAULT (probe: 783 hidden billed
+ *   reasoning tokens on "17*24" with no config), so we always send an
+ *   explicit thinkingBudget: toggle OFF really disables it (0 on Flash;
+ *   Pro can't disable → API minimum 128), toggle ON scales it by effort.
+ * - deepseek / kimi — reasoning is model-selected, not flag-selected;
+ *   handled upstream via THINKING_MODEL_SWAP. Nothing to send here.
+ * - ollama — no reliable per-request reasoning control: the /v1
+ *   OpenAI-compatible endpoint ignores unknown body params (`think` only
+ *   exists on the native /api/chat). Both controls intentionally no-op.
+ *
+ * Returns the final `temperature` (undefined = omit), optional
+ * providerOptions, and the (possibly inflated) maxOutputTokens to send.
+ */
+function reasoningConfig(
+  provider: string,
+  modelId: string,
+  effort: Effort,
+  thinking: boolean,
+  maxOutputTokens: number,
+  baseTemp: number,
+): {
+  providerOptions?: Record<string, Record<string, unknown>>;
+  temperature: number | undefined;
+  maxOutputTokens: number;
+} {
+  // `effort` is client-supplied and unvalidated — the call site's `as Effort`
+  // cast doesn't check the runtime value, so a bogus string would make
+  // THINKING_BUDGET[effort] undefined (google: Math.min(undefined,…) = NaN →
+  // 400). Coerce anything unknown to "high".
+  const eff: Effort = (
+    ["low", "medium", "high", "extra", "max"] as const
+  ).includes(effort)
+    ? effort
+    : "high";
+  if (provider === "anthropic") {
+    if (ADAPTIVE_ANTHROPIC.has(modelId)) {
+      // Adaptive-only models: temperature must be omitted even with thinking
+      // OFF, and OFF must NOT send {type:"disabled"} (fable-5 400s on that
+      // too) — just omit thinking entirely.
+      if (!thinking) return { temperature: undefined, maxOutputTokens };
+      // display:"summarized" opts back into visible reasoning text — the
+      // adaptive default is "omitted" (empty thinking blocks, long silent
+      // pause in the UI). Effort replaces budgetTokens on these models.
+      return {
+        providerOptions: {
+          anthropic: {
+            thinking: { type: "adaptive", display: "summarized" },
+            effort: ANTHROPIC_EFFORT[eff],
+          },
+        },
+        temperature: undefined,
+        maxOutputTokens,
+      };
+    }
+    // haiku-4-5 / sonnet-4-6 (and any other anthropic id): proven
+    // enabled+budget path, unchanged.
+    if (!thinking) return { temperature: baseTemp, maxOutputTokens };
+    // budgetTokens does NOT need to fit inside maxOutputTokens — the SDK
+    // inflates max_tokens by the budget itself (probe: budget 8192 with
+    // maxOut 1024 succeeds), so no maxOut gate/clamp here. Temperature
+    // must be OMITTED: the SDK strips any explicit value when thinking is
+    // enabled (and warns); the API runs thinking at temperature 1 itself.
+    return {
+      providerOptions: {
+        anthropic: {
+          thinking: { type: "enabled", budgetTokens: THINKING_BUDGET[eff] },
+        },
+      },
+      temperature: undefined,
+      maxOutputTokens,
+    };
+  }
+  if (provider === "google") {
+    const isPro = modelId.includes("pro");
+    if (!thinking) {
+      // Actually turn default thinking OFF (Flash: 0). 2.5 Pro can't
+      // disable — send its API minimum (128) instead of an invalid 0.
+      return {
+        providerOptions: {
+          google: { thinkingConfig: { thinkingBudget: isPro ? 128 : 0 } },
+        },
+        temperature: baseTemp,
+        maxOutputTokens,
+      };
+    }
+    const budget = Math.min(
+      THINKING_BUDGET[eff],
+      isPro ? GOOGLE_BUDGET_MAX_PRO : GOOGLE_BUDGET_MAX_FLASH,
+    );
+    return {
+      providerOptions: {
+        google: {
+          // includeThoughts surfaces the reasoning stream to the UI —
+          // without it thoughts are billed but never rendered (probe).
+          thinkingConfig: { thinkingBudget: budget, includeThoughts: true },
+        },
+      },
+      temperature: baseTemp,
+      // Gemini counts thoughts toward the output cap — add the budget as
+      // headroom so a fully-used budget can't starve the visible answer.
+      // Harmless if unused (a ceiling, not a target); well under the
+      // model's 65536 output limit.
+      maxOutputTokens: maxOutputTokens + budget,
+    };
+  }
+  if (provider === "openai") {
+    // Applied regardless of the Thinking toggle — these models reason by
+    // default and the effort ladder is the only real knob. 'minimal' is
+    // gpt-5-family-only (o-series bottoms out at 'low'). Temperature is
+    // omitted: reasoning models reject a custom temperature.
+    const oaiEff =
+      eff === "low" && modelId.startsWith("gpt-5")
+        ? "minimal"
+        : OPENAI_EFFORT[eff];
+    return {
+      providerOptions: { openai: { reasoningEffort: oaiEff } },
+      temperature: undefined,
+      maxOutputTokens,
+    };
+  }
+  // deepseek / kimi (model-swapped upstream) and ollama (no knob): plain path.
+  return { temperature: baseTemp, maxOutputTokens };
+}
+
 export async function POST(req: Request) {
-  const { id, messages, model, system, workspaceId, mode, format, search, image, incognito, scheduleSetup, taskTitle }: Body = await req.json();
+  const { id, messages, model, system, workspaceId, mode, format, search, image, incognito, scheduleSetup, taskTitle, effort, thinking }: Body = await req.json();
   // UIMessage shape only — a {role, content} message (or missing array)
   // used to 500 deep in extractText instead of failing at the boundary.
   if (
@@ -270,6 +474,19 @@ export async function POST(req: Request) {
   }
   const settings = await loadSettings();
   let modelId = model ?? settings.defaults.model;
+
+  // Thinking toggle → reasoner-sibling swap for providers where reasoning
+  // is a different MODEL, not a request option (DeepSeek, Kimi). Runs
+  // BEFORE the design/workbench substitutions below, so workspace turns
+  // keep their reasoning→non-reasoning protection (which would swap it
+  // right back — by design). Also runs before the Kimi K2.6 mode gate so
+  // a swapped kimi id dispatches to the Thinking mode handler.
+  if (thinking === true && THINKING_MODEL_SWAP[modelId]) {
+    console.log(
+      `[chat] thinking-on: substituting ${modelId} → ${THINKING_MODEL_SWAP[modelId]} (reasoning is model-selected on this provider)`,
+    );
+    modelId = THINKING_MODEL_SWAP[modelId];
+  }
 
   // Auto-substitute reasoning models in design mode. Reasoning models
   // (deepseek-reasoner, deepseek-v4-pro, kimi-k2-thinking, o3) burn most
@@ -859,12 +1076,28 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
     }
   }
 
+  const rc = reasoningConfig(
+    selected.meta.provider,
+    modelId,
+    (effort ?? "high") as Effort,
+    thinking === true,
+    maxOutputTokens,
+    settings.defaults.temperature ?? 0.7,
+  );
+
   const result = streamText({
     model: selected.model,
     system: finalSystem,
     messages: modelMessages,
-    temperature: settings.defaults.temperature ?? 0.7,
-    maxOutputTokens,
+    temperature: rc.temperature,
+    maxOutputTokens: rc.maxOutputTokens,
+    ...(rc.providerOptions
+      ? {
+          providerOptions: rc.providerOptions as Parameters<
+            typeof streamText
+          >[0]["providerOptions"],
+        }
+      : {}),
     // INTENTIONALLY no abortSignal: req.signal here. If we tied the
     // model run to the request signal, navigating away from the
     // workspace mid-stream would close the SSE connection, fire

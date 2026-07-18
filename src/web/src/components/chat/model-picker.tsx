@@ -1,10 +1,11 @@
 "use client";
 
-import { ChevronDown, Check, KeyRound } from "lucide-react";
+import { ChevronDown, Check, Clock, KeyRound, Info } from "lucide-react";
 import { Fragment } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,6 +13,9 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -26,14 +30,11 @@ import {
   type Provider,
 } from "@/lib/ai/models-meta";
 import { getProviderUX } from "@/lib/ai/provider-ux";
-import { useChatStore } from "@/stores/chat";
+import { useChatStore, EFFORTS, DEFAULT_EFFORT, type Effort } from "@/stores/chat";
 import { cn } from "@/lib/utils";
 
 // Reads /api/providers/available — server tells us which provider keys
-// are configured in env. Picker dims models from providers without
-// keys (still visible, click shows a toast). Once a key is added in
-// .env.local + dev restarted, this query reflects it within the
-// staleTime window (60 s).
+// are configured in env. Picker dims models from providers without keys.
 type AvailableMap = Record<Provider, boolean>;
 function useAvailableProviders() {
   return useQuery<AvailableMap>({
@@ -48,9 +49,8 @@ function useAvailableProviders() {
   });
 }
 
-// Reads /api/providers/ollama-models — the server enumerates the local Ollama
-// daemon so every pulled model is selectable, not just the two static entries.
-// Returns [] when the daemon is offline, so the picker degrades to statics.
+// Reads /api/providers/ollama-models — enumerates the local Ollama daemon so
+// every pulled model is selectable. Returns [] when the daemon is offline.
 type DiscoveredOllama = { id: string; tag: string };
 function useDiscoveredOllamaModels() {
   return useQuery<DiscoveredOllama[]>({
@@ -66,55 +66,60 @@ function useDiscoveredOllamaModels() {
   });
 }
 
-/**
- * Strips redundant brand prefixes so the picker reads like claude.ai's
- * compact "Opus 4.7" label instead of the full "Claude Opus 4.7".
- */
+/** Compact label like claude.ai's "Opus 4.8" (drops the "Claude " prefix). */
 function shortLabel(full: string): string {
   return full.replace(/^Claude\s+/, "");
 }
 
-/**
- * Some models ship a mode hint that claude.ai surfaces as a muted sub-label
- * (e.g., "Adaptive", "Reasoner"). For anything else we fall back to the
- * provider as the muted tag.
- */
-function subLabel(id: string, providerLabel: string): string {
-  if (id.startsWith("claude-opus") || id.startsWith("claude-sonnet")) {
-    return "Adaptive";
-  }
-  if (id === "deepseek-reasoner") return "Reasoner";
-  if (id === "o3") return "Reasoning";
-  if (id === "kimi-k2-instant") return "Instant";
-  if (id === "kimi-k2-thinking") return "Thinking";
-  if (id === "kimi-k2-agent") return "Agent";
-  if (id === "kimi-k2-swarm") return "Swarm";
-  return providerLabel;
-}
+// Curated flagships shown up top, claude.ai-style, with a punchy one-line
+// description. Everything else lives under "More models".
+const TOP_MODEL_IDS: string[] = [
+  "claude-fable-5",
+  "claude-opus-4-8",
+  "claude-sonnet-4-6",
+  "claude-haiku-4-5",
+];
+const TOP_DESCRIPTION: Record<string, string> = {
+  "claude-fable-5": "For your toughest challenges",
+  "claude-opus-4-8": "For complex tasks",
+  "claude-sonnet-4-6": "Most efficient for everyday tasks",
+  "claude-haiku-4-5": "Fastest for quick answers",
+};
+const TOP_NOTE: Record<string, string> = {
+  "claude-fable-5": "Included until July 19",
+};
+const TOP_LABEL: Record<string, string> = {
+  "claude-sonnet-4-6": "Sonnet 5",
+};
+
+const EFFORT_LABEL: Record<Effort, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  extra: "Extra",
+  max: "Max",
+};
 
 export function ComposerModelPicker() {
   const model = useChatStore((s) => s.model);
   const setModel = useChatStore((s) => s.setModel);
+  const effort = useChatStore((s) => s.effort);
+  const setEffort = useChatStore((s) => s.setEffort);
+  const thinking = useChatStore((s) => s.thinking);
+  const setThinking = useChatStore((s) => s.setThinking);
   const { data: available } = useAvailableProviders();
   const { data: discovered } = useDiscoveredOllamaModels();
 
-  // The picker lists ONLY ollama models actually pulled into the local daemon
-  // (from live discovery) — no hardcoded fallback, so nothing appears when the
-  // user hasn't downloaded a local model. The static ollama-* registry entries
-  // remain for routing/test-provider but are not shown here.
   const installedOllama: ModelMeta[] = (discovered ?? []).map((d) =>
     buildOllamaMeta(d.tag),
   );
 
-  // Swap the static ollama group's models for what's installed, and drop the
-  // ollama group entirely when nothing is pulled.
   const groups = modelsByProvider()
     .map((g) =>
       g.provider === "ollama" ? { ...g, models: installedOllama } : g,
     )
     .filter((g) => g.provider !== "ollama" || g.models.length > 0);
 
-  // Resolve the active model — including a discovered id not in MODELS_META.
   const active =
     MODELS_META[model] ??
     (isOllamaId(model)
@@ -122,19 +127,36 @@ export function ComposerModelPicker() {
       : undefined) ??
     MODELS_META[DEFAULT_MODEL];
 
-  const providerLabel =
-    groups.find((g) => g.provider === active.provider)?.label ?? "";
   const ux = getProviderUX(active.provider);
   const primaryLabel =
     ux.modelShortLabel?.(active.label, active.id) ?? shortLabel(active.label);
-  const showSub = !ux.modelShortLabel?.(active.label, active.id);
 
   const isProviderAvailable = (p: Provider): boolean => {
-    // Until the availability map loads, optimistically allow everything
-    // — avoids one render flash where every model looks dim.
-    if (!available) return true;
+    if (!available) return true; // optimistic until the map loads
     return available[p] ?? false;
   };
+
+  const selectModel = (m: ModelMeta, providerLabel: string) => {
+    if (!isProviderAvailable(m.provider)) {
+      toast.error(`${providerLabel} key not set`, {
+        description: `Add the API key in src/web/.env.local and restart the dev server to enable ${shortLabel(m.label)}.`,
+      });
+      return;
+    }
+    setModel(m.id as ModelId);
+  };
+
+  const topModels = TOP_MODEL_IDS.map((id) => MODELS_META[id]).filter(
+    Boolean,
+  ) as ModelMeta[];
+
+  // "More models" = every group minus the curated flagships (drops now-empty groups).
+  const moreGroups = groups
+    .map((g) => ({
+      ...g,
+      models: g.models.filter((m) => !TOP_MODEL_IDS.includes(m.id)),
+    }))
+    .filter((g) => g.models.length > 0);
 
   return (
     <DropdownMenu>
@@ -148,81 +170,172 @@ export function ComposerModelPicker() {
         }
       >
         <span>{primaryLabel}</span>
-        {showSub && (
-          <span className="text-muted-foreground">
-            {subLabel(active.id, providerLabel)}
-          </span>
-        )}
+        <span className="text-muted-foreground">{EFFORT_LABEL[effort]}</span>
         <ChevronDown className="size-3 text-muted-foreground" />
       </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="end"
-        // Drop downward — matches Claude's behaviour. Base UI
-        // auto-flips to "top" if there isn't enough room below,
-        // so this is a hint, not a hard pin.
-        side="bottom"
-        sideOffset={6}
-        // max-h matches Claude.ai's compact picker height. The list
-        // grows past it as more providers/models land, so the inner
-        // scroll keeps the popover from running off-screen.
-        className="w-64 max-h-100 overflow-y-auto p-1"
-      >
-        {groups.map((g, gi) => (
-          <Fragment key={g.provider}>
-            {gi > 0 && <DropdownMenuSeparator />}
-            <DropdownMenuGroup>
-              <DropdownMenuLabel className="px-2 pt-1.5 pb-0.5 font-mono text-[9px] uppercase tracking-[0.18em]">
-                {g.label}
-              </DropdownMenuLabel>
-              {g.models.map((m) => {
-                const isActive = m.id === model;
-                const enabled = isProviderAvailable(g.provider);
-                return (
-                  <DropdownMenuItem
-                    key={m.id}
-                    onClick={() => {
-                      if (!enabled) {
-                        toast.error(
-                          `${g.label} key not set`,
-                          {
-                            description:
-                              `Add the API key in src/web/.env.local and restart the dev server to enable ${shortLabel(m.label)}.`,
-                          },
-                        );
-                        return;
-                      }
-                      setModel(m.id as ModelId);
-                    }}
-                    className={cn(
-                      "gap-1.5 py-1 text-[13px]",
-                      !enabled && "opacity-50",
-                    )}
-                  >
-                    <Check
-                      className={
-                        isActive
-                          ? "size-3 text-primary"
-                          : "size-3 opacity-0"
-                      }
-                    />
-                    <span className="truncate">{shortLabel(m.label)}</span>
-                    {m.badge && (
-                      <span className="ml-auto rounded-sm bg-primary/15 px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-primary">
-                        {m.badge}
+      <DropdownMenuContent align="end" side="bottom" sideOffset={6} className="w-72 p-1">
+        {/* ── Curated flagships ── */}
+        {topModels.map((m) => {
+          const isActive = m.id === model;
+          const enabled = isProviderAvailable(m.provider);
+          return (
+            <DropdownMenuItem
+              key={m.id}
+              onClick={() => selectModel(m, "Anthropic")}
+              className={cn(
+                "flex items-start gap-2 py-1.5",
+                !enabled && "opacity-50",
+              )}
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[13px] font-medium text-foreground">
+                    {TOP_LABEL[m.id] ?? shortLabel(m.label)}
+                  </span>
+                  {TOP_NOTE[m.id] && (
+                    <>
+                      <Clock className="size-3 shrink-0 text-muted-foreground" />
+                      <span className="text-[11px] text-muted-foreground">
+                        {TOP_NOTE[m.id]}
                       </span>
-                    )}
-                    {!enabled && (
-                      <KeyRound
-                        className="ml-auto size-3 text-muted-foreground/70"
-                        aria-label="API key required"
-                      />
-                    )}
-                  </DropdownMenuItem>
-                );
-              })}
-            </DropdownMenuGroup>
-          </Fragment>
-        ))}
+                    </>
+                  )}
+                </div>
+                <div className="text-[11.5px] leading-snug text-muted-foreground">
+                  {TOP_DESCRIPTION[m.id] ?? m.description}
+                </div>
+              </div>
+              {isActive ? (
+                <Check className="mt-0.5 size-3.5 shrink-0 text-primary" />
+              ) : !enabled ? (
+                <KeyRound
+                  className="mt-0.5 size-3 shrink-0 text-muted-foreground/70"
+                  aria-label="API key required"
+                />
+              ) : (
+                <span className="size-3.5 shrink-0" />
+              )}
+            </DropdownMenuItem>
+          );
+        })}
+
+        <DropdownMenuSeparator />
+
+        {/* ── Effort submenu ── */}
+        <DropdownMenuSub>
+          {/* [&>svg]:!ml-0 kills the SubTrigger's auto-chevron ml-auto so it
+              doesn't split the free space with the "High" span — otherwise a
+              gap opens between the effort value and the ">" chevron. With the
+              chevron neutralized, the value's ml-auto pushes value+chevron to
+              the right, adjacent (gap-1.5 apart). */}
+          <DropdownMenuSubTrigger className="py-1 text-[13px] [&>svg]:!ml-0">
+            <span>Effort</span>
+            <span className="ml-auto text-muted-foreground">
+              {EFFORT_LABEL[effort]}
+            </span>
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent side="left" className="w-64 p-1">
+            <p className="px-2 pt-1.5 pb-2 text-[11.5px] leading-snug text-muted-foreground">
+              Higher effort means more thorough responses, but takes longer and
+              uses your limits faster.
+            </p>
+            {EFFORTS.map((e) => {
+              const sel = e === effort;
+              return (
+                <button
+                  key={e}
+                  type="button"
+                  onClick={() => setEffort(e)}
+                  className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-accent"
+                >
+                  <span className="text-foreground">{EFFORT_LABEL[e]}</span>
+                  {e === DEFAULT_EFFORT && (
+                    <span className="rounded-sm bg-muted px-1 py-px text-[9px] font-medium tracking-wide text-muted-foreground">
+                      Default
+                    </span>
+                  )}
+                  {e === "max" && (
+                    <Info className="size-3 text-muted-foreground/70" />
+                  )}
+                  {sel && (
+                    <Check className="ml-auto size-3.5 shrink-0 text-primary" />
+                  )}
+                </button>
+              );
+            })}
+            <DropdownMenuSeparator />
+            <div
+              className="flex items-start gap-2 px-2 py-1.5"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="min-w-0 flex-1">
+                <div className="text-[13px] text-foreground">Thinking</div>
+                <div className="text-[11.5px] leading-snug text-muted-foreground">
+                  Can think for more complex tasks
+                </div>
+              </div>
+              <Switch
+                checked={thinking}
+                onCheckedChange={setThinking}
+                size="sm"
+                className="mt-0.5"
+              />
+            </div>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+
+        {/* ── More models submenu ── */}
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger className="py-1 text-[13px]">
+            <span>More models</span>
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent side="left" className="w-64 max-h-100 overflow-y-auto p-1">
+            {moreGroups.map((g, gi) => (
+              <Fragment key={g.provider}>
+                {gi > 0 && <DropdownMenuSeparator />}
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel className="px-2 pt-1.5 pb-0.5 font-mono text-[9px] uppercase tracking-[0.18em]">
+                    {g.label}
+                  </DropdownMenuLabel>
+                  {g.models.map((m) => {
+                    const isActive = m.id === model;
+                    const enabled = isProviderAvailable(g.provider);
+                    return (
+                      <DropdownMenuItem
+                        key={m.id}
+                        onClick={() => selectModel(m, g.label)}
+                        className={cn(
+                          "gap-1.5 py-1 text-[13px]",
+                          !enabled && "opacity-50",
+                        )}
+                      >
+                        <Check
+                          className={
+                            isActive
+                              ? "size-3 text-primary"
+                              : "size-3 opacity-0"
+                          }
+                        />
+                        <span className="truncate">{shortLabel(m.label)}</span>
+                        {m.badge && (
+                          <span className="ml-auto rounded-sm bg-primary/15 px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-primary">
+                            {m.badge}
+                          </span>
+                        )}
+                        {!enabled && (
+                          <KeyRound
+                            className="ml-auto size-3 text-muted-foreground/70"
+                            aria-label="API key required"
+                          />
+                        )}
+                      </DropdownMenuItem>
+                    );
+                  })}
+                </DropdownMenuGroup>
+              </Fragment>
+            ))}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
       </DropdownMenuContent>
     </DropdownMenu>
   );

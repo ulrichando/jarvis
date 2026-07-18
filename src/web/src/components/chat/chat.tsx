@@ -472,6 +472,8 @@ export function Chat({
   const { toggleSidebar, sidebarOpen } = useUI();
   const model = useChatStore((s) => s.model);
   const setModel = useChatStore((s) => s.setModel);
+  const effort = useChatStore((s) => s.effort);
+  const thinking = useChatStore((s) => s.thinking);
   const storeWorkspaceId = useChatStore((s) => s.targetWorkspaceId);
   const storeWorkspaceName = useChatStore((s) => s.targetWorkspaceName);
   // When mounted inside the workbench, props pin the workspace; otherwise
@@ -1143,6 +1145,10 @@ export function Chat({
             turnTogglesRef.current.deepthink && model.startsWith("deepseek")
               ? "deepseek-reasoner"
               : model,
+          // Reasoning effort + explicit thinking toggle (model-picker). The
+          // route maps these onto per-provider reasoning options.
+          effort,
+          thinking,
           messages: messagesForRequest,
           workspaceId: targetWorkspaceId ?? undefined,
           mode,
