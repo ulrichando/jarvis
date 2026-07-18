@@ -37,7 +37,7 @@ export const runtime = "nodejs";
 // SELF_AUTH_GET_PATTERNS. Read-only, no user-scoped data.
 
 const SERVICE_SUB = "voice-agent";
-const MAX_RESULTS = 8;
+const MAX_RESULTS = 15;
 // Per-backend cap. The agent's own HTTP timeout is 12s total — worst case
 // here is brave+searxng+ddg+fetch ≈ 4+4+4+2.5s, still under it in practice
 // because dead backends fail fast (HTTP error, not timeout).
