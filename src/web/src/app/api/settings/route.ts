@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { loadSettings, redactForClient, saveSettings } from "@/lib/settings/store";
-import { DEFAULT_SETTINGS, settingsSchema, KOKORO_VOICE_ID_RE } from "@/lib/settings/schema";
+import { DEFAULT_SETTINGS, settingsSchema, isValidVoiceId } from "@/lib/settings/schema";
 import { baseURLSchema } from "@/lib/settings/base-url";
 
 export const runtime = "nodejs";
@@ -29,7 +29,8 @@ const patchSchema = z.object({
       callName: z.string().optional(),
       jobTitle: z.string().optional(),
       preferences: z.string().optional(),
-      voice: z.string().regex(KOKORO_VOICE_ID_RE).optional(),
+      // Kokoro (af_heart) or Edge (en-US-GuyNeural) voice id.
+      voice: z.string().refine(isValidVoiceId).optional(),
     })
     .partial()
     .optional(),

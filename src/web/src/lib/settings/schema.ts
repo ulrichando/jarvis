@@ -15,6 +15,16 @@ export const PROVIDER_KEYS: Provider[] = [
 // this module dependency-free; keep in sync.
 export const KOKORO_VOICE_ID_RE = /^[a-z]{2}_[a-z0-9]+$/;
 
+// Edge neural voice id shape (en-US-GuyNeural, …). Shape-only here — the
+// exact-match allowlist (EDGE_VOICES in lib/chat/voices) is enforced where
+// the id reaches a synth call (/api/tts). Keep in sync likewise.
+export const EDGE_VOICE_ID_RE = /^[a-z]{2}-[A-Z]{2}-[A-Za-z]+Neural$/;
+
+/** A saved web voice id: Kokoro (on-device) or Edge (online). */
+export function isValidVoiceId(v: string): boolean {
+  return KOKORO_VOICE_ID_RE.test(v) || EDGE_VOICE_ID_RE.test(v);
+}
+
 const providerSettingsSchema = z.object({
   apiKey: z.string().optional(),
   baseURL: z.string().url().optional().or(z.literal("").transform(() => undefined)),
@@ -28,10 +38,11 @@ export const settingsSchema = z.object({
       callName: z.string().max(40).optional(),
       jobTitle: z.string().max(100).optional(),
       preferences: z.string().max(2000).optional(),
-      // Preferred Kokoro voice id for web voice mode (General → Voice
-      // settings). .catch(): pre-2026-07 files stored texture names
-      // ("Mellow") — degrade to unset, never reject the file.
-      voice: z.string().regex(KOKORO_VOICE_ID_RE).optional().catch(undefined),
+      // Preferred voice id for web voice mode (General → Voice settings) —
+      // Kokoro (af_heart) or Edge (en-US-GuyNeural). .catch(): pre-2026-07
+      // files stored texture names ("Mellow") — degrade to unset, never
+      // reject the file.
+      voice: z.string().refine(isValidVoiceId).optional().catch(undefined),
     })
     .default({}),
   notifications: z
