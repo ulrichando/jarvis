@@ -44,6 +44,7 @@ import { ScheduleInterviewCards } from "./schedule-cards";
 import { TaskPanel } from "./task-panel";
 import { useChatStore } from "@/stores/chat";
 import { useVoiceMode } from "@/lib/chat/use-voice-mode";
+import { VoiceOverlay } from "./voice-overlay";
 import { appendImageMarkdown } from "@/lib/chat/image-markdown";
 import { useEditedFiles } from "@/stores/edited-files";
 import { useSettings } from "@/hooks/use-settings";
@@ -2157,6 +2158,35 @@ export function Chat({
     lastSpokenIdRef.current = last.id;
     voiceSpeak(text, last.id);
   }, [status, voiceActive, voiceSpeak, messages]);
+  // Thinking-phase safety net: the hook flips to "thinking" when an utterance
+  // is submitted; speak() (the effect above — it runs first and sets the
+  // phase ref synchronously) moves it to "speaking". If the turn ends with
+  // nothing to speak (error, empty reply, deduped id), resume listening so
+  // the mic can't stay dead in "thinking". No-op in any other phase.
+  const voiceResumeListening = voice.resumeListening;
+  useEffect(() => {
+    if (status !== "ready" && status !== "error") return;
+    voiceResumeListening();
+  }, [status, messages, voiceResumeListening]);
+  // Immersive full-screen voice overlay — mounted while voice mode is live
+  // (both the empty-state and conversation layouts render it).
+  const voiceOverlayEl = voice.active ? (
+    <VoiceOverlay
+      phase={voice.phase}
+      getAnalyser={voice.getAnalyser}
+      lastUtterance={voice.lastUtterance}
+      speakingText={voice.speakingText}
+      micMuted={voice.micMuted}
+      onToggleMic={voice.toggleMic}
+      mode={voice.mode}
+      onModeChange={voice.setMode}
+      pttHeld={voice.pttHeld}
+      onPttHold={voice.pttHold}
+      ratePct={voice.ratePct}
+      onRateChange={voice.setRatePct}
+      onClose={voice.stop}
+    />
+  ) : null;
 
   // centered hero treatment.
   // Incognito ghost button — top-right of the chat surface (claude.ai
@@ -2278,6 +2308,7 @@ export function Chat({
             </>
           )}
         </div>
+        {voiceOverlayEl}
       </div>
     );
   }
@@ -2472,6 +2503,7 @@ export function Chat({
         </button>
       )}
       <ShortcutsHelp open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+      {voiceOverlayEl}
     </div>
   );
 }
