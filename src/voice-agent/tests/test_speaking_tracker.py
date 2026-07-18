@@ -70,3 +70,46 @@ def test_reset_clears_everything():
     st.reset()
     assert st.current_speaking_text() == ""
     assert st.recent_speaking_text(ttl_s=999) == ""
+
+
+def test_tts_node_feeds_tracker(monkeypatch):
+    """JarvisAgent.tts_node must tee synth chunks into note_speaking — the feed
+    that was lost when Orpheus was purged. Regression guard."""
+    import asyncio
+    from types import SimpleNamespace
+    from livekit.agents.voice.agent import Agent
+    from pipeline import speaking_tracker as st
+
+    st.reset()
+
+    # Stub the default node: consume the (teed) text stream, yield a dummy frame.
+    async def _fake_default_tts_node(self, text, model_settings):
+        async for _chunk in text:
+            pass
+        yield "FRAME"
+
+    monkeypatch.setattr(Agent.default, "tts_node", _fake_default_tts_node)
+
+    import jarvis_agent
+
+    async def _text_stream():
+        for part in ("Hello ", "there, ", "sir."):
+            yield part
+
+    async def _drive():
+        frames = []
+        # Call the unbound method with a lightweight self — tts_node only uses
+        # self to forward to Agent.default.tts_node.
+        async for frame in jarvis_agent.JarvisAgent.tts_node(
+            SimpleNamespace(), _text_stream(), model_settings=None
+        ):
+            frames.append(frame)
+        return frames
+
+    try:
+        frames = asyncio.run(_drive())
+        assert frames == ["FRAME"]
+        assert "Hello" in st.current_speaking_text()
+        assert "there," in st.current_speaking_text()
+    finally:
+        st.reset()
