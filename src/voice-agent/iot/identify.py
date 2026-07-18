@@ -268,6 +268,14 @@ def identify(observations: list[Observation], gateway_ip: str | None = None) -> 
     blob = " ".join(blob_parts).lower()
 
     def _finish(dtype: str, brand: str, ctrl: Controllable, hint: str) -> Device:
+        # A device typed "unknown" by a brand-only signal (Matter/HomeKit vary
+        # by product) often co-advertises a role service — use it so it groups
+        # under the right category (e.g. a Matter+Spotify host is a speaker).
+        if dtype == "unknown":
+            if services & {"_spotify-connect._tcp", "_sonos._tcp", "_raop._tcp"}:
+                dtype = "speaker"
+            elif services & {"_googlecast._tcp", "_airplay._tcp", "_roku._tcp"} or 8060 in ports:
+                dtype = "tv"
         dev.type, dev.brand, dev.controllable, dev.control_hint = dtype, brand, ctrl, hint
         dev.name = dev.name or (f"{brand} device" if dtype == "unknown" else f"{brand} {dtype}")
         return dev
