@@ -17,6 +17,8 @@ import {
   Blinds,
   ChevronRight,
   CircleHelp,
+  Eye,
+  EyeOff,
   Fan,
   Info,
   Lightbulb,
@@ -244,6 +246,9 @@ export function DevicesView({ initialDevices }: { initialDevices?: IotDevice[] }
   const [scanning, setScanning] = useState(false);
   const [loading, setLoading] = useState(initialDevices === undefined);
   const [error, setError] = useState<string | null>(null);
+  // The sidecar hides excluded (non-smart) hosts by default; ?all=1 is the
+  // escape hatch — this toggle refetches with it and shows them grouped.
+  const [showAll, setShowAll] = useState(false);
 
   const load = useCallback(async (path: string, init?: RequestInit) => {
     try {
@@ -261,7 +266,15 @@ export function DevicesView({ initialDevices }: { initialDevices?: IotDevice[] }
   }, []);
 
   const refresh = useCallback(() => {
-    void load("/api/iot/devices");
+    void load(showAll ? "/api/iot/devices?all=1" : "/api/iot/devices");
+  }, [load, showAll]);
+
+  const toggleShowAll = useCallback(() => {
+    setShowAll((v) => {
+      const next = !v;
+      void load(next ? "/api/iot/devices?all=1" : "/api/iot/devices");
+      return next;
+    });
   }, [load]);
 
   // Initial inventory — skipped when the caller seeds the list (tests, SSR).
@@ -274,16 +287,23 @@ export function DevicesView({ initialDevices }: { initialDevices?: IotDevice[] }
   const rescan = useCallback(async () => {
     setScanning(true);
     try {
-      await load("/api/iot/scan", { method: "POST" });
+      await load(showAll ? "/api/iot/scan?all=1" : "/api/iot/scan", {
+        method: "POST",
+      });
     } finally {
       setScanning(false);
     }
-  }, [load]);
+  }, [load, showAll]);
 
-  const groups = useMemo(() => groupByType(devices), [devices]);
-  const controllableCount = useMemo(
-    () => devices.filter(isControllable).length,
+  const smartDevices = useMemo(() => devices.filter((d) => !d.excluded), [devices]);
+  const excludedDevices = useMemo(
+    () => devices.filter((d) => Boolean(d.excluded)),
     [devices],
+  );
+  const groups = useMemo(() => groupByType(smartDevices), [smartDevices]);
+  const controllableCount = useMemo(
+    () => smartDevices.filter(isControllable).length,
+    [smartDevices],
   );
 
   return (
@@ -302,6 +322,14 @@ export function DevicesView({ initialDevices }: { initialDevices?: IotDevice[] }
           </span>
         )}
         <div className="flex-1" />
+        <button
+          onClick={toggleShowAll}
+          aria-pressed={showAll}
+          className="inline-flex h-[30px] items-center gap-1.5 rounded-lg border border-border/40 bg-card px-3 text-[12px] text-muted-foreground transition-colors hover:border-border"
+        >
+          {showAll ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+          {showAll ? "Smart only" : "Show all devices"}
+        </button>
         <button
           onClick={() => void rescan()}
           disabled={scanning}
@@ -356,6 +384,42 @@ export function DevicesView({ initialDevices }: { initialDevices?: IotDevice[] }
                 </section>
               );
             })
+          )}
+
+          {/* Excluded (non-smart) hosts — only fetched via ?all=1. No controls. */}
+          {showAll && excludedDevices.length > 0 && (
+            <section className="mb-6">
+              <h2 className="mb-1.5 flex items-center gap-2 px-3 text-[11px] font-medium tracking-[0.08em] text-muted-foreground/80 uppercase">
+                <EyeOff className="size-3.5 text-muted-foreground/60" />
+                Other / not smart
+                <span className="font-mono text-[10px] text-muted-foreground/50 normal-case">
+                  {excludedDevices.length}
+                </span>
+              </h2>
+              <ul className="rounded-xl border border-border/40 bg-card/20">
+                {excludedDevices.map((d) => (
+                  <li
+                    key={deviceKey(d)}
+                    className="flex items-center gap-3 px-3 py-2.5 opacity-70"
+                  >
+                    <span className="grid size-8 shrink-0 place-items-center rounded-lg border border-border/40 bg-card text-muted-foreground">
+                      <CircleHelp className="size-4" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13.5px] font-medium text-foreground">
+                        {d.name || d.hostname || d.ip}
+                      </span>
+                      <span className="block truncate text-[11.5px] text-muted-foreground">
+                        {d.exclude_reason || "Not a smart-home device"}
+                      </span>
+                    </span>
+                    <span className="hidden font-mono text-[11px] text-muted-foreground/80 sm:block">
+                      {d.ip}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
           )}
 
           <HomeAssistantPanel onSaved={refresh} />

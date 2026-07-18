@@ -63,8 +63,16 @@ def make_app(registry: DeviceRegistry | None = None, discover=run_discovery,
     async def health(_):
         return web.json_response({"ok": True})
 
+    def _show_all(request) -> bool:
+        """?all=1 (or true/yes) — include excluded (non-smart) hosts."""
+        return request.query.get("all", "").lower() in ("1", "true", "yes")
+
     async def devices(request):
         items = await _merged_devices()
+        if not _show_all(request):
+            # Precision-first default: hide phones/computers/routers/printers
+            # and bare hosts. ?all=1 is the escape hatch.
+            items = [d for d in items if not d.excluded]
         want = request.query.get("controllable")
         if want:
             items = [d for d in items if d.controllable.value == want]
@@ -75,11 +83,14 @@ def make_app(registry: DeviceRegistry | None = None, discover=run_discovery,
         return web.json_response(_to_dict(d)) if d else web.json_response(
             {"error": "not found"}, status=404)
 
-    async def scan(_):
+    async def scan(request):
         if discover is None:
-            return web.json_response({"devices": [d.to_dict() for d in reg.all()]})
-        found = await discover(default_scanners(), reg, timeout=float(os.environ.get(
-            "JARVIS_IOT_SCAN_TIMEOUT", "6")))
+            found = reg.all()
+        else:
+            found = await discover(default_scanners(), reg, timeout=float(os.environ.get(
+                "JARVIS_IOT_SCAN_TIMEOUT", "6")))
+        if not _show_all(request):
+            found = [d for d in found if not d.excluded]
         return web.json_response({"devices": [d.to_dict() for d in found]})
 
     async def _routed(request) -> tuple[Device, Controller] | web.Response:

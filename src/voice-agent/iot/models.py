@@ -37,6 +37,12 @@ class Device:
     protocol: list[str] = field(default_factory=list)
     controllable: Controllable = Controllable.UNKNOWN
     control_hint: str = ""
+    # Precision-first classifier verdict. `excluded` is a SEPARATE axis from
+    # type="unknown": unknown-but-smart (e.g. a bare HomeKit/Matter hit) stays
+    # visible; excluded marks non-smart hosts (phone/PC/router/printer/bare
+    # ARP entry) that /devices hides by default (escape hatch: ?all=1).
+    excluded: bool = False
+    exclude_reason: str = ""        # e.g. "phone/tablet (_companion-link._tcp)"
     first_seen: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
     raw: dict = field(default_factory=dict)

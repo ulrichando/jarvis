@@ -20,6 +20,14 @@ export type IotDevice = {
   control_hint: string;
   /** Stable controller id when one exists (e.g. "ha:light.kitchen"). */
   id?: string | null;
+  /**
+   * Precision-first classifier verdict: true = not a smart-home device
+   * (phone/computer/router/printer/bare host). The sidecar hides these from
+   * GET /devices by default; they only arrive via ?all=1.
+   */
+  excluded?: boolean;
+  /** Why it was excluded, e.g. "phone/tablet (_companion-link._tcp)". */
+  exclude_reason?: string;
   /** Actions the sidecar can actually drive. Empty/absent = discovery-only. */
   capabilities?: string[];
   first_seen?: number;
