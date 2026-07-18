@@ -17,7 +17,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useVoiceRead } from "@/stores/voice-read";
 import { useSettings } from "@/hooks/use-settings";
-import { KOKORO_ID_RE } from "@/lib/chat/voices";
+import { KOKORO_ID_RE, isEdgeVoice } from "@/lib/chat/voices";
 
 export type VoicePhase = "idle" | "connecting" | "listening" | "speaking";
 
@@ -26,6 +26,16 @@ export type VoicePhase = "idle" | "connecting" | "listening" | "speaking";
 const SPEECH_RMS = 0.025; // above this a frame counts as voiced
 const SILENCE_MS = 900; // trailing quiet that ends an utterance
 const MIN_VOICE_MS = 250; // ignore sub-quarter-second blips (coughs, clicks)
+
+// Barge-in tuning (hot-mic monitor while JARVIS speaks). The mic stream runs
+// with echoCancellation:true and the TTS plays through an HTMLAudioElement,
+// so the browser AEC strips most of JARVIS's own voice from the mic — the
+// monitor mostly sees the USER. Residual echo still leaks, hence a threshold
+// ~1.8× the endpointer's SPEECH_RMS plus a sustain window before firing.
+const BARGE_RMS = 0.045; // ≈1.8× SPEECH_RMS — clears residual-echo floor
+const BARGE_SUSTAIN_MS = 280; // voiced time required before interrupting
+const BARGE_GAP_RESET_MS = 150; // quiet gap that resets the sustain counter
+const BARGE_GUARD_MS = 300; // refractory after playback start (onset transient)
 
 function pickMimeType(): string {
   if (typeof MediaRecorder === "undefined") return "";
@@ -89,12 +99,16 @@ export function useVoiceMode(opts: {
   const [active, setActive] = useState(false);
   const [phase, setPhase] = useState<VoicePhase>("idle");
 
-  // Settings → General → Voice (a Kokoro voice id). Held in a ref because
-  // the TTS fetch fires inside long-lived closures.
+  // Settings → General → Voice (a Kokoro or Edge voice id — /api/tts routes
+  // by id). Held in a ref because the TTS fetch fires inside long-lived
+  // closures.
   const { data: settings } = useSettings();
   const ttsVoiceRef = useRef<string | null>(null);
   const prefVoice = settings?.user?.voice;
-  ttsVoiceRef.current = prefVoice && KOKORO_ID_RE.test(prefVoice) ? prefVoice : null;
+  ttsVoiceRef.current =
+    prefVoice && (KOKORO_ID_RE.test(prefVoice) || isEdgeVoice(prefVoice))
+      ? prefVoice
+      : null;
 
   const activeRef = useRef(false);
   const phaseRef = useRef<VoicePhase>("idle");
@@ -125,6 +139,20 @@ export function useVoiceMode(opts: {
   // TTS machinery: read the reply aloud + drive the gray→white highlight.
   const intervalRef = useRef<number | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Barge-in machinery: a lightweight VAD raf loop over the SAME analyser
+  // (which survives pauseListening — only the recorder + endpointer raf stop)
+  // that runs while phase === "speaking". No MediaRecorder during speaking —
+  // we never record JARVIS's own audio, we only watch RMS for the user.
+  const bargeRafRef = useRef<number | null>(null);
+  const bargeVoicedMsRef = useRef(0);
+  const bargeLastVoiceTsRef = useRef(0);
+  const bargeLastTickTsRef = useRef(0);
+  const bargeStartedAtRef = useRef(0);
+  // Speak generation: bumped by barge-in and stop() so the normal finish()
+  // path of a superseded utterance becomes a no-op — the barge path and the
+  // finish path can never both fire (double startListening / stale cleanup).
+  const speakGenRef = useRef(0);
 
   const onUtteranceRef = useRef(onUtterance);
   useEffect(() => {
@@ -351,6 +379,98 @@ export function useVoiceMode(opts: {
     }
   }, [stopBrowserStt]);
 
+  // --- Barge-in: hot-mic interrupt while JARVIS speaks ----------------------
+  const stopBargeMonitor = useCallback(() => {
+    if (bargeRafRef.current != null) {
+      cancelAnimationFrame(bargeRafRef.current);
+      bargeRafRef.current = null;
+    }
+  }, []);
+
+  // Fired when the monitor detects sustained user speech: kill the TTS
+  // (neural audio AND the speechSynthesis fallback), clear the highlight,
+  // and go straight back to listening so the interrupting utterance is
+  // captured. Bumping speakGenRef makes the superseded utterance's finish()
+  // a no-op, so this path and the normal end-of-playback path can't both run.
+  const interruptSpeech = useCallback(() => {
+    if (!activeRef.current || phaseRef.current !== "speaking") return;
+    speakGenRef.current++;
+    stopBargeMonitor();
+    clearTick();
+    const audio = audioRef.current;
+    audioRef.current = null;
+    if (audio) {
+      try {
+        audio.pause();
+      } catch {
+        /* gone */
+      }
+      try {
+        if (audio.src.startsWith("blob:")) URL.revokeObjectURL(audio.src);
+      } catch {
+        /* detached */
+      }
+    }
+    try {
+      window.speechSynthesis?.cancel();
+    } catch {
+      /* no synth */
+    }
+    useVoiceRead.getState().stopReading();
+    startListening();
+  }, [clearTick, startListening, stopBargeMonitor]);
+
+  // Per-frame RMS sampler (same math as tick()) with three false-trigger
+  // guards: a refractory window after playback start (TTS onset transient,
+  // before AEC converges), a higher-than-endpointer RMS threshold (residual
+  // echo), and a sustain requirement (~BARGE_SUSTAIN_MS of voiced time, with
+  // short quiet gaps tolerated) before firing.
+  const bargeTick = useCallback(() => {
+    const analyser = analyserRef.current;
+    if (!analyser || !activeRef.current || phaseRef.current !== "speaking") {
+      bargeRafRef.current = null;
+      return;
+    }
+    const now = performance.now();
+    const dt = bargeLastTickTsRef.current ? now - bargeLastTickTsRef.current : 0;
+    bargeLastTickTsRef.current = now;
+
+    if (now - bargeStartedAtRef.current >= BARGE_GUARD_MS) {
+      const buf = new Uint8Array(analyser.fftSize);
+      analyser.getByteTimeDomainData(buf);
+      let sumSq = 0;
+      for (let i = 0; i < buf.length; i++) {
+        const v = (buf[i] - 128) / 128;
+        sumSq += v * v;
+      }
+      const rms = Math.sqrt(sumSq / buf.length);
+      if (rms > BARGE_RMS) {
+        bargeVoicedMsRef.current += dt;
+        bargeLastVoiceTsRef.current = now;
+      } else if (now - bargeLastVoiceTsRef.current > BARGE_GAP_RESET_MS) {
+        bargeVoicedMsRef.current = 0; // brief blip, not sustained speech
+      }
+      if (bargeVoicedMsRef.current >= BARGE_SUSTAIN_MS) {
+        interruptSpeech();
+        return;
+      }
+    }
+    bargeRafRef.current = requestAnimationFrame(bargeTick);
+  }, [interruptSpeech]);
+
+  // Started once TTS playback actually begins (not at speak() entry — the
+  // /api/tts fetch can take a while and the guard window is relative to
+  // audible onset). No-op on the browser-SpeechRecognition STT path, where
+  // we own no mic pipeline (no analyser) — barge-in needs the analyser.
+  const startBargeMonitor = useCallback(() => {
+    if (!analyserRef.current || bargeRafRef.current != null) return;
+    bargeVoicedMsRef.current = 0;
+    bargeLastVoiceTsRef.current = 0;
+    bargeLastTickTsRef.current = 0;
+    bargeStartedAtRef.current = performance.now();
+    bargeRafRef.current = requestAnimationFrame(bargeTick);
+  }, [bargeTick]);
+
   const teardown = useCallback(() => {
     pauseListening();
     if (audioCtxRef.current) {
@@ -443,10 +563,12 @@ export function useVoiceMode(opts: {
 
   const stop = useCallback(() => {
     sttGenRef.current++; // invalidate in-flight transcriptions from this session
+    speakGenRef.current++; // any pending finish() becomes a no-op
     activeRef.current = false;
     setActive(false);
     setPhase("idle");
     phaseRef.current = "idle";
+    stopBargeMonitor();
     teardown();
     clearTick();
     if (audioRef.current) {
@@ -463,7 +585,7 @@ export function useVoiceMode(opts: {
     } catch {
       /* no synth */
     }
-  }, [clearTick, teardown]);
+  }, [clearTick, stopBargeMonitor, teardown]);
 
   const toggle = useCallback(() => {
     if (activeRef.current) stop();
@@ -477,10 +599,17 @@ export function useVoiceMode(opts: {
       pauseListening();
       setPhase("speaking");
       phaseRef.current = "speaking";
+      // This utterance's generation. Barge-in and stop() bump the counter,
+      // turning every callback below (finish, onerror, late speakBrowser)
+      // into a no-op — so the normal end-of-playback path and the barge-in
+      // path can never both fire.
+      const gen = ++speakGenRef.current;
       const store = useVoiceRead.getState();
       if (messageId) store.startReading(messageId);
 
       const finish = () => {
+        if (gen !== speakGenRef.current) return; // barged-in or superseded
+        stopBargeMonitor();
         clearTick();
         if (audioRef.current) {
           try {
@@ -497,6 +626,7 @@ export function useVoiceMode(opts: {
       // Fallback: browser TTS (robotic on Linux). onboundary doesn't fire on
       // Linux/Android, so a time estimate drives the reveal there.
       const speakBrowser = () => {
+        if (gen !== speakGenRef.current) return; // barged-in or superseded
         if (!("speechSynthesis" in window)) {
           finish();
           return;
@@ -509,7 +639,10 @@ export function useVoiceMode(opts: {
         }, 80);
         try {
           const u = new SpeechSynthesisUtterance(text);
-          u.lang = navigator.language || "en-US";
+          // Voice mode is English-only — never navigator.language, which
+          // makes browsers with a non-English locale read replies in that
+          // locale's voice (mangled English at best).
+          u.lang = "en-US";
           u.onboundary = (ev) => {
             const p = (ev.charIndex ?? 0) + (ev.charLength ?? 0);
             if (p > useVoiceRead.getState().readChar) store.setChar(p);
@@ -518,6 +651,12 @@ export function useVoiceMode(opts: {
           u.onerror = finish;
           window.speechSynthesis.cancel();
           window.speechSynthesis.speak(u);
+          // Hot-mic barge-in (no-op without an analyser, i.e. on the
+          // browser-SpeechRecognition STT path). AEC coverage of synth
+          // output varies by platform — the higher threshold + sustain
+          // window carry more of the load here than on the audio-element
+          // path.
+          startBargeMonitor();
         } catch {
           finish();
         }
@@ -569,7 +708,8 @@ export function useVoiceMode(opts: {
           finish();
         };
         audio.onerror = () => {
-          URL.revokeObjectURL(url);
+          URL.revokeObjectURL(url); // no-op if barge-in already revoked it
+          if (gen !== speakGenRef.current) return; // don't touch a newer turn
           audioRef.current = null;
           speakBrowser();
         };
@@ -577,12 +717,17 @@ export function useVoiceMode(opts: {
           await audio.play();
         } catch {
           URL.revokeObjectURL(url);
+          if (gen !== speakGenRef.current) return;
           audioRef.current = null;
           speakBrowser();
+          return;
         }
+        // Playback is audibly running — arm the hot-mic barge-in monitor
+        // (its BARGE_GUARD_MS refractory is relative to this moment).
+        if (gen === speakGenRef.current) startBargeMonitor();
       })();
     },
-    [clearTick, pauseListening, startListening],
+    [clearTick, pauseListening, startBargeMonitor, startListening, stopBargeMonitor],
   );
 
   // Unmount cleanup. Touch refs directly (not the memoized teardown) so this
@@ -591,6 +736,7 @@ export function useVoiceMode(opts: {
     () => () => {
       activeRef.current = false;
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+      if (bargeRafRef.current != null) cancelAnimationFrame(bargeRafRef.current);
       const rec = recorderRef.current;
       if (rec && rec.state !== "inactive") {
         rec.onstop = null;

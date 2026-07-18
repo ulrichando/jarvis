@@ -22,7 +22,14 @@ import { useSettings, useUpdateSettings } from "@/hooks/use-settings";
 import { useChatStore } from "@/stores/chat";
 import { modelsByProvider, MODELS_META, type ModelId } from "@/lib/ai/models-meta";
 import { IMAGE_MODELS } from "@/lib/ai/image-models";
-import { kokoroVoiceAccent, kokoroVoiceLabel } from "@/lib/chat/voices";
+import {
+  EDGE_VOICES,
+  edgeVoiceLabel,
+  isEdgeVoice,
+  kokoroVoiceAccent,
+  kokoroVoiceLabel,
+  type EdgeVoice,
+} from "@/lib/chat/voices";
 import { cn } from "@/lib/utils";
 
 const JOB_TITLES = [
@@ -68,17 +75,21 @@ export function GeneralSection() {
   const [previewing, setPreviewing] = useState<string | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  // The REAL voices the local Kokoro engine serves (not invented names).
-  const { data: voiceList, isError: voicesDown } = useQuery({
+  // Both engines: the REAL voices the local Kokoro engine serves (not
+  // invented names; [] when it's down) + the static Edge catalog. Edge chips
+  // render from the local EDGE_VOICES import so they survive a failed fetch.
+  const { data: voiceData, isError: voicesDown } = useQuery({
     queryKey: ["tts-voices"],
     queryFn: async () => {
       const r = await fetch("/api/tts/voices");
-      if (!r.ok) throw new Error("kokoro unavailable");
-      return ((await r.json()) as { voices: string[] }).voices;
+      if (!r.ok) throw new Error("voice list unavailable");
+      return (await r.json()) as { kokoro: string[]; edge: EdgeVoice[] };
     },
     staleTime: 5 * 60_000,
     retry: 1,
   });
+  const kokoroList = voiceData?.kokoro;
+  const kokoroDown = voicesDown || (kokoroList !== undefined && kokoroList.length === 0);
 
   useEffect(() => {
     if (!data) return;
@@ -176,7 +187,12 @@ export function GeneralSection() {
           voice: v,
         }),
       });
-      if (!r.ok) throw new Error("Kokoro TTS isn't reachable");
+      if (!r.ok)
+        throw new Error(
+          isEdgeVoice(v)
+            ? "Edge TTS isn't reachable — check your internet connection"
+            : "Kokoro TTS isn't reachable",
+        );
       const url = URL.createObjectURL(await r.blob());
       previewAudioRef.current?.pause();
       const audio = new Audio(url);
@@ -195,6 +211,29 @@ export function GeneralSection() {
   if (isLoading || !data) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
   }
+
+  // One chip shape for both engines — selection + preview behave identically
+  // whether the id is Kokoro (af_heart) or Edge (en-US-GuyNeural).
+  const voiceChip = (id: string, label: string) => (
+    <button
+      key={id}
+      type="button"
+      onClick={() => applyVoice(id)}
+      className={cn(
+        "flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-[13px] font-medium transition-colors",
+        voice === id
+          ? "border-primary/50 bg-primary/10 text-primary"
+          : "border-border/50 bg-card/30 text-foreground/70 hover:border-border hover:text-foreground",
+      )}
+    >
+      {previewing === id ? (
+        <Loader2 className="size-3 animate-spin" />
+      ) : (
+        voice === id && <Volume2 className="size-3" />
+      )}
+      {label}
+    </button>
+  );
 
   return (
     <div className="space-y-10">
@@ -502,59 +541,74 @@ export function GeneralSection() {
         </div>
       </section>
 
-      {/* Voice settings — the live Kokoro voice list, click to hear + save */}
+      {/* Voice settings — two engines: on-device Kokoro + online Edge */}
       <section>
         <SectionHeader title="Voice settings" />
         <div>
           <p className="text-[14px] font-medium mb-1">Voice</p>
           <p className="text-[13px] text-muted-foreground mb-3">
-            Voices served by your local Kokoro TTS — click one to hear it and
-            make it the read-aloud voice for web chat.
+            Click a voice to hear it and make it the read-aloud voice for web
+            chat. Kokoro voices run on-device; Edge voices stream from
+            Microsoft online.
           </p>
-          {voicesDown ? (
-            <p className="rounded-lg border border-border/50 bg-card/30 px-4 py-3 text-[13px] text-muted-foreground">
+
+          {/* On-device · Kokoro — the live list the local engine serves */}
+          <p className="mb-2 text-[12px] font-semibold uppercase tracking-wider text-foreground/60">
+            On-device · Kokoro
+          </p>
+          {kokoroDown ? (
+            <p className="mb-5 rounded-lg border border-border/50 bg-card/30 px-4 py-3 text-[13px] text-muted-foreground">
               Kokoro TTS isn&apos;t reachable (kokoro-tts container on :8880).
-              Start it, then reload this page.
+              Start it, then reload this page — the online Edge voices below
+              still work.
             </p>
-          ) : !voiceList ? (
-            <p className="text-[13px] text-muted-foreground">Loading voices…</p>
+          ) : !kokoroList ? (
+            <p className="mb-5 text-[13px] text-muted-foreground">
+              Loading voices…
+            </p>
           ) : (
-            (["af", "am", "bf", "bm"] as const)
-              .map((prefix) => ({
-                prefix,
-                ids: voiceList.filter((v) => v.startsWith(prefix)),
-              }))
-              .filter((g) => g.ids.length > 0)
-              .map((g) => (
-                <div key={g.prefix} className="mb-3">
-                  <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                    {kokoroVoiceAccent(`${g.prefix}_x`)}
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {g.ids.map((v) => (
-                      <button
-                        key={v}
-                        type="button"
-                        onClick={() => applyVoice(v)}
-                        className={cn(
-                          "flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-[13px] font-medium transition-colors",
-                          voice === v
-                            ? "border-primary/50 bg-primary/10 text-primary"
-                            : "border-border/50 bg-card/30 text-foreground/70 hover:border-border hover:text-foreground",
-                        )}
-                      >
-                        {previewing === v ? (
-                          <Loader2 className="size-3 animate-spin" />
-                        ) : (
-                          voice === v && <Volume2 className="size-3" />
-                        )}
-                        {kokoroVoiceLabel(v)}
-                      </button>
-                    ))}
+            <div className="mb-5">
+              {(["af", "am", "bf", "bm"] as const)
+                .map((prefix) => ({
+                  prefix,
+                  ids: kokoroList.filter((v) => v.startsWith(prefix)),
+                }))
+                .filter((g) => g.ids.length > 0)
+                .map((g) => (
+                  <div key={g.prefix} className="mb-3">
+                    <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                      {kokoroVoiceAccent(`${g.prefix}_x`)}
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {g.ids.map((v) => voiceChip(v, kokoroVoiceLabel(v)))}
+                    </div>
                   </div>
-                </div>
-              ))
+                ))}
+            </div>
           )}
+
+          {/* Online · Edge — static catalog, works without the local container */}
+          <p className="mb-2 text-[12px] font-semibold uppercase tracking-wider text-foreground/60">
+            Online · Edge
+          </p>
+          {(
+            [
+              { gender: "M", label: "Male" },
+              { gender: "F", label: "Female" },
+            ] as const
+          ).map((g) => (
+            <div key={g.gender} className="mb-3">
+              <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                {g.label}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {EDGE_VOICES.filter((v) => v.gender === g.gender).map((v) =>
+                  voiceChip(v.id, edgeVoiceLabel(v.id)),
+                )}
+              </div>
+            </div>
+          ))}
+
           <p className="mt-3 text-[12px] text-muted-foreground">
             Used when Jarvis reads replies aloud in the web chat&apos;s voice
             mode. The desktop / voice agent has its own voice settings in the
