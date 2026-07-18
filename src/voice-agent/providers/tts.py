@@ -10,10 +10,10 @@ History: the previous cloud Orpheus TTS (with its logging/chunked-stream
 shims) was removed 2026-06-29 when its provider was eradicated from the
 stack; ElevenLabs was removed 2026-05-01. NOTE: the Orpheus stream was the only
 caller of `record_synthesis` (barge-in position table) and
-`speaking_tracker.note_speaking` (echo-aware barge-in) — both have been
-dormant since TTS went Kokoro-primary (2026-06-22) and are NOT re-homed
-onto the Kokoro/Edge path here (a separate task if echo-aware barge-in
-is wanted back).
+`speaking_tracker.note_speaking` (echo-aware barge-in) — the latter is
+now re-homed in JarvisAgent.tts_node (2026-07-17), feeding on every
+route; `record_synthesis` remains un-re-homed (barge-in truncation
+rides the agent-audio-ms accumulator).
 """
 from __future__ import annotations
 

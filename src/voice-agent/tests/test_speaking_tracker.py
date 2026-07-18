@@ -106,7 +106,10 @@ def test_tts_node_feeds_tracker(monkeypatch):
             frames.append(frame)
         return frames
 
-    frames = asyncio.run(_drive())
-    assert frames == ["FRAME"]
-    assert "Hello" in st.current_speaking_text()
-    assert "there," in st.current_speaking_text()
+    try:
+        frames = asyncio.run(_drive())
+        assert frames == ["FRAME"]
+        assert "Hello" in st.current_speaking_text()
+        assert "there," in st.current_speaking_text()
+    finally:
+        st.reset()

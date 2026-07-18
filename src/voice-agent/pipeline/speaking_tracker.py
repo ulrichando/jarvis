@@ -5,7 +5,8 @@ text chunk into ``note_speaking`` as it flows to the TTS engine — the one poin
 every route's spoken text passes through. (Originally fed by the Orpheus TTS
 shim; when Orpheus was purged 2026-06-29 the feed moved to tts_node.) One
 LiveKit worker job handles one session, so process-local state is session-scoped
-in practice; `reset()` is called per speech-start path to avoid cross-job bleed.
+in practice; `reset()` runs once per job at session-handler wiring to avoid
+cross-job bleed.
 
 Consumed by the echo-aware barge-in gate (`pipeline/echo_gate.py`):
   - current_speaking_text()    — what JARVIS is saying NOW   (interrupt consumer)
@@ -40,7 +41,8 @@ _recent_ended_at: float = 0.0
 
 
 def note_speaking(text: str) -> None:
-    """Append a synthesized chunk to the live buffer (called from TTS `_run`)."""
+    """Append a synthesized chunk to the live buffer (called from
+    JarvisAgent.tts_node's tee)."""
     if not text:
         return
     with _lock:
