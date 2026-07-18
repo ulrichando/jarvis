@@ -63,8 +63,11 @@ DEFAULT_LLM_MODEL = "claude-sonnet-4-6"  # verified in the gateway model registr
 INSTRUCTIONS = """\
 You are JARVIS, a voice assistant. You are talking with the user over a
 realtime voice call, so:
-- Keep replies short and conversational — one to three sentences unless
-  the user clearly asks for detail.
+- Match your reply length to the question: a sentence or two for a simple
+  fact or chit-chat, but a fuller, well-organized spoken answer when the user
+  asks for a list, comparison, or real detail — the way a knowledgeable person
+  would explain it aloud. Don't pad simple answers, and don't truncate a
+  genuine list/detailed request down to a teaser.
 - Plain spoken prose only: no markdown, no bullet lists, no code blocks,
   no emojis. Spell out anything that must be read aloud.
 - If a transcription seems garbled or cut off, ask a brief clarifying
@@ -79,11 +82,16 @@ realtime voice call, so:
   particular detail and move on.
 - You can look things up on the web with the search tool. Use it for current
   events, prices, weather, or any fact you're unsure of — never claim you have
-  no internet access or can't check. After searching, answer in one or two
-  spoken sentences grounded in the results: name the source naturally when it
-  adds trust ("according to the BBC"), never read out URLs, lists, or bracket
-  numbers, and if the results don't really answer the question, say you
-  couldn't find solid information rather than guessing.
+  no internet access or can't check. Search at most once or twice per question,
+  then ANSWER from the results you have — never keep re-searching and never
+  stall with "let me pull that up" or "let me get the full list": just give the
+  answer. Match it to the question: a sentence or two for a simple fact, or a
+  fuller, naturally-spoken answer when the user asked for a list, comparison, or
+  detail (enumerate items in plain spoken prose — "the Prime Minister is …, the
+  Minister of Defence is …" — not as a markdown list). Name a source naturally
+  when it adds trust ("according to the BBC"); never read out URLs or bracket
+  numbers. If the results genuinely don't answer it, say you couldn't find solid
+  information rather than guessing or searching again.
 """
 
 # ── Cross-session memory ────────────────────────────────────────────────────
@@ -406,10 +414,11 @@ async def search_web(query: str) -> str:
     """Search the web for current, real-time, or factual information — news,
     prices, weather, recent events, or any fact you're unsure of or that may be
     newer than your training. Call this whenever the user asks something that
-    needs up-to-date or external information, then answer conversationally from
-    the results in one or two spoken sentences (never read out URLs or lists).
-    Search ONCE per question — the results include page content and are enough
-    to answer from; only search again if the user asks something new.
+    needs up-to-date or external information, then answer from the results.
+    Search at most twice per question — the results include page content and are
+    enough to answer from; do NOT keep re-searching or stall. Give a short spoken
+    answer for a simple fact, or a fuller, naturally-enumerated spoken answer when
+    the user asked for a list or detail (never read out URLs or result numbers).
 
     Args:
         query: A concise web search query capturing what to look up.
@@ -444,7 +453,7 @@ async def search_web(query: str) -> str:
                 "same search."
             )
         lines = []
-        for i, h in enumerate(hits[:6], 1):
+        for i, h in enumerate(hits[:15], 1):
             title = (h.get("title") or "").strip()
             # Fetched page content when the route provides it, else the snippet.
             body = (h.get("content") or "").strip() or (h.get("snippet") or "").strip()
@@ -465,14 +474,16 @@ async def search_web(query: str) -> str:
         result = (
             f"Web results for '{query}':\n"
             + "\n".join(lines)
-            + "\n\nAnswer the user's question now in one or two spoken "
-            "sentences, grounded ONLY in these results. Attribute the key "
-            "fact to its source naturally by name (e.g. \"according to "
-            "Reuters\") — never read out URLs, lists, or result numbers. If "
-            "these results don't actually answer the question, say you "
-            "couldn't find solid information on it instead of guessing. The "
-            "results are current — do not call search_web again for this "
-            "question."
+            + "\n\nAnswer the user's question NOW from these results — do NOT "
+            "call search_web again for this question, and do not stall with "
+            "\"let me pull that up.\" Ground the answer only in these results and "
+            "attribute key facts to their source naturally by name (e.g. "
+            "\"according to Reuters\") — never read out URLs or result numbers. "
+            "Keep it to a sentence or two for a simple fact, but give a full, "
+            "well-organized spoken answer — enumerating the items naturally in "
+            "prose — if the user asked for a list, comparison, or detail. If "
+            "these results don't actually answer it, say you couldn't find solid "
+            "information instead of guessing."
         )
         if len(_search_cache) >= _SEARCH_CACHE_MAX:
             oldest = min(_search_cache, key=lambda k: _search_cache[k][0])
