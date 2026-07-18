@@ -207,13 +207,27 @@ TTS_PROVIDERS_AVAILABLE: dict[str, str] = {
     # On-device · Kokoro (af_heart) — the default; runs locally via the
     # kokoro-tts container. These gate the /tts-provider POST + label GET.
     "kokoro:af_heart": "Kokoro · Heart (local)",
-    # Online · Microsoft Edge-TTS (auth-free, online).
-    "edge:en-US-GuyNeural":         "Edge · Guy",
-    "edge:en-US-ChristopherNeural": "Edge · Christopher",
-    "edge:en-US-JennyNeural":       "Edge · Jenny",
-    "edge:en-US-AriaNeural":        "Edge · Aria",
-    "edge:en-GB-RyanNeural":        "Edge · Ryan",
-    "edge:en-GB-SoniaNeural":       "Edge · Sonia",
+    # Online · Microsoft Edge-TTS (auth-free, online). Mirrors the mobile
+    # app's catalog (jarvis-android EdgeTtsVoice.kt) — the curated 15
+    # en-GB/en-US voices from the mobile catalog (children, Steffan, and
+    # Multilingual variants excluded). Male first (JARVIS tone), then
+    # female; keep this list in sync with ONLINE_TTS_VOICES in
+    # desktop-tauri/src-tauri/src/main.rs.
+    "edge:en-GB-RyanNeural":        "Edge · Ryan (UK male)",
+    "edge:en-GB-ThomasNeural":      "Edge · Thomas (UK male)",
+    "edge:en-US-GuyNeural":         "Edge · Guy (US male)",
+    "edge:en-US-ChristopherNeural": "Edge · Christopher (US male)",
+    "edge:en-US-EricNeural":        "Edge · Eric (US male)",
+    "edge:en-US-AndrewNeural":      "Edge · Andrew (US male)",
+    "edge:en-US-BrianNeural":       "Edge · Brian (US male)",
+    "edge:en-US-RogerNeural":       "Edge · Roger (US male)",
+    "edge:en-GB-SoniaNeural":       "Edge · Sonia (UK female)",
+    "edge:en-GB-LibbyNeural":       "Edge · Libby (UK female)",
+    "edge:en-US-AriaNeural":        "Edge · Aria (US female)",
+    "edge:en-US-JennyNeural":       "Edge · Jenny (US female)",
+    "edge:en-US-AvaNeural":         "Edge · Ava (US female)",
+    "edge:en-US-EmmaNeural":        "Edge · Emma (US female)",
+    "edge:en-US-MichelleNeural":    "Edge · Michelle (US female)",
 }
 
 
