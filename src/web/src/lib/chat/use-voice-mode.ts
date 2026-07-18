@@ -23,7 +23,15 @@ export type VoicePhase = "idle" | "connecting" | "listening" | "speaking";
 
 // Endpointer tuning. SPEECH_RMS is on normalized RMS (0..1) of the time-domain
 // signal; the rest are millisecond windows.
-const SPEECH_RMS = 0.025; // above this a frame counts as voiced
+// SPEECH_RMS 0.025→0.02 (2026-07-18, quiet-speech under-capture): 0.025
+// (≈-32 dBFS) sat close enough to soft post-noise-suppression speech that a
+// quiet talker could fail to accumulate MIN_VOICE_MS and never endpoint (the
+// utterance was captured but never sent). 0.02 (≈-34 dBFS) still leaves wide
+// headroom over a typical suppressed room-noise floor (< -50 dBFS).
+// Tradeoff: a genuinely loud environment (TV/music) is ~2 dB more likely to
+// count as voiced → spurious sends or late endpointing. NEEDS A REAL-MIC
+// PASS — if background noise starts triggering segments, revert to 0.025.
+const SPEECH_RMS = 0.02; // above this a frame counts as voiced
 const SILENCE_MS = 900; // trailing quiet that ends an utterance
 const MIN_VOICE_MS = 250; // ignore sub-quarter-second blips (coughs, clicks)
 
@@ -31,8 +39,9 @@ const MIN_VOICE_MS = 250; // ignore sub-quarter-second blips (coughs, clicks)
 // with echoCancellation:true and the TTS plays through an HTMLAudioElement,
 // so the browser AEC strips most of JARVIS's own voice from the mic — the
 // monitor mostly sees the USER. Residual echo still leaks, hence a threshold
-// ~1.8× the endpointer's SPEECH_RMS plus a sustain window before firing.
-const BARGE_RMS = 0.045; // ≈1.8× SPEECH_RMS — clears residual-echo floor
+// well above the endpointer's SPEECH_RMS plus a sustain window before firing.
+const BARGE_RMS = 0.045; // 2.25× SPEECH_RMS (absolute value unchanged by the
+// 2026-07-18 SPEECH_RMS retune — barge sensitivity is deliberately untouched)
 const BARGE_SUSTAIN_MS = 280; // voiced time required before interrupting
 const BARGE_GAP_RESET_MS = 150; // quiet gap that resets the sustain counter
 const BARGE_GUARD_MS = 300; // refractory after playback start (onset transient)
@@ -134,6 +143,9 @@ export function useVoiceMode(opts: {
   // from BEFORE a stop can't deliver its transcript into a restarted session
   // (active+listening are true again after stop→start, so those guards alone
   // don't survive a restart — a discarded utterance would submit a real turn).
+  // ALSO bumped on barge-in (interruptSpeech): once the user interrupts, a
+  // pre-barge in-flight transcript is stale — delivering it alongside the
+  // re-spoken interruption would double-submit.
   const sttGenRef = useRef(0);
 
   // TTS machinery: read the reply aloud + drive the gray→white highlight.
@@ -198,9 +210,20 @@ export function useVoiceMode(opts: {
     } catch {
       return;
     }
-    // Only feed a transcript while we're actually listening — not if the user
-    // stopped voice mode or we've switched to speaking the reply meanwhile.
-    if (text && activeRef.current && phaseRef.current === "listening") {
+    // Deliver if the voice session is still live and this STT generation
+    // hasn't been superseded. Deliberately NOT gated on phase==="listening":
+    // the /api/stt round-trip can land a moment after the previous reply's
+    // TTS starts (phase already "speaking"), and that was real user speech —
+    // the old phase gate silently ate those utterances. Guards:
+    //   (a) double-delivery: each blob is transcribed exactly once (one
+    //       recorder onstop → one transcribe call), so a passing gen check
+    //       here can't deliver the same utterance twice;
+    //   (b) empty text: `text` is trimmed + truthy-checked;
+    //   (c) superseded generation: stop() AND barge-in (interruptSpeech)
+    //       bump sttGenRef, so a pre-barge/pre-stop in-flight transcript
+    //       can't double-submit alongside whatever the user re-speaks
+    //       after taking the floor back.
+    if (text && activeRef.current && gen === sttGenRef.current) {
       onUtteranceRef.current(text);
     }
   }, []);
@@ -234,7 +257,11 @@ export function useVoiceMode(opts: {
         if (r.isFinal) text += r[0]?.transcript ?? "";
       }
       text = text.trim();
-      if (text && activeRef.current && phaseRef.current === "listening") {
+      // Gate on session liveness, not instantaneous phase: a final result
+      // racing the listening→speaking flip is still real user speech. Stale
+      // recognizer instances can't fire here — stopBrowserStt() (run by both
+      // stop() and pauseListening()) detaches onresult before any phase flip.
+      if (text && activeRef.current) {
         onUtteranceRef.current(text);
       }
     };
@@ -305,7 +332,13 @@ export function useVoiceMode(opts: {
       // Reopen the mic immediately so we don't clip the next utterance — unless
       // we've since paused (speaking the reply) or stopped voice mode.
       if (activeRef.current && phaseRef.current === "listening") beginSegment();
-      if (hadSpeech && blob.size > 1200) void transcribe(blob);
+      // Size floor 1200→600 (2026-07-18): this gate only exists to skip
+      // header-only / degenerate blobs (a bare webm/opus container header is
+      // ~200–700 B). At 1200 a short quiet utterance could be eaten — VBR
+      // opus encodes soft speech small. Real-speech screening is hadSpeech
+      // (≥MIN_VOICE_MS of voiced frames), not the byte count; a false
+      // positive here just costs one cheap STT call that returns "".
+      if (hadSpeech && blob.size > 600) void transcribe(blob);
     };
     recorderRef.current = rec;
     rec.start();
@@ -395,6 +428,10 @@ export function useVoiceMode(opts: {
   const interruptSpeech = useCallback(() => {
     if (!activeRef.current || phaseRef.current !== "speaking") return;
     speakGenRef.current++;
+    // The user is taking the floor back — invalidate any in-flight /api/stt
+    // fetch from before the barge so its stale transcript can't double-submit
+    // alongside what they're about to say.
+    sttGenRef.current++;
     stopBargeMonitor();
     clearTick();
     const audio = audioRef.current;
@@ -417,6 +454,15 @@ export function useVoiceMode(opts: {
       /* no synth */
     }
     useVoiceRead.getState().stopReading();
+    // KNOWN LIMITATION (deliberate): capture starts HERE, so the head of the
+    // interruption — the ~BARGE_SUSTAIN_MS of speech that proved the barge,
+    // plus anything inside BARGE_GUARD_MS — is not recorded. There is no
+    // teardown delay to shave: everything above is synchronous, and the
+    // pause-TTS-before-recorder order is what keeps JARVIS's own tail out of
+    // the blob. Recovering the head means recording through playback with a
+    // pre-roll ring buffer, rejected for now: any AEC leakage would put
+    // JARVIS's own TTS into the transcript (self-interruption). Revisit only
+    // with a real-mic AEC verification pass.
     startListening();
   }, [clearTick, startListening, stopBargeMonitor]);
 
@@ -517,7 +563,18 @@ export function useVoiceMode(opts: {
     let stream: MediaStream;
     try {
       stream = await md.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
+        // echoCancellation: the barge-in monitor depends on the browser AEC
+        // stripping JARVIS's TTS from the mic — keep ON. autoGainControl:
+        // explicitly ON (was left to per-browser defaults) — it lifts quiet
+        // speakers toward the SPEECH_RMS voiced threshold. noiseSuppression
+        // stays ON: it can shave soft consonants, but turning it off raises
+        // the noise floor into endpointer/barge false-trigger territory —
+        // don't flip it without a real-mic pass.
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
       });
     } catch {
       activeRef.current = false;
@@ -604,6 +661,33 @@ export function useVoiceMode(opts: {
       // into a no-op — so the normal end-of-playback path and the barge-in
       // path can never both fire.
       const gen = ++speakGenRef.current;
+      // Supersede any reply that's still being read aloud. Reachable when a
+      // new turn lands mid-playback (e.g. a late STT transcript submitted
+      // while the previous reply was speaking): the gen bump above turns the
+      // old utterance's finish()/onended into no-ops, so without this the old
+      // HTMLAudioElement would keep playing UNDER the new reply, and the old
+      // highlight interval would corrupt the new message's reveal.
+      stopBargeMonitor();
+      clearTick();
+      const prevAudio = audioRef.current;
+      if (prevAudio) {
+        audioRef.current = null;
+        try {
+          prevAudio.pause();
+        } catch {
+          /* gone */
+        }
+        try {
+          if (prevAudio.src.startsWith("blob:")) URL.revokeObjectURL(prevAudio.src);
+        } catch {
+          /* detached */
+        }
+      }
+      try {
+        window.speechSynthesis?.cancel();
+      } catch {
+        /* no synth */
+      }
       const store = useVoiceRead.getState();
       if (messageId) store.startReading(messageId);
 
