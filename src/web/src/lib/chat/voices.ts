@@ -9,6 +9,16 @@
  *  the /api/tts `voice` param (the value reaches an internal HTTP body). */
 export const KOKORO_ID_RE = /^[a-z]{2}_[a-z0-9]+$/;
 
+/** English Kokoro prefixes: af/am = US, bf/bm = UK. Voice mode is
+ *  English-only — Kokoro's other prefixes (jf_/jm_ Japanese, zf_/zm_ Chinese,
+ *  ef_/em_ Spanish, ff_ French, hf_/hm_ Hindi, if_/im_ Italian, pf_/pm_
+ *  Portuguese) speak THAT language, so they're filtered out of the picker
+ *  (/api/tts/voices) and guarded server-side in /api/tts against stale saved
+ *  ids. Edge ids are en-* only already (exact-match EDGE_VOICES catalog). */
+export function isEnglishKokoro(id: string): boolean {
+  return /^(af|am|bf|bm)_/.test(id);
+}
+
 export type EdgeVoice = {
   id: string;
   label: string;

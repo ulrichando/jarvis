@@ -14,7 +14,7 @@
  * matches the mobile app's online voice option.
  */
 import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts'
-import { KOKORO_ID_RE, isEdgeVoice } from '@/lib/chat/voices'
+import { KOKORO_ID_RE, isEdgeVoice, isEnglishKokoro } from '@/lib/chat/voices'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -95,12 +95,15 @@ export async function POST(req: Request): Promise<Response> {
     // Settings → General → Voice. Gated — the value reaches an internal
     // synth call, so never pass arbitrary client strings through. Edge ids
     // are exact-match allowlisted (isEdgeVoice); Kokoro ids are shape-gated
-    // (Kokoro itself rejects ids it doesn't serve; client then falls back).
+    // (Kokoro itself rejects ids it doesn't serve; client then falls back)
+    // AND English-gated: a stale saved non-English id (jf_alpha, zf_xiaobei,
+    // …) would make Kokoro speak that language, so it falls back to the
+    // default English voice instead of passing through.
     if (typeof body?.voice === 'string') {
       if (isEdgeVoice(body.voice)) {
         edge = true
         voice = body.voice
-      } else if (KOKORO_ID_RE.test(body.voice)) {
+      } else if (KOKORO_ID_RE.test(body.voice) && isEnglishKokoro(body.voice)) {
         voice = body.voice
       }
     }

@@ -1,4 +1,4 @@
-import { KOKORO_ID_RE, EDGE_VOICES } from '@/lib/chat/voices'
+import { KOKORO_ID_RE, EDGE_VOICES, isEnglishKokoro } from '@/lib/chat/voices'
 
 /**
  * GET /api/tts/voices — both TTS engines for the Settings → General → Voice
@@ -30,7 +30,9 @@ async function kokoroVoices(): Promise<string[]> {
     const voices = (j.voices ?? [])
       .map((v) => (typeof v === 'string' ? v : v.id ?? ''))
       // v0 entries are legacy duplicates of the same speakers — hide them.
-      .filter((id) => KOKORO_ID_RE.test(id) && !id.includes('_v0'))
+      // Non-English voices (jf_/zf_/ef_/… — they speak that language) are
+      // hidden too: voice mode is English-only.
+      .filter((id) => KOKORO_ID_RE.test(id) && !id.includes('_v0') && isEnglishKokoro(id))
     cache = { at: Date.now(), voices }
     return voices
   } catch {
