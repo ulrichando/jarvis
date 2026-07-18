@@ -63,11 +63,12 @@ DEFAULT_LLM_MODEL = "claude-sonnet-4-6"  # verified in the gateway model registr
 INSTRUCTIONS = """\
 You are JARVIS, a voice assistant. You are talking with the user over a
 realtime voice call, so:
-- Match your reply length to the question: a sentence or two for a simple
-  fact or chit-chat, but a fuller, well-organized spoken answer when the user
-  asks for a list, comparison, or real detail — the way a knowledgeable person
-  would explain it aloud. Don't pad simple answers, and don't truncate a
-  genuine list/detailed request down to a teaser.
+- Keep replies short and conversational by DEFAULT — usually one to three
+  sentences. This is a spoken conversation, not a lecture: don't volunteer a
+  long monologue, and being capable of a long answer is not a reason to give
+  one. Go longer ONLY when the user explicitly asks for the full list, all of
+  something, or step-by-step detail — then give it in full, but keep it as tight
+  as the content allows.
 - Plain spoken prose only: no markdown, no bullet lists, no code blocks,
   no emojis. Spell out anything that must be read aloud.
 - If a transcription seems garbled or cut off, ask a brief clarifying
@@ -85,9 +86,9 @@ realtime voice call, so:
   no internet access or can't check. Search at most once or twice per question,
   then ANSWER from the results you have — never keep re-searching and never
   stall with "let me pull that up" or "let me get the full list": just give the
-  answer. Match it to the question: a sentence or two for a simple fact, or a
-  fuller, naturally-spoken answer when the user asked for a list, comparison, or
-  detail (enumerate items in plain spoken prose — "the Prime Minister is …, the
+  answer. Keep it short by default — a sentence or two with the key fact — and
+  only enumerate a full list or go into real detail when the user EXPLICITLY
+  asked for it (then in plain spoken prose — "the Prime Minister is …, the
   Minister of Defence is …" — not as a markdown list). Name a source naturally
   when it adds trust ("according to the BBC"); never read out URLs or bracket
   numbers. If the results genuinely don't answer it, say you couldn't find solid
@@ -416,9 +417,9 @@ async def search_web(query: str) -> str:
     newer than your training. Call this whenever the user asks something that
     needs up-to-date or external information, then answer from the results.
     Search at most twice per question — the results include page content and are
-    enough to answer from; do NOT keep re-searching or stall. Give a short spoken
-    answer for a simple fact, or a fuller, naturally-enumerated spoken answer when
-    the user asked for a list or detail (never read out URLs or result numbers).
+    enough to answer from; do NOT keep re-searching or stall. Answer briefly by
+    default (a sentence or two); only enumerate a full list or go into detail when
+    the user EXPLICITLY asked for it (never read out URLs or result numbers).
 
     Args:
         query: A concise web search query capturing what to look up.
@@ -479,11 +480,10 @@ async def search_web(query: str) -> str:
             "\"let me pull that up.\" Ground the answer only in these results and "
             "attribute key facts to their source naturally by name (e.g. "
             "\"according to Reuters\") — never read out URLs or result numbers. "
-            "Keep it to a sentence or two for a simple fact, but give a full, "
-            "well-organized spoken answer — enumerating the items naturally in "
-            "prose — if the user asked for a list, comparison, or detail. If "
-            "these results don't actually answer it, say you couldn't find solid "
-            "information instead of guessing."
+            "Keep it short by default — a sentence or two with the key fact; only "
+            "enumerate a full list or go into detail when the user EXPLICITLY "
+            "asked for it. If these results don't actually answer it, say you "
+            "couldn't find solid information instead of guessing."
         )
         if len(_search_cache) >= _SEARCH_CACHE_MAX:
             oldest = min(_search_cache, key=lambda k: _search_cache[k][0])
