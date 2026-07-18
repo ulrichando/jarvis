@@ -38,19 +38,14 @@ function passthrough(r: Response): Response {
 // request open (client would sit in "previewing" forever).
 const EDGE_TIMEOUT_MS = 20_000
 
-async function viaEdge(text: string, voice: string, ratePct: number): Promise<Response | null> {
+async function viaEdge(text: string, voice: string): Promise<Response | null> {
   const tts = new MsEdgeTTS()
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     const buf = await Promise.race([
       (async () => {
         await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3)
-        // msedge-tts ProsodyOptions.rate takes an SSML relative percentage
-        // ("+20%" / "-20%") — same format the mobile app sends the agent.
-        const { audioStream } = tts.toStream(
-          text,
-          ratePct !== 0 ? { rate: `${ratePct >= 0 ? '+' : ''}${ratePct}%` } : undefined,
-        )
+        const { audioStream } = tts.toStream(text)
         const chunks: Buffer[] = []
         for await (const chunk of audioStream) chunks.push(chunk as Buffer)
         return Buffer.concat(chunks)
@@ -76,19 +71,12 @@ async function viaEdge(text: string, voice: string, ratePct: number): Promise<Re
   }
 }
 
-async function viaKokoro(text: string, voice: string, ratePct: number): Promise<Response | null> {
+async function viaKokoro(text: string, voice: string): Promise<Response | null> {
   try {
     const r = await fetch(`${KOKORO_URL}/audio/speech`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: KOKORO_MODEL,
-        voice,
-        input: text,
-        response_format: 'wav',
-        // OpenAI-compatible speed multiplier: -50%..+50% → 0.5..1.5.
-        ...(ratePct !== 0 ? { speed: 1 + ratePct / 100 } : {}),
-      }),
+      body: JSON.stringify({ model: KOKORO_MODEL, voice, input: text, response_format: 'wav' }),
       signal: AbortSignal.timeout(30_000),
     })
     return r.ok && r.body ? passthrough(r) : null
@@ -101,15 +89,9 @@ export async function POST(req: Request): Promise<Response> {
   let text = ''
   let voice = KOKORO_VOICE
   let edge = false
-  let ratePct = 0
   try {
-    const body = (await req.json()) as { text?: unknown; voice?: unknown; ratePct?: unknown }
+    const body = (await req.json()) as { text?: unknown; voice?: unknown }
     text = typeof body?.text === 'string' ? body.text.slice(0, 4000) : ''
-    // Optional speech rate (percent delta). Clamped hard — the value reaches
-    // internal synth calls. Absent/invalid → 0 (default speed, legacy shape).
-    if (typeof body?.ratePct === 'number' && Number.isFinite(body.ratePct)) {
-      ratePct = Math.max(-50, Math.min(50, Math.round(body.ratePct)))
-    }
     // Settings → General → Voice. Gated — the value reaches an internal
     // synth call, so never pass arbitrary client strings through. Edge ids
     // are exact-match allowlisted (isEdgeVoice); Kokoro ids are shape-gated
@@ -130,7 +112,7 @@ export async function POST(req: Request): Promise<Response> {
   }
   if (!text.trim()) return new Response('text required', { status: 400 })
 
-  const res = edge ? await viaEdge(text, voice, ratePct) : await viaKokoro(text, voice, ratePct)
+  const res = edge ? await viaEdge(text, voice) : await viaKokoro(text, voice)
   if (res) return res
   // Engine unavailable — client falls back to browser speechSynthesis.
   return new Response('no tts engine available', { status: 503 })

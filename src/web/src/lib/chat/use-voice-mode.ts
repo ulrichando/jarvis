@@ -19,44 +19,7 @@ import { useVoiceRead } from "@/stores/voice-read";
 import { useSettings } from "@/hooks/use-settings";
 import { KOKORO_ID_RE, isEdgeVoice } from "@/lib/chat/voices";
 
-export type VoicePhase =
-  | "idle"
-  | "connecting"
-  | "listening"
-  | "thinking"
-  | "speaking";
-
-/** Input style: hands-free = continuous listen with silence endpointing;
- *  ptt = push-to-talk, the mic captures only while the talk button is held. */
-export type VoiceInputMode = "handsfree" | "ptt";
-
-// Persisted voice preferences (mirrors the mobile app's pushToTalk +
-// voiceRatePct settings). localStorage — per-browser, like theme.
-const MODE_KEY = "jarvis.voice.mode";
-const RATE_KEY = "jarvis.voice.ratePct";
-
-function readStoredMode(): VoiceInputMode {
-  if (typeof window === "undefined") return "handsfree";
-  try {
-    return localStorage.getItem(MODE_KEY) === "ptt" ? "ptt" : "handsfree";
-  } catch {
-    return "handsfree";
-  }
-}
-
-function clampRatePct(n: number): number {
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(-50, Math.min(50, Math.round(n)));
-}
-
-function readStoredRate(): number {
-  if (typeof window === "undefined") return 0;
-  try {
-    return clampRatePct(Number(localStorage.getItem(RATE_KEY) ?? 0));
-  } catch {
-    return 0;
-  }
-}
+export type VoicePhase = "idle" | "connecting" | "listening" | "speaking";
 
 // Endpointer tuning. SPEECH_RMS is on normalized RMS (0..1) of the time-domain
 // signal; the rest are millisecond windows.
@@ -151,23 +114,6 @@ export function useVoiceMode(opts: {
   const phaseRef = useRef<VoicePhase>("idle");
   phaseRef.current = phase;
 
-  // Input mode (hands-free ⇄ push-to-talk) + speech rate — persisted.
-  const [mode, setModeState] = useState<VoiceInputMode>(readStoredMode);
-  const modeRef = useRef(mode);
-  const [ratePct, setRatePctState] = useState<number>(readStoredRate);
-  const rateRef = useRef(ratePct);
-  // PTT hold state (true while the talk button is pressed).
-  const [pttHeld, setPttHeldState] = useState(false);
-  const pttHeldRef = useRef(false);
-  // Hands-free mic mute (session-scoped, not persisted).
-  const [micMuted, setMicMutedState] = useState(false);
-  const micMutedRef = useRef(false);
-  // Overlay transcript: the user's latest transcribed utterance and the
-  // assistant text currently being spoken. Discrete updates only (per
-  // utterance / per reply) — never per audio frame.
-  const [lastUtterance, setLastUtterance] = useState("");
-  const [speakingText, setSpeakingText] = useState("");
-
   // STT machinery: mic stream → AnalyserNode endpointer → per-utterance
   // MediaRecorder → /api/stt.
   const streamRef = useRef<MediaStream | null>(null);
@@ -220,18 +166,6 @@ export function useVoiceMode(opts: {
     }
   }, []);
 
-  // Enable/disable the raw mic tracks. Disabled tracks feed silence to BOTH
-  // the analyser (orb goes flat) and the recorder — the honest "not
-  // listening" state for mute + PTT-idle without tearing the pipeline down.
-  const setTrackEnabled = useCallback((on: boolean) => {
-    const s = streamRef.current;
-    if (s) for (const t of s.getAudioTracks()) t.enabled = on;
-  }, []);
-
-  // Set after beginThinking is defined (it depends on pauseListening, which
-  // is defined below transcribe) — called via ref from the STT paths.
-  const beginThinkingRef = useRef<() => void>(() => {});
-
   // --- STT: transcribe a settled utterance ---------------------------------
   const transcribe = useCallback(async (blob: Blob) => {
     const gen = sttGenRef.current;
@@ -267,11 +201,7 @@ export function useVoiceMode(opts: {
     // Only feed a transcript while we're actually listening — not if the user
     // stopped voice mode or we've switched to speaking the reply meanwhile.
     if (text && activeRef.current && phaseRef.current === "listening") {
-      setLastUtterance(text);
       onUtteranceRef.current(text);
-      // The utterance is now with the model — show "thinking" until the
-      // reply lands (speak()) or the caller resumes listening (error path).
-      beginThinkingRef.current();
     }
   }, []);
 
@@ -305,9 +235,7 @@ export function useVoiceMode(opts: {
       }
       text = text.trim();
       if (text && activeRef.current && phaseRef.current === "listening") {
-        setLastUtterance(text);
         onUtteranceRef.current(text);
-        beginThinkingRef.current();
       }
     };
     rec.onerror = (e) => {
@@ -321,15 +249,9 @@ export function useVoiceMode(opts: {
     };
     rec.onend = () => {
       // Continuous recognition still ends on long silence / transient errors —
-      // reopen while we're meant to be listening. In PTT the recognizer only
-      // runs while the talk button is held; in hands-free, not while muted.
+      // reopen while we're meant to be listening.
       recognitionRef.current = null;
-      if (
-        activeRef.current &&
-        phaseRef.current === "listening" &&
-        sttFallbackRef.current &&
-        (modeRef.current === "ptt" ? pttHeldRef.current : !micMutedRef.current)
-      ) {
+      if (activeRef.current && phaseRef.current === "listening" && sttFallbackRef.current) {
         startBrowserSttRef.current();
       }
     };
@@ -381,15 +303,8 @@ export function useVoiceMode(opts: {
       const hadSpeech = voicedMsRef.current >= MIN_VOICE_MS;
       const blob = new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" });
       // Reopen the mic immediately so we don't clip the next utterance — unless
-      // we've since paused (speaking the reply), stopped voice mode, muted, or
-      // released the PTT button (a PTT segment is one hold, not continuous).
-      if (
-        activeRef.current &&
-        phaseRef.current === "listening" &&
-        (modeRef.current === "ptt" ? pttHeldRef.current : !micMutedRef.current)
-      ) {
-        beginSegment();
-      }
+      // we've since paused (speaking the reply) or stopped voice mode.
+      if (activeRef.current && phaseRef.current === "listening") beginSegment();
       if (hadSpeech && blob.size > 1200) void transcribe(blob);
     };
     recorderRef.current = rec;
@@ -420,7 +335,6 @@ export function useVoiceMode(opts: {
         voicedMsRef.current += dt;
         lastVoiceTsRef.current = now;
       } else if (
-        modeRef.current !== "ptt" && // PTT: the segment ends on release, never on silence
         voicedMsRef.current >= MIN_VOICE_MS &&
         now - lastVoiceTsRef.current > SILENCE_MS
       ) {
@@ -438,18 +352,6 @@ export function useVoiceMode(opts: {
   const startListening = useCallback(() => {
     setPhase("listening");
     phaseRef.current = "listening";
-    if (modeRef.current === "ptt") {
-      // PTT: "listening" is the session's resting state; actual capture only
-      // runs while the talk button is held (pttHold opens/closes segments).
-      setTrackEnabled(pttHeldRef.current);
-      if (!pttHeldRef.current) return;
-    } else {
-      if (micMutedRef.current) {
-        setTrackEnabled(false);
-        return; // muted — phase shows listening, capture stays closed
-      }
-      setTrackEnabled(true);
-    }
     if (sttFallbackRef.current) {
       startBrowserStt(); // browser SpeechRecognition — its own capture loop
       return;
@@ -457,7 +359,7 @@ export function useVoiceMode(opts: {
     lastTickTsRef.current = 0;
     beginSegment();
     if (rafRef.current == null) rafRef.current = requestAnimationFrame(tick);
-  }, [beginSegment, tick, startBrowserStt, setTrackEnabled]);
+  }, [beginSegment, tick, startBrowserStt]);
 
   const pauseListening = useCallback(() => {
     stopBrowserStt();
@@ -476,26 +378,6 @@ export function useVoiceMode(opts: {
       }
     }
   }, [stopBrowserStt]);
-
-  // --- Thinking window: utterance sent, reply not yet spoken ----------------
-  // Entered automatically when an utterance is delivered (see transcribe /
-  // the browser-STT onresult). Left via speak() (reply arrived) or
-  // resumeListening() (chat.tsx calls it when a turn ends with nothing to
-  // say — error, empty reply, deduped reply — so the mic can't stay dead).
-  const beginThinking = useCallback(() => {
-    if (!activeRef.current || phaseRef.current !== "listening") return;
-    pauseListening();
-    setPhase("thinking");
-    phaseRef.current = "thinking";
-  }, [pauseListening]);
-  useEffect(() => {
-    beginThinkingRef.current = beginThinking;
-  }, [beginThinking]);
-
-  const resumeListening = useCallback(() => {
-    if (!activeRef.current || phaseRef.current !== "thinking") return;
-    startListening();
-  }, [startListening]);
 
   // --- Barge-in: hot-mic interrupt while JARVIS speaks ----------------------
   const stopBargeMonitor = useCallback(() => {
@@ -535,116 +417,8 @@ export function useVoiceMode(opts: {
       /* no synth */
     }
     useVoiceRead.getState().stopReading();
-    setSpeakingText("");
     startListening();
   }, [clearTick, startListening, stopBargeMonitor]);
-
-  // --- Push-to-talk: capture only while the talk button is held -------------
-  // Down → open a capture segment (interrupting JARVIS if he's mid-reply);
-  // up → close the segment, which transcribes + sends it (mobile pttHold).
-  const pttHold = useCallback(
-    (down: boolean) => {
-      if (!activeRef.current || modeRef.current !== "ptt") return;
-      if (down) {
-        if (pttHeldRef.current) return;
-        pttHeldRef.current = true;
-        setPttHeldState(true);
-        if (phaseRef.current === "connecting") return; // start() arms capture once live
-        if (phaseRef.current === "speaking") {
-          interruptSpeech(); // → startListening() sees the held flag and captures
-          return;
-        }
-        startListening();
-        return;
-      }
-      if (!pttHeldRef.current) return;
-      pttHeldRef.current = false;
-      setPttHeldState(false);
-      setTrackEnabled(false);
-      if (sttFallbackRef.current) {
-        stopBrowserStt(); // finals already delivered by the recognizer
-        return;
-      }
-      // Close the held segment. Unlike pauseListening we KEEP rec.onstop —
-      // that's what transcribes + sends the utterance.
-      if (rafRef.current != null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-      const rec = recorderRef.current;
-      recorderRef.current = null;
-      if (rec && rec.state !== "inactive") {
-        try {
-          rec.stop();
-        } catch {
-          /* already stopped */
-        }
-      }
-    },
-    [interruptSpeech, startListening, stopBrowserStt, setTrackEnabled],
-  );
-
-  // Switch hands-free ⇄ push-to-talk (persisted). Mid-session the capture
-  // pipeline is re-armed under the new mode's rules.
-  const setMode = useCallback(
-    (m: VoiceInputMode) => {
-      if (modeRef.current === m) return;
-      modeRef.current = m;
-      setModeState(m);
-      try {
-        localStorage.setItem(MODE_KEY, m);
-      } catch {
-        /* private mode */
-      }
-      pttHeldRef.current = false;
-      setPttHeldState(false);
-      if (!activeRef.current) return;
-      if (phaseRef.current === "listening") {
-        pauseListening();
-        startListening();
-      }
-    },
-    [pauseListening, startListening],
-  );
-
-  // Hands-free mic mute toggle (tap the mic in the overlay). Tracks are
-  // disabled so the analyser flatlines — the orb honestly shows "not heard".
-  const toggleMic = useCallback(() => {
-    if (!activeRef.current || modeRef.current === "ptt") return;
-    const next = !micMutedRef.current;
-    micMutedRef.current = next;
-    setMicMutedState(next);
-    if (phaseRef.current !== "listening") {
-      // speaking/thinking — just flip the tracks; startListening() applies
-      // the mute when the turn returns to listening.
-      setTrackEnabled(!next);
-      return;
-    }
-    if (next) {
-      pauseListening();
-      setTrackEnabled(false);
-    } else {
-      startListening();
-    }
-  }, [pauseListening, startListening, setTrackEnabled]);
-
-  // Speech rate (percent delta, -50..+50 — the mobile app's voiceRatePct).
-  const setRatePct = useCallback((n: number) => {
-    const v = clampRatePct(n);
-    rateRef.current = v;
-    setRatePctState(v);
-    try {
-      localStorage.setItem(RATE_KEY, String(v));
-    } catch {
-      /* private mode */
-    }
-  }, []);
-
-  // Stable analyser getter for the overlay's canvas loop — the orb reads
-  // audio energy straight off the AnalyserNode inside its own rAF loop, so
-  // no React state ever updates per audio frame. Null on the
-  // browser-SpeechRecognition fallback path (it owns capture — no pipeline).
-  const getAnalyser = useCallback(() => analyserRef.current, []);
 
   // Per-frame RMS sampler (same math as tick()) with three false-trigger
   // guards: a refractory window after playback start (TTS onset transient,
@@ -794,12 +568,6 @@ export function useVoiceMode(opts: {
     setActive(false);
     setPhase("idle");
     phaseRef.current = "idle";
-    pttHeldRef.current = false;
-    setPttHeldState(false);
-    micMutedRef.current = false;
-    setMicMutedState(false);
-    setLastUtterance("");
-    setSpeakingText("");
     stopBargeMonitor();
     teardown();
     clearTick();
@@ -838,7 +606,6 @@ export function useVoiceMode(opts: {
       const gen = ++speakGenRef.current;
       const store = useVoiceRead.getState();
       if (messageId) store.startReading(messageId);
-      setSpeakingText(text);
 
       const finish = () => {
         if (gen !== speakGenRef.current) return; // barged-in or superseded
@@ -853,7 +620,6 @@ export function useVoiceMode(opts: {
           audioRef.current = null;
         }
         store.stopReading();
-        setSpeakingText("");
         if (activeRef.current) startListening();
       };
 
@@ -877,10 +643,6 @@ export function useVoiceMode(opts: {
           // makes browsers with a non-English locale read replies in that
           // locale's voice (mangled English at best).
           u.lang = "en-US";
-          // Honor the speech-rate preference on the fallback voice too.
-          if (rateRef.current !== 0) {
-            u.rate = Math.max(0.5, Math.min(2, 1 + rateRef.current / 100));
-          }
           u.onboundary = (ev) => {
             const p = (ev.charIndex ?? 0) + (ev.charLength ?? 0);
             if (p > useVoiceRead.getState().readChar) store.setChar(p);
@@ -910,9 +672,6 @@ export function useVoiceMode(opts: {
             body: JSON.stringify({
               text,
               ...(ttsVoiceRef.current ? { voice: ttsVoiceRef.current } : {}),
-              // Speech-rate preference (percent delta). Omitted at 0 so the
-              // request shape is unchanged for the default speed.
-              ...(rateRef.current !== 0 ? { ratePct: rateRef.current } : {}),
             }),
           });
         } catch {
@@ -1016,31 +775,5 @@ export function useVoiceMode(opts: {
     [],
   );
 
-  return {
-    active,
-    phase,
-    toggle,
-    start,
-    stop,
-    speak,
-    // Thinking window (utterance sent, reply pending).
-    beginThinking,
-    resumeListening,
-    // Input mode + push-to-talk.
-    mode,
-    setMode,
-    pttHold,
-    pttHeld,
-    // Hands-free mic mute.
-    micMuted,
-    toggleMic,
-    // Speech rate (percent delta, -50..+50).
-    ratePct,
-    setRatePct,
-    // Overlay feed: analyser for the canvas orb (read inside its own rAF
-    // loop — never per-frame React state) + the live transcript pieces.
-    getAnalyser,
-    lastUtterance,
-    speakingText,
-  };
+  return { active, phase, toggle, start, stop, speak };
 }
