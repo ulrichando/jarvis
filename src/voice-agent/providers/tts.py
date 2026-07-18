@@ -116,10 +116,11 @@ def build_dispatching_tts() -> DispatchingTTS:
 
     Cloud Orpheus + its per-route voices were removed 2026-06-29
     (provider eradication pass); ElevenLabs was removed 2026-05-01. The
-    Orpheus stream was the only caller of record_synthesis (barge-in
-    position table) and speaking_tracker.note_speaking (echo-aware
-    barge-in) — both dormant since TTS went Kokoro-primary 2026-06-22 and
-    NOT re-homed here.
+    Orpheus stream used to call record_synthesis (barge-in position table)
+    and speaking_tracker.note_speaking (echo-aware barge-in); the latter is
+    now re-homed in JarvisAgent.tts_node (feeds on every route). record_synthesis
+    (the TTS-position table for barge-in truncation) is still not re-homed —
+    barge-in truncation currently relies on the agent-audio-ms accumulator.
     """
     edge_voice = os.environ.get("JARVIS_EDGE_VOICE", "en-US-ChristopherNeural")
     try:
