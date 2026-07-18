@@ -338,9 +338,11 @@ export function Composer({
             voiceActive
               ? voicePhase === "speaking"
                 ? "Speaking…"
-                : voicePhase === "connecting"
-                  ? "Connecting…"
-                  : "Listening…"
+                : voicePhase === "thinking"
+                  ? "Thinking…"
+                  : voicePhase === "connecting"
+                    ? "Connecting…"
+                    : "Listening…"
               : coworkMode
                 ? "Describe a task — Jarvis will work on it in a session"
                 : (placeholder ?? ux.placeholder)
@@ -474,9 +476,11 @@ export function Composer({
                   title={
                     voicePhase === "speaking"
                       ? "Speaking…"
-                      : voicePhase === "connecting"
-                        ? "Connecting…"
-                        : "Listening — click to stop"
+                      : voicePhase === "thinking"
+                        ? "Thinking…"
+                        : voicePhase === "connecting"
+                          ? "Connecting…"
+                          : "Listening — click to stop"
                   }
                   className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 text-[12px] font-medium text-primary-foreground transition-opacity hover:opacity-90"
                 >
