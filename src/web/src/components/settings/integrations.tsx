@@ -152,6 +152,9 @@ function GitHubRow() {
               hasToken ? "Replace token (leave blank to keep)" : "ghp_… or github_pat_…"
             }
             className="h-8 text-[12px] font-mono"
+            // A token isn't a login credential — "new-password" is the opt-out
+            // Chrome actually honors on password-type fields ("off" is ignored).
+            autoComplete="new-password"
           />
           <Button
             type="button"

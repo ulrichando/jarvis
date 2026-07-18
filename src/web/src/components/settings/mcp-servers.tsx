@@ -181,7 +181,7 @@ export function McpServersCard() {
             onChange={(e) => setToken(e.target.value)}
             placeholder="Auth token (optional) — sent as Authorization: Bearer …"
             type="password"
-            autoComplete="off"
+            autoComplete="new-password"
             className="w-full rounded-md border border-border/60 bg-accent/20 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-1 focus:ring-primary/40"
           />
           {test && (

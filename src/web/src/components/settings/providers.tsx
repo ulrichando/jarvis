@@ -193,8 +193,9 @@ function ProviderRow({
             aria-label={`${PROVIDER_LABEL[provider.id]} API key`}
             // An API key isn't a login credential — don't let Chrome autofill
             // saved passwords here or pair it with the search box as a "username"
-            // field (which was dumping the account email into search).
-            autoComplete="off"
+            // field (which was dumping the account email into search). Chrome
+            // ignores "off" on password fields; "new-password" is the honored opt-out.
+            autoComplete="new-password"
           />
           <button
             type="button"

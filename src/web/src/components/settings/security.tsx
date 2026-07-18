@@ -100,8 +100,21 @@ function PasswordPrompt({
       <div>
         <label className="block text-[14px] font-medium mb-1.5">{label}</label>
         <div className="flex gap-2">
+          {/* Hidden username field: gives Chrome's password manager a username
+              candidate so it doesn't grab the settings-dialog search box as the
+              "username" for this current-password field. */}
+          <input
+            type="text"
+            autoComplete="username"
+            aria-hidden="true"
+            tabIndex={-1}
+            readOnly
+            value=""
+            style={{ display: "none" }}
+          />
           <Input
             type="password"
+            autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Your current password"

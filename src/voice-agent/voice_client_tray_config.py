@@ -208,9 +208,10 @@ TTS_PROVIDERS_AVAILABLE: dict[str, str] = {
     # kokoro-tts container. These gate the /tts-provider POST + label GET.
     "kokoro:af_heart": "Kokoro · Heart (local)",
     # Online · Microsoft Edge-TTS (auth-free, online). Mirrors the mobile
-    # app's catalog (jarvis-android EdgeTtsVoice.kt) — the 15 en-GB/en-US
-    # voices the free edge-tts endpoint actually serves. Male first (JARVIS
-    # tone), then female; keep this list in sync with ONLINE_TTS_VOICES in
+    # app's catalog (jarvis-android EdgeTtsVoice.kt) — the curated 15
+    # en-GB/en-US voices from the mobile catalog (children, Steffan, and
+    # Multilingual variants excluded). Male first (JARVIS tone), then
+    # female; keep this list in sync with ONLINE_TTS_VOICES in
     # desktop-tauri/src-tauri/src/main.rs.
     "edge:en-GB-RyanNeural":        "Edge · Ryan (UK male)",
     "edge:en-GB-ThomasNeural":      "Edge · Thomas (UK male)",

@@ -1357,8 +1357,9 @@ fn switch_cli_model(app: &tauri::AppHandle, id: &'static str) {
 /// the spec prefix. On-device Kokoro
 /// voices live in KOKORO_VOICE_CHOICES, listed separately under their own header.
 /// Mirrors the mobile app's catalog (jarvis-android EdgeTtsVoice.kt) and
-/// TTS_PROVIDERS_AVAILABLE in voice_client_tray_config.py — the 15 en-GB/en-US
-/// voices the free edge-tts endpoint actually serves. Male first (JARVIS tone),
+/// TTS_PROVIDERS_AVAILABLE in voice_client_tray_config.py — the curated 15
+/// en-GB/en-US voices from the mobile catalog (children, Steffan, and
+/// Multilingual variants excluded). Male first (JARVIS tone),
 /// then female. Keep the "Name  (region gender)" shape so tts_provider_pretty
 /// (splits on '(') resolves to "Edge · Name". Keep all three lists in sync.
 const ONLINE_TTS_VOICES: &[(&str, &str, &str)] = &[
