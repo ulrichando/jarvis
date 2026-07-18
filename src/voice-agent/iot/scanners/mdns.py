@@ -7,9 +7,27 @@ from __future__ import annotations
 
 from iot.models import Observation
 
-SERVICE_TYPES = ["_hue._tcp.local.", "_roku._tcp.local.", "_googlecast._tcp.local.",
-                 "_amzn-wplay._tcp.local.", "_airplay._tcp.local.",
-                 "_spotify-connect._tcp.local.", "_printer._tcp.local."]
+# The browse list carries BOTH positive smart-home types AND the phone/
+# computer/printer signals identify.py's exclude pass keys on. Browsing the
+# exclude types is a hard dependency of precision-first identification —
+# without them, a phone advertising _googlecast looks like a Chromecast
+# because we never see its _companion-link record. (_printer stays browsed
+# but is an EXCLUDE signal in identify.py.)
+SERVICE_TYPES = [
+    # positive smart-home services
+    "_hue._tcp.local.", "_roku._tcp.local.", "_googlecast._tcp.local.",
+    "_amzn-wplay._tcp.local.", "_airplay._tcp.local.",
+    "_spotify-connect._tcp.local.", "_sonos._tcp.local.",
+    "_androidtvremote2._tcp.local.", "_hap._tcp.local.",
+    "_matter._tcp.local.", "_matterc._udp.local.", "_matterd._udp.local.",
+    "_shelly._tcp.local.", "_esphomelib._tcp.local.", "_nanoleaf._tcp.local.",
+    # exclude signals (phones / computers / printers) — consumed by
+    # identify.py's exclude pass, never surfaced as devices themselves
+    "_companion-link._tcp.local.", "_rdlink._tcp.local.",
+    "_apple-mobdev2._tcp.local.", "_ssh._tcp.local.", "_smb._tcp.local.",
+    "_workstation._tcp.local.", "_device-info._tcp.local.",
+    "_ipp._tcp.local.", "_printer._tcp.local.", "_sleep-proxy._udp.local.",
+]
 
 
 def obs_from_service_info(service: str, ip: str, hostname: str | None,
