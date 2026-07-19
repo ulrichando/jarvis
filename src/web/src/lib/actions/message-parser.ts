@@ -179,7 +179,14 @@ export class StreamingMessageParser {
           i = closeIndex + RESULTS_TAG_CLOSE.length;
           continue;
         }
-        return commit(state, output, input.length);
+        // Hold back a possible split close tag so the resume position
+        // stays before it and next chunk's indexOf can match it.
+        return commit(
+          state,
+          output,
+          input.length -
+            partialCloseTagSuffix(lower, i, input.length, RESULTS_TAG_CLOSE),
+        );
       }
 
       if (state.insidePlan) {
@@ -200,14 +207,18 @@ export class StreamingMessageParser {
         }
         // Tag not closed yet — emit a streaming update so the plan card
         // builds up live (same UX as file actions), then bail until the
-        // next chunk arrives.
-        state.planContent += input.slice(i);
+        // next chunk arrives. Hold back a possible split close tag (see
+        // partialCloseTagSuffix) so </jarvisPlan> fragments never land in
+        // plan content and the close is still found next chunk.
+        const held = partialCloseTagSuffix(lower, i, input.length, PLAN_TAG_CLOSE);
+        const end = input.length - held;
+        state.planContent += input.slice(i, end);
         this.callbacks.onPlan?.({
           messageId,
           content: state.planContent,
           complete: false,
         });
-        return commit(state, output, input.length);
+        return commit(state, output, end);
       }
 
       if (state.insideJarvisArtifact) {
@@ -242,8 +253,18 @@ export class StreamingMessageParser {
         }
         // Tag not closed yet — stream the in-progress content so Preview
         // builds up live (same UX as file actions), then bail until the
-        // next chunk arrives.
-        state.jarvisArtifactContent += input.slice(i);
+        // next chunk arrives. Hold back any trailing bytes that could be
+        // the start of a close tag split across the chunk boundary (see
+        // partialCloseTagSuffix) so no fragment of </jarvisArtifact> is
+        // ever streamed into artifact content.
+        const held = partialCloseTagSuffix(
+          lower,
+          i,
+          input.length,
+          JARVIS_ARTIFACT_TAG_CLOSE,
+        );
+        const end = input.length - held;
+        state.jarvisArtifactContent += input.slice(i, end);
         this.callbacks.onJarvisArtifactStream?.({
           messageId,
           slug: meta.slug,
@@ -253,7 +274,7 @@ export class StreamingMessageParser {
           content: finalize(state.jarvisArtifactContent),
           complete: false,
         });
-        return commit(state, output, input.length);
+        return commit(state, output, end);
       }
 
       if (state.insideArtifact) {
@@ -502,6 +523,35 @@ export class StreamingMessageParser {
 function commit(state: MessageState, output: string, position: number): string {
   state.position = position;
   return output;
+}
+
+/**
+ * Length of the longest suffix of `lower[start..end)` that is a PROPER
+ * prefix of `tag` (a close tag, stored lowercase).
+ *
+ * Streaming boundary guard: the plan/results/jarvisArtifact branches
+ * consume to end-of-input when the close tag isn't found and advance
+ * `state.position` past everything consumed. If a chunk ends MID close
+ * tag (e.g. `…end</jarvisArtif`), the partial tag would be consumed into
+ * content and the position pushed past the tag's START — and since
+ * `indexOf(tag, i)` only matches occurrences beginning at ≥ i, the
+ * completed tag is never found on later chunks: the block wedges open
+ * and all trailing text leaks into its content (live bug: Mermaid source
+ * ending in `end</jarvisArtifact>-` → parse error). Callers hold back
+ * these bytes — never emitting them as content — until the next chunk
+ * resolves them into either the real close tag or ordinary text.
+ */
+function partialCloseTagSuffix(
+  lower: string,
+  start: number,
+  end: number,
+  tag: string,
+): number {
+  const max = Math.min(tag.length - 1, end - start);
+  for (let k = max; k >= 1; k--) {
+    if (lower.startsWith(tag.slice(0, k), end - k)) return k;
+  }
+  return 0;
 }
 
 function parseActionTag(tag: string): PartialAction {
