@@ -1,9 +1,16 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Brain, ChevronDown } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+// Reasoning / "thinking" disclosure shown above an assistant reply for any
+// model that streams a hidden reasoning trace (DeepSeek reasoner, K2.6
+// thinking, o-series, etc.). Deliberately minimal: no brain/sparkle icon —
+// while the model thinks it shows a plain "Thinking" heading with a small
+// animated three-dot loader (uniform across every model), and it stays
+// COLLAPSED by default so the raw reasoning never auto-dumps into the thread.
+// The chevron reveals the trace on demand; once done it reads "Thought for Ns".
 export function KimiReasoning({
   text,
   streaming,
@@ -11,7 +18,7 @@ export function KimiReasoning({
   text: string;
   streaming: boolean;
 }) {
-  const [open, setOpen] = useState(streaming);
+  const [open, setOpen] = useState(false);
   const [duration, setDuration] = useState<number | null>(null);
   const startedAtRef = useRef<number | null>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -25,21 +32,14 @@ export function KimiReasoning({
     }
   }, [streaming, duration]);
 
-  useEffect(() => {
-    if (!streaming) setOpen(false);
-  }, [streaming]);
-
+  // Only auto-scroll the trace if the user chose to open it mid-stream.
   useEffect(() => {
     if (!open || !streaming) return;
     const el = scrollerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [text, open, streaming]);
 
-  const label = streaming
-    ? "Thinking…"
-    : duration !== null
-      ? `Thought for ${duration}s`
-      : "Thoughts";
+  const doneLabel = duration !== null ? `Thought for ${duration}s` : "Thoughts";
 
   if (!text && !streaming) return null;
 
@@ -50,13 +50,14 @@ export function KimiReasoning({
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-muted-foreground hover:bg-muted/40 transition-colors"
       >
-        <Brain
-          className={cn(
-            "size-3.5 shrink-0",
-            streaming ? "text-primary animate-pulse" : "text-muted-foreground/70",
-          )}
-        />
-        <span className="flex-1 font-medium">{label}</span>
+        {streaming ? (
+          <span className="flex flex-1 items-center gap-1.5 font-medium">
+            Thinking
+            <ThinkingDots />
+          </span>
+        ) : (
+          <span className="flex-1 font-medium">{doneLabel}</span>
+        )}
         <ChevronDown
           className={cn(
             "size-3.5 shrink-0 transition-transform duration-200",
@@ -84,5 +85,28 @@ export function KimiReasoning({
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+// Three dots fading in sequence — a calm "working" indicator. Driven by
+// motion's compositor loop (no per-frame React state), so it's cheap even
+// while the thread re-renders during streaming.
+function ThinkingDots() {
+  return (
+    <span className="flex items-center gap-[3px]" aria-hidden>
+      {[0, 1, 2].map((i) => (
+        <motion.span
+          key={i}
+          className="size-1 rounded-full bg-current"
+          animate={{ opacity: [0.25, 1, 0.25] }}
+          transition={{
+            duration: 0.9,
+            repeat: Infinity,
+            ease: "easeInOut",
+            delay: i * 0.18,
+          }}
+        />
+      ))}
+    </span>
   );
 }

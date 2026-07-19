@@ -18,6 +18,7 @@ import { toast } from "sonner";
 import { useVoiceRead } from "@/stores/voice-read";
 import { useSettings } from "@/hooks/use-settings";
 import { KOKORO_ID_RE, isEdgeVoice } from "@/lib/chat/voices";
+import { normalizeForSpeech } from "@/lib/chat/tts-normalize";
 
 export type VoicePhase = "idle" | "connecting" | "listening" | "speaking";
 
@@ -722,7 +723,12 @@ export function useVoiceMode(opts: {
           if (est > useVoiceRead.getState().readChar) store.setChar(est);
         }, 80);
         try {
-          const u = new SpeechSynthesisUtterance(text);
+          // Strip markdown / symbols so the browser voice doesn't read
+          // "asterisk", "slash", etc. (the /api/tts server path normalizes
+          // too; this covers the Kokoro/Edge-unreachable fallback). The
+          // read-along estimate still tracks the original text length —
+          // it's a rough time estimate on Linux where onboundary is silent.
+          const u = new SpeechSynthesisUtterance(normalizeForSpeech(text) || text);
           // Voice mode is English-only — never navigator.language, which
           // makes browsers with a non-English locale read replies in that
           // locale's voice (mangled English at best).
