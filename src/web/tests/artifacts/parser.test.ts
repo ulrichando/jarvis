@@ -116,3 +116,106 @@ describe("jarvisArtifact parsing", () => {
     expect(open?.kind).toBe("code");
   });
 });
+
+describe("close tag split across chunk boundaries never leaks into content", () => {
+  // Regression for the live Mermaid bug: a chunk ending mid-close-tag
+  // (`…end</jarvisArtif`) was consumed into artifact content and the
+  // parser position advanced past the tag's start, so indexOf() never
+  // found the completed tag — the artifact wedged open and the Mermaid
+  // source ended with `end</jarvisArtifact>-` → parse error.
+  const MERMAID_BODY = "flowchart TD\n  A[Start] --> J[Stop]\n  end";
+  const OPEN = `<jarvisArtifact kind="mermaid" slug="diag" title="Diagram">`;
+
+  function assertNoLeak(chunks: string[]) {
+    const { events, visible } = run(chunks);
+
+    // Every streamed snapshot is a clean prefix of the body — no byte of
+    // the close tag (full or partial) ever appears in artifact content.
+    for (const [name, data] of events) {
+      if (name !== "jarvisStream" && name !== "jarvisClose") continue;
+      const content = (data as JarvisArtifactCallbackData).content;
+      expect(content).not.toMatch(/<\/jarvis/i);
+      expect(content).not.toMatch(/<\/$/);
+      expect(MERMAID_BODY.startsWith(content)).toBe(true);
+    }
+
+    // The artifact actually closes, with exactly the diagram source.
+    const close = events.find((e) => e[0] === "jarvisClose")?.[1] as
+      | JarvisArtifactCallbackData
+      | undefined;
+    expect(close).toBeDefined();
+    expect(close!.complete).toBe(true);
+    expect(close!.content).toBe(MERMAID_BODY);
+
+    // Trailing prose lands back in the visible output, not the diagram.
+    expect(visible).toContain("- after");
+    expect(visible).not.toMatch(/<\/jarvis/i);
+  }
+
+  test("close tag split mid-tag: `</jarvisArtif` | `act>`", () => {
+    assertNoLeak([
+      `${OPEN}${MERMAID_BODY}</jarvisArtif`,
+      `act>\n- after`,
+    ]);
+  });
+
+  test("split at the tag boundary: `…end` | `</jarvisArtifact>`", () => {
+    assertNoLeak([
+      `${OPEN}${MERMAID_BODY}`,
+      `</jarvisArtifact>\n- after`,
+    ]);
+  });
+
+  test("close tag split with only `>` missing: `</jarvisArtifact` | `>`", () => {
+    assertNoLeak([
+      `${OPEN}${MERMAID_BODY}</jarvisArtifact`,
+      `>\n- after`,
+    ]);
+  });
+
+  test("whole message streamed one character at a time", () => {
+    const full = `${OPEN}${MERMAID_BODY}</jarvisArtifact>\n- after`;
+    assertNoLeak(full.split(""));
+  });
+
+  test("mixed-case split close tag (`</JarvisArtif` | `ACT>`) still resolves", () => {
+    assertNoLeak([
+      `${OPEN}${MERMAID_BODY}</JarvisArtif`,
+      `ACT>\n- after`,
+    ]);
+  });
+
+  test("a real `</` inside content that is NOT the close tag is preserved", () => {
+    // `</x>` is held back for one chunk (could be a tag prefix) but must
+    // be released into content once it provably isn't the close tag.
+    const body = `flowchart TD\n  A["a </x> b"] --> B`;
+    const { events } = run([
+      `<jarvisArtifact kind="mermaid" slug="d" title="D">${body.slice(0, body.indexOf("</") + 2)}`,
+      `${body.slice(body.indexOf("</") + 2)}</jarvisArtifact>`,
+    ]);
+    const close = events.find((e) => e[0] === "jarvisClose")?.[1] as
+      | JarvisArtifactCallbackData
+      | undefined;
+    expect(close?.content).toBe(body);
+  });
+});
+
+describe("jarvisPlan close tag split across chunks (same bug class)", () => {
+  test("`</jarvisPl` | `an>` still closes the plan; content clean", () => {
+    const plans: Array<{ content: string; complete: boolean }> = [];
+    const parser = new StreamingMessageParser({
+      onPlan: (d) => plans.push({ content: d.content, complete: d.complete }),
+    });
+    let cumulative = "";
+    let visible = "";
+    for (const c of [`<jarvisPlan>step one</jarvisPl`, `an> after`]) {
+      cumulative += c;
+      visible += parser.parse("m1", cumulative);
+    }
+    const done = plans.find((p) => p.complete);
+    expect(done).toBeDefined();
+    expect(done!.content).toBe("step one");
+    for (const p of plans) expect(p.content).not.toMatch(/<\/jarvis/i);
+    expect(visible).toContain("after");
+  });
+});

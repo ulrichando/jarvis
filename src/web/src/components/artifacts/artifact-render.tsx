@@ -18,6 +18,7 @@ import {
   buildReactDoc,
   buildSvgDoc,
 } from "@/lib/artifacts/iframe";
+import { sanitizeMermaidSource } from "@/lib/artifacts/mermaid";
 
 const CodeMirror = dynamic(() => import("@uiw/react-codemirror"), {
   ssr: false,
@@ -221,7 +222,9 @@ function MermaidView({ content }: { content: string }) {
           securityLevel: "strict",
         });
         const id = "artifact-mmd-" + Math.random().toString(36).slice(2);
-        const { svg } = await mermaid.render(id, content);
+        // Defensive: a leaked </jarvisArtifact> (full or partial) in the
+        // source makes Mermaid's parser throw — strip it, never render it.
+        const { svg } = await mermaid.render(id, sanitizeMermaidSource(content));
         if (alive) setSvg(svg);
       } catch (e) {
         if (alive) setError(String((e as Error)?.message ?? e));
