@@ -496,7 +496,13 @@ const DEEPSEEK_UX: ProviderUX = {
   plus: DEFAULT_UX.plus,
   inlineToggles: [
     { id: "deepthink", label: "DeepThink", icon: Brain, defaultOn: false },
-    { id: "search", label: "Search", icon: Globe, defaultOn: false },
+    // Web search is available by DEFAULT (mobile parity — mobile searches
+    // automatically). defaultOn:false used to seed `search:false` into the
+    // composer's toggle state, which reached /api/chat as a literal `false`
+    // and dropped BOTH the webSearch tool and the server-side grounding —
+    // the model then claimed it had no web search. Only an explicit user
+    // toggle-OFF should send `search:false`.
+    { id: "search", label: "Search", icon: Globe, defaultOn: true },
   ],
   // Don't collapse every non-reasoner DeepSeek model to "Instant" in the
   // picker trigger — that hid which model was actually selected
