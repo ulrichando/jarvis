@@ -1,4 +1,13 @@
-import { convertToModelMessages, streamText, stepCountIs, type UIMessage, type ToolSet } from "ai";
+import {
+  convertToModelMessages,
+  createUIMessageStream,
+  createUIMessageStreamResponse,
+  streamText,
+  stepCountIs,
+  type UIMessage,
+  type UIMessageStreamOptions,
+  type ToolSet,
+} from "ai";
 import { eq } from "drizzle-orm";
 import { MissingApiKeyError } from "@/lib/ai/models";
 import { getModelWithLocalFailover } from "@/lib/ai/local-failover";
@@ -52,7 +61,12 @@ import {
   stripGeneratedImagesForModel,
   hasImageIntent,
 } from "@/lib/chat/image-markdown";
-import { maybeGroundWithSearch } from "@/lib/chat/search-grounding";
+import {
+  maybeGroundWithSearch,
+  toWebSearchToolPart,
+  SERVER_SEARCH_TOOL_CALL_ID,
+  type SearchGrounding,
+} from "@/lib/chat/search-grounding";
 
 // File extension → suggested filename when the model dumps a fenced
 // code block instead of using boltAction. Used by the recovery path
@@ -661,15 +675,24 @@ export async function POST(req: Request) {
   // /api/media urls (which 404 → broken images) instead of calling the tool.
   // Replaced with a neutral placeholder so the model still knows an image was
   // made. Does NOT touch what the user sees or what we persist.
+  // Also drop `tool-webSearch` parts from the history the MODEL sees. They
+  // exist for the Sources-chips UI + reload persistence (synthetic
+  // server-search parts from grounded turns, and client-attached parts from
+  // real webSearch calls) — the assistant's ANSWER text already reflects
+  // them. Keeping them out preserves today's model context byte-for-byte,
+  // avoids paying tokens for raw result JSON, and never teaches weak
+  // tool-callers (DeepSeek) to mimic tool-call shapes as text.
   const historyForModel = messages.map((m) =>
     m.role === "assistant"
       ? {
           ...m,
-          parts: m.parts.map((p) =>
-            p.type === "text"
-              ? { ...p, text: stripGeneratedImagesForModel(p.text) }
-              : p,
-          ),
+          parts: m.parts
+            .filter((p) => p.type !== "tool-webSearch")
+            .map((p) =>
+              p.type === "text"
+                ? { ...p, text: stripGeneratedImagesForModel(p.text) }
+                : p,
+            ),
         }
       : m,
   );
@@ -1081,21 +1104,24 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
   // to search. DeepSeek (and other weak tool-callers / thinking models that
   // reject tool_choice) routinely skip the webSearch tool and answer from
   // training data claiming "search is down". For those models ONLY — same
-  // gating as the tool (Search toggle not off, plain chat) plus a tight
-  // live-info intent check on the latest user message — run ONE bounded
-  // Brave search here and append the results to the system prompt so the
-  // answer is grounded regardless of tool-calling ability. Strong
+  // gating as the tool (Search toggle not off, plain chat) plus an intent
+  // check on the latest user message — run ONE bounded Brave search here
+  // and (a) append the results to the system prompt so the answer is
+  // grounded regardless of tool-calling ability, (b) keep the raw hits so
+  // the response can emit a synthetic tool-webSearch part → visible Sources
+  // chips (see the createUIMessageStream branch at the bottom). Strong
   // tool-callers (Claude / GPT / Gemini) are untouched: they call the tool
   // fine and shouldn't pay a double search. On error / timeout / no hits
   // this yields null and the turn proceeds exactly as before.
+  let searchGrounding: SearchGrounding | null = null;
   try {
-    const searchGrounding = await maybeGroundWithSearch({
+    searchGrounding = await maybeGroundWithSearch({
       modelId,
       search,
       workspaceId,
       userText: firstUserText,
     });
-    if (searchGrounding) finalSystem += searchGrounding;
+    if (searchGrounding) finalSystem += searchGrounding.block;
   } catch (err) {
     console.warn("[chat] server-side search grounding failed:", err);
   }
@@ -1242,6 +1268,13 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
           tokensIn: totalUsage.inputTokens,
           tokensOut: totalUsage.outputTokens,
           stopReason: finishReason,
+          // Grounded turn → persist the synthetic webSearch tool part AHEAD
+          // of the text (matching the live stream order) so Sources chips
+          // survive reload: toUIMessages returns content verbatim and
+          // extractSources reads tool-webSearch parts.
+          extraParts: searchGrounding
+            ? ([toWebSearchToolPart(searchGrounding)] as UIMessage["parts"])
+            : undefined,
         });
         // Persist + version any self-contained <jarvisArtifact> blocks the
         // model emitted (plain-chat only; workspace turns use the bolt
@@ -1281,14 +1314,15 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
   // via the onError hook on streamText already.
   result.consumeStream();
 
-  return result.toUIMessageStreamResponse({
-    headers,
-    // Forward per-step usage from streamText into the UI message stream
-    // as `messageMetadata` events. The chat client reads these to render
-    // a per-turn token + cost chip below each assistant message — same
-    // visibility OpenRouter / Cursor / Bolt show. Without this, the
-    // user has no insight into how many tokens or dollars a turn cost.
-    messageMetadata: ({ part }) => {
+  // Forward per-step usage from streamText into the UI message stream
+  // as `messageMetadata` events. The chat client reads these to render
+  // a per-turn token + cost chip below each assistant message — same
+  // visibility OpenRouter / Cursor / Bolt show. Without this, the
+  // user has no insight into how many tokens or dollars a turn cost.
+  // (Extracted to a const so the grounded branch below and the default
+  // return share ONE definition.)
+  const messageMetadata: UIMessageStreamOptions<UIMessage>["messageMetadata"] =
+    ({ part }) => {
       if (part.type === "finish-step") {
         return {
           usage: {
@@ -1301,6 +1335,50 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
         };
       }
       return undefined;
-    },
+    };
+
+  // Grounded turn (weak tool-caller + server-side Brave search): emit a
+  // SYNTHETIC webSearch tool part AHEAD of the model's stream so the client
+  // shows the same Sources chips a real webSearch tool call produces —
+  // tool-input-available + tool-output-available for toolName "webSearch",
+  // exactly the chunk pair the AI SDK emits for a real call, with the
+  // output shape extractSources reads ({ results: [{title,url,snippet}] }).
+  // The model itself never called a tool (DeepSeek / thinking models can't
+  // be forced to) — its answer is grounded via the system-prompt block
+  // appended above. The non-grounded path below is unchanged.
+  if (searchGrounding) {
+    const grounding = searchGrounding;
+    const stream = createUIMessageStream({
+      execute: ({ writer }) => {
+        writer.write({
+          type: "tool-input-available",
+          toolCallId: SERVER_SEARCH_TOOL_CALL_ID,
+          toolName: "webSearch",
+          input: { query: grounding.query },
+          // Server-executed: a standard AI SDK client must never treat
+          // this as a client tool call awaiting execution (suppresses
+          // onToolCall / addToolResult flows).
+          providerExecuted: true,
+        });
+        writer.write({
+          type: "tool-output-available",
+          toolCallId: SERVER_SEARCH_TOOL_CALL_ID,
+          output: { query: grounding.query, results: grounding.results },
+          providerExecuted: true,
+        });
+        writer.merge(result.toUIMessageStream({ messageMetadata }));
+      },
+      // Match toUIMessageStreamResponse's default error masking — its
+      // default onError is () => "An error occurred.", while
+      // createUIMessageStream's default forwards the raw error message.
+      // Don't leak provider internals on the grounded path only.
+      onError: () => "An error occurred.",
+    });
+    return createUIMessageStreamResponse({ stream, headers });
+  }
+
+  return result.toUIMessageStreamResponse({
+    headers,
+    messageMetadata,
   });
 }

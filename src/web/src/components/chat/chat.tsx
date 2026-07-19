@@ -1040,6 +1040,31 @@ export function Chat({
     // events and append them as markdown at `finish` (after the text, matching
     // the server's onFinish persistence). Rendered via the Markdown <img>.
     const pendingImages: { url: string; prompt?: string }[] = [];
+    // Web-search sources for this turn. Both a REAL webSearch tool call
+    // (strong tool-callers) and the server's SYNTHETIC grounded-search
+    // events (weak tool-callers like DeepSeek — see api/chat/route.ts +
+    // lib/chat/search-grounding.ts) arrive as `tool-output-available` with
+    // `output.results: [{title, url, snippet}]`. Collect them and attach a
+    // `tool-webSearch` part to the assistant message so extractSources /
+    // <Sources> render Perplexity-style citation chips — the same part
+    // shape the server persists, so live and reload match.
+    const pendingSources: { title: string; url: string; snippet?: string }[] =
+      [];
+    let sourcesToolCallId = "server-search-1";
+    let sourcesQuery: string | undefined;
+    const partsWithSources = (text: string): UIMessage["parts"] =>
+      pendingSources.length > 0
+        ? [
+            {
+              type: "tool-webSearch",
+              toolCallId: sourcesToolCallId,
+              state: "output-available",
+              input: sourcesQuery ? { query: sourcesQuery } : {},
+              output: { results: pendingSources.slice() },
+            } as never,
+            { type: "text", text } as never,
+          ]
+        : [{ type: "text", text } as never];
     // Reasoning trace for this turn. Persisted across auto-continue
     // passes (same assistantId) so the "Thoughts" block shows the full
     // chain of thought, not just the last segment.
@@ -1081,7 +1106,7 @@ export function Chat({
           setMessages((prev) =>
             prev.map((m) =>
               m.id === p.id
-                ? { ...m, parts: [{ type: "text", text: p.text } as never] }
+                ? { ...m, parts: partsWithSources(p.text) }
                 : m,
             ),
           );
@@ -1268,6 +1293,24 @@ export function Chat({
             reasoningText += evt.delta;
             reasoningPending.current = { id: assistantId, text: reasoningText };
             scheduleReasoningFlush();
+          } else if (evt.type === "tool-input-available") {
+            // webSearch call opened (real tool call OR the server's
+            // synthetic grounded search) — remember its id + query so the
+            // sources part mirrors the real call and the tool trace can
+            // show the query.
+            const call = evt as unknown as {
+              toolCallId?: string;
+              toolName?: string;
+              input?: { query?: unknown };
+            };
+            if (call.toolName === "webSearch") {
+              if (typeof call.toolCallId === "string") {
+                sourcesToolCallId = call.toolCallId;
+              }
+              if (typeof call.input?.query === "string") {
+                sourcesQuery = call.input.query;
+              }
+            }
           } else if (evt.type === "tool-output-available") {
             // generateImage tool result. Collect successful images; append
             // them at `finish` (below) so they land AFTER the model's text,
@@ -1280,6 +1323,29 @@ export function Chat({
             ).output;
             if (out?.status === "ok" && typeof out.url === "string") {
               pendingImages.push({ url: out.url, prompt: out.prompt });
+            }
+            // webSearch result (real or synthetic server-search): anything
+            // with a results array of {title, url} is a sources payload.
+            // De-duped by url; attached to the message via partsWithSources.
+            const results = (
+              evt as unknown as { output?: { results?: unknown } }
+            ).output?.results;
+            if (Array.isArray(results)) {
+              for (const r of results as {
+                title?: unknown;
+                url?: unknown;
+                snippet?: unknown;
+              }[]) {
+                if (typeof r?.url !== "string" || typeof r?.title !== "string")
+                  continue;
+                if (pendingSources.some((s) => s.url === r.url)) continue;
+                pendingSources.push({
+                  title: r.title,
+                  url: r.url,
+                  snippet:
+                    typeof r.snippet === "string" ? r.snippet : undefined,
+                });
+              }
             }
           } else if (evt.type === "finish") {
             finishReason = (evt as unknown as { finishReason?: string })
@@ -1446,7 +1512,7 @@ export function Chat({
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId
-                ? { ...m, parts: [{ type: "text", text: finalText } as never] }
+                ? { ...m, parts: partsWithSources(finalText) }
                 : m,
             ),
           );
