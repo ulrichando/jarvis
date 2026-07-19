@@ -122,8 +122,16 @@ export async function POST(req: Request): Promise<Response> {
   const normalized = normalizeForSpeech(text)
   const spoken = normalized.trim() ? normalized : text
 
-  const res = edge ? await viaEdge(spoken, voice) : await viaKokoro(spoken, voice)
+  let res = edge ? await viaEdge(spoken, voice) : await viaKokoro(spoken, voice)
+  // Edge is ONLINE — a network blip / Microsoft-endpoint hiccup makes viaEdge
+  // return null. Rather than 503 → the client's robotic browser speechSynthesis
+  // (a jarringly different voice), fall back to the LOCAL Kokoro engine with the
+  // default voice: still a natural neural voice, and it works offline. (A picked
+  // Edge voice can't be reproduced by Kokoro, so this is a graceful degrade, not
+  // an exact match — pick an On-device Kokoro voice for network-independent
+  // consistency.)
+  if (!res && edge) res = await viaKokoro(spoken, KOKORO_VOICE)
   if (res) return res
-  // Engine unavailable — client falls back to browser speechSynthesis.
+  // Both engines unavailable — client falls back to browser speechSynthesis.
   return new Response('no tts engine available', { status: 503 })
 }
