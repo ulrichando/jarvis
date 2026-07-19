@@ -63,8 +63,10 @@ import {
 } from "@/lib/chat/image-markdown";
 import {
   maybeGroundWithSearch,
+  shouldOfferWebSearchTool,
   toWebSearchToolPart,
   SERVER_SEARCH_TOOL_CALL_ID,
+  type QueryGenTurn,
   type SearchGrounding,
 } from "@/lib/chat/search-grounding";
 
@@ -1100,26 +1102,44 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
     }
   }
 
-  // Deterministic server-side web search — the forced-image pattern applied
-  // to search. DeepSeek (and other weak tool-callers / thinking models that
-  // reject tool_choice) routinely skip the webSearch tool and answer from
-  // training data claiming "search is down". For those models ONLY — same
-  // gating as the tool (Search toggle not off, plain chat) plus an intent
-  // check on the latest user message — run ONE bounded Brave search here
-  // and (a) append the results to the system prompt so the answer is
-  // grounded regardless of tool-calling ability, (b) keep the raw hits so
-  // the response can emit a synthetic tool-webSearch part → visible Sources
-  // chips (see the createUIMessageStream branch at the bottom). Strong
-  // tool-callers (Claude / GPT / Gemini) are untouched: they call the tool
-  // fine and shouldn't pay a double search. On error / timeout / no hits
-  // this yields null and the turn proceeds exactly as before.
+  // Deterministic server-side web search for WEAK tool-callers — the
+  // forced-image pattern applied to search. DeepSeek (and other weak
+  // tool-callers / thinking models that reject tool_choice) routinely skip
+  // the webSearch tool and answer from training data claiming "search is
+  // down". For those models ONLY — same gating as the tool (Search toggle
+  // not off, plain chat) plus the cheap regex intent check on the latest
+  // user message — a fast task-model call REFINES the message into 1–3
+  // keyword queries (best-effort: raw text on any failure, see
+  // search-grounding.ts) and ONE bounded Brave pass runs here. Then (a) the
+  // results land in the system prompt so the answer is grounded regardless
+  // of tool-calling ability, (b) the raw hits ride along so the response
+  // emits a synthetic tool-webSearch part → visible Sources chips (see the
+  // createUIMessageStream branch at the bottom). Strong tool-callers
+  // (Claude / GPT / Gemini) ground to null at the isWeakToolCaller gate:
+  // they keep their iterative webSearch tool path, pay no query-gen call,
+  // and shouldn't double-search. Grounded turns DROP the webSearch tool
+  // below. On error / timeout / no hits this yields null and the turn
+  // proceeds exactly as before (tool still offered).
   let searchGrounding: SearchGrounding | null = null;
   try {
+    // Up to the last 2 prior turns give query-gen pronoun/topic context
+    // ("what about their away record?" needs the previous turn to resolve).
+    const recentTurns: QueryGenTurn[] = messages
+      .filter(
+        (m) => m !== lastUser && (m.role === "user" || m.role === "assistant"),
+      )
+      .slice(-2)
+      .map((m) => ({
+        role: m.role as "user" | "assistant",
+        text: extractText(m.parts),
+      }))
+      .filter((t) => t.text.trim().length > 0);
     searchGrounding = await maybeGroundWithSearch({
       modelId,
       search,
       workspaceId,
       userText: firstUserText,
+      recentTurns,
     });
     if (searchGrounding) finalSystem += searchGrounding.block;
   } catch (err) {
@@ -1163,12 +1183,17 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
     // producing the requested artifact (`finish: tool-calls`, no
     // boltActions emitted). Workspace turns are for building code, not
     // research. webSearch stays available only for plain chats.
-    // Search toggle (DeepSeek) off → drop webSearch; otherwise keep the existing
-    // duck-duck-scrape tool. Other providers send no flag → kept (unchanged).
+    // Search toggle off → drop webSearch. Grounded turn (weak caller,
+    // server-side search already ran, results in the system prompt) → ALSO
+    // drop it, so the model doesn't double-search the same question.
+    // Non-grounded turn — which is EVERY strong-caller turn (they ground to
+    // null) — → tool offered exactly as before.
     tools: workspaceId
       ? undefined
       : {
-          ...(search === false ? {} : { webSearch: webSearchTool }),
+          ...(shouldOfferWebSearchTool(search, searchGrounding)
+            ? { webSearch: webSearchTool }
+            : {}),
           ...imageTools,
           ...mcpTools,
         },
@@ -1343,8 +1368,9 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
   // tool-input-available + tool-output-available for toolName "webSearch",
   // exactly the chunk pair the AI SDK emits for a real call, with the
   // output shape extractSources reads ({ results: [{title,url,snippet}] }).
-  // The model itself never called a tool (DeepSeek / thinking models can't
-  // be forced to) — its answer is grounded via the system-prompt block
+  // The model itself never called a tool this turn (the webSearch tool is
+  // dropped on grounded turns; DeepSeek / thinking models couldn't be
+  // forced to anyway) — its answer is grounded via the system-prompt block
   // appended above. The non-grounded path below is unchanged.
   if (searchGrounding) {
     const grounding = searchGrounding;
