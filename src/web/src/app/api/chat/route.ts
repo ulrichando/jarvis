@@ -50,7 +50,10 @@ import {
   userAskedForQuestions,
 } from "@/lib/design/format";
 import { webSearchTool } from "@/lib/tools/web-search";
+import { webFetchTool } from "@/lib/tools/web-fetch";
 import { createGenerateImageTool } from "@/lib/tools/generate-image";
+import { createMemoryTool } from "@/lib/tools/memory";
+import { buildMemoryBlock } from "@/lib/chat/memory";
 import {
   imageGenAvailable,
   generateChatImage,
@@ -711,6 +714,7 @@ export async function POST(req: Request) {
   // Global knowledge docs (Settings → Knowledge) — reference material the user
   // uploaded, injected into every chat. No-op when none are enabled.
   finalSystem += await readGlobalKnowledgeBlock();
+  finalSystem += await buildMemoryBlock(userId);
   // Plain chat (no workspace): activate claude.ai-style self-contained
   // artifacts so the model can emit <jarvisArtifact> blocks the artifact
   // side panel renders + persists. Workspace turns keep the bolt path
@@ -1194,6 +1198,11 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
           ...(shouldOfferWebSearchTool(search, searchGrounding)
             ? { webSearch: webSearchTool }
             : {}),
+          // webFetch + memory are always available — webFetch reads a
+          // user-pasted URL (not gated by the search toggle), memory lets the
+          // model save/recall user facts across chats.
+          webFetch: webFetchTool,
+          memory: createMemoryTool(userId),
           ...imageTools,
           ...mcpTools,
         },

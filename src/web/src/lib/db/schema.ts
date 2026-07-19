@@ -270,6 +270,29 @@ export const curatedMemories = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Chat memory — model-callable ChatGPT/Claude-style persistent user facts.
+// One row per fact. Written by the chat `memory` tool
+// (src/lib/tools/memory.ts) and injected into every chat system prompt via
+// buildMemoryBlock (src/lib/chat/memory.ts). Deliberately DISTINCT from
+// curated_memories above (the voice agent's kinds-based curated stores,
+// managed via /api/memory): this is the web chat's flat, per-fact list.
+// The CREATE TABLE also lives in ensure-schema.ts for existing production
+// DBs (the web DB is drizzle-push managed).
+// ---------------------------------------------------------------------------
+export const userMemories = pgTable(
+  "user_memories",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    content: text("content").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [index("user_memories_user_idx").on(table.userId)],
+);
+
+// ---------------------------------------------------------------------------
 // Two-factor auth (TOTP enrollment).
 // The better-auth `twoFactor` plugin accesses this table under the model name
 // "twoFactor". The drizzle adapter maps that → drizzleAdapter schema key
@@ -354,6 +377,7 @@ export const artifactsRelations = relations(artifacts, ({ one, many }) => ({
 }));
 
 export type User = typeof users.$inferSelect;
+export type UserMemory = typeof userMemories.$inferSelect;
 export type Conversation = typeof conversations.$inferSelect;
 export type Message = typeof messages.$inferSelect;
 export type Artifact = typeof artifacts.$inferSelect;

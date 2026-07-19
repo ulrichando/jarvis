@@ -84,4 +84,18 @@ async function runEnsureWebSchema(): Promise<void> {
   await db.execute(
     sql`CREATE UNIQUE INDEX IF NOT EXISTS curated_memories_user_kind_uniq ON web.curated_memories (user_id, kind)`,
   );
+  // Chat memory (the model-callable `memory` tool) — one row per saved user
+  // fact, injected into every chat system prompt (src/lib/chat/memory.ts).
+  // Distinct from curated_memories above.
+  await db.execute(
+    sql`CREATE TABLE IF NOT EXISTS web.user_memories (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id uuid NOT NULL REFERENCES web.users(id) ON DELETE CASCADE,
+      content text NOT NULL,
+      created_at timestamp NOT NULL DEFAULT now()
+    )`,
+  );
+  await db.execute(
+    sql`CREATE INDEX IF NOT EXISTS user_memories_user_idx ON web.user_memories (user_id)`,
+  );
 }
