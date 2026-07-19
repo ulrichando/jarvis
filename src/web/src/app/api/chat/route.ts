@@ -52,6 +52,7 @@ import {
 import { webSearchTool } from "@/lib/tools/web-search";
 import { webFetchTool } from "@/lib/tools/web-fetch";
 import { fileSearchTool } from "@/lib/tools/file-search";
+import { createRunCodeTool } from "@/lib/tools/run-code";
 import { createGenerateImageTool } from "@/lib/tools/generate-image";
 import { createMemoryTool } from "@/lib/tools/memory";
 import { buildMemoryBlock } from "@/lib/chat/memory";
@@ -1205,6 +1206,12 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
           webFetch: webFetchTool,
           memory: createMemoryTool(userId),
           fileSearch: fileSearchTool,
+          // Code interpreter — runs in the hardened workbench sandbox. Plain
+          // chats only (workspace chats run code via boltActions). Kill-switch:
+          // JARVIS_CHAT_CODE_TOOL=0.
+          ...(process.env.JARVIS_CHAT_CODE_TOOL !== "0"
+            ? { runCode: createRunCodeTool(userId) }
+            : {}),
           ...imageTools,
           ...mcpTools,
         },
