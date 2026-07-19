@@ -52,6 +52,7 @@ import {
   stripGeneratedImagesForModel,
   hasImageIntent,
 } from "@/lib/chat/image-markdown";
+import { maybeGroundWithSearch } from "@/lib/chat/search-grounding";
 
 // File extension → suggested filename when the model dumps a fenced
 // code block instead of using boltAction. Used by the recovery path
@@ -1074,6 +1075,29 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
       );
       // fall through to normal streamText
     }
+  }
+
+  // Deterministic server-side web search — the forced-image pattern applied
+  // to search. DeepSeek (and other weak tool-callers / thinking models that
+  // reject tool_choice) routinely skip the webSearch tool and answer from
+  // training data claiming "search is down". For those models ONLY — same
+  // gating as the tool (Search toggle not off, plain chat) plus a tight
+  // live-info intent check on the latest user message — run ONE bounded
+  // Brave search here and append the results to the system prompt so the
+  // answer is grounded regardless of tool-calling ability. Strong
+  // tool-callers (Claude / GPT / Gemini) are untouched: they call the tool
+  // fine and shouldn't pay a double search. On error / timeout / no hits
+  // this yields null and the turn proceeds exactly as before.
+  try {
+    const searchGrounding = await maybeGroundWithSearch({
+      modelId,
+      search,
+      workspaceId,
+      userText: firstUserText,
+    });
+    if (searchGrounding) finalSystem += searchGrounding;
+  } catch (err) {
+    console.warn("[chat] server-side search grounding failed:", err);
   }
 
   const rc = reasoningConfig(
