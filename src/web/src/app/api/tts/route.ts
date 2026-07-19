@@ -15,6 +15,7 @@
  */
 import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts'
 import { KOKORO_ID_RE, isEdgeVoice, isEnglishKokoro } from '@/lib/chat/voices'
+import { normalizeForSpeech } from '@/lib/chat/tts-normalize'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -112,7 +113,16 @@ export async function POST(req: Request): Promise<Response> {
   }
   if (!text.trim()) return new Response('text required', { status: 400 })
 
-  const res = edge ? await viaEdge(text, voice) : await viaKokoro(text, voice)
+  // Speech normalization (port of the voice agent's pipeline/tts_normalize.py):
+  // flatten markdown structure + convert/drop symbols so Kokoro/Edge never
+  // voice "asterisk asterisk" / "slash" / "ampersand" by name. Server-side so
+  // EVERY TTS caller (chat voice mode, settings voice preview) benefits.
+  // Guard: a symbol-only input can normalize to nothing — fall back to the
+  // original text rather than send an empty string to the engine.
+  const normalized = normalizeForSpeech(text)
+  const spoken = normalized.trim() ? normalized : text
+
+  const res = edge ? await viaEdge(spoken, voice) : await viaKokoro(spoken, voice)
   if (res) return res
   // Engine unavailable — client falls back to browser speechSynthesis.
   return new Response('no tts engine available', { status: 503 })
