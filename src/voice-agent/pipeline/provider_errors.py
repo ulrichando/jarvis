@@ -153,8 +153,8 @@ _STT_TEXT_RE = re.compile(r"faster.?whisper|ctranslate|local STT", re.I)
 
 
 # Transient GPU markers (kept in sync with providers/faster_whisper_stt.py's
-# in-rung retry regex): ctranslate2 kernel-launch failures under compute
-# contention with a local LLM sharing the card.
+# in-rung retry regex): ctranslate2 CUDA failures — a wedged GPU context
+# (cuInit 999 after a suspend / driver hiccup) or, on a shared card, an OOM.
 _STT_GPU_ERR_RE = re.compile(r"parallel_for failed|\bcuda|cublas|cudnn", re.I)
 
 
@@ -279,11 +279,11 @@ def _spoken_and_notify(category: str, provider: str, component: str) -> tuple[st
             "My local speech-to-text hit a GPU error. I'll keep retrying — "
             "if I keep missing you, the GPU may need a recovery.",
             "JARVIS — local speech-to-text GPU error",
-            "Local faster-whisper hit a transient CUDA error (GPU compute "
-            "contention with the local LLM sharing the card) — NOT a cloud "
-            "provider or network issue. It retries automatically; if it "
-            "persists, run bin/jarvis-cuda-recover or set "
-            "JARVIS_LOCAL_STT_DEVICE=cpu.",
+            "Local faster-whisper hit a transient CUDA/GPU error (the "
+            "on-device GPU context wedged) — NOT a cloud provider or network "
+            "issue. It retries automatically and falls back to CPU so speech "
+            "keeps working; if it persists, run bin/jarvis-cuda-recover to "
+            "reset the GPU, or set JARVIS_LOCAL_STT_DEVICE=cpu.",
         ),
         "server_error": (
             f"{provider} is having server trouble. It should recover shortly.",
