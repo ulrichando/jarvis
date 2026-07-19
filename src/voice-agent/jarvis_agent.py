@@ -1033,6 +1033,9 @@ _ERR_NOTIFY_TS = [0.0]  # boxed: throttle provider-error desktop notifications
 def _notify_error(classified, *, min_interval: float = 60.0) -> None:
     """Throttled desktop notification for a classified provider error, so the
     user SEES what broke ('out of credits on Claude') instead of nothing."""
+    from pipeline.cron_delivery import notifications_disabled
+    if notifications_disabled():
+        return  # kill-switch (headless box / hermetic test suite)
     now = time.time()
     if now - _ERR_NOTIFY_TS[0] < min_interval:
         return
@@ -5783,7 +5786,8 @@ def _register_session_error_handlers(session) -> None:
 
             # Throttle notifications to one per 60 s so a flood of
             # retries doesn't spam the desktop.
-            if now - _last_notify_ts[0] > 60:
+            from pipeline.cron_delivery import notifications_disabled
+            if now - _last_notify_ts[0] > 60 and not notifications_disabled():
                 _last_notify_ts[0] = now
                 try:
                     _subprocess.Popen(
