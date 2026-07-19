@@ -677,11 +677,19 @@ function ReasoningBlock({
     if (el) el.scrollTop = el.scrollHeight;
   }, [reasoning, open, streaming]);
 
-  const label = streaming
-    ? "Thinking…"
-    : duration !== null
-      ? `Thought for ${duration}s`
-      : "Thoughts";
+  // While the model is thinking, represent it with ONLY the 3 loading dots —
+  // no box, no "Thinking" label, no chevron (per Ulrich). Once thinking ends,
+  // the trace is offered as a small collapsed "Thought for Ns" disclosure.
+  if (streaming) {
+    return (
+      <div className="mb-3 flex items-center py-1">
+        <ThinkingDots />
+      </div>
+    );
+  }
+  if (!reasoning) return null;
+
+  const label = duration !== null ? `Thought for ${duration}s` : "Thoughts";
 
   return (
     <div className="mb-3 rounded-lg border border-border/40 bg-muted/20 overflow-hidden">
@@ -690,14 +698,7 @@ function ReasoningBlock({
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-muted-foreground hover:bg-muted/40 transition-colors"
       >
-        {streaming ? (
-          <span className="flex flex-1 items-center gap-1.5 font-medium">
-            Thinking
-            <ThinkingDots />
-          </span>
-        ) : (
-          <span className="flex-1 font-medium">{label}</span>
-        )}
+        <span className="flex-1 font-medium">{label}</span>
         <ChevronDown
           className={cn(
             "size-3.5 shrink-0 transition-transform duration-200",
