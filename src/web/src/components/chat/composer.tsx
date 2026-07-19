@@ -331,8 +331,19 @@ export function Composer({
   const removeImage = (id: string) =>
     setImages((prev) => prev.filter((p) => p.id !== id));
 
-  const removeDoc = (id: string) =>
+  // Removing a doc chip deletes it from the knowledge store too — otherwise a
+  // doc the user "removed" would silently persist (and stay searchable) forever.
+  const removeDoc = (id: string) => {
+    const doc = docs.find((p) => p.id === id);
     setDocs((prev) => prev.filter((p) => p.id !== id));
+    if (doc && doc.status !== "error") {
+      void fetch(`/api/knowledge?name=${encodeURIComponent(doc.name)}`, {
+        method: "DELETE",
+      }).catch(() => {
+        /* best-effort; the doc is already gone from the composer */
+      });
+    }
+  };
 
   const inlineToggles = providerUX.inlineToggles ?? [];
 

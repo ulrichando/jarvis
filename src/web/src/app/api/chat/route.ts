@@ -1204,7 +1204,9 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
           // user-pasted URL (not gated by the search toggle), memory lets the
           // model save/recall user facts across chats.
           webFetch: webFetchTool,
-          memory: createMemoryTool(userId),
+          // memory persists a durable DB row — omit it in incognito chats so an
+          // "incognito" turn can't silently write long-term state.
+          ...(incognito ? {} : { memory: createMemoryTool(userId) }),
           fileSearch: fileSearchTool,
           // Code interpreter — runs in the hardened workbench sandbox. Plain
           // chats only (workspace chats run code via boltActions). Kill-switch:

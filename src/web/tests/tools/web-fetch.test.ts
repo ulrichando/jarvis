@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// DNS is mocked so the SSRF guard's resolve step is deterministic + offline.
+// Default: every hostname resolves to a public IP. Individual tests override
+// (mockResolvedValueOnce) to simulate a private-A-record rebind.
+const lookupMock = vi.fn(
+  async (..._a: unknown[]) => [{ address: "93.184.216.34", family: 4 }],
+);
+vi.mock("node:dns/promises", () => {
+  const lookup = (...a: unknown[]) => lookupMock(...a);
+  return { lookup, default: { lookup } };
+});
+
 import { webFetchTool } from "../../src/lib/tools/web-fetch";
 
 type Out = { url: string; title?: string; text?: string; error?: string };
@@ -38,6 +49,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   fetchMock.mockReset();
+  lookupMock.mockReset();
+  lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
 });
 
 describe("webFetchTool", () => {
@@ -74,6 +87,29 @@ describe("webFetchTool", () => {
       expect(out.error, url).toMatch(/blocked/i);
       expect(out.text, url).toBeUndefined();
     }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks a public hostname that RESOLVES to a private address (DNS rebind)", async () => {
+    // isPubliclyRoutableUrl passes the string, but the A-record is loopback.
+    lookupMock.mockResolvedValueOnce([{ address: "127.0.0.1", family: 4 }]);
+    const out = await run("http://127.0.0.1.nip.io/admin");
+    expect(out.error).toMatch(/blocked/i);
+    expect(out.text).toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks a hostname resolving to the cloud metadata IP", async () => {
+    lookupMock.mockResolvedValueOnce([{ address: "169.254.169.254", family: 4 }]);
+    const out = await run("http://metadata.evil.example/latest/");
+    expect(out.error).toMatch(/blocked/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the hostname fails to resolve (no blind fetch)", async () => {
+    lookupMock.mockRejectedValueOnce(new Error("ENOTFOUND"));
+    const out = await run("https://does-not-resolve.example/");
+    expect(out.error).toMatch(/blocked/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

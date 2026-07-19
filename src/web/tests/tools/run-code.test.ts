@@ -16,6 +16,8 @@ type Out = {
   stdout?: string;
   stderr?: string;
   durationMs?: number;
+  timedOut?: boolean;
+  note?: string;
   error?: string;
 };
 
@@ -98,12 +100,36 @@ describe("createRunCodeTool", () => {
     expect(out.stderr).toMatch(/NameError/);
   });
 
-  it("reports a timeout as an error result (never throws)", async () => {
+  it("runs code under a timeout that kills the process in-container", async () => {
     dockerStatus.mockResolvedValue({ available: true, imageReady: true });
-    execInRuntime.mockRejectedValue(new Error("Command failed: docker exec … timed out"));
+    execInRuntime.mockResolvedValue({ stdout: "", stderr: "", exitCode: 0, durationMs: 1 });
+    await run("while True: pass");
+    // The command wraps the interpreter in GNU `timeout` so a runaway process
+    // is actually terminated (not just the docker-exec client).
+    expect(execInRuntime.mock.calls[0][1]).toMatch(/timeout -k 5 60 python3/);
+  });
+
+  it("reports an in-container timeout (exit 124) clearly, keeping partial output", async () => {
+    dockerStatus.mockResolvedValue({ available: true, imageReady: true });
+    execInRuntime.mockResolvedValue({
+      stdout: "partial before kill\n",
+      stderr: "",
+      exitCode: 124,
+      durationMs: 60_002,
+    });
     const out = await run("while True: pass");
+    expect(out.status).toBe("ok");
+    expect(out.timedOut).toBe(true);
+    expect(out.note).toMatch(/time limit/i);
+    expect(out.stdout).toContain("partial before kill");
+  });
+
+  it("returns an error result (never throws) when the container can't start", async () => {
+    dockerStatus.mockResolvedValue({ available: true, imageReady: true });
+    execInRuntime.mockRejectedValue(new Error("docker: no such image"));
+    const out = await run("print(1)");
     expect(out.status).toBe("error");
-    expect(out.error).toMatch(/timed out/i);
+    expect(out.error).toMatch(/sandbox error/i);
   });
 
   it("truncates runaway output", async () => {

@@ -24,9 +24,12 @@ const inputSchema = z.object({
     .describe("Language to run the code as. Defaults to python."),
 });
 
-/** Wall-clock cap per run. The container itself allows far longer; this keeps
- *  a runaway snippet from hogging the sandbox and the chat turn. */
-const TIMEOUT_MS = 60_000;
+/** Wall-clock cap per run, enforced INSIDE the container by `timeout(1)` so a
+ *  runaway process is actually killed (docker.mjs::exec's own timeout only
+ *  kills the `docker exec` client, leaving the in-container process burning
+ *  CPU toward the pid cap). The host-side exec timeout is a backstop above it. */
+const TIMEOUT_S = 60;
+const EXEC_BACKSTOP_MS = (TIMEOUT_S + 10) * 1000;
 /** Per-stream output cap so a `while True: print()` can't blow the context. */
 const MAX_OUTPUT_CHARS = 10_000;
 
@@ -49,12 +52,18 @@ function buildCommand(language: string, code: string): string {
   const ext = language === "javascript" ? "js" : language === "bash" ? "sh" : "py";
   const interp =
     language === "javascript" ? "node" : language === "bash" ? "bash" : "python3";
-  // Decode → run → clean up, preserving the interpreter's exit code.
+  // Decode → run under `timeout` (TERM at TIMEOUT_S, KILL 5s later) → clean up,
+  // preserving the exit code. `timeout` exits 124 on TERM-timeout, 137 on KILL.
   return (
     `f=$(mktemp /tmp/jarvis_run.XXXXXX.${ext}) && ` +
     `printf %s '${b64}' | base64 -d > "$f" && ` +
-    `${interp} "$f"; rc=$?; rm -f "$f"; exit $rc`
+    `timeout -k 5 ${TIMEOUT_S} ${interp} "$f"; rc=$?; rm -f "$f"; exit $rc`
   );
+}
+
+/** GNU timeout's exit codes when it had to terminate the command. */
+function isTimeoutExit(code: number): boolean {
+  return code === 124 || code === 137;
 }
 
 /**
@@ -69,7 +78,7 @@ export function createRunCodeTool(userId: string) {
     description:
       "Run code in a secure sandbox and get the output back. Use this to compute answers, run scripts, analyze data, test snippets, or verify results — instead of guessing at what code would print. " +
       "Supports python (default), bash, and javascript (node). Returns stdout, stderr, and the exit code. " +
-      "The sandbox has no internet by default and files persist between calls in the working directory. Never run destructive or malicious commands.",
+      "Files persist between calls in the working directory; a 60s time limit applies. Never run destructive or malicious commands.",
     inputSchema,
     execute: async ({ code, language }) => {
       const lang = language ?? "python";
@@ -83,8 +92,9 @@ export function createRunCodeTool(userId: string) {
           };
         }
         const result = await execInRuntime(sandboxId, buildCommand(lang, code), {
-          timeoutMs: TIMEOUT_MS,
+          timeoutMs: EXEC_BACKSTOP_MS,
         });
+        const timedOut = isTimeoutExit(result.exitCode);
         return {
           status: "ok" as const,
           language: lang,
@@ -92,17 +102,22 @@ export function createRunCodeTool(userId: string) {
           stdout: truncate(result.stdout),
           stderr: truncate(result.stderr),
           durationMs: result.durationMs,
+          // Surface a real timeout clearly (the process was killed in-container),
+          // while still returning whatever it printed before being cut off.
+          ...(timedOut
+            ? { timedOut: true, note: `Killed: exceeded the ${TIMEOUT_S}s time limit.` }
+            : {}),
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error("[run-code] failed:", message);
         // execInRuntime catches command failures internally, so reaching here
-        // means the container couldn't start / a timeout killed docker exec.
+        // means the container couldn't start (or the host backstop fired).
         return {
           status: "error" as const,
           language: lang,
           error: /timed out|ETIMEDOUT|killed/i.test(message)
-            ? `Execution timed out after ${TIMEOUT_MS / 1000}s.`
+            ? `Execution timed out after ${TIMEOUT_S}s.`
             : `Sandbox error: ${message}`,
         };
       }

@@ -1,3 +1,5 @@
+import { lookup } from "node:dns/promises";
+import net from "node:net";
 import { tool } from "ai";
 import { z } from "zod";
 import {
@@ -16,10 +18,17 @@ import {
 // throws: a thrown tool error would surface to the model as a hard tool
 // failure instead of an explainable result.
 //
-// SSRF: core.ts::isPubliclyRoutableUrl gates BOTH the initial URL and every
-// redirect hop (redirects are followed manually so a public URL can't bounce
-// the fetch into localhost / RFC1918 / the cloud metadata IP). Non-http(s)
-// schemes are rejected by the same guard before any fetch happens.
+// SSRF: isSafePublicUrl() gates BOTH the initial URL and every redirect hop
+// (redirects are followed manually so a public URL can't bounce the fetch into
+// an internal target). It layers a DNS check on top of the string-based
+// isPubliclyRoutableUrl: the hostname is RESOLVED and every returned address
+// re-validated against the private/loopback/link-local ranges — so a public
+// hostname with a private A-record (127.0.0.1.nip.io, an attacker domain
+// pointing at 169.254.169.254 / RFC1918, etc.) is refused, not just literal
+// private IPs. Non-http(s) schemes are rejected before any DNS/fetch happens.
+// (Residual TOCTOU: Node fetch re-resolves on connect, so a sub-second rebind
+// after our lookup is still theoretically possible — the practical A-record
+// class is closed; full pinning would need a custom undici connector.)
 //
 // PDF text extraction is NOT available yet — no PDF library is installed in
 // src/web and this deliberately doesn't add one. application/pdf responses
@@ -48,6 +57,61 @@ export type WebFetchResult =
   | { url: string; title: string; text: string }
   | { url: string; error: string };
 
+/** True for an IPv4 in any private/loopback/link-local/CGNAT/reserved range. */
+function isPrivateV4(ip: string): boolean {
+  const p = ip.split(".").map((n) => parseInt(n, 10));
+  if (p.length !== 4 || p.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+    return true; // malformed → treat as unsafe
+  }
+  const [a, b] = p;
+  if (a === 127 || a === 10 || a === 0) return true; // loopback / RFC1918 / this-host
+  if (a === 192 && b === 168) return true; // RFC1918
+  if (a === 172 && b >= 16 && b <= 31) return true; // RFC1918
+  if (a === 169 && b === 254) return true; // link-local + cloud metadata
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT (100.64/10)
+  if (a >= 224) return true; // multicast / reserved
+  return false;
+}
+
+/** True for any IP address we must never connect to (v4 + common v6 privates). */
+function isPrivateIp(ip: string): boolean {
+  const addr = ip.split("%")[0]; // drop a zone id like fe80::1%eth0
+  const fam = net.isIP(addr);
+  if (fam === 4) return isPrivateV4(addr);
+  if (fam === 6) {
+    const l = addr.toLowerCase();
+    if (l === "::1" || l === "::") return true; // loopback / unspecified
+    if (/^fe[89ab]/.test(l)) return true; // fe80::/10 link-local
+    if (/^f[cd]/.test(l)) return true; // fc00::/7 unique-local
+    const mapped = l.match(/(?:::ffff:)(\d+\.\d+\.\d+\.\d+)$/); // v4-mapped
+    if (mapped) return isPrivateV4(mapped[1]);
+    return false;
+  }
+  return true; // not a valid IP → unsafe
+}
+
+/**
+ * SSRF gate: string checks (scheme, bare names, literal privates) via
+ * isPubliclyRoutableUrl, THEN resolve the hostname and reject if ANY address
+ * is private. Refuses on resolution failure rather than fetching blind.
+ */
+async function isSafePublicUrl(u: string): Promise<boolean> {
+  if (!isPubliclyRoutableUrl(u)) return false;
+  let host: string;
+  try {
+    host = new URL(u).hostname;
+  } catch {
+    return false;
+  }
+  try {
+    const addrs = await lookup(host, { all: true });
+    if (addrs.length === 0) return false;
+    return addrs.every((a) => !isPrivateIp(a.address));
+  } catch {
+    return false;
+  }
+}
+
 function extractTitle(html: string): string {
   const m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html.slice(0, 200_000));
   if (!m) return "";
@@ -59,11 +123,11 @@ function extractTitle(html: string): string {
  * voice-search route) and for direct unit testing.
  */
 export async function fetchUrlAsText(url: string): Promise<WebFetchResult> {
-  if (!isPubliclyRoutableUrl(url)) {
+  if (!(await isSafePublicUrl(url))) {
     return {
       url,
       error:
-        "Blocked: only public http(s) URLs can be fetched (private, loopback, link-local and metadata addresses, and non-http schemes, are refused).",
+        "Blocked: only public http(s) URLs can be fetched (private, loopback, link-local and metadata addresses — including hostnames that resolve to them — and non-http schemes, are refused).",
     };
   }
 
@@ -86,7 +150,7 @@ export async function fetchUrlAsText(url: string): Promise<WebFetchResult> {
       text(): Promise<string>;
     } | null = null;
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      if (!isPubliclyRoutableUrl(current)) {
+      if (!(await isSafePublicUrl(current))) {
         return {
           url,
           error: `Blocked: the page redirected to a non-public address (${current}).`,
