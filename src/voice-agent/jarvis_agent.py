@@ -414,6 +414,7 @@ from pipeline.turn_router    import (
 from pipeline.dispatching_llm import DispatchingLLM
 from pipeline.dispatching_tts import DispatchingTTS
 from pipeline.provider_errors import classify_provider_error
+from pipeline.tts_normalize import normalize_for_speech
 from pipeline.lang_context import LangContext
 from pipeline.thinking_heartbeat import (
     _TOOL_BUSY_FILE, _AGENT_THINKING_FILE,
@@ -4047,20 +4048,36 @@ async def cap_sir_count(text):
 # husk got committed to chat_ctx — which then taught the model to
 # emit more emotes (feedback loop).
 _EMOTE_PAREN_RE = re.compile(r"\*+\s*\([^)*]*\)?\s*\**")  # *(chuckles)* incl. unclosed "*("
-_MD_RESIDUE_RE = re.compile(r"[*_`#~]+")                  # stray markdown chars
+# NOTE 2026-07-18: the old `_MD_RESIDUE_RE = re.compile(r"[*_`#~]+")`
+# 5-char strip was replaced by pipeline/tts_normalize.py::
+# normalize_for_speech — the comprehensive speech normalizer (markdown
+# structure flattening + symbol-to-word conversion). Kokoro/Edge voice
+# every surviving symbol BY NAME ("asterisk asterisk", "slash",
+# "ampersand", "bracket"), so a 5-char strip was far too narrow.
 _SPEAKABLE_RE = re.compile(r"[^\W_]", re.UNICODE)         # any letter/digit, any script
 
 
 async def strip_emote_markup(text):
-    """Drop stage-direction emotes and guarantee TTS never receives a
-    letterless reply.
+    """Drop stage-direction emotes, normalize markdown/symbols for
+    speech, and guarantee TTS never receives a letterless reply.
 
     Asterisk-wrapped parentheticals are stage directions, not speech —
-    removed entirely. Bare emphasis (`*really*`) keeps its word; plain
-    parentheticals ("(about sixty)") pass through. If nothing speakable
-    remains, emit nothing: a letterless string makes the TTS push zero
-    frames, which the FallbackAdapter counts as a provider failure and
-    poisons the whole voice chain (voice flip + retry stalls).
+    removed entirely. The full reply then goes through
+    `normalize_for_speech` (pipeline/tts_normalize.py): markdown
+    structure is flattened (headers/bullets/links/tables/code fences)
+    and standalone symbols are converted to words (`&`→and,
+    `50%`→50 percent, `->`→to) or dropped — so the TTS engine never
+    voices a symbol by its name. Bare emphasis (`*really*`) keeps its
+    word; plain parentheticals ("(about sixty)") pass through. If
+    nothing speakable remains, emit nothing: a letterless string makes
+    the TTS push zero frames, which the FallbackAdapter counts as a
+    provider failure and poisons the whole voice chain (voice flip +
+    retry stalls).
+
+    This transform sits in tts_text_transforms, which the framework
+    applies to BOTH the LLM reply stream and session.say() text
+    (agent_activity._tts_task_impl → perform_tts_inference(
+    text_transforms=...)), so every voiced utterance is covered.
     """
     buffer = ""
     async for chunk in text:
@@ -4068,8 +4085,7 @@ async def strip_emote_markup(text):
     if not buffer:
         return
     cleaned = _EMOTE_PAREN_RE.sub(" ", buffer)
-    cleaned = _MD_RESIDUE_RE.sub("", cleaned)
-    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+    cleaned = normalize_for_speech(cleaned)
     if not _SPEAKABLE_RE.search(cleaned):
         logger.info(f"[emote-strip] dropped unspeakable reply: {buffer[:80]!r}")
         return  # emit nothing — actual silence beats a zero-frame TTS error
