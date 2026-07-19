@@ -72,13 +72,20 @@ def _recognize(inst):
 
 
 @pytest.fixture
-def stt_with(monkeypatch):
+def stt_with(monkeypatch, tmp_path):
     """Build a cuda-device FasterWhisperSTT whose model is a fake; the
     reload path (_ensure_model after self._model=None) returns the SAME
     fake so no real WhisperModel ever loads."""
 
     def make(failures, retries="2"):
         monkeypatch.setenv("JARVIS_LOCAL_STT_GPU_RETRIES", retries)
+        # Wedge-persistence hermeticity (2026-07-18): point the flag file at
+        # tmp and stub the arm-time cuInit probe healthy, so these tests
+        # never read/write the REAL ~/.jarvis flag or touch libcuda.
+        monkeypatch.setenv(
+            "JARVIS_LOCAL_STT_WEDGE_FLAG", str(tmp_path / "wedge.json")
+        )
+        monkeypatch.setattr(fw, "_cuda_healthy", lambda: True)
         # Kill the retry backoff sleeps (module-level asyncio.sleep) so the
         # suite doesn't pay real wall-clock for the exhaust cases.
         real_sleep = asyncio.sleep

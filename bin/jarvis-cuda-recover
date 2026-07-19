@@ -26,6 +26,20 @@ REASON="${1:-manual}"
 
 log() { logger -t jarvis-cuda-recover "$*" 2>/dev/null || true; echo "[jarvis-cuda-recover] $*"; }
 
+# STT wedge-episode flag (2026-07-18): providers/faster_whisper_stt.py records
+# "this boot's GPU is wedged + the user was notified" here so the sticky-CPU
+# switch survives the per-room job-process churn. This script is the
+# documented remedy, so it retires the episode whenever CUDA is (or becomes)
+# healthy — the next agent/job process then re-arms STT on the GPU
+# immediately instead of waiting for its own arm-time probe to notice.
+# Keep the path in sync with faster_whisper_stt.py::_wedge_flag_path.
+WEDGE_FLAG="$(getent passwd "$USER_NAME" | cut -d: -f6)/.jarvis/stt-gpu-wedged.json"
+clear_wedge_flag() {
+    if [ -n "$WEDGE_FLAG" ] && [ -e "$WEDGE_FLAG" ]; then
+        rm -f "$WEDGE_FLAG" 2>/dev/null && log "cleared STT GPU-wedge flag ($WEDGE_FLAG)"
+    fi
+}
+
 # Run `systemctl --user` as the target user whether we were invoked as root
 # (the resume hook) or as the user (manual). Mirrors jarvis-voice-recover.
 uctl() {
@@ -52,6 +66,7 @@ PY
 
 if cuda_ok; then
     log "CUDA healthy ($REASON) — no action"
+    clear_wedge_flag   # a healthy GPU means any recorded wedge episode is over
     exit 0
 fi
 
@@ -69,6 +84,10 @@ uctl stop jarvis-voice-agent.service 2>/dev/null || true
 sleep 1
 if modprobe -r nvidia_uvm 2>/dev/null && modprobe nvidia_uvm 2>/dev/null; then
     log "nvidia_uvm reloaded"
+    # Reload succeeded → retire the STT wedge episode so the restarting agent
+    # re-arms on the GPU. If CUDA is somehow STILL wedged, the arm-time probe
+    # re-records the episode (and honestly re-notifies — it's a new failure).
+    clear_wedge_flag
 else
     log "nvidia_uvm reload failed (module still busy?) — a reboot may be needed; Groq fallback covers STT meanwhile"
 fi
