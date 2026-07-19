@@ -20,8 +20,9 @@ export const webSearchTool = tool({
   inputSchema,
   execute: async ({ query }) => {
     try {
-      const hits = await searchBrave(query, { count: 8 });
-      const results: Hit[] = hits.slice(0, 5).map((h) => ({
+      // 15 sources to match the mobile app (jarvis-android keeps hits.take(15)).
+      const hits = await searchBrave(query, { count: 20 });
+      const results: Hit[] = hits.slice(0, 15).map((h) => ({
         title: h.title,
         url: h.url,
         snippet: h.snippet || (h.extraSnippets?.[0] ?? ""),

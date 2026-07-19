@@ -416,7 +416,7 @@ describe("maybeGroundWithSearch (scoped gating: weak caller + regex intent)", ()
     expect(searchBrave).toHaveBeenCalledTimes(1);
     expect(searchBrave).toHaveBeenCalledWith(
       "quantum computing news",
-      expect.objectContaining({ count: 8 }),
+      expect.objectContaining({ count: 20 }),
     );
     expect(grounding).toBeTruthy();
     const block = grounding!.block;
@@ -483,7 +483,7 @@ describe("maybeGroundWithSearch (scoped gating: weak caller + regex intent)", ()
   it("caps the returned results at 5 (same hits as the prompt block)", async () => {
     modelReturns("michelle jackson");
     searchBrave.mockResolvedValue(
-      Array.from({ length: 8 }, (_, i) => ({
+      Array.from({ length: 20 }, (_, i) => ({
         title: `T${i}`,
         url: `https://x.example/${i}`,
         snippet: `s${i}`,
@@ -495,8 +495,8 @@ describe("maybeGroundWithSearch (scoped gating: weak caller + regex intent)", ()
       workspaceId: undefined,
       userText: "who is Michelle Jackson",
     });
-    expect(grounding!.results).toHaveLength(5);
-    expect(grounding!.results[4].title).toBe("T4");
+    expect(grounding!.results).toHaveLength(15);
+    expect(grounding!.results[14].title).toBe("T14");
   });
 
   it("fires when the Search toggle is explicitly ON (composer default)", async () => {
@@ -574,7 +574,7 @@ describe("maybeGroundWithSearch (scoped gating: weak caller + regex intent)", ()
   it("skips the 2nd Brave call when the first already filled the cap", async () => {
     modelReturns("q-one\nq-two");
     searchBrave.mockResolvedValue(
-      Array.from({ length: 8 }, (_, i) => ({
+      Array.from({ length: 20 }, (_, i) => ({
         title: `T${i}`,
         url: `https://x.example/${i}`,
         snippet: `s${i}`,
@@ -587,7 +587,7 @@ describe("maybeGroundWithSearch (scoped gating: weak caller + regex intent)", ()
       userText: "who won Barcelona's last match",
     });
     expect(searchBrave).toHaveBeenCalledTimes(1);
-    expect(grounding!.results).toHaveLength(5);
+    expect(grounding!.results).toHaveLength(15);
     expect(grounding!.query).toBe("q-one");
   });
 
@@ -664,7 +664,7 @@ describe("maybeGroundWithSearch (scoped gating: weak caller + regex intent)", ()
     expect(searchBrave).toHaveBeenCalledTimes(1);
     expect(searchBrave).toHaveBeenCalledWith(
       "what's the latest news on quantum computing",
-      expect.objectContaining({ count: 8 }),
+      expect.objectContaining({ count: 20 }),
     );
     // Strong callers and regex-negative turns stay null, same as #280.
     expect(
@@ -713,15 +713,15 @@ describe("shouldOfferWebSearchTool (double-search guard)", () => {
 });
 
 describe("formatSearchGrounding", () => {
-  it("caps at 5 hits and numbers them", () => {
-    const many = Array.from({ length: 8 }, (_, i) => ({
+  it("caps at 15 hits and numbers them", () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({
       title: `T${i}`,
       url: `https://x.example/${i}`,
       snippet: `s${i}`,
     }));
     const block = formatSearchGrounding("q", many);
-    expect(block).toContain("5. T4");
-    expect(block).not.toContain("T5");
+    expect(block).toContain("15. T14");
+    expect(block).not.toContain("T15");
   });
 });
 

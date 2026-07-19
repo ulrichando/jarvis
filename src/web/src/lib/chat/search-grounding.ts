@@ -62,7 +62,8 @@ const QUERYGEN_DEFAULT_MODEL = "deepseek-v4-flash";
 const QUERYGEN_MAX_OUTPUT_TOKENS = 64;
 
 /** Hits actually injected into the prompt (Brave is asked for a few more). */
-const MAX_INJECTED_HITS = 5;
+// 15 to match the mobile app (jarvis-android WebSearchClient keeps hits.take(15)).
+const MAX_INJECTED_HITS = 15;
 const MAX_SNIPPET_CHARS = 500;
 const MAX_QUERY_CHARS = 300;
 
@@ -443,7 +444,7 @@ async function searchWithTimeout(
   });
   try {
     const search = searchBrave(query, {
-      count: 8,
+      count: 20, // Brave max — fetch enough candidates to keep up to 15 after dedupe.
       // Leave headroom inside the overall budget for the rate-limit slot
       // spacing searchBrave applies internally (~1.05s between calls).
       timeoutMs: Math.max(1000, timeoutMs - 1000),

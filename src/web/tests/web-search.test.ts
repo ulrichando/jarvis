@@ -34,7 +34,7 @@ describe("webSearchTool (Brave-only)", () => {
       { title: "B", url: "http://b", snippet: "", extraSnippets: ["extra b"] },
     ]);
     const out = await run("hello");
-    expect(searchBrave).toHaveBeenCalledWith("hello", { count: 8 });
+    expect(searchBrave).toHaveBeenCalledWith("hello", { count: 20 });
     expect(out.results).toEqual([
       { title: "A", url: "http://a", snippet: "snip a" },
       { title: "B", url: "http://b", snippet: "extra b" },
@@ -42,16 +42,16 @@ describe("webSearchTool (Brave-only)", () => {
     expect(out.error).toBeUndefined();
   });
 
-  it("caps at 5 results", async () => {
+  it("caps at 15 results (mobile parity)", async () => {
     searchBrave.mockResolvedValue(
-      Array.from({ length: 8 }, (_, i) => ({
+      Array.from({ length: 20 }, (_, i) => ({
         title: `T${i}`,
         url: `http://${i}`,
         snippet: `s${i}`,
       })),
     );
     const out = await run("many");
-    expect(out.results).toHaveLength(5);
+    expect(out.results).toHaveLength(15);
   });
 
   it("returns a 'not configured' error when BRAVE_SEARCH_API_KEY is missing", async () => {
