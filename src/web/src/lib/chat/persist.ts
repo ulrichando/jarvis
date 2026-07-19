@@ -129,12 +129,18 @@ export async function saveAssistantMessage({
   tokensIn,
   tokensOut,
   stopReason,
+  extraParts,
 }: {
   conversationId: string;
   text: string;
   tokensIn?: number;
   tokensOut?: number;
   stopReason?: string;
+  /** Optional parts persisted BEFORE the text part — e.g. the synthetic
+   *  server-search `tool-webSearch` part (chat/route.ts grounded turns) so
+   *  Sources chips survive reload (toUIMessages returns content verbatim
+   *  and extractSources reads tool-webSearch parts). */
+  extraParts?: UIMessage["parts"];
 }): Promise<string | null> {
   if (!db) return null;
   // Return the inserted id so callers (e.g. artifact persistence in
@@ -145,7 +151,7 @@ export async function saveAssistantMessage({
     .values({
       conversationId,
       role: "assistant",
-      content: [{ type: "text", text }],
+      content: [...(extraParts ?? []), { type: "text", text }],
       tokensIn,
       tokensOut,
       stopReason,
