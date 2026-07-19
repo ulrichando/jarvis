@@ -183,15 +183,3 @@ mutmut>=3.0
 # read OS notifications via the notifications tool instead of a screenshot.
 jeepney>=0.9
 vosk>=0.3.45  # partial-word barge-in tap (pipeline/bargein_tap.py) — free local streaming partials, 2026-07-02
-
-# IoT discovery service (iot/ sidecar, :8779) — Phase 1, 2026-07-11.
-zeroconf>=0.150
-async-upnp-client>=0.47
-tinytuya>=1.20
-mac-vendor-lookup>=0.1.15
-pytest-aiohttp>=1.1  # aiohttp_client fixture for tests/test_iot_service.py
-
-# IoT control (iot/controllers/) — Phase 2, 2026-07-18. HA control rides the
-# existing aiohttp; LG webOS needs its async client + Wake-on-LAN for power-on.
-aiowebostv>=0.7.5
-wakeonlan>=3.1
