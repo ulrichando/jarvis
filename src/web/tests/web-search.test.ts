@@ -1,15 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// duck-duck-scrape is the local-dev fallback; stub it so tests don't hit the net.
-const ddgSearch = vi.fn();
-vi.mock("duck-duck-scrape", () => ({
-  search: (...a: unknown[]) => ddgSearch(...a),
-  SafeSearchType: { MODERATE: 0 },
+// Brave is the ONLY backend now — stub the shared searchBrave so tests don't
+// hit the network. web-search.ts imports it from "@/lib/search/pipeline".
+const searchBrave = vi.fn();
+vi.mock("@/lib/search/pipeline", () => ({
+  searchBrave: (...a: unknown[]) => searchBrave(...a),
 }));
 
 import { webSearchTool } from "../src/lib/tools/web-search";
 
-type Out = { query: string; results: { title: string; url: string; snippet: string }[]; error?: string };
+type Out = {
+  query: string;
+  results: { title: string; url: string; snippet: string }[];
+  error?: string;
+};
 
 // tool.execute has a required second arg (ToolCallOptions) we don't use.
 const run = (query: string): Promise<Out> =>
@@ -20,48 +24,47 @@ const run = (query: string): Promise<Out> =>
 
 afterEach(() => {
   vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-  delete process.env.SEARXNG_URL;
-  ddgSearch.mockReset();
+  searchBrave.mockReset();
 });
 
-describe("webSearchTool", () => {
-  it("uses SearXNG and maps content→snippet when SEARXNG_URL is set", async () => {
-    process.env.SEARXNG_URL = "http://searxng:8080/";
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({
-      ok: true,
-      json: async () => ({
-        results: [
-          { title: "A", url: "http://a", content: "snip a" },
-          { title: "", url: "http://skip", content: "no title dropped" },
-        ],
-      }),
-    }));
-    vi.stubGlobal("fetch", fetchMock);
-
+describe("webSearchTool (Brave-only)", () => {
+  it("returns Brave hits mapped to {title,url,snippet}, extraSnippets as fallback", async () => {
+    searchBrave.mockResolvedValue([
+      { title: "A", url: "http://a", snippet: "snip a" },
+      { title: "B", url: "http://b", snippet: "", extraSnippets: ["extra b"] },
+    ]);
     const out = await run("hello");
-    expect(fetchMock.mock.calls[0][0]).toContain(
-      "http://searxng:8080/search?q=hello&format=json",
+    expect(searchBrave).toHaveBeenCalledWith("hello", { count: 8 });
+    expect(out.results).toEqual([
+      { title: "A", url: "http://a", snippet: "snip a" },
+      { title: "B", url: "http://b", snippet: "extra b" },
+    ]);
+    expect(out.error).toBeUndefined();
+  });
+
+  it("caps at 5 results", async () => {
+    searchBrave.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({
+        title: `T${i}`,
+        url: `http://${i}`,
+        snippet: `s${i}`,
+      })),
     );
-    expect(out.results).toEqual([{ title: "A", url: "http://a", snippet: "snip a" }]);
-    expect(ddgSearch).not.toHaveBeenCalled();
+    const out = await run("many");
+    expect(out.results).toHaveLength(5);
   });
 
-  it("returns error='Search unavailable' when SearXNG 403s (the reported bug)", async () => {
-    process.env.SEARXNG_URL = "http://searxng:8080";
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 403 })));
+  it("returns a 'not configured' error when BRAVE_SEARCH_API_KEY is missing", async () => {
+    searchBrave.mockRejectedValue(new Error("BRAVE_SEARCH_API_KEY not set"));
     const out = await run("x");
-    expect(out.error).toBe("Search unavailable");
     expect(out.results).toEqual([]);
+    expect(out.error).toMatch(/BRAVE_SEARCH_API_KEY/);
   });
 
-  it("falls back to DuckDuckGo when SEARXNG_URL is unset", async () => {
-    ddgSearch.mockResolvedValue({
-      noResults: false,
-      results: [{ title: "D", url: "http://d", description: "desc" }],
-    });
+  it("returns 'Search unavailable' on any other Brave error", async () => {
+    searchBrave.mockRejectedValue(new Error("Brave HTTP 500"));
     const out = await run("y");
-    expect(ddgSearch).toHaveBeenCalled();
-    expect(out.results).toEqual([{ title: "D", url: "http://d", snippet: "desc" }]);
+    expect(out.results).toEqual([]);
+    expect(out.error).toBe("Search unavailable");
   });
 });

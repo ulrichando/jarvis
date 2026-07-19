@@ -10,7 +10,6 @@ import {
   ThumbsDown,
   RotateCcw,
   ChevronDown,
-  Brain,
   ListChecks,
   Undo2,
   Loader2,
@@ -648,9 +647,9 @@ function ReasoningBlock({
   reasoning: string;
   streaming: boolean;
 }) {
-  // Open while the model is still emitting reasoning tokens so the user
-  // can watch it think live; collapse once the visible reply takes over.
-  const [open, setOpen] = useState(streaming);
+  // Collapsed by default — the raw reasoning shouldn't auto-dump into the
+  // thread; the chevron reveals it on demand.
+  const [open, setOpen] = useState(false);
   const [duration, setDuration] = useState<number | null>(null);
   const startedAtRef = useRef<number | null>(null);
 
@@ -691,13 +690,14 @@ function ReasoningBlock({
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-muted-foreground hover:bg-muted/40 transition-colors"
       >
-        <Brain
-          className={cn(
-            "size-3.5 shrink-0",
-            streaming ? "text-primary animate-pulse" : "text-muted-foreground/70",
-          )}
-        />
-        <span className="flex-1 font-medium">{label}</span>
+        {streaming ? (
+          <span className="flex flex-1 items-center gap-1.5 font-medium">
+            Thinking
+            <ThinkingDots />
+          </span>
+        ) : (
+          <span className="flex-1 font-medium">{label}</span>
+        )}
         <ChevronDown
           className={cn(
             "size-3.5 shrink-0 transition-transform duration-200",
