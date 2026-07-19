@@ -62,8 +62,28 @@ def _pending_lock():
         f.close()  # releasing the fd releases a POSIX flock
 
 
+def notifications_disabled() -> bool:
+    """Global desktop-notification kill-switch (JARVIS_NOTIFY_DISABLED=1).
+
+    Two audiences: headless boxes that want zero toasts, and the pytest
+    suite (tests/conftest.py sets it) so no test can ever reach a REAL
+    ``notify-send``. Live incident 2026-07-16→19: test_local_stt_gpu_retry's
+    sticky-switch test drove the real ``_notify_switched_to_cpu`` →
+    ``notify()`` path, popping "JARVIS — local speech-to-text GPU error" on
+    the desktop once per suite run — 80 firings over 3 days that perfectly
+    impersonated a live GPU failure (the GPU was healthy the whole time) and
+    made every fix look like it hadn't worked, because verifying the fix ran
+    the suite, which fired the notification again. Every notify-send call
+    site must consult this switch (grep ``notify-send`` when adding one).
+    """
+    return os.environ.get("JARVIS_NOTIFY_DISABLED", "0") == "1"
+
+
 def notify(title: str, body: str) -> None:
     """Fire a desktop notification; no-op (logged) if notify-send is absent."""
+    if notifications_disabled():
+        logger.info("[cron] notifications disabled; notify skipped: %s", title)
+        return
     if not shutil.which("notify-send"):
         logger.info("[cron] notify-send unavailable; notify skipped: %s", body[:80])
         return

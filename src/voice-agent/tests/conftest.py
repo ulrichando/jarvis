@@ -96,6 +96,17 @@ def pytest_configure(config) -> None:
         str(Path(tempfile.mkdtemp(prefix="jarvis-test-tele-")) / "turn_telemetry.db"),
     )
 
+    # Hermetic suite: no test may ever fire a REAL desktop notification.
+    # pipeline.cron_delivery.notify() and jarvis_agent's two notify-send
+    # sites all consult this kill-switch. Live incident 2026-07-16→19:
+    # test_local_stt_gpu_retry's sticky-switch test reached the real
+    # notify-send, popping "JARVIS — local speech-to-text GPU error" on the
+    # desktop once per suite run — 80 firings over 3 days that impersonated
+    # a live GPU failure and made every fix look ineffective (verifying a
+    # fix ran the suite, which re-fired the notification). Tests that
+    # exercise the real notify path delenv this and stub subprocess.
+    os.environ.setdefault("JARVIS_NOTIFY_DISABLED", "1")
+
     # Same hermeticity rule for the conversation mode: a dev box whose
     # ~/.jarvis/voice-mode is "local" would otherwise (a) have
     # jarvis_agent._apply_voice_mode() force JARVIS_LOCAL_* env into the
