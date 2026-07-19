@@ -125,7 +125,10 @@ export function Composer({
     if (value.trim().length === 0 && images.length === 0) return;
     const carry = images;
     setImages([]);
-    onSubmit({ images: carry });
+    // Carry the toggle state exactly like the Enter path — without it, an
+    // explicit Search-off / DeepThink-on was silently dropped when the user
+    // clicked Send instead of pressing Enter.
+    onSubmit({ images: carry, toggles });
     // Clicking the button moves focus off the textarea — return it so the
     // user can keep typing the next prompt (claude.ai keeps the caret in
     // the box).

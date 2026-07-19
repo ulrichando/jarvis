@@ -217,6 +217,20 @@ describe("maybeGroundWithSearch (injection gating)", () => {
     expect(searchBrave).not.toHaveBeenCalled();
   });
 
+  it("fires when the Search toggle is explicitly ON (composer default)", async () => {
+    // The composer's Search toggle now defaults ON, so the wire value for an
+    // untouched toggle is a literal `true` — must gate the same as undefined.
+    searchBrave.mockResolvedValue(HITS);
+    const grounding = await maybeGroundWithSearch({
+      modelId: "deepseek-v4-flash",
+      search: true,
+      workspaceId: undefined,
+      userText: "what's the latest news on quantum computing",
+    });
+    expect(grounding).toBeTruthy();
+    expect(searchBrave).toHaveBeenCalledTimes(1);
+  });
+
   it("does NOT fire when the Search toggle is off", async () => {
     const block = await maybeGroundWithSearch({
       modelId: "deepseek-chat",
