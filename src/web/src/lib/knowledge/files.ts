@@ -173,6 +173,28 @@ export function createKnowledgeStore(opts: {
   }
 
   /**
+   * Full content of every doc (enabled AND disabled), for on-demand search
+   * by the `fileSearch` chat tool — the counterpart to readBlock's 4K-per-doc
+   * wholesale injection. Disabled docs are included on purpose: disabling a
+   * doc means "don't force it into every prompt", NOT "hide it from search".
+   * So a user can upload a large reference doc, disable its injection, and
+   * still have the model grep it. Newest first.
+   */
+  async function readAll(): Promise<{ name: string; content: string }[]> {
+    const docs = await list();
+    const out: { name: string; content: string }[] = [];
+    for (const d of docs) {
+      try {
+        const content = await fs.readFile(contain(root, d.name), "utf8");
+        out.push({ name: d.name, content });
+      } catch {
+        /* missing — skip */
+      }
+    }
+    return out;
+  }
+
+  /**
    * Read all enabled knowledge docs and concatenate them into a single
    * string suitable for appending to the chat system prompt. Each doc
    * is truncated to 4K chars to keep the total bounded; the chat route
@@ -196,5 +218,5 @@ export function createKnowledgeStore(opts: {
     return `\n\n## ${blockHeader}\n${blockIntro}\n\n${parts.join("\n\n")}\n`;
   }
 
-  return { list, add, remove, setEnabled, readBlock };
+  return { list, add, remove, setEnabled, readBlock, readAll };
 }

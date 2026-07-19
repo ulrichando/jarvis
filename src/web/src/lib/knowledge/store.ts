@@ -52,3 +52,13 @@ export async function setKnowledgeEnabled(
 export async function readGlobalKnowledgeBlock(): Promise<string> {
   return store.readBlock();
 }
+
+/**
+ * Full content of every personal doc (enabled + disabled), for the
+ * `fileSearch` chat tool to grep on demand — see files.ts::readAll.
+ */
+export async function readAllKnowledgeDocs(): Promise<
+  { name: string; content: string }[]
+> {
+  return store.readAll();
+}
