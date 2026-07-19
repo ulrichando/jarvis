@@ -1,7 +1,7 @@
 import { and, asc, eq, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { ensureWebSchema } from "@/lib/db/ensure-schema";
-import { toUIMessages } from "@/lib/chat/persist";
+import { softDeleteConversations, toUIMessages } from "@/lib/chat/persist";
 import { requireUserId, Unauthenticated } from "@/lib/auth-helpers";
 
 export const runtime = "nodejs";
@@ -57,15 +57,16 @@ export async function DELETE(
     if (e instanceof Unauthenticated) return new Response("Unauthorized", { status: 401 });
     throw e;
   }
+  // softDeleteConversations bumps change_seq via nextval — guarantee the
+  // sequence exists on a cold DB (no-op after boot), same as the other routes.
+  await ensureWebSchema();
 
-  await db
-    .delete(schema.conversations)
-    .where(
-      and(
-        eq(schema.conversations.id, id),
-        eq(schema.conversations.userId, userId),
-      ),
-    );
+  // Soft-delete (not a hard row delete) so the delete PROPAGATES to other
+  // devices: sets deleted_at + bumps change_seq, which the mobile sync pull
+  // returns as a tombstone → the phone removes it too. A hard delete left no
+  // tombstone, so a chat deleted in the browser lingered forever on mobile.
+  // The list route filters deleted_at IS NULL, so it's hidden here immediately.
+  await softDeleteConversations(userId, [id]);
 
   return new Response(null, { status: 204 });
 }

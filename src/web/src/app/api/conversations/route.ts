@@ -1,4 +1,4 @@
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { ensureWebSchema } from "@/lib/db/ensure-schema";
 import { requireUserId, Unauthenticated } from "@/lib/auth-helpers";
@@ -43,7 +43,16 @@ export async function GET(req: Request) {
       schema.projects,
       eq(schema.conversations.projectId, schema.projects.id),
     )
-    .where(eq(schema.conversations.userId, userId))
+    // Exclude soft-deleted tombstones. A delete on another device (the phone)
+    // pushes a tombstone via /api/sync/push → softDeleteConversations sets
+    // deleted_at but keeps the row so other devices learn to remove it. Without
+    // this filter the browser sidebar kept showing chats deleted on mobile.
+    .where(
+      and(
+        eq(schema.conversations.userId, userId),
+        isNull(schema.conversations.deletedAt),
+      ),
+    )
     .orderBy(desc(schema.conversations.updatedAt))
     .limit(100);
 
