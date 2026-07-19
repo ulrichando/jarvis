@@ -39,9 +39,19 @@ export function KimiReasoning({
     if (el) el.scrollTop = el.scrollHeight;
   }, [text, open, streaming]);
 
-  const doneLabel = duration !== null ? `Thought for ${duration}s` : "Thoughts";
+  // Thinking in progress → ONLY the 3 loading dots (no box, no label, no
+  // chevron, per Ulrich). Once thinking ends, the trace is offered as a small
+  // collapsed "Thought for Ns" disclosure.
+  if (streaming) {
+    return (
+      <div className="mb-3 flex items-center py-1">
+        <ThinkingDots />
+      </div>
+    );
+  }
+  if (!text) return null;
 
-  if (!text && !streaming) return null;
+  const doneLabel = duration !== null ? `Thought for ${duration}s` : "Thoughts";
 
   return (
     <div className="mb-3 rounded-lg border border-border/40 bg-muted/20 overflow-hidden">
@@ -50,14 +60,7 @@ export function KimiReasoning({
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-muted-foreground hover:bg-muted/40 transition-colors"
       >
-        {streaming ? (
-          <span className="flex flex-1 items-center gap-1.5 font-medium">
-            Thinking
-            <ThinkingDots />
-          </span>
-        ) : (
-          <span className="flex-1 font-medium">{doneLabel}</span>
-        )}
+        <span className="flex-1 font-medium">{doneLabel}</span>
         <ChevronDown
           className={cn(
             "size-3.5 shrink-0 transition-transform duration-200",
