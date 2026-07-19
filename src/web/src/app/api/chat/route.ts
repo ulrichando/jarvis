@@ -51,6 +51,7 @@ import {
 } from "@/lib/design/format";
 import { webSearchTool } from "@/lib/tools/web-search";
 import { webFetchTool } from "@/lib/tools/web-fetch";
+import { fileSearchTool } from "@/lib/tools/file-search";
 import { createGenerateImageTool } from "@/lib/tools/generate-image";
 import { createMemoryTool } from "@/lib/tools/memory";
 import { buildMemoryBlock } from "@/lib/chat/memory";
@@ -1203,6 +1204,7 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
           // model save/recall user facts across chats.
           webFetch: webFetchTool,
           memory: createMemoryTool(userId),
+          fileSearch: fileSearchTool,
           ...imageTools,
           ...mcpTools,
         },

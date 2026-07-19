@@ -1,6 +1,15 @@
 "use client";
 
-import { ArrowUp, AudioLines, Mic, Paperclip, Square, X } from "lucide-react";
+import {
+  ArrowUp,
+  AudioLines,
+  FileText,
+  Loader2,
+  Mic,
+  Paperclip,
+  Square,
+  X,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -33,6 +42,32 @@ export type AttachedImage = {
   dataUrl: string; // data:image/...;base64,xxx
   name: string;
 };
+
+// A text document attached in the composer. Unlike images (which ride inline
+// in the message as data-URL file parts), documents upload into the personal
+// knowledge store (/api/knowledge) so the model can grep them on demand via
+// the fileSearch tool. The chip is a confirmation; the doc is server-side.
+type AttachedDoc = {
+  id: string;
+  name: string;
+  status: "uploading" | "ready" | "error";
+};
+
+// Accept text-ish documents in the picker alongside images. MIME is unreliable
+// for code files (often "" or application/octet-stream), so we also match by
+// extension. Kept in sync with the picker `accept` attribute below.
+const DOC_EXTENSIONS =
+  /\.(txt|md|markdown|csv|tsv|json|jsonl|log|ya?ml|xml|html?|py|js|jsx|ts|tsx|mjs|cjs|java|c|h|cpp|cc|hpp|cs|go|rs|rb|php|swift|kt|scala|sh|bash|zsh|sql|toml|ini|cfg|conf|env|tex|rst|org)$/i;
+
+function isTextDoc(file: File): boolean {
+  if (file.type.startsWith("image/")) return false;
+  if (file.type.startsWith("text/")) return true;
+  if (file.type === "application/json") return true;
+  return DOC_EXTENSIONS.test(file.name);
+}
+
+// Matches the knowledge store's per-file cap (lib/knowledge/files.ts).
+const MAX_DOC_BYTES = 1024 * 1024;
 
 type ComposerProps = {
   value: string;
@@ -190,6 +225,7 @@ export function Composer({
   // data URLs so we can preview thumbnails and ship them inline as
   // image parts in the user message — no upload round-trip needed.
   const [images, setImages] = useState<AttachedImage[]>([]);
+  const [docs, setDocs] = useState<AttachedDoc[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
 
@@ -201,36 +237,77 @@ export function Composer({
       r.readAsDataURL(file);
     });
 
-  const ingestFiles = useCallback(async (files: FileList | File[]) => {
-    const arr = Array.from(files).filter((f) =>
-      f.type.startsWith("image/"),
-    );
-    if (arr.length === 0) return;
-    // Cap on file size so a 50MB photo doesn't blow the request body.
-    const TOO_BIG = 8 * 1024 * 1024;
-    const ok = arr.filter((f) => {
-      if (f.size > TOO_BIG) {
-        toast.error(
-          `Image ${f.name} is ${(f.size / 1024 / 1024).toFixed(1)}MB — over the 8MB limit.`,
-        );
-        return false;
-      }
-      return true;
-    });
-    if (ok.length === 0) return;
-    try {
-      const parsed = await Promise.all(
-        ok.map(async (f) => ({
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          dataUrl: await fileToDataUrl(f),
-          name: f.name,
-        })),
+  // Upload a text document into the personal knowledge store. The model reaches
+  // it via the fileSearch tool; there's no round-trip into the message body.
+  const uploadDoc = useCallback(async (file: File) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    if (file.size > MAX_DOC_BYTES) {
+      toast.error(
+        `${file.name} is ${(file.size / 1024 / 1024).toFixed(1)}MB — over the 1MB document limit.`,
       );
-      setImages((prev) => [...prev, ...parsed]);
+      return;
+    }
+    setDocs((prev) => [...prev, { id, name: file.name, status: "uploading" }]);
+    try {
+      const content = await file.text();
+      const res = await fetch("/api/knowledge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: file.name, content }),
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(j.error ?? `upload failed (${res.status})`);
+      }
+      setDocs((prev) =>
+        prev.map((d) => (d.id === id ? { ...d, status: "ready" } : d)),
+      );
+      toast.success(`${file.name} added — I can search it now.`);
     } catch (e) {
-      toast.error(`Couldn't read image: ${(e as Error).message}`);
+      setDocs((prev) =>
+        prev.map((d) => (d.id === id ? { ...d, status: "error" } : d)),
+      );
+      toast.error(`Couldn't add ${file.name}: ${(e as Error).message}`);
     }
   }, []);
+
+  const ingestFiles = useCallback(
+    async (files: FileList | File[]) => {
+      const all = Array.from(files);
+      // Text docs → knowledge store (searchable via fileSearch).
+      const docFiles = all.filter(isTextDoc);
+      for (const f of docFiles) void uploadDoc(f);
+
+      // Images → inline data-URL parts (existing drop-screenshot workflow).
+      const arr = all.filter((f) => f.type.startsWith("image/"));
+      if (arr.length === 0) return;
+      // Cap on file size so a 50MB photo doesn't blow the request body.
+      const TOO_BIG = 8 * 1024 * 1024;
+      const ok = arr.filter((f) => {
+        if (f.size > TOO_BIG) {
+          toast.error(
+            `Image ${f.name} is ${(f.size / 1024 / 1024).toFixed(1)}MB — over the 8MB limit.`,
+          );
+          return false;
+        }
+        return true;
+      });
+      if (ok.length === 0) return;
+      try {
+        const parsed = await Promise.all(
+          ok.map(async (f) => ({
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            dataUrl: await fileToDataUrl(f),
+            name: f.name,
+          })),
+        );
+        setImages((prev) => [...prev, ...parsed]);
+      } catch (e) {
+        toast.error(`Couldn't read image: ${(e as Error).message}`);
+      }
+    },
+    [uploadDoc],
+  );
 
   const attach = () => fileInputRef.current?.click();
 
@@ -254,6 +331,9 @@ export function Composer({
   const removeImage = (id: string) =>
     setImages((prev) => prev.filter((p) => p.id !== id));
 
+  const removeDoc = (id: string) =>
+    setDocs((prev) => prev.filter((p) => p.id !== id));
+
   const inlineToggles = providerUX.inlineToggles ?? [];
 
   return (
@@ -275,7 +355,7 @@ export function Composer({
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
+        accept="image/*,text/*,.txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.log,.yaml,.yml,.xml,.html,.htm,.py,.js,.jsx,.ts,.tsx,.mjs,.cjs,.java,.c,.h,.cpp,.cc,.hpp,.cs,.go,.rs,.rb,.php,.swift,.kt,.scala,.sh,.bash,.zsh,.sql,.toml,.ini,.cfg,.conf,.env,.tex,.rst,.org"
         multiple
         className="hidden"
         onChange={(e) => {
@@ -302,6 +382,44 @@ export function Composer({
             aria-hidden
             className="pointer-events-none fixed inset-x-0 bottom-0 z-0 h-44 animate-pulse bg-gradient-to-t from-primary/25 via-primary/5 to-transparent blur-xl"
           />
+        )}
+        {docs.length > 0 && (
+          <div className="flex flex-wrap gap-2 px-3 pt-3">
+            {docs.map((doc) => (
+              <div
+                key={doc.id}
+                className={cn(
+                  "group flex items-center gap-2 rounded-lg border border-border/50 bg-card px-2.5 py-1.5 text-[12px]",
+                  doc.status === "error" && "border-destructive/50",
+                )}
+                title={doc.name}
+              >
+                {doc.status === "uploading" ? (
+                  <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
+                ) : (
+                  <FileText
+                    className={cn(
+                      "size-4 shrink-0",
+                      doc.status === "error"
+                        ? "text-destructive"
+                        : "text-primary",
+                    )}
+                  />
+                )}
+                <span className="max-w-40 truncate text-foreground">
+                  {doc.name}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => removeDoc(doc.id)}
+                  className="flex size-4 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+                  aria-label="Remove document"
+                >
+                  <X className="size-3" />
+                </button>
+              </div>
+            ))}
+          </div>
         )}
         {images.length > 0 && (
           <div className="flex flex-wrap gap-2 px-3 pt-3">
@@ -406,8 +524,8 @@ export function Composer({
               size="icon"
               onClick={attach}
               className="size-8 shrink-0 rounded-lg text-muted-foreground hover:text-foreground"
-              aria-label="Attach image"
-              title="Attach image (or drag/drop, or paste)"
+              aria-label="Attach image or document"
+              title="Attach an image or document (or drag/drop)"
             >
               <Paperclip className="size-4" />
             </Button>
