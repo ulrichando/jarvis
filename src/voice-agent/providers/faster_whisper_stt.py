@@ -20,10 +20,14 @@ local-LLM design (~/.claude/plans/we-need-to-find-polymorphic-allen.md).
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import io
+import json
 import logging
 import os
 import re
+import time
+from pathlib import Path
 
 from livekit import rtc
 from livekit.agents import APIConnectionError, APIConnectOptions, stt
@@ -86,6 +90,98 @@ def _gpu_sticky_after() -> int:
         return 3
 
 
+# ── GPU-wedge persistence across process churn (2026-07-18) ──────────────────
+# All the wedge state below (`_gpu_wedge_streak`, the sticky CPU switch, the
+# notified-once latch) is per-INSTANCE — and livekit-agents spawns a NEW job
+# process (→ a fresh FasterWhisperSTT) per room session. Live burst
+# 2026-07-16T01:19–01:33 UTC: 462 CUDA-failed log lines across 32 job pids in
+# ~14 min — every fresh process re-armed on the wedged GPU, re-paid the full
+# retry+model-reload lag on its first clips (372 model loads that hour), and
+# would ALSO re-fire the "switched to CPU" notification once per process, so
+# "notify exactly once" was really "once per restart". This tiny per-boot flag
+# file makes the wedge EPISODE outlive the process: "this boot's GPU is wedged
+# + the user has been told". It can never go stale — every read is validated
+# against the CURRENT boot id (a reboot resets the GPU ⇒ old flags are
+# discarded on sight) and honoring it at arm time is gated on a live cuInit
+# probe (a recovered GPU ⇒ flag deleted, GPU path re-armed). bin/
+# jarvis-cuda-recover also deletes it on a successful recovery, so the
+# documented remedy restores the GPU path immediately instead of leaving STT
+# silently stuck on CPU. Kill-switch: JARVIS_LOCAL_STT_WEDGE_PERSIST=0
+# reverts to the old per-process-only behavior.
+
+
+def _wedge_persist_enabled() -> bool:
+    return os.environ.get("JARVIS_LOCAL_STT_WEDGE_PERSIST", "1") != "0"
+
+
+def _wedge_flag_path() -> Path:
+    """Flag location — env-overridable so tests never touch the real one.
+    Keep the default in sync with bin/jarvis-cuda-recover, which clears it."""
+    raw = os.environ.get("JARVIS_LOCAL_STT_WEDGE_FLAG", "").strip()
+    return Path(raw) if raw else Path.home() / ".jarvis" / "stt-gpu-wedged.json"
+
+
+def _boot_id() -> str:
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except Exception:
+        return ""  # non-Linux / hardened proc — flags then only TTL by boot_id equality
+
+
+def _cuda_healthy() -> bool | None:
+    """Live cuInit probe — the first call ctranslate2 itself makes, and the
+    same health check bin/jarvis-cuda-recover trusts. True = GPU usable,
+    False = wedged (the cuInit-999 signature), None = can't probe (no
+    libcuda on this box) — callers must treat None as "unknown", never as
+    wedged, so a CPU-only box is unaffected."""
+    try:
+        lib = ctypes.CDLL("libcuda.so.1")
+        return int(lib.cuInit(0)) == 0
+    except Exception:
+        return None
+
+
+def _read_wedge_flag() -> dict | None:
+    """The parsed flag for THIS boot, else None. Stale flags (older boot,
+    corrupt json, wrong shape) are deleted on sight so they self-clean."""
+    path = _wedge_flag_path()
+    try:
+        data = json.loads(path.read_text())
+        if isinstance(data, dict) and data.get("boot_id") == _boot_id():
+            return data
+        path.unlink(missing_ok=True)  # another boot's episode — GPU was reset
+    except FileNotFoundError:
+        pass
+    except Exception:
+        try:
+            path.unlink(missing_ok=True)  # corrupt — self-clean
+        except Exception:
+            pass
+    return None
+
+
+def _write_wedge_flag(*, notified: bool) -> None:
+    path = _wedge_flag_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({
+            "boot_id": _boot_id(),
+            "ts": time.time(),
+            "notified": bool(notified),
+        }))
+        tmp.replace(path)  # atomic vs sibling job processes reading it
+    except Exception:
+        pass  # persistence is best-effort — it must never break STT itself
+
+
+def _clear_wedge_flag() -> None:
+    try:
+        _wedge_flag_path().unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 class FasterWhisperSTT(stt.STT):
     """Local Whisper (faster-whisper) as a non-streaming livekit STT."""
 
@@ -108,10 +204,61 @@ class FasterWhisperSTT(stt.STT):
         self._cpu_model = None  # lazy CPU model for the GPU-OOM fallback
         self._load_lock = asyncio.Lock()
         self._gpu_wedge_streak = 0  # consecutive non-OOM GPU-wedged clips
+        # Arm-time wedge check (2026-07-18): a fresh process arming on a
+        # wedged GPU used to pay 3 laggy wedged clips + one MORE notification
+        # before its own per-process sticky switch re-engaged — once per room
+        # session, for as long as the GPU stayed wedged. Probe cuInit once at
+        # construction instead: still wedged → arm straight on CPU (silent if
+        # this boot's episode already notified); healthy → clear any recorded
+        # episode so the GPU path re-arms with zero residue.
+        if self._device != "cpu" and _wedge_persist_enabled():
+            self._apply_boot_wedge_state()
 
     @property
     def label(self) -> str:
         return f"local:faster-whisper/{self._model_size}"
+
+    def _apply_boot_wedge_state(self) -> None:
+        """Honor / retire this boot's persisted GPU-wedge episode at arm time.
+
+        Only called when constructed for a GPU device. The flag alone never
+        forces CPU — the live cuInit probe is authoritative: probe healthy →
+        any flag is stale (jarvis-cuda-recover ran, or the wedge was
+        transient) and is deleted; probe wedged → arm on CPU now instead of
+        replaying the failure, recording/refreshing the episode. Probe
+        unavailable (no libcuda) → trust a recorded episode, else leave the
+        runtime retry path to decide."""
+        flag = _read_wedge_flag()
+        healthy = _cuda_healthy()
+        if healthy:
+            if flag is not None:
+                _clear_wedge_flag()
+                logger.info(
+                    "[stt.local] GPU recovered — cleared this boot's wedge "
+                    "flag; arming on %s as configured", self._device,
+                )
+            return
+        if healthy is None and flag is None:
+            return  # unknown GPU state, no recorded episode — don't preempt
+        already_notified = bool(flag and flag.get("notified"))
+        logger.error(
+            "[stt.local] CUDA wedged at arm time (cuInit probe failed%s) — "
+            "arming STT on CPU instead of the configured %s. Run "
+            "bin/jarvis-cuda-recover to restore the GPU.",
+            "" if healthy is False else "; probe unavailable, episode on record",
+            self._device,
+        )
+        self._device = "cpu"
+        self._compute_type = "int8"  # float16 is GPU-only
+        _write_wedge_flag(notified=True)
+        if not already_notified:
+            # First signal of THIS episode (episode = one wedge per boot,
+            # ended by recovery). Synthesize the canonical wedge error so the
+            # stt_gpu classifier words it identically to the runtime path.
+            self._notify_switched_to_cpu(RuntimeError(
+                "CUDA failed with error unknown error "
+                "(cuInit probe failed arming local STT)"
+            ))
 
     async def _ensure_model(self):
         if self._model is not None:
@@ -211,7 +358,15 @@ class FasterWhisperSTT(stt.STT):
                 text, detected = await asyncio.to_thread(
                     self._transcribe_sync, model, wav, lang
                 )
-                self._gpu_wedge_streak = 0  # a clean success clears the streak
+                # A clean GPU success clears the streak — and retires any
+                # persisted wedge episode (the wedge was transient after
+                # all). Guard on device: post-sticky clips succeed on CPU
+                # and must NOT clear the flag, or the next job process
+                # would re-arm on the still-dead GPU and re-notify.
+                if self._device != "cpu":
+                    if self._gpu_wedge_streak and _wedge_persist_enabled():
+                        _clear_wedge_flag()
+                    self._gpu_wedge_streak = 0
                 break
             except Exception as e:  # surface as a chain-cascadable error
                 blob = f"{type(e).__name__} {e}"
@@ -264,16 +419,29 @@ class FasterWhisperSTT(stt.STT):
                                 self._device = "cpu"
                                 self._compute_type = "int8"  # float16 is GPU-only
                                 self._model = None  # rebuild on CPU next clip
-                                # Signal the user ONCE. After the switch we no
-                                # longer raise the wedge, so the framework's
-                                # notify path never fires — this is the only
-                                # heads-up that STT dropped to CPU + how to
-                                # restore the GPU. (Trade-off: in a rare
-                                # local-PRIMARY + cloud-fallback config this also
-                                # means we stay on CPU instead of cascading to a
-                                # cloud STT rung; acceptable — the live box is
-                                # local-only, and self-healing beats a flood.)
-                                self._notify_switched_to_cpu(e)
+                                # Signal the user ONCE — per EPISODE, not per
+                                # process. After the switch we no longer raise
+                                # the wedge, so the framework's notify path
+                                # never fires — this is the only heads-up that
+                                # STT dropped to CPU + how to restore the GPU.
+                                # The flag file persists the episode across
+                                # the job-process churn (a new process per
+                                # room session), so a restart doesn't reset
+                                # the latch and re-notify. (Trade-off: in a
+                                # rare local-PRIMARY + cloud-fallback config
+                                # this also means we stay on CPU instead of
+                                # cascading to a cloud STT rung; acceptable —
+                                # the live box is local-only, and self-healing
+                                # beats a flood.)
+                                already_notified = False
+                                if _wedge_persist_enabled():
+                                    prior = _read_wedge_flag()
+                                    already_notified = bool(
+                                        prior and prior.get("notified")
+                                    )
+                                    _write_wedge_flag(notified=True)
+                                if not already_notified:
+                                    self._notify_switched_to_cpu(e)
                         break
                     raise APIConnectionError(
                         f"faster-whisper local STT failed: {e}"
@@ -335,9 +503,12 @@ def build_local_stt() -> FasterWhisperSTT | None:
         inst = FasterWhisperSTT(
             model=model, device=device, compute_type=compute, language=lang,
         )
+        # Log the INSTANCE device, not the env one — the arm-time wedge probe
+        # may have coerced a wedged-GPU config to CPU (see
+        # _apply_boot_wedge_state); the armed line must tell the truth.
         logger.info(
             "[stt.local] faster-whisper rung armed: model=%s device=%s compute=%s lang=%s",
-            model, device, compute, lang or "auto",
+            model, inst._device, inst._compute_type, lang or "auto",
         )
         return inst
     except Exception as e:
