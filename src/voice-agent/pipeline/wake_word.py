@@ -51,6 +51,11 @@ NAME_ALTERNATION: str = (
     r"|y[aeiou]+[rl]*[aeiou]*vis|g[aeiou]+[rl]*[aeiou]*vis|h[aeiou]+[rl]*[aeiou]*vis"
     r"|jorvis|jarbis"
     r"|yaris|yeris|yoris|jarius|jarrus|jorius"
+    # d/t/ch onsets — faster-whisper regularly renders "Jarvis" as
+    # "david"/"travis"/"charvis" etc., which the addressing gate must accept
+    # as the wake word or it drops the user's real requests (2026-07-19).
+    r"|d[aeiou]+[rl]*[aeiou]*vis|t[aeiou]+[rl]*[aeiou]*vis|ch[aeiou]+[rl]*[aeiou]*vis"
+    r"|travis|david|harris"
 )
 
 
