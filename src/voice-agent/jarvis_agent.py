@@ -713,18 +713,36 @@ def _mute_context_engaged() -> bool:
         return False
 
 
+# Standalone greetings count as addressing (2026-07-20). With the TV gone, a
+# bare "hey" / "hello" / "you there?" is the user trying to engage — the
+# addressing gate must accept it (and the backchannel suppressor must not eat
+# the "Yes?" reply) instead of dropping it as ambient. Anchored to a SHORT
+# whole-utterance greeting so an ambient sentence that merely CONTAINS "hi"
+# doesn't match (e.g. "hi honey I'm home, dinner's ready" won't trip it).
+_GREETING_RE = re.compile(
+    r"^\s*(?:hey|hi|hiya|hello|hullo|yo|howdy)\b[\s,]*(?:there|jarvis)?[\s,.!?]*$"
+    r"|^\s*(?:are\s+you|you)\s+there\b[\s,.!?]*$",
+    re.IGNORECASE,
+)
+
+
 def _is_unaddressed_ambient(text: str) -> bool:
     """Decide whether a transcript should be dropped as ambient room audio.
 
-    True when the addressing gate is on, the text carries NO "Jarvis" vocative
-    and NO wake phrase, AND there has been no real interaction within the
-    engagement window (tighter by day via ENGAGEMENT_WINDOW_SEC, generous at
-    night via QUIET_HOURS_WINDOW_SEC). Pure function of `text` + module state so
-    the gate is unit-testable. Wired into on_user_turn_completed."""
+    True when the addressing gate is on, the text carries NO "Jarvis" vocative,
+    NO wake phrase and is NOT a bare greeting, AND there has been no real
+    interaction within the engagement window (tighter by day via
+    ENGAGEMENT_WINDOW_SEC, generous at night via QUIET_HOURS_WINDOW_SEC). Pure
+    function of `text` + module state so the gate is unit-testable. Wired into
+    on_user_turn_completed."""
     if not ADDRESSING_GATE_ON:
         return False
-    if _JARVIS_NAME_RE.search(text) or _is_command(text, _WAKE_PATTERNS):
-        return False  # explicitly addressed — always answer
+    if (
+        _JARVIS_NAME_RE.search(text)
+        or _is_command(text, _WAKE_PATTERNS)
+        or _GREETING_RE.match(text)
+    ):
+        return False  # explicitly addressed / bare greeting — always answer
     window = QUIET_HOURS_WINDOW_SEC if _in_quiet_hours() else ENGAGEMENT_WINDOW_SEC
     return not _recent_interaction(window)
 
@@ -880,7 +898,9 @@ def _turn_is_addressed(user_text: str) -> bool:
     exchange (the addressed-window stamp, touched by every addressed
     turn in on_user_turn_completed)."""
     if user_text and (
-        _JARVIS_NAME_RE.search(user_text) or _is_command(user_text, _WAKE_PATTERNS)
+        _JARVIS_NAME_RE.search(user_text)
+        or _is_command(user_text, _WAKE_PATTERNS)
+        or _GREETING_RE.match(user_text)
     ):
         return True
     return _within_addressed_window()
