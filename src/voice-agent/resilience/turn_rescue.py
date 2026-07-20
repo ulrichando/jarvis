@@ -48,7 +48,9 @@ suppressed 'see you all time' each killed a finished web_search reply).
    cooldown-limited so ambient storms can't ping-pong replies.
 
 Idempotent install(). Kill-switches: JARVIS_TURN_RESCUE_DISABLED=1 (whole
-patch), JARVIS_TURN_RESCUE_RESURRECT_DISABLED=1 (resurrection only).
+patch), JARVIS_TURN_RESCUE_RESURRECT_DISABLED=1 (resurrection only),
+JARVIS_INTERRUPT_FOLLOWUP_DISABLED=1 (the circle-back-to-the-interrupted-
+question path only).
 """
 from __future__ import annotations
 
@@ -76,6 +78,17 @@ _last_resurrect_mono = 0.0
 # resurrection recovers the whole cascade).
 _rescue_seq = 0
 
+# Interrupt-follow-up tuning (2026-07-19). Sibling to resurrection but for the
+# OPPOSITE case: the user barged in with question B, JARVIS answered B, and the
+# question A he was interrupted on was silently dropped. This circles back to A
+# once, after B's reply finishes. Waits for agent_state to RETURN to listening
+# (B's reply drained), up to _FOLLOWUP_MAX_WAIT_S; cooldown-bounded so it can
+# never loop.
+_FOLLOWUP_GRACE_S = 0.8
+_FOLLOWUP_MAX_WAIT_S = 20.0
+_FOLLOWUP_COOLDOWN_S = 20.0
+_last_followup_mono = 0.0
+
 
 def enabled() -> bool:
     return os.environ.get("JARVIS_TURN_RESCUE_DISABLED", "0") != "1"
@@ -83,6 +96,10 @@ def enabled() -> bool:
 
 def resurrect_enabled() -> bool:
     return os.environ.get("JARVIS_TURN_RESCUE_RESURRECT_DISABLED", "0") != "1"
+
+
+def followup_enabled() -> bool:
+    return os.environ.get("JARVIS_INTERRUPT_FOLLOWUP_DISABLED", "0") != "1"
 
 
 def should_rescue(
@@ -163,6 +180,12 @@ def _schedule_resurrect(activity: Any, killed_speech: Any, transcript: str, seq:
             now = time.monotonic()
             if (now - _last_resurrect_mono) < _RESURRECT_COOLDOWN_S:
                 return
+            # Symmetric latch (Fable review 2026-07-19): if the interrupt
+            # follow-up just circled back to the question, don't ALSO resurrect —
+            # both would re-answer it. Guards the short-reply race should
+            # _FOLLOWUP_GRACE_S ever be tuned below the resurrection grace.
+            if (now - _last_followup_mono) < _RESURRECT_COOLDOWN_S:
+                return
             _last_resurrect_mono = now
             logger.info(
                 "[turn-rescue] rescuing turn produced no reply — "
@@ -183,6 +206,90 @@ def _schedule_resurrect(activity: Any, killed_speech: Any, transcript: str, seq:
         asyncio.create_task(_resurrect_after_grace())
     except RuntimeError:
         pass  # no running loop (sync/unit-test context) — best-effort only
+
+
+def _schedule_question_followup(activity: Any, transcript: str, seq: int) -> None:
+    """After a barge-in whose OWN reply finished, circle back ONCE to the prior
+    QUESTION that barge-in interrupted — the case resurrection deliberately
+    skips (resurrection only fires when the barge-in produced NO reply). This
+    is the "you asked A, got answered on B, and A was dropped" fix. Guarded
+    against deliberate stops, topic changes, and double-firing with
+    resurrection."""
+    if not followup_enabled():
+        return
+    sess = getattr(activity, "_session", None)
+    if sess is None:
+        return
+    prior_q = getattr(sess, "_jarvis_prior_pending_question", None)
+    if not prior_q:
+        return  # the interrupted turn wasn't a question — nothing owed
+    blocked = getattr(getattr(activity, "_agent", None), "_jarvis_resurrect_blocked", None)
+    if blocked is not None:
+        try:
+            # Screen BOTH the barge-in transcript (a deliberate stop) AND the
+            # prior "question" itself — "can you stop" / "will you shut up" are
+            # question-shaped but must never be circled back to. (Fable review.)
+            if blocked(transcript) is True or blocked(prior_q) is True:
+                return
+        except Exception:
+            return
+
+    async def _followup_after_reply() -> None:
+        global _last_followup_mono
+        try:
+            waited = 0.0
+            saw_speaking = False
+            # Wait for the barge-in's OWN reply to run and drain (speaking →
+            # listening). If it never speaks, the barge-in produced no reply —
+            # that's resurrection's job, not ours — so we drop. This
+            # speaking→listening transition is what makes follow-up and
+            # resurrection mutually exclusive.
+            while waited < _FOLLOWUP_MAX_WAIT_S:
+                await asyncio.sleep(_FOLLOWUP_GRACE_S)
+                waited += _FOLLOWUP_GRACE_S
+                if _rescue_seq != seq:
+                    return  # a newer rescue owns the conversation now
+                st = getattr(sess, "agent_state", "")
+                if st == "speaking":
+                    saw_speaking = True
+                elif saw_speaking and st in ("listening", "idle"):
+                    break
+            else:
+                return  # the reply never ran + drained within the budget
+            now = time.monotonic()
+            if (now - _last_followup_mono) < _FOLLOWUP_COOLDOWN_S:
+                return
+            # If resurrection JUST re-delivered the interrupted answer (short
+            # barge-in reply that drained before resurrection's grace), don't
+            # also circle back — both would answer the same question.
+            if (now - _last_resurrect_mono) < _FOLLOWUP_COOLDOWN_S:
+                return
+            # The stash must STILL be the same question — a newer question
+            # replaced it (topic change) → don't chase a stale one.
+            if getattr(sess, "_jarvis_prior_pending_question", None) != prior_q:
+                return
+            _last_followup_mono = now
+            sess._jarvis_prior_pending_question = None  # consume — fire once
+            logger.info(
+                "[turn-rescue] circling back to the interrupted question: "
+                f"{prior_q[:60]!r}"
+            )
+            sess.generate_reply(
+                instructions=(
+                    f'A moment ago the user asked: "{prior_q}". You have handled '
+                    "what they interrupted with. Circle back and answer their "
+                    'earlier question now, briefly — e.g. "Coming back to your '
+                    'earlier question —…". If you already answered it in passing '
+                    "or it no longer makes sense, stay silent."
+                )
+            )
+        except Exception as e:
+            logger.debug(f"[turn-rescue] followup skipped: {e}")
+
+    try:
+        asyncio.create_task(_followup_after_reply())
+    except RuntimeError:
+        pass  # no running loop (sync/unit-test) — best-effort only
 
 
 def install() -> None:
@@ -245,6 +352,10 @@ def install() -> None:
                 _schedule_resurrect(self, killed_speech, transcript, rescued_seq)
             except Exception as e:
                 logger.debug(f"[turn-rescue] resurrect scheduling failed: {e}")
+            try:
+                _schedule_question_followup(self, transcript, rescued_seq)
+            except Exception as e:
+                logger.debug(f"[turn-rescue] followup scheduling failed: {e}")
         return result
 
     aa.AgentActivity._user_turn_completed_task = patched

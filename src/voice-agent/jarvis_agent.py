@@ -729,6 +729,27 @@ def _is_unaddressed_ambient(text: str) -> bool:
     return not _recent_interaction(window)
 
 
+_QUESTION_LEAD_RE = re.compile(
+    r"^\s*(who|what|when|where|why|how|which|whose|whom|"
+    r"can|could|would|will|should|do|does|did|is|are|was|were|"
+    r"have|has|had|may|might)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_question(text: str) -> bool:
+    """Cheap heuristic: does this transcript read as a question the assistant
+    still owes an answer to? True when it ends with '?' or opens with a wh-/
+    aux- lead. Used to decide whether an INTERRUPTED user turn is worth circling
+    back to (resilience/turn_rescue._schedule_question_followup). Note: "do it"
+    matches (do is an aux) — a benign, cooldown-bounded false positive not worth
+    a more complex regex."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    return t.endswith("?") or bool(_QUESTION_LEAD_RE.match(t))
+
+
 def _would_discard_transcript(text: str) -> bool:
     """PURE mirror of on_user_turn_completed's reply-less discard gates.
 
@@ -4811,6 +4832,11 @@ class JarvisAgent(Agent):
         # finalized "user turn" may be JARVIS's own speech echoing back. Drop
         # it so echo never becomes a phantom request. Only matches within
         # RECENT_SPEECH_TTL of speech end (else recent_speaking_text() is "").
+        # TTL kept at 2 s: echo_gate rule 5 drops any <3-novel-word transcript
+        # while speaking_text is non-empty, so a WIDE window would eat real short
+        # follow-ups ("yes", "do it"). The mic-drop-during-TTS fix
+        # (JARVIS_PIPEWIRE_AEC=0) is what actually closes the echo path; this gate
+        # only covers the brief post-TTS tail, so a short window is correct.
         drop_echo = False
         try:
             from pipeline import echo_gate, speaking_tracker
@@ -4896,6 +4922,21 @@ class JarvisAgent(Agent):
         # live (idempotent with _should_sync_memory_item's touch).
         try:
             self.session._jarvis_last_user_text = text
+        except Exception:
+            pass
+        # Track the last question-shaped user turn so an INTERRUPTED question can
+        # be circled back to after JARVIS answers the barge-in (see
+        # resilience/turn_rescue._schedule_question_followup). This turn's
+        # question shifts into _prior_pending_question; if the NEXT turn
+        # interrupts this one, _prior_pending_question is the question that got
+        # dropped. Consumed by the follow-up scheduler.
+        try:
+            self.session._jarvis_prior_pending_question = getattr(
+                self.session, "_jarvis_pending_question", None
+            )
+            self.session._jarvis_pending_question = (
+                text if _looks_like_question(text) else None
+            )
         except Exception:
             pass
         if _JARVIS_NAME_RE.search(text) or _is_command(text, _WAKE_PATTERNS):
