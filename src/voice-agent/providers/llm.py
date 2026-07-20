@@ -129,6 +129,29 @@ DEFAULT_SPEECH_MODEL: str = "deepseek-chat"
 # (~1.4s TTFT, tool_choice=auto works). Ref: api-docs.deepseek.com thinking-mode.
 _DEEPSEEK_NON_THINKING = {"thinking": {"type": "disabled"}}
 
+
+def _voice_max_tokens() -> int:
+    """Output-token cap for voice replies (~150-200 tok ≈ 10 s of speech).
+
+    Anthropic (max_tokens=200) and Gemini (max_output_tokens=200) speech models
+    already cap output, but the DeepSeek builds — including the tray-pinned
+    deepseek-v4-flash that is the LIVE voice primary — did NOT, so a rambling
+    turn synthesized long and slow (voice-setup todo #5). Env-tunable via
+    JARVIS_VOICE_MAX_TOKENS; default 200 matches the other providers. Evaluated
+    at build time so a restart picks up a new value."""
+    try:
+        return int(os.environ.get("JARVIS_VOICE_MAX_TOKENS", "200"))
+    except (TypeError, ValueError):
+        return 200
+
+
+def _deepseek_extra_body() -> dict:
+    """DeepSeek request extras: non-thinking pin + the voice output cap. DeepSeek
+    takes `max_tokens` in the request body (its OpenAI-compat endpoint), so it
+    rides extra_body rather than lk_openai's `max_completion_tokens` param."""
+    return {**_DEEPSEEK_NON_THINKING, "max_tokens": _voice_max_tokens()}
+
+
 SPEECH_MODELS: dict[str, dict] = {
     # DeepSeek family — needs reasoning_content round-trip on
     # assistant tool-call messages, handled by deepseek_roundtrip.install()
@@ -150,7 +173,7 @@ SPEECH_MODELS: dict[str, dict] = {
             api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
             base_url="https://api.deepseek.com/v1",
             temperature=0.6,
-            extra_body=_DEEPSEEK_NON_THINKING,
+            extra_body=_deepseek_extra_body(),
         ),
     },
     "deepseek-v4-flash": {
@@ -162,7 +185,7 @@ SPEECH_MODELS: dict[str, dict] = {
             temperature=0.6,
             # Without this, v4-flash defaults to THINKING → slow TTFW +
             # tool_choice=required 400s. Non-thinking is the voice-correct mode.
-            extra_body=_DEEPSEEK_NON_THINKING,
+            extra_body=_deepseek_extra_body(),
         ),
     },
     # Same upstream model as "deepseek-chat", under a DISTINCT id so it is
@@ -181,7 +204,7 @@ SPEECH_MODELS: dict[str, dict] = {
             api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
             base_url="https://api.deepseek.com/v1",
             temperature=0.6,
-            extra_body=_DEEPSEEK_NON_THINKING,
+            extra_body=_deepseek_extra_body(),
         ),
     },
     # deepseek-v4-pro RETIRED 2026-05-16 per global review §P0-3.
@@ -1537,7 +1560,7 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
                 temperature=0.6,
                 # Non-thinking: the fallback rung serves tool-forced routes,
                 # and v4-flash's default thinking mode 400s on tool_choice=required.
-                extra_body=_DEEPSEEK_NON_THINKING,
+                extra_body=_deepseek_extra_body(),
             )
             ds_fallback._jarvis_label = "deepseek:chat"
             logger.info("[dispatch] DeepSeek fallback armed (rung 3) for all routes")

@@ -29,8 +29,14 @@ def test_deepseek_speech_models_are_explicit_v4flash_non_thinking(model_id):
         "(the bare 'deepseek-chat' alias is discontinued 2026-07-24)"
     )
     # (b) non-thinking forced (voice: fast TTFT + tool_choice=required works)
-    assert getattr(opts, "extra_body", None) == {"thinking": {"type": "disabled"}}, (
+    # + (c) output capped ~200 tok (voice-setup todo #5). extra_body now carries
+    # both the thinking pin and max_tokens (DeepSeek takes the cap in-body).
+    eb = getattr(opts, "extra_body", None) or {}
+    assert eb.get("thinking") == {"type": "disabled"}, (
         f"{model_id}: thinking not disabled — voice would get 6-47s TTFT + tool 400s"
+    )
+    assert isinstance(eb.get("max_tokens"), int) and eb["max_tokens"] > 0, (
+        f"{model_id}: output not capped — voice replies can ramble long/slow (todo #5)"
     )
 
 
