@@ -174,6 +174,17 @@ export JARVIS_DISABLE_TOOL_DEFERRAL="${JARVIS_DISABLE_TOOL_DEFERRAL:-1}"
 # ~/.claude.json, so the skip bought nothing. Do not re-add.
 export DISABLE_INSTALLATION_CHECKS=1
 export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1   # enable swarm/agent-teams
+# Plan-mode INTERVIEW phase (off by default for external builds via the
+# tengu_plan_mode_interview_phase gate; always-on for ant). ON makes plan mode
+# pair-plan: write a skeleton plan then ask the user up-front via AskUserQuestion
+# (the option picker) BEFORE exploring exhaustively — instead of the 5-phase
+# explore→design→approve flow where asking is an optional late step the model
+# skips. This is what surfaces the interactive options picker on open-ended
+# requests ("build me X"). To revert to the 5-phase workflow, change the default
+# below to 0 — a shell-level `CLAUDE_CODE_PLAN_MODE_INTERVIEW_PHASE=0 jarvis` will
+# NOT work (the nested-session strip loop near the top of this file unsets all
+# inherited CLAUDE_CODE_* vars before this line reinstates the :-1 default).
+export CLAUDE_CODE_PLAN_MODE_INTERVIEW_PHASE="${CLAUDE_CODE_PLAN_MODE_INTERVIEW_PHASE:-1}"
 
 # /ultraplan (Phase B): the command is compiled + registered, but its
 # isEnabled() gate is `process.env.JARVIS_ULTRAPLAN === '1'` (commands/
