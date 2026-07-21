@@ -1,66 +1,288 @@
 #!/usr/bin/env bash
-# jarvis-health — one-shot health snapshot of the whole JARVIS stack:
-# systemd --user services, docker containers, LLM provider keys (live),
-# GPU, the evolution queue, and the last voice turn.
+# jarvis-health — one-shot health snapshot of the whole JARVIS stack.
 #
-# Exit 0 if everything healthy, 1 if any hard check FAILs — so it doubles as the
-# probe behind an alert (systemd timer / tray indicator). Soft issues = WARN
-# (don't fail the exit). The thing this session kept doing by hand, in one place.
+# Enterprise-grade on the ROBUSTNESS & DEPTH axis (2026-07-21 rebuild, Fable-researched):
+#   - HYBRID execution: fast local checks run serially (ordered output); the 5 cloud
+#     provider probes run in the background and are replayed in fixed order after one
+#     `wait`. Tight timeouts + `timeout -k` around every hang-capable command. No retries.
+#     Wall time ~3-5s typical / ~15s worst-case degraded (was up to 75s serial).
+#   - Actionable severity: only truly-broken, YOU-can-fix-it states FAIL (flip exit 1).
+#     Desktop/launcher-managed surfaces and deliberately-stoppable containers are WARN.
+#   - Depth: LiveKit SFU, voice-client deaf-wedge, cuInit(999) wedge, failed-unit sweep,
+#     honcho tier restart/health, local capability ports, SQLite quick_check, disk floor.
+#
+# CONTRACTS (do not break — other tools depend on these):
+#   - The `  [FAIL] msg` line shape (two-space indent, ANSI, bracket tag) is what
+#     jarvis-health-alert greps (after ANSI-strip) as its dedup signature. Never restyle it.
+#   - Exit code is boolean: 0 = no FAIL anywhere (WARNs allowed), 1 = >=1 FAIL. WARN never
+#     affects the exit code. Consumers (jarvis-health.timer -> jarvis-health-alert, tray)
+#     treat rc as boolean — no Nagios 0/1/2.
+#
+# Scoped OUT by request (YAGNI): JSON/Prometheus/Nagios output, history/persistence,
+# config registry, cert-expiry, timer-freshness, RAM thresholds, retries. The evolution
+# queue check was removed (monitored a shelved subsystem). See --help for env overrides.
 set -uo pipefail
+export LC_ALL=C   # stable '.' radix for $EPOCHREALTIME + awk arithmetic
+
+case "${1:-}" in
+  -h|--help)
+    cat <<'EOF'
+jarvis-health — one-shot health snapshot of the JARVIS stack.
+
+Usage: jarvis-health [-h|--help]
+
+Sections & checks (severity):
+  services         voice-agent[FAIL] livekit-SFU[FAIL] proxy:4000[WARN]
+                   bridge:8765[WARN] failed-unit-sweep[WARN]
+  voice path       voice-path-wedged[FAIL] mic-drain-stall[WARN] last-turn[INFO]
+  provider keys    5 keys, live HTTP, classified: 401/403=FAIL (dead key),
+                   000/timeout=WARN (offline), 429/5xx=WARN (provider-side)
+  GPU              nvidia-smi liveness[FAIL] cuInit-wedge[FAIL] VRAM[INFO]
+  containers       docker-daemon[WARN] honcho tier[WARN] honcho /health[WARN]
+  local caps       kokoro/searxng/computer-use/ollama-socket/jarvis-web[WARN]
+  data & disk      sqlite quick_check x3[FAIL] disk-free-floor[WARN] log-rotation[WARN]
+
+Exit: 0 = healthy (no FAIL; WARNs allowed), 1 = >=1 FAIL. WARN is informational.
+
+Env overrides:
+  JARVIS_HEALTH_HTTP_TIMEOUT   cloud probe max-time seconds  (default 8)
+  JARVIS_HEALTH_DISK_WARN_GB   warn under this many GB free  (default 10)
+  JARVIS_HEALTH_DISK_FAIL_GB   FAIL under this many GB free  (default 2)
+EOF
+    exit 0 ;;
+  "") ;;
+  *) printf 'jarvis-health: unknown option %q (try --help)\n' "$1" >&2; exit 2 ;;
+esac
 
 KEYS="${HOME}/.jarvis/keys.env"
-[ -f "$KEYS" ] && { set -a; . "$KEYS" 2>/dev/null || true; set +a; }
+# set +u around the source: keys.env is machine-written (jarvis keys pull); one
+# templated line with an unbound $var would otherwise abort the whole script under set -u.
+[ -f "$KEYS" ] && { set -a; set +u; . "$KEYS" 2>/dev/null || true; set -u; set +a; }
 
-fail=0
-hdr() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
-ok()  { printf '  \033[32m[OK]\033[0m   %s\n' "$1"; }
-bad() { printf '  \033[31m[FAIL]\033[0m %s\n' "$1"; fail=1; }
-warn(){ printf '  \033[33m[WARN]\033[0m %s\n' "$1"; }
-hc()  { curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$@" 2>/dev/null; }
+HTTP_TIMEOUT="${JARVIS_HEALTH_HTTP_TIMEOUT:-8}"
+DISK_WARN_GB="${JARVIS_HEALTH_DISK_WARN_GB:-10}"
+DISK_FAIL_GB="${JARVIS_HEALTH_DISK_FAIL_GB:-2}"
 
-hdr "services"
-# voice-agent is the always-on systemd service → a hard FAIL if it's down.
-st=$(systemctl --user is-active jarvis-voice-agent.service 2>/dev/null || echo unknown)
-[ "$st" = active ] && ok "jarvis-voice-agent: ${st}" || bad "jarvis-voice-agent: ${st}"
-# proxy (:4000) + bridge (:8765) are LAUNCHER-managed (started by the desktop,
-# not long-lived systemd units — jarvis-proxy.service is intentionally disabled
-# because it crash-loops fighting the launcher for :4000). Check the PORT, and
-# only WARN when down so a closed desktop isn't a false "ISSUES FOUND".
-pc=$(hc http://127.0.0.1:4000/)
-{ [ -n "$pc" ] && [ "$pc" != 000 ]; } && ok "jarvis-proxy: :4000 (HTTP ${pc})" || warn "jarvis-proxy: :4000 down (desktop not running?)"
-bc=$(hc http://127.0.0.1:8765/)
-{ [ -n "$bc" ] && [ "$bc" != 000 ]; } && ok "jarvis-bridge: :8765 (HTTP ${bc})" || warn "jarvis-bridge: :8765 down (desktop not running?)"
+t_start="${EPOCHREALTIME}"
+n_ok=0 n_warn=0 n_fail=0 fail=0
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 
-hdr "docker containers"
-for c in honcho-api honcho-deriver kokoro-tts; do
-  st=$(docker ps --filter "name=${c}" --format '{{.Status}}' 2>/dev/null | head -1)
-  [ -n "$st" ] && ok "${c}: ${st}" || warn "${c}: not running"
-done
+# ---- renderers (parent shell ONLY — counters/fail must never mutate in a subshell) ----
+hdr()  { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
+ok()   { printf '  \033[32m[OK]\033[0m   %s\n' "$1"; n_ok=$((n_ok+1)); }
+warn() { printf '  \033[33m[WARN]\033[0m %s\n' "$1"; n_warn=$((n_warn+1)); }
+bad()  { printf '  \033[31m[FAIL]\033[0m %s\n' "$1"; n_fail=$((n_fail+1)); fail=1; }
+info() { printf '  \033[36m[INFO]\033[0m %s\n' "$1"; }
 
-hdr "LLM provider keys (live HTTP)"
-[ -n "${ANTHROPIC_API_KEY:-}" ] && { c=$(hc https://api.anthropic.com/v1/models -H "x-api-key: ${ANTHROPIC_API_KEY}" -H 'anthropic-version: 2023-06-01'); [ "$c" = 200 ] && ok "Anthropic" || bad "Anthropic (HTTP ${c:-?})"; } || warn "Anthropic: no key"
-[ -n "${OPENAI_API_KEY:-}" ]    && { c=$(hc https://api.openai.com/v1/models -H "Authorization: Bearer ${OPENAI_API_KEY}"); [ "$c" = 200 ] && ok "OpenAI" || bad "OpenAI (HTTP ${c:-?})"; } || warn "OpenAI: no key"
-[ -n "${DEEPSEEK_API_KEY:-}" ]  && { c=$(hc https://api.deepseek.com/v1/models -H "Authorization: Bearer ${DEEPSEEK_API_KEY}"); [ "$c" = 200 ] && ok "DeepSeek" || bad "DeepSeek (HTTP ${c:-?})"; } || warn "DeepSeek: no key"
-[ -n "${KIMI_API_KEY:-}" ]      && { c=$(hc https://api.moonshot.ai/v1/models -H "Authorization: Bearer ${KIMI_API_KEY}"); [ "$c" = 200 ] && ok "Kimi" || bad "Kimi (HTTP ${c:-?})"; } || warn "Kimi: no key"
-[ -n "${GOOGLE_API_KEY:-}" ]    && { c=$(hc "https://generativelanguage.googleapis.com/v1beta/models?key=${GOOGLE_API_KEY}"); [ "$c" = 200 ] && ok "Gemini/Google" || bad "Gemini/Google (HTTP ${c:-?})"; } || warn "Google: no key"
+# loopback HTTP probe → "code time_total" (never blocks > ~3s); "000 0" on hard failure.
+hcl() { local o; o="$(curl -s -o /dev/null --connect-timeout 2 --max-time 3 -w '%{http_code} %{time_total}' "$@" 2>/dev/null)"; printf '%s' "${o:-000 0}"; }
+# cloud HTTP probe → "code time_total".
+hcc() { local o; o="$(curl -s -o /dev/null --connect-timeout 3 --max-time "$HTTP_TIMEOUT" -w '%{http_code} %{time_total}' "$@" 2>/dev/null)"; printf '%s' "${o:-000 0}"; }
+# 2dp seconds from a float (locale-safe via awk).
+secs() { awk -v x="${1:-0}" 'BEGIN{printf "%.2f", x+0}'; }
 
-hdr "GPU (local STT/LLM)"
-if command -v nvidia-smi >/dev/null 2>&1; then
-  if nvidia-smi -L >/dev/null 2>&1; then
-    ok "$(nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader 2>/dev/null | head -1)"
-  else
-    bad "nvidia-smi present but failing (CUDA may be wedged — try bin/jarvis-cuda-recover)"
-  fi
+# provider probe — runs BACKGROUNDED; emits exactly one "STATUS<TAB>message" to its file.
+probe() { # $1 label  $2 url  [curl args...]
+  local label="$1" url="$2"; shift 2
+  local o code t; o="$(hcc "$url" "$@")"; code="${o%% *}"; t="$(secs "${o##* }")"
+  case "$code" in
+    200)     printf 'OK\t%s (HTTP 200, %ss)\n'                              "$label" "$t" ;;
+    401|403) printf 'FAIL\t%s key dead/rotated (HTTP %s) — check bin/jarvis-key-age\n' "$label" "$code" ;;
+    000)     printf 'WARN\t%s unreachable (offline/DNS?, %ss)\n'            "$label" "$t" ;;
+    *)       printf 'WARN\t%s provider-side error (HTTP %s) — not your key\n' "$label" "$code" ;;
+  esac
+}
+launch() { # $1 file  $2 label  $3 keyval  $4 url  [curl args...]
+  local file="$1" label="$2" key="$3" url="$4"; shift 4
+  if [ -z "$key" ]; then printf 'WARN\t%s: no key\n' "$label" >"$tmp/$file"; return; fi
+  probe "$label" "$url" "$@" >"$tmp/$file" &
+}
+
+# ---- launch provider probes FIRST so they overlap all local checks (offline-gated) ----
+if ip route get 1.1.1.1 >/dev/null 2>&1; then
+  providers_online=1
+  launch anthropic "Anthropic"     "${ANTHROPIC_API_KEY:-}" "https://api.anthropic.com/v1/models" -H "x-api-key: ${ANTHROPIC_API_KEY:-}" -H 'anthropic-version: 2023-06-01'
+  launch openai    "OpenAI"        "${OPENAI_API_KEY:-}"    "https://api.openai.com/v1/models"    -H "Authorization: Bearer ${OPENAI_API_KEY:-}"
+  launch deepseek  "DeepSeek"      "${DEEPSEEK_API_KEY:-}"  "https://api.deepseek.com/v1/models"  -H "Authorization: Bearer ${DEEPSEEK_API_KEY:-}"
+  launch kimi      "Kimi"          "${KIMI_API_KEY:-}"      "https://api.moonshot.ai/v1/models"   -H "Authorization: Bearer ${KIMI_API_KEY:-}"
+  launch google    "Gemini/Google" "${GOOGLE_API_KEY:-}"    "https://generativelanguage.googleapis.com/v1beta/models?key=${GOOGLE_API_KEY:-}"
 else
-  warn "no nvidia-smi (CPU-only box)"
+  providers_online=0
 fi
 
-hdr "evolution + voice"
-q=$(wc -l < "${HOME}/.jarvis/auto-mods/queue.jsonl" 2>/dev/null || echo 0)
-ok "evolution queue: ${q} intents"
-last=$(sqlite3 "${HOME}/.local/share/jarvis/turn_telemetry.db" \
-  "SELECT CAST((julianday('now')-julianday(MAX(ts_utc)))*86400 AS INT) FROM turns;" 2>/dev/null || echo "")
-[ -n "$last" ] && ok "last voice turn: ${last}s ago" || warn "no turn telemetry"
+# ---------------------------------------------------------------- services
+hdr "services"
+st="$(systemctl --user is-active jarvis-voice-agent.service 2>/dev/null || echo unknown)"
+[ "$st" = active ] && ok "jarvis-voice-agent: ${st}" || bad "jarvis-voice-agent: ${st}"
 
+lk="$(systemctl --user is-active livekit-server.service 2>/dev/null || echo unknown)"
+lkc="$(hcl http://127.0.0.1:7880/)"; lkc="${lkc%% *}"
+{ [ "$lk" = active ] && [ "$lkc" = 200 ]; } \
+  && ok "livekit-server SFU: active (:7880 HTTP 200)" \
+  || bad "livekit-server SFU: unit=${lk} :7880=${lkc} — voice transport down"
+
+# proxy/bridge are desktop/launcher-managed → WARN only (a closed desktop must not page).
+pbody="$(curl -s --connect-timeout 2 --max-time 3 http://127.0.0.1:4000/health 2>/dev/null)"
+printf '%s' "$pbody" | grep -q '"status":"ok"' \
+  && ok "jarvis-proxy: :4000 (health ok)" \
+  || warn "jarvis-proxy: :4000 down (desktop/launcher not running?)"
+bc="$(hcl http://127.0.0.1:8765/)"; bc="${bc%% *}"
+{ [ -n "$bc" ] && [ "$bc" != 000 ]; } \
+  && ok "jarvis-bridge: :8765 (HTTP ${bc})" \
+  || warn "jarvis-bridge: :8765 down (desktop not running?)"
+
+# One line catches any wedged/crashed jarvis|livekit --user unit without enumerating all.
+# jarvis-mode-resume is a known pre-existing failure — remove this exclusion once fixed.
+failed="$(systemctl --user --failed --no-legend --plain 2>/dev/null | awk '{print $1}' \
+  | grep -E '^(jarvis|livekit)' | grep -v '^jarvis-mode-resume' | tr '\n' ' ')"
+[ -z "${failed// }" ] && ok "no failed jarvis/livekit --user units" || warn "failed units: ${failed}"
+
+# ---------------------------------------------------------------- voice path
+hdr "voice path"
+vc="$(curl -s --connect-timeout 2 --max-time 3 http://127.0.0.1:8767/status 2>/dev/null)"
+if [ -z "$vc" ]; then
+  warn "voice-client :8767 not running (desktop closed?)"
+else
+  conn="$(printf '%s' "$vc"   | grep -o '"connected"[: ]*[a-z]*'     | grep -o '[a-z]*$')"
+  agentp="$(printf '%s' "$vc" | grep -o '"agent_present"[: ]*[a-z]*' | grep -o '[a-z]*$')"
+  muted="$(printf '%s' "$vc"  | grep -o '"muted"[: ]*[a-z]*'         | grep -o '[a-z]*$')"
+  if [ "$conn" = true ] && [ "$agentp" = true ]; then
+    ok "voice-client: connected + agent present"
+    if [ "$muted" = false ]; then
+      drain="$(printf '%s' "$vc" | grep -o '"mic_last_drain_age_s"[: ]*[0-9.]*' | grep -o '[0-9.]*$')"
+      [ -n "$drain" ] && awk -v d="$drain" 'BEGIN{exit !(d>20)}' \
+        && warn "mic drain stalled ${drain}s (deaf wedge? — restart voice-client)"
+    elif [ "$muted" = true ]; then
+      info "voice-client muted (mic-drain check skipped)"
+    else
+      info "voice-client mute state unknown (mic-drain check skipped)"
+    fi
+  else
+    bad "voice path wedged: connected=${conn:-?} agent_present=${agentp:-?}"
+  fi
+fi
+last="$(timeout -k 2 8 sqlite3 "file:${HOME}/.local/share/jarvis/turn_telemetry.db?mode=ro" \
+  "SELECT CAST((julianday('now')-julianday(MAX(ts_utc)))*86400 AS INT) FROM turns;" 2>/dev/null || echo "")"
+[ -n "$last" ] && info "last voice turn: ${last}s ago" || warn "no turn telemetry"
+
+# ---------------------------------------------------------------- provider keys (replay)
+hdr "LLM provider keys (live HTTP)"
+if [ "$providers_online" = 0 ]; then
+  warn "offline — provider key checks skipped"
+else
+  wait                                   # status rides the files; wait's rc is irrelevant
+  for p in anthropic openai deepseek kimi google; do
+    if [ -s "$tmp/$p" ]; then
+      IFS=$'\t' read -r s m <"$tmp/$p"
+      case "$s" in OK) ok "$m";; WARN) warn "$m";; FAIL) bad "$m";; *) bad "${p}: probe produced no result";; esac
+    else
+      bad "${p}: probe produced no result"
+    fi
+  done
+fi
+
+# ---------------------------------------------------------------- GPU
+hdr "GPU (local STT/LLM)"
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+  warn "no nvidia-smi (CPU-only box)"
+else
+  smi="$(timeout -k 2 8 nvidia-smi -L 2>&1)"; smirc=$?
+  if [ "$smirc" = 124 ]; then
+    bad "nvidia-smi HUNG (driver wedged — run bin/jarvis-cuda-recover)"
+  elif printf '%s' "$smi" | grep -qi 'Driver/library version mismatch'; then
+    warn "GPU driver upgraded — reboot needed"
+  elif [ "$smirc" != 0 ]; then
+    bad "nvidia-smi failing (rc=${smirc} — try bin/jarvis-cuda-recover)"
+  else
+    ok "$(timeout -k 2 8 nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
+    # THE documented wedge is cuInit 999 WITH a working nvidia-smi. Read-only, no VRAM alloc.
+    if command -v python3 >/dev/null 2>&1; then
+      timeout -k 2 8 python3 -c "import ctypes,sys; sys.exit(0 if ctypes.CDLL('libcuda.so.1').cuInit(0)==0 else 1)" 2>/dev/null \
+        || bad "CUDA wedged (cuInit!=0) while nvidia-smi works — run bin/jarvis-cuda-recover"
+    fi
+    info "VRAM: $(timeout -k 2 8 nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader 2>/dev/null | head -1)"
+  fi
+fi
+
+# ---------------------------------------------------------------- containers
+hdr "memory & containers"
+if ! command -v docker >/dev/null 2>&1; then
+  warn "docker not installed"
+elif ! timeout -k 2 8 docker info >/dev/null 2>&1; then
+  warn "docker daemon unreachable — container checks skipped"
+else
+  for c in honcho-api-1 honcho-deriver-1 honcho-database-1 honcho-redis-1; do
+    insp="$(timeout -k 2 8 docker inspect -f '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.RestartCount}}' "$c" 2>/dev/null)"
+    if [ -z "$insp" ]; then warn "${c}: not present (compose down?)"; continue; fi
+    IFS='|' read -r cst chealth crestarts <<<"$insp"
+    if   [ "$cst" != running ];      then warn "${c}: ${cst} (compose down?)"
+    elif [ "$chealth" = unhealthy ]; then warn "${c}: running but unhealthy"
+    elif [ "${crestarts:-0}" -gt 3 ]; then warn "${c}: crash-looping (${crestarts} restarts)"
+    else ok "${c}: running$([ "$chealth" != none ] && printf ' (%s)' "$chealth")"; fi
+  done
+  hc="$(hcl http://127.0.0.1:8000/health)"; hc="${hc%% *}"
+  [ "$hc" = 200 ] && ok "honcho api /health (HTTP 200)" || warn "honcho api unhealthy (HTTP ${hc}) — deep recall degraded"
+fi
+
+# ---------------------------------------------------------------- local capabilities
+hdr "local capabilities"
+cap() { # $1 label  $2 url  $3 degraded-note
+  local code; code="$(hcl "$2")"; code="${code%% *}"
+  [ "$code" = 200 ] && ok "$1 (HTTP 200)" || warn "$1 down (HTTP ${code}) — $3"
+}
+cap "kokoro TTS :8880"          http://127.0.0.1:8880/health "TTS falling back to Edge"
+cap "SearXNG :8888"             http://127.0.0.1:8888/       "web_search degraded"
+cap "computer-use sidecar :8771" http://127.0.0.1:8771/health "computer_use unavailable"
+# ollama is socket-activated (system unit); the daemon idle-stops by design, so check the
+# SOCKET (side-effect-free) — an HTTP wake would pin ~3GB VRAM next to STT.
+systemctl is-active ollama-proxy.socket >/dev/null 2>&1 \
+  && ok "ollama socket: listening" \
+  || warn "ollama socket down — offline local-LLM fallback unavailable"
+jw="$(hcl http://127.0.0.1:3000/api/health)"; jw="${jw%% *}"
+if   [ "$jw" = 200 ]; then ok   "jarvis-web :3000 (HTTP 200)"
+elif [ "$jw" = 000 ]; then warn "jarvis-web :3000 down (not listening)"
+else warn "jarvis-web :3000 up but /api/health HTTP ${jw} (stale build — cd src/web && npm run build + restart; scheduled voice reminders target :3000)"; fi
+
+# ---------------------------------------------------------------- data & disk
+hdr "data & disk"
+sqcheck() { # $1 label  $2 path
+  [ -f "$2" ] || { warn "$1: db missing ($2)"; return; }
+  local t0 t1 out rc; t0="${EPOCHREALTIME}"
+  out="$(timeout -k 2 8 sqlite3 "file:$2?mode=ro" 'PRAGMA quick_check;' 2>&1)"; rc=$?
+  t1="${EPOCHREALTIME}"
+  local ts; ts="$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.2f", b-a}')"
+  if   [ "$rc" = 124 ] || [ "$rc" = 137 ];          then warn "$1: quick_check timed out/killed (db busy or hung)"
+  elif [ "$rc" -ge 125 ];                           then warn "$1: sqlite3 probe unavailable (rc=${rc})"
+  elif printf '%s' "$out" | grep -qi 'locked';      then warn "$1: db busy (locked — hourly snapshot?)"
+  elif [ "$out" = ok ];                             then ok   "$1: quick_check ok (${ts}s)"
+  else bad "$1: CORRUPT — restore from ~/.jarvis/snapshots"; fi
+}
+sqcheck "turn_telemetry" "${HOME}/.local/share/jarvis/turn_telemetry.db"
+sqcheck "conversations"  "${HOME}/.jarvis/conversations.db"
+sqcheck "bridge"         "${HOME}/.jarvis/bridge.db"
+
+avail="$(df --output=avail -BG "$HOME" 2>/dev/null | awk 'NR==2{gsub(/[G ]/,"");print}')"
+if [ -n "$avail" ]; then
+  if   [ "$avail" -lt "$DISK_FAIL_GB" ]; then bad  "disk: ${avail}G free (< ${DISK_FAIL_GB}G floor) — critical"
+  elif [ "$avail" -lt "$DISK_WARN_GB" ]; then warn "disk: ${avail}G free (< ${DISK_WARN_GB}G)"
+  else ok "disk: ${avail}G free"; fi
+else
+  warn "disk: df parse failed"
+fi
+
+logf="${HOME}/.local/share/jarvis/logs/voice-agent.log"
+if [ -f "$logf" ]; then
+  sz="$(stat -c '%s' "$logf" 2>/dev/null || echo 0)"
+  if [ "${sz:-0}" -gt 209715200 ]; then   # 200MB = 4x the 50MB rotate cap
+    warn "voice-agent.log $((sz/1048576))MB (>200MB — rotation wedged? jarvis-log-rotate.timer)"
+  else
+    ok "voice-agent.log $((sz/1048576))MB (rotation ok)"
+  fi
+fi
+
+# ---------------------------------------------------------------- summary
+t_end="${EPOCHREALTIME}"
+total="$(awk -v a="$t_start" -v b="$t_end" 'BEGIN{printf "%.1f", b-a}')"
 printf '\n\033[1m== %s ==\033[0m\n' "$([ "$fail" = 0 ] && echo 'ALL HEALTHY' || echo 'ISSUES FOUND (see [FAIL] above)')"
+printf '%d ok, %d warn, %d fail — total %ss\n' "$n_ok" "$n_warn" "$n_fail" "$total"
 exit "$fail"
