@@ -317,13 +317,41 @@ class FasterWhisperSTT(stt.STT):
             pass  # notify-send absent / headless — the log line is the signal
 
     def _transcribe_sync(self, model, wav: bytes, lang: str | None):
+        # Anti-hallucination decode config. faster-whisper's DEFAULTS invent
+        # fluent text from silence/room-tone (2026-07-19 incident: 43 phantom
+        # "user" turns with no real audio — e.g. a 15-word sentence transcribed
+        # verbatim 6× across turns). The signature fix is
+        # condition_on_previous_text=False: the library default (True) feeds the
+        # previously decoded text back in as the decoder prompt, so ONE silence
+        # hallucination regurgitates forever. temperature=0.0 disables the
+        # temperature-fallback ladder (each fallback rung invents more on a
+        # low-confidence clip). vad_filter=True restores faster-whisper's own
+        # Silero silence gate — the upstream chain VAD opens on breath/room-tone,
+        # so re-gate here (the old "already gated" comment didn't hold in a live
+        # room).
         segments, info = model.transcribe(
             io.BytesIO(wav),
             language=lang,
-            beam_size=1,        # fast; this is a last-resort rung
-            vad_filter=False,   # the chain's Silero VAD already gated this audio
+            beam_size=1,                       # fast; this is a last-resort rung
+            temperature=0.0,                   # no temp-fallback ladder
+            condition_on_previous_text=False,  # CRITICAL: no prior-text feed-forward
+            vad_filter=True,                   # faster-whisper's own silence gate, ON
+            vad_parameters={"min_silence_duration_ms": 500},
         )
-        text = "".join(seg.text for seg in segments).strip()
+        # Stop discarding the per-segment confidence metadata (previously thrown
+        # away): drop any segment faster-whisper itself flags as near-certain
+        # silence (high no_speech_prob) or a very low-confidence decode (very
+        # negative avg_logprob). These signals catch novel multi-sentence
+        # hallucinations the fixed-phrase stt_gate structurally cannot. Kept
+        # conservative so genuine quiet speech (no_speech_prob≈0, avg_logprob>-1)
+        # is never dropped.
+        kept = [
+            seg.text
+            for seg in segments
+            if getattr(seg, "no_speech_prob", 0.0) < 0.85
+            and getattr(seg, "avg_logprob", 0.0) > -1.2
+        ]
+        text = "".join(kept).strip()
         return text, getattr(info, "language", None)
 
     async def _recognize_impl(
