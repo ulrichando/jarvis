@@ -4619,12 +4619,18 @@ class JarvisAgent(Agent):
         zero added latency on the transcription path.
         """
         tap = getattr(self.session, "_jarvis_partial_bargein_tap", None)
-        if tap is None:
+        # Smart Turn v3 end-of-turn buffer rides the same proven audio path
+        # (2026-07-20, todo #2). None unless JARVIS_SMART_TURN=1.
+        eou = getattr(self.session, "_jarvis_eou_buffer", None)
+        if tap is None and eou is None:
             return super().stt_node(audio, model_settings)
 
         async def _teed():
             async for frame in audio:
-                tap.feed_frame(frame)
+                if tap is not None:
+                    tap.feed_frame(frame)
+                if eou is not None:
+                    eou.feed_frame(frame)
                 yield frame
 
         return super().stt_node(_teed(), model_settings)
@@ -7144,6 +7150,17 @@ async def entrypoint(ctx: JobContext) -> None:
         f"label={getattr(llm_arg, '_jarvis_label', None)!r}"
     )
 
+    # Smart Turn v3 raw-audio end-of-turn detector (todo #2). Opt-in via
+    # JARVIS_SMART_TURN=1; None (default) leaves endpointing exactly as before.
+    # Reads a JARVIS-side audio buffer instead of the transcript (LiveKit's
+    # turn_detection seam is text-only). See pipeline/smart_turn.py.
+    try:
+        from pipeline.smart_turn import build_smart_turn_detector
+        _eou_detector = build_smart_turn_detector()
+    except Exception as _eou_e:
+        _eou_detector = None
+        logger.warning(f"[smart-turn] build failed: {_eou_e}")
+
     session = AgentSession(
         # 2026-05-02: raised from livekit's default 3 to 15. Browser
         # subagent chains commonly need 5+ tool calls (navigate,
@@ -7185,6 +7202,15 @@ async def entrypoint(ctx: JobContext) -> None:
         # graceful so the user can start a new turn mid-sentence.
         # Shape: TurnHandlingOptions TypedDict with three sections.
         turn_handling={
+            # Learned raw-audio end-of-turn detector (todo #2). None (default,
+            # JARVIS_SMART_TURN unset) = unchanged VAD endpointing. A
+            # SmartTurnEOU extends the endpointing wait (min_delay→max_delay)
+            # when the user seems mid-thought; fail-safe to min_delay on any
+            # internal error. MUST live inside turn_handling — the top-level
+            # turn_detection= kwarg is deprecated AND ignored once turn_handling
+            # is provided (agent_session.py only migrates it when turn_handling
+            # is absent). None here == key absent.
+            "turn_detection": _eou_detector,
             "interruption": {
                 # 2026-05-20 echo-aware barge-in: when the echo gate is ON
                 # (default), DISABLE the framework's built-in VAD interruption —
@@ -7422,6 +7448,13 @@ async def entrypoint(ctx: JobContext) -> None:
         session._jarvis_partial_bargein_tap = _pb_tap
     except Exception as e:
         logger.warning(f"[partial-bargein] init failed: {e}")
+
+    # Expose the Smart Turn EOU buffer to JarvisAgent.stt_node so the same tee
+    # that feeds the partial-barge-in tap also feeds the end-of-turn model
+    # (todo #2). No-op unless build_smart_turn_detector() returned a detector.
+    if _eou_detector is not None:
+        session._jarvis_eou_buffer = _eou_detector.buffer
+        logger.info("[smart-turn] EOU buffer wired to stt_node tee")
 
     # LiveKit screen-share consumer. Whenever the voice-client publishes
     # its SOURCE_SCREENSHARE track, this sink decodes the latest frame
