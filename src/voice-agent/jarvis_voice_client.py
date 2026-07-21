@@ -1444,6 +1444,17 @@ async def run_once(shutdown: asyncio.Event) -> None:
             last_drops_seen = _mic_drops[0]
             if not state.agent_present or state.muted:
                 continue
+            # During TTS the mic is intentionally gated (half-duplex mic-drop,
+            # JARVIS_PIPEWIRE_AEC=0), so capture_frame never drains — that's
+            # EXPECTED, not a deaf-agent stall. Skip the health check AND keep the
+            # drain clock fresh, so neither this watchdog nor the external voice
+            # healthcheck (which reads mic_last_drain) fires a false "mic stall"
+            # that would republish the mic mid-reply and re-open the echo path on
+            # long readouts. (2026-07-19, Fable review — FLAW B/C.)
+            if state.speaking:
+                _mic_last_drain[0] = time.monotonic()
+                last_drops_seen = _mic_drops[0]
+                continue
             stalled_s = time.monotonic() - _mic_last_drain[0]
             stalled = stalled_s >= _DRAIN_STALL_SEC
             trickling = drops_delta >= _DRAIN_TRICKLE_DROPS_PER_POLL
