@@ -316,6 +316,31 @@ class FasterWhisperSTT(stt.STT):
         except Exception:
             pass  # notify-send absent / headless — the log line is the signal
 
+    @staticmethod
+    def _hallucination_thresholds() -> tuple[float, float, float]:
+        """Per-segment drop thresholds, env-tunable so the operating point can
+        be calibrated to a real mic/room without a code edit — the confidence
+        values a minimal model can't guess in advance. Defaults:
+          - no_speech_prob CEILING 0.85 — faster-whisper's near-certain-silence
+            flag; drop at/above it.
+          - avg_logprob FLOOR -1.2 — a very low-confidence decode; drop at/below.
+          - compression_ratio CEILING 2.4 — Whisper's standard repetitive-
+            hallucination bar (gzip ratio; normal speech sits ~1.2-2.0). Catches
+            the verbatim-repeat / babble hallucinations that the two confidence
+            signals miss, because a confident hallucination can have GOOD logprob
+            and LOW no_speech_prob but still be pathologically repetitive.
+        Env: JARVIS_STT_NO_SPEECH_CEIL / _LOGPROB_FLOOR / _COMPRESSION_CEIL."""
+        def _f(env: str, default: float) -> float:
+            try:
+                return float(os.environ.get(env, default))
+            except (TypeError, ValueError):
+                return default
+        return (
+            _f("JARVIS_STT_NO_SPEECH_CEIL", 0.85),
+            _f("JARVIS_STT_LOGPROB_FLOOR", -1.2),
+            _f("JARVIS_STT_COMPRESSION_CEIL", 2.4),
+        )
+
     def _transcribe_sync(self, model, wav: bytes, lang: str | None):
         # Anti-hallucination decode config. faster-whisper's DEFAULTS invent
         # fluent text from silence/room-tone (2026-07-19 incident: 43 phantom
@@ -340,17 +365,32 @@ class FasterWhisperSTT(stt.STT):
         )
         # Stop discarding the per-segment confidence metadata (previously thrown
         # away): drop any segment faster-whisper itself flags as near-certain
-        # silence (high no_speech_prob) or a very low-confidence decode (very
-        # negative avg_logprob). These signals catch novel multi-sentence
+        # silence (high no_speech_prob), a very low-confidence decode (very
+        # negative avg_logprob), or a pathologically repetitive one (high
+        # compression_ratio — the signal that catches confident-but-babbling
+        # hallucinations the other two miss). These catch novel multi-sentence
         # hallucinations the fixed-phrase stt_gate structurally cannot. Kept
-        # conservative so genuine quiet speech (no_speech_prob≈0, avg_logprob>-1)
-        # is never dropped.
-        kept = [
-            seg.text
-            for seg in segments
-            if getattr(seg, "no_speech_prob", 0.0) < 0.85
-            and getattr(seg, "avg_logprob", 0.0) > -1.2
-        ]
+        # conservative (thresholds env-tunable) so genuine quiet speech
+        # (no_speech_prob≈0, avg_logprob>-1, compression≈1.5) is never dropped.
+        # Every drop is logged with its metrics so the operating point can be
+        # tuned from real mic/room data instead of guessed.
+        no_speech_ceil, logprob_floor, compression_ceil = self._hallucination_thresholds()
+        kept: list[str] = []
+        for seg in segments:
+            nsp = getattr(seg, "no_speech_prob", 0.0)
+            alp = getattr(seg, "avg_logprob", 0.0)
+            # compression_ratio missing → 0.0, which is falsy, so the ceiling
+            # never trips on a segment that didn't report it (older code / other
+            # backends stay kept, matching the no_speech/logprob defaults).
+            cr = getattr(seg, "compression_ratio", 0.0)
+            if nsp >= no_speech_ceil or alp <= logprob_floor or (cr and cr > compression_ceil):
+                logger.info(
+                    "[stt.local] dropped hallucination-suspect segment "
+                    "(no_speech=%.2f logprob=%.2f compression=%.2f): %r",
+                    nsp, alp, cr, (getattr(seg, "text", "") or "")[:80],
+                )
+                continue
+            kept.append(seg.text)
         text = "".join(kept).strip()
         return text, getattr(info, "language", None)
 
