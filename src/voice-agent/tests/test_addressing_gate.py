@@ -74,3 +74,21 @@ def test_quiet_hours_uses_more_generous_window(monkeypatch):
     # Idle longer than the daytime window but well within the night window.
     ja._last_real_interaction = time.monotonic() - (ja.ENGAGEMENT_WINDOW_SEC + 30)
     assert ja._is_unaddressed_ambient("go on then") is False
+
+
+def test_bare_greeting_answered_even_when_idle():
+    """A standalone greeting is a cold re-engage — answered without a vocative
+    (2026-07-20, TV gone). Both the gate and _turn_is_addressed accept it."""
+    _idle()
+    for g in ("hey", "hello", "hi", "you there?", "are you there", "hey there",
+              "hello jarvis", "Hi!"):
+        assert ja._is_unaddressed_ambient(g) is False, g
+        assert ja._turn_is_addressed(g) is True, g
+
+
+def test_greeting_regex_does_not_match_ambient_sentence():
+    """A longer ambient sentence that merely CONTAINS a greeting word is still
+    dropped when idle — the anchor keeps it from being a wake word."""
+    _idle()
+    assert ja._is_unaddressed_ambient("hi honey i'm home dinner is ready") is True
+    assert ja._is_unaddressed_ambient("hey did you see the game last night") is True
