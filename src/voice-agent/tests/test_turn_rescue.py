@@ -221,6 +221,16 @@ class TestResurrection:
     def _fast_grace(self, monkeypatch):
         monkeypatch.setattr(turn_rescue, "_RESURRECT_GRACE_S", 0.01)
         monkeypatch.setattr(turn_rescue, "_last_resurrect_mono", 0.0)
+        monkeypatch.setattr(turn_rescue, "_last_followup_mono", 0.0)
+
+    @pytest.mark.asyncio
+    async def test_no_resurrect_when_followup_just_fired(self, monkeypatch):
+        import asyncio, time as _t
+        activity, sess, killed = self._stubs()
+        monkeypatch.setattr(turn_rescue, "_last_followup_mono", _t.monotonic())
+        turn_rescue._schedule_resurrect(activity, killed, "moving.", turn_rescue._rescue_seq)
+        await asyncio.sleep(0.08)
+        assert not sess.generate_reply.called  # symmetric latch
 
     @pytest.mark.asyncio
     async def test_resurrects_when_rescuing_turn_went_silent(self):
@@ -282,6 +292,149 @@ class TestResurrection:
         turn_rescue._schedule_resurrect(activity, killed, "moving.", turn_rescue._rescue_seq)
         await asyncio.sleep(0.08)
         assert not sess.generate_reply.called
+
+
+class TestQuestionFollowup:
+    """_schedule_question_followup — after the barge-in's OWN reply finishes
+    (speaking→listening), circle back once to the prior question it interrupted,
+    unless a guard says otherwise."""
+
+    def _stubs(self, agent_state="speaking", prior_q="what's the weather?", blocked=False):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        sess = SimpleNamespace(
+            agent_state=agent_state,
+            generate_reply=MagicMock(),
+            _jarvis_prior_pending_question=prior_q,
+        )
+        activity = SimpleNamespace(
+            _session=sess,
+            _agent=SimpleNamespace(_jarvis_resurrect_blocked=lambda t: blocked),
+        )
+        return activity, sess
+
+    @pytest.fixture(autouse=True)
+    def _fast(self, monkeypatch):
+        monkeypatch.setattr(turn_rescue, "_FOLLOWUP_GRACE_S", 0.01)
+        monkeypatch.setattr(turn_rescue, "_FOLLOWUP_MAX_WAIT_S", 0.5)
+        monkeypatch.setattr(turn_rescue, "_last_followup_mono", 0.0)
+        monkeypatch.setattr(turn_rescue, "_last_resurrect_mono", 0.0)
+        monkeypatch.delenv("JARVIS_INTERRUPT_FOLLOWUP_DISABLED", raising=False)
+
+    @pytest.mark.asyncio
+    async def test_fires_after_bargein_reply(self):
+        import asyncio
+        activity, sess = self._stubs(agent_state="speaking")
+        turn_rescue._schedule_question_followup(activity, "what time is it?", turn_rescue._rescue_seq)
+        await asyncio.sleep(0.03)          # saw "speaking" (B's reply)
+        sess.agent_state = "listening"     # B's reply finished
+        await asyncio.sleep(0.05)
+        assert sess.generate_reply.called
+        assert "what's the weather" in sess.generate_reply.call_args.kwargs["instructions"]
+        assert sess._jarvis_prior_pending_question is None  # consumed — fire once
+
+    @pytest.mark.asyncio
+    async def test_no_prior_question(self):
+        import asyncio
+        activity, sess = self._stubs(prior_q=None)
+        turn_rescue._schedule_question_followup(activity, "x", turn_rescue._rescue_seq)
+        await asyncio.sleep(0.05)
+        assert not sess.generate_reply.called
+
+    @pytest.mark.asyncio
+    async def test_blocked_stop(self):
+        import asyncio
+        activity, sess = self._stubs(blocked=True)
+        turn_rescue._schedule_question_followup(activity, "stop", turn_rescue._rescue_seq)
+        await asyncio.sleep(0.05)
+        assert not sess.generate_reply.called
+
+    @pytest.mark.asyncio
+    async def test_no_reply_never_speaks(self):
+        # Barge-in produced NO reply (agent stays listening) → that's
+        # resurrection's case, not ours → no follow-up (mutual exclusion).
+        import asyncio
+        activity, sess = self._stubs(agent_state="listening")
+        turn_rescue._schedule_question_followup(activity, "x", turn_rescue._rescue_seq)
+        await asyncio.sleep(0.6)  # past _FOLLOWUP_MAX_WAIT_S
+        assert not sess.generate_reply.called
+
+    @pytest.mark.asyncio
+    async def test_superseded(self, monkeypatch):
+        import asyncio
+        activity, sess = self._stubs()
+        stale = turn_rescue._rescue_seq
+        monkeypatch.setattr(turn_rescue, "_rescue_seq", stale + 1)
+        turn_rescue._schedule_question_followup(activity, "x", stale)
+        await asyncio.sleep(0.05)
+        assert not sess.generate_reply.called
+
+    @pytest.mark.asyncio
+    async def test_cooldown(self, monkeypatch):
+        import asyncio, time as _t
+        activity, sess = self._stubs()
+        monkeypatch.setattr(turn_rescue, "_last_followup_mono", _t.monotonic())
+        turn_rescue._schedule_question_followup(activity, "x", turn_rescue._rescue_seq)
+        await asyncio.sleep(0.03); sess.agent_state = "listening"; await asyncio.sleep(0.05)
+        assert not sess.generate_reply.called
+
+    @pytest.mark.asyncio
+    async def test_resurrection_latch_prevents_double(self, monkeypatch):
+        import asyncio, time as _t
+        activity, sess = self._stubs()
+        monkeypatch.setattr(turn_rescue, "_last_resurrect_mono", _t.monotonic())
+        turn_rescue._schedule_question_followup(activity, "x", turn_rescue._rescue_seq)
+        await asyncio.sleep(0.03); sess.agent_state = "listening"; await asyncio.sleep(0.05)
+        assert not sess.generate_reply.called
+
+    @pytest.mark.asyncio
+    async def test_stash_changed_mid_wait(self):
+        import asyncio
+        activity, sess = self._stubs()
+        turn_rescue._schedule_question_followup(activity, "x", turn_rescue._rescue_seq)
+        await asyncio.sleep(0.03)
+        sess._jarvis_prior_pending_question = "a different newer question?"  # topic change
+        sess.agent_state = "listening"
+        await asyncio.sleep(0.05)
+        assert not sess.generate_reply.called
+
+    @pytest.mark.asyncio
+    async def test_kill_switch(self, monkeypatch):
+        import asyncio
+        monkeypatch.setenv("JARVIS_INTERRUPT_FOLLOWUP_DISABLED", "1")
+        activity, sess = self._stubs()
+        turn_rescue._schedule_question_followup(activity, "x", turn_rescue._rescue_seq)
+        await asyncio.sleep(0.03); sess.agent_state = "listening"; await asyncio.sleep(0.05)
+        assert not sess.generate_reply.called
+
+    @pytest.mark.asyncio
+    async def test_prior_question_stop_phrase_not_reraised(self):
+        # "can you stop" is question-shaped but a stop → never circle back to it,
+        # even though the barge-in transcript itself is a benign question.
+        import asyncio
+        activity, sess = self._stubs(prior_q="can you stop")
+        activity._agent._jarvis_resurrect_blocked = lambda t: "stop" in (t or "")
+        turn_rescue._schedule_question_followup(activity, "what time is it?", turn_rescue._rescue_seq)
+        await asyncio.sleep(0.03); sess.agent_state = "listening"; await asyncio.sleep(0.05)
+        assert not sess.generate_reply.called
+
+
+class TestLooksLikeQuestion:
+    @pytest.mark.parametrize("text,expected", [
+        ("what time is it?", True),
+        ("how does this work", True),
+        ("Is the server up?", True),
+        ("who is the minister of Cameroon", True),
+        ("open the browser", False),
+        ("mute yourself", False),
+        ("that's cool", False),
+        ("", False),
+        ("   ", False),
+        ("do it", True),  # known benign FP: "do" is an aux — cooldown-bounded
+    ])
+    def test_question_detection(self, text, expected):
+        import jarvis_agent as ja
+        assert ja._looks_like_question(text) is expected
 
 
 class TestInstall:
