@@ -726,25 +726,53 @@ _GREETING_RE = re.compile(
 )
 
 
-def _is_unaddressed_ambient(text: str) -> bool:
-    """Decide whether a transcript should be dropped as ambient room audio.
+def _addressing_decision(text: str, use_directedness: bool) -> tuple[bool, dict]:
+    """Single source of truth for the ambient-drop decision (returns
+    (should_drop, debug)). Vocative / wake / bare-greeting are a HARD ACCEPT in
+    BOTH modes; only the previously time-window-gated tail differs:
 
-    True when the addressing gate is on, the text carries NO "Jarvis" vocative,
-    NO wake phrase and is NOT a bare greeting, AND there has been no real
-    interaction within the engagement window (tighter by day via
-    ENGAGEMENT_WINDOW_SEC, generous at night via QUIET_HOURS_WINDOW_SEC). Pure
-    function of `text` + module state so the gate is unit-testable. Wired into
-    on_user_turn_completed."""
+      - use_directedness=True  → the fused directedness score (todo #3)
+      - use_directedness=False → the legacy recency time-window
+
+    Pure function of `text` + module state, so both modes are unit-testable and
+    the shadow logger can evaluate them side by side. Fail-safe: any error in
+    the directedness path falls through to the legacy window."""
     if not ADDRESSING_GATE_ON:
-        return False
+        return False, {"reason": "gate_off"}
     if (
         _JARVIS_NAME_RE.search(text)
         or _is_command(text, _WAKE_PATTERNS)
         or _GREETING_RE.match(text)
     ):
-        return False  # explicitly addressed / bare greeting — always answer
+        return False, {"reason": "hard_accept"}  # vocative / wake / greeting
+    if use_directedness:
+        try:
+            from pipeline import directedness
+            elapsed = time.monotonic() - _last_real_interaction
+            s, feats = directedness.score(text, elapsed)
+            return (s < directedness.threshold()), {"reason": "score", **feats}
+        except Exception:
+            pass  # fail-safe → legacy window below
     window = QUIET_HOURS_WINDOW_SEC if _in_quiet_hours() else ENGAGEMENT_WINDOW_SEC
-    return not _recent_interaction(window)
+    recent = _recent_interaction(window)
+    return (not recent), {"reason": "window", "recent": recent, "window": window}
+
+
+def _is_unaddressed_ambient(text: str) -> bool:
+    """Decide whether a transcript should be dropped as ambient room audio.
+
+    Delegates to _addressing_decision, using the fused directedness score when
+    JARVIS_DIR_GATE=1 (todo #3) and the legacy recency window otherwise. Pure
+    function of `text` + module state so the gate is unit-testable. Wired into
+    on_user_turn_completed and mirrored by _would_discard_transcript — both stay
+    in sync automatically because they route through this one function."""
+    try:
+        from pipeline import directedness
+        use_dir = directedness.acting()
+    except Exception:
+        use_dir = False  # fail-safe: legacy window if the module is unavailable
+    drop, _ = _addressing_decision(text, use_directedness=use_dir)
+    return drop
 
 
 def _would_discard_transcript(text: str) -> bool:
@@ -4898,7 +4926,24 @@ class JarvisAgent(Agent):
         # this the gate was quiet-hours-only AND quiet hours defaulted OFF, so
         # JARVIS answered ALL ambient 24/7 (user 2026-06-25: "responds when I
         # walk by, not addressed to me"). Kill-switch: JARVIS_ADDRESSING_GATE=0.
-        if _is_unaddressed_ambient(text):
+        drop_ambient = _is_unaddressed_ambient(text)
+        # Directedness shadow/telemetry (todo #3): log what the fused score
+        # WOULD decide vs the regex/window, EVERY turn, so FRR@fixed-FAR can be
+        # tuned offline from real turns. Logging only — the decision above is
+        # unchanged unless JARVIS_DIR_GATE=1 (which flips _is_unaddressed_ambient
+        # to the score). Never raises.
+        try:
+            from pipeline import directedness as _dir
+            _sdrop, _sdbg = _addressing_decision(text, use_directedness=True)
+            _rdrop, _ = _addressing_decision(text, use_directedness=False)
+            logger.info(
+                "[directedness] acting=%s score_drop=%s regex_drop=%s dbg=%s text=%r",
+                _dir.acting(), _sdrop, _rdrop, _sdbg, text[:80],
+            )
+            self.session._jarvis_directedness_dbg = _sdbg
+        except Exception:
+            pass
+        if drop_ambient:
             logger.info(
                 f"[addressing-gate] dropping ambient turn (not addressed): "
                 f"{text[:80]!r}"
