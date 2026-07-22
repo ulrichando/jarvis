@@ -64,6 +64,7 @@ CLI_CMD=( "$BUN"
   --feature=HOOK_PROMPTS
   --feature=EXTRACT_MEMORIES
   --feature=BUILDING_CLAUDE_APPS
+  --feature=AWAY_SUMMARY
   --define 'MACRO.VERSION="2.1.108"'
   --define 'MACRO.BUILD_TIME=""'
   --define 'MACRO.PACKAGE_URL="@anthropic-ai/claude-code"'
