@@ -19,6 +19,13 @@ import type {
 import { createAttachmentMessage } from '../utils/attachments.js'
 import { logForDebugging } from '../utils/debug.js'
 import { errorMessage } from '../utils/errors.js'
+import { evaluateGoal } from '../utils/goalEvaluator.js'
+import {
+  clearGoal,
+  getGoal,
+  getGoalMaxContinuations,
+  recordContinuation,
+} from '../utils/goalState.js'
 import type { REPLHookContext } from '../utils/hooks/postSamplingHooks.js'
 import {
   executeStopHooks,
@@ -447,6 +454,72 @@ export async function* handleStopHooks(
       if (teammateBlockingErrors.length > 0) {
         return {
           blockingErrors: teammateBlockingErrors,
+          preventContinuation: false,
+        }
+      }
+    }
+
+    // ── /goal auto-continue ───────────────────────────────────────────────
+    // Runs only when every Stop/TaskCompleted/TeammateIdle hook above allowed
+    // the turn to end (preventContinuation and hook blockingErrors return
+    // earlier). Main-conversation queries only:
+    //   - 'repl_main_thread' (+ ':outputStyle:*' variants) — interactive REPL
+    //   - 'sdk' — headless -p / SDK main query (print.ts → QueryEngine.ask)
+    // Never subagents (toolUseContext.agentId set — they use agent:* sources
+    // anyway) and never side-channel sources (away_summary / compact /
+    // session_memory / goal_evaluator itself fail the allowlist). Returning
+    // blockingErrors with preventContinuation:false makes query.ts continue
+    // the loop via its existing stop_hook_blocking transition, feeding the
+    // evaluator's reason back as a meta user message. Those continuations do
+    // NOT bump turnCount, so recordContinuation's cap is the runaway guard.
+    const activeGoal = getGoal()
+    if (
+      activeGoal &&
+      !toolUseContext.agentId &&
+      (querySource.startsWith('repl_main_thread') || querySource === 'sdk') &&
+      !toolUseContext.abortController.signal.aborted
+    ) {
+      const verdict = await evaluateGoal(
+        [...messagesForQuery, ...assistantMessages],
+        activeGoal.condition,
+        toolUseContext.abortController.signal,
+      )
+      if (toolUseContext.abortController.signal.aborted) {
+        // Ctrl+C during evaluation — stop the loop now. The goal stays set
+        // (visible in /goal status); /goal clear removes it.
+        return { blockingErrors: [], preventContinuation: false }
+      }
+      if (verdict.met) {
+        // verdict.failOpen marks the evaluator's fail-open path (API error /
+        // empty / ambiguous reply → met:true): a broken judge must never cause
+        // an infinite loop, so we stop — but record it as 'error' so /goal
+        // status doesn't later claim the goal "was met".
+        clearGoal(verdict.failOpen ? 'error' : 'met')
+        yield createSystemMessage(
+          verdict.failOpen
+            ? `Goal auto-continue stopped (evaluator problem): ${verdict.reason}`
+            : `Goal met — auto-continue stopped: ${verdict.reason}`,
+          verdict.failOpen ? 'warning' : 'info',
+        )
+      } else if (!recordContinuation(verdict.reason)) {
+        clearGoal('cap')
+        yield createSystemMessage(
+          `Goal stopped: hit the ${getGoalMaxContinuations()}-continuation cap without meeting the condition. Last evaluator verdict: ${verdict.reason}`,
+          'warning',
+        )
+      } else {
+        const continuationMessage = createUserMessage({
+          content:
+            `[GOAL MODE — automatic continuation ${activeGoal.continuations}/${getGoalMaxContinuations()}] ` +
+            `The completion condition is not yet met: "${activeGoal.condition}". ` +
+            `Evaluator: ${verdict.reason} ` +
+            `Continue working toward the condition; only stop when tool output shows it is genuinely met. ` +
+            `(To stop: press Esc/Ctrl+C to interrupt now; /goal clear takes effect once the loop yields.)`,
+          isMeta: true,
+        })
+        yield continuationMessage
+        return {
+          blockingErrors: [continuationMessage],
           preventContinuation: false,
         }
       }

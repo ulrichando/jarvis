@@ -144,6 +144,15 @@ export type LocalJSXCommandModule = {
 type LocalJSXCommand = {
   type: 'local-jsx'
   /**
+   * Opt-in to headless (-p / SDK) mode. Default false: local-jsx commands
+   * render Ink UI, so main.tsx filters them out of the headless command
+   * list. Commands whose call() never renders JSX (always invokes onDone()
+   * and returns null — e.g. /goal) can set this to run headless; the
+   * local-jsx case in processSlashCommand.tsx already handles
+   * isNonInteractiveSession by discarding any returned JSX.
+   */
+  supportsNonInteractive?: boolean
+  /**
    * Lazy-load the command implementation.
    * Returns a module with a call() function.
    * This defers loading heavy dependencies until the command is invoked.
