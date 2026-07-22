@@ -44,10 +44,12 @@ export function useAwaySummary(
   messagesRef.current = messages
   isLoadingRef.current = isLoading
 
-  // 3P default: false
+  // jarvis: default flipped to true (upstream 3P default: false). With
+  // DISABLE_TELEMETRY=1 GrowthBook never fetches, so this always returns the
+  // default; the USER_TYPE==='ant' override paths are off-limits per cli.md.
   const gbEnabled = getFeatureValue_CACHED_MAY_BE_STALE(
     'tengu_sedge_lantern',
-    false,
+    true,
   )
 
   useEffect(() => {
