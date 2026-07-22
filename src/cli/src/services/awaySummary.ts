@@ -15,11 +15,24 @@ import { getSessionMemoryContent } from './SessionMemory/sessionMemoryUtils.js'
 // large sessions. 30 messages ≈ ~15 exchanges, plenty for "where we left off."
 const RECENT_MESSAGE_WINDOW = 30
 
-function buildAwaySummaryPrompt(memory: string | null): string {
+/**
+ * 'away'   — automatic "while you were away" card (terminal blurred 5 min).
+ * 'manual' — user-invoked /recap; same output contract, different lead-in.
+ */
+export type AwaySummaryVariant = 'away' | 'manual'
+
+function buildAwaySummaryPrompt(
+  memory: string | null,
+  variant: AwaySummaryVariant,
+): string {
   const memoryBlock = memory
     ? `Session memory (broader context):\n${memory}\n\n`
     : ''
-  return `${memoryBlock}The user stepped away and is coming back. Write exactly 1-3 short sentences. Start by stating the high-level task — what they are building or debugging, not implementation details. Next: the concrete next step. Skip status reports and commit recaps.`
+  const leadIn =
+    variant === 'manual'
+      ? 'The user asked for a quick recap of this session.'
+      : 'The user stepped away and is coming back.'
+  return `${memoryBlock}${leadIn} Write exactly 1-3 short sentences. Start by stating the high-level task — what they are building or debugging, not implementation details. Next: the concrete next step. Skip status reports and commit recaps.`
 }
 
 /**
@@ -29,6 +42,7 @@ function buildAwaySummaryPrompt(memory: string | null): string {
 export async function generateAwaySummary(
   messages: readonly Message[],
   signal: AbortSignal,
+  variant: AwaySummaryVariant = 'away',
 ): Promise<string | null> {
   if (messages.length === 0) {
     return null
@@ -37,7 +51,9 @@ export async function generateAwaySummary(
   try {
     const memory = await getSessionMemoryContent()
     const recent = messages.slice(-RECENT_MESSAGE_WINDOW)
-    recent.push(createUserMessage({ content: buildAwaySummaryPrompt(memory) }))
+    recent.push(
+      createUserMessage({ content: buildAwaySummaryPrompt(memory, variant) }),
+    )
     const response = await queryModelWithoutStreaming({
       messages: recent,
       systemPrompt: asSystemPrompt([]),
