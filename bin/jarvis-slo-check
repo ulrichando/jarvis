@@ -22,6 +22,11 @@
 #                                   means caching silently broke (provider TTL
 #                                   regression, prompt-prefix churn) — pure cost/
 #                                   latency bleed with no user-visible failure.
+#   JARVIS_SLO_MAX_STALE_S=86400    skip evaluation when the newest turn is older
+#                                   than this — the window is a frozen snapshot
+#                                   (idle OR outage; undecidable from telemetry
+#                                   alone, so it must NOT page — liveness paging
+#                                   is jarvis-health's job).
 set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,29 +43,44 @@ T_FB="${JARVIS_SLO_FALLBACK_PCT:-40}"
 T_TE="${JARVIS_SLO_TOOLERR_PCT:-40}"
 T_RSS="${JARVIS_SLO_RSS_MB:-4500}"
 T_CACHE="${JARVIS_SLO_CACHE_HIT_PCT:-60}"
+T_STALE="${JARVIS_SLO_MAX_STALE_S:-86400}"
 
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$LOG"; }
 [ -f "$DB" ] || { log "no telemetry db"; exit 0; }
 
-# One query → "count|ttfw_p95|fallback_pct|toolerr_pct|rss_max|cache_hit_pct|llm_turns"
+# One query → "count|ttfw_p95|fallback_pct|toolerr_pct|rss_max|cache_hit_pct|llm_turns|newest_age_s"
 # over last WIN turns.
-read -r CNT P95 FB TE RSS CH CN < <(sqlite3 -separator ' ' "$DB" "
+read -r CNT P95 FB TE RSS CH CN AGE < <(sqlite3 -separator ' ' "$DB" "
 WITH recent AS (SELECT * FROM turns ORDER BY ts_utc DESC LIMIT ${WIN})
 SELECT
   (SELECT COUNT(*) FROM recent),
   IFNULL((SELECT ttfw_ms FROM (SELECT ttfw_ms FROM recent WHERE ttfw_ms IS NOT NULL ORDER BY ttfw_ms)
-          LIMIT 1 OFFSET (SELECT CAST(0.95*(COUNT(*)-1) AS INT) FROM recent WHERE ttfw_ms IS NOT NULL)), 0),
+          LIMIT 1 OFFSET (SELECT (19*COUNT(*)+19)/20 - 1 FROM recent WHERE ttfw_ms IS NOT NULL)), 0),
   IFNULL((SELECT ROUND(100.0*SUM(COALESCE(route_fallback,0))/COUNT(*),0) FROM recent), 0),
   IFNULL((SELECT ROUND(100.0*SUM(COALESCE(had_tool_error,0))/COUNT(*),0) FROM recent), 0),
   IFNULL((SELECT ROUND(MAX(rss_mb),0) FROM recent), 0),
   IFNULL((SELECT ROUND(100.0*SUM(COALESCE(prompt_cached_tokens,0)>0)/COUNT(*),0)
           FROM recent WHERE COALESCE(input_tokens,0)>0), 100),
-  IFNULL((SELECT COUNT(*) FROM recent WHERE COALESCE(input_tokens,0)>0), 0);
+  IFNULL((SELECT COUNT(*) FROM recent WHERE COALESCE(input_tokens,0)>0), 0),
+  IFNULL((SELECT CAST(strftime('%s','now') - strftime('%s', MAX(ts_utc)) AS INT) FROM recent), 999999999);
 " 2>/dev/null)
 
 CNT="${CNT:-0}"
 if [ "$CNT" -lt "$MIN" ]; then
   log "skip — only ${CNT} turns in window (< ${MIN})"
+  exit 0
+fi
+
+# Staleness guard: if the newest turn is older than T_STALE, the window is a
+# frozen snapshot — user idle (normal) or agent down (jarvis-health's job to
+# page). Either way, asserting "within budget" on it is meaningless. Skip like
+# the MIN_SAMPLES case. Deliberately NOT a breach: absence of turns is
+# ambiguous on a single-user box and must never page. Latch left untouched:
+# clearing it here would re-page the same continuing breach after every idle
+# gap, and a stale window is no evidence of recovery either.
+AGE="${AGE:-999999999}"
+if [ "${AGE%.*}" -gt "$T_STALE" ] 2>/dev/null; then
+  log "skip — newest turn ${AGE}s old (> ${T_STALE}s): window stale, not asserting budget"
   exit 0
 fi
 
