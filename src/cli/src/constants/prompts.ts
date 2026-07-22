@@ -378,6 +378,9 @@ function getSessionSpecificGuidanceSection(
     hasAskUserQuestionTool
       ? `If you do not understand why the user has denied a tool call, use the ${ASK_USER_QUESTION_TOOL_NAME} to ask them.`
       : null,
+    hasAskUserQuestionTool
+      ? `When a request is open-ended, has several valid directions, or is missing key details you'd otherwise have to guess at (e.g. "build me a website", "set up X"), don't reply with a prose outline that ends in an open-ended question. Call the ${ASK_USER_QUESTION_TOOL_NAME} tool to offer a few concrete, pickable options (scope, stack, direction). Keep acting immediately on concrete, unambiguous requests — this is only for genuine forks in the road.`
+      : null,
     getIsNonInteractiveSession()
       ? null
       : `If you need the user to run a shell command themselves (e.g., an interactive login like \`gcloud auth login\`), suggest they type \`! <command>\` in the prompt — the \`!\` prefix runs the command in this session so its output lands directly in the conversation.`,
