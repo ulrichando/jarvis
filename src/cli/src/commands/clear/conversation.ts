@@ -24,6 +24,7 @@ import { isLocalShellTask } from '../../tasks/LocalShellTask/guards.js'
 import { asAgentId } from '../../types/ids.js'
 import type { Message } from '../../types/message.js'
 import { createEmptyAttributionState } from '../../utils/commitAttribution.js'
+import { clearGoal } from '../../utils/goalState.js'
 import type { FileStateCache } from '../../utils/fileStateCache.js'
 import {
   executeSessionEndHooks,
@@ -63,6 +64,11 @@ export async function clearConversation({
   setAppState?: (f: (prev: AppState) => AppState) => void
   setConversationId?: (id: UUID) => void
 }): Promise<void> {
+  // Drop any active /goal — the auto-continue loop must NOT survive a
+  // conversation wipe (it would relaunch on the empty session with a stale
+  // condition). Session-scoped state, same as the transcript being cleared.
+  clearGoal('user')
+
   // Execute SessionEnd hooks before clearing (bounded by
   // CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS, default 1.5s)
   const sessionEndTimeoutMs = getSessionEndHookTimeoutMs()

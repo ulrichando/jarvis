@@ -3804,14 +3804,19 @@ async function run(): Promise<CommanderCommand> {
           process.exit(1);
         }
 
-        // Headless mode supports all prompt commands and some local commands
+        // Headless mode supports all prompt commands and some local commands.
+        // local-jsx commands are excluded by default (they render Ink UI) —
+        // commands that never render JSX (call() always invokes onDone and
+        // returns null, e.g. /goal) opt in via supportsNonInteractive.
         // If disableSlashCommands is true, return empty array
         const commandsHeadless = disableSlashCommands
           ? []
           : commands.filter(
               (command) =>
                 (command.type === "prompt" && !command.disableNonInteractive) ||
-                (command.type === "local" && command.supportsNonInteractive),
+                (command.type === "local" && command.supportsNonInteractive) ||
+                (command.type === "local-jsx" &&
+                  command.supportsNonInteractive === true),
             );
         const defaultState = getDefaultAppState();
         const headlessInitialState: AppState = {
