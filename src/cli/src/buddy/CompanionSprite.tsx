@@ -1,7 +1,7 @@
 import { c as _c } from "react/compiler-runtime";
 import { feature } from 'bun:bundle';
 import figures from 'figures';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { stringWidth } from '../ink/stringWidth.js';
 import { Box, Text } from '../ink.js';
@@ -182,7 +182,6 @@ export function CompanionSprite(): React.ReactNode {
     columns
   } = useTerminalSize();
   const [tick, setTick] = useState(0);
-  const lastSpokeTick = useRef(0);
   // Sync-during-render (not useEffect) so the first post-pet render already
   // has petStartTick=tick and petAge=0 — otherwise frame 0 is skipped.
   const [{
@@ -198,26 +197,41 @@ export function CompanionSprite(): React.ReactNode {
       forPetAt: petAt
     });
   }
+  // Same sync-during-render pattern for the speech bubble: the first render
+  // of a NEW quip must already see spokeTick=tick (bubbleAge=0). The old
+  // useEffect-updated ref lagged one commit, so every new bubble's first
+  // frame rendered in the dimmed about-to-fade style.
+  const [{
+    spokeTick,
+    forReaction
+  }, setSpoke] = useState({
+    spokeTick: 0,
+    forReaction: reaction
+  });
+  if (reaction !== forReaction) {
+    setSpoke({
+      spokeTick: tick,
+      forReaction: reaction
+    });
+  }
   useEffect(() => {
     const timer = setInterval(setT => setT((t: number) => t + 1), TICK_MS, setTick);
     return () => clearInterval(timer);
   }, []);
   useEffect(() => {
     if (!reaction) return;
-    lastSpokeTick.current = tick;
     const timer = setTimeout(setA => setA((prev: AppState) => prev.companionReaction === undefined ? prev : {
       ...prev,
       companionReaction: undefined
     }), BUBBLE_SHOW * TICK_MS, setAppState);
     return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick intentionally captured at reaction-change, not tracked
   }, [reaction, setAppState]);
   if (!feature('BUDDY')) return null;
   const companion = getCompanion();
   if (!companion || getGlobalConfig().companionMuted) return null;
   const color = RARITY_COLORS[companion.rarity];
   const colWidth = spriteColWidth(stringWidth(companion.name));
-  const bubbleAge = reaction ? tick - lastSpokeTick.current : 0;
+  const bubbleAge = reaction ? tick - spokeTick : 0;
   const fading = reaction !== undefined && bubbleAge >= BUBBLE_SHOW - FADE_WINDOW;
   const petAge = petAt ? tick - petStartTick : Infinity;
   const petting = petAge * TICK_MS < PET_BURST_MS;
