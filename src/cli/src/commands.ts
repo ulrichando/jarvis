@@ -68,10 +68,13 @@ const assistantCommand = feature('KAIROS')
 const bridge = feature('BRIDGE_MODE')
   ? require('./commands/bridge/index.js').default
   : null
-const remoteControlServerCommand =
-  feature('DAEMON') && feature('BRIDGE_MODE')
-    ? require('./commands/remoteControlServer/index.js').default
-    : null
+// remoteControlServer's command source was stripped from the public build — the
+// dir is absent in jarvis AND the donor, so the old
+// `require('./commands/remoteControlServer/index.js')` threw "Cannot find
+// module" the instant DAEMON was enabled (BRIDGE_MODE is already on). Hardcoded
+// null so flipping DAEMON can never crash boot; restore the require only if the
+// module is ever re-added. Remote control itself is the `bridge` command above.
+const remoteControlServerCommand = null
 const voiceCommand = feature('VOICE_MODE')
   ? require('./commands/voice/index.js').default
   : null
@@ -258,7 +261,10 @@ export const INTERNAL_ONLY_COMMANDS = [
   summary,
   antTrace,
   perfIssue,
-  env,
+  // env moved to the main COMMANDS list — it's a harmless environment readout
+  // that JARVIS (external) should surface. INTERNAL_ONLY_COMMANDS is stripped
+  // for external builds (USER_TYPE!=='ant'), which is why /env never surfaced
+  // despite isEnabled()=true. Same move as version/teleport/ultraplan.
   oauthRefresh,
   debugToolCall,
   autofixPr,
@@ -287,6 +293,7 @@ const COMMANDS = memoize((): Command[] => [
   diff,
   doctor,
   effort,
+  env,
   exit,
   fast,
   files,
