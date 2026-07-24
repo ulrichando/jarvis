@@ -50,6 +50,7 @@ some confabs slip through to keep precision near 100%.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -389,6 +390,71 @@ def _msg_attr(obj: Any, name: str) -> Any:
     if isinstance(obj, dict):
         return obj.get(name)
     return getattr(obj, name, None)
+
+
+def tool_result_is_error(payload: Any) -> bool:
+    """True if a tool's returned output payload signals FAILURE.
+
+    JARVIS tools report errors IN-BAND (a normal return value), not by
+    raising: ``tools/_adapter._run`` swallows any exception into a plain
+    ``"Error: <tool> failed: ..."`` string, and most handlers return
+    ``tool_error(...)`` → ``{"error": ...}`` JSON. The confab guards used
+    to treat ANY returned result as proof the action succeeded, so a
+    "Done!" voiced over a failed tool passed as clean (mode: claims-done-
+    without-checking). This makes the guards success-aware.
+
+    Detects (HIGH PRECISION — few false positives, because this gates a
+    reply-facing honest-error hedge: a false positive makes JARVIS wrongly
+    say "that didn't go through" over a SUCCESS, which is itself a confab):
+      * structured JSON dict — truthy ``"error"``, ``status == "error"``,
+        or ``"ok": false`` (a failed ``computer_use`` ActionResult — that
+        tool's ``_result_succeeded`` documents the shape, which carries
+        NO error/status/exit_code key);
+      * a plain string beginning with a known error marker
+        (``"Error:"`` / ``"Browser task failed"``).
+
+    Deliberately does NOT infer failure from a non-zero ``exit_code``:
+    too many benign non-zero exits (grep/rg no-match, diff files-differ,
+    ``test`` false, git diff, and — crucially — UN-annotated ones like
+    ``pkill``/``systemctl is-active``/``which`` not-found) are
+    indistinguishable from real failures at the exit-code level, and
+    terminal only annotates some. Real terminal failures (timeout /
+    exec-fail / spawn-fail / blocked) set a truthy ``"error"``, caught
+    above. Trading a few missed exit-code-only failures for ZERO
+    benign-exit false positives is the right call for a reply gate.
+
+    A null ``error``, or an ordinary string, is NOT an error.
+    String-sniffing is last-resort and prefix-anchored so a ``read_file``
+    whose *contents* mention "error" doesn't trip it.
+    """
+    if payload is None:
+        return False
+    data: Any = payload
+    if isinstance(data, str):
+        s = data.strip()
+        if not s:
+            return False
+        if s[0] in "{[":
+            try:
+                data = json.loads(s)
+            except Exception:
+                data = s  # not JSON — fall through to the string check
+        else:
+            data = s
+    if isinstance(data, dict):
+        if data.get("error") not in (None, "", False):
+            return True
+        if str(data.get("status", "")).lower() == "error":
+            return True
+        if data.get("ok") is False:
+            # computer_use failed ActionResult: {"ok": false, "action",
+            # "message"} — no error/status/exit_code key. Mirrors
+            # tools/computer_use.py::_result_succeeded.
+            return True
+        return False
+    if isinstance(data, str):
+        return data.startswith("Error:") or data.startswith("Browser task failed")
+    return False
 
 
 def _has_recent_memory_tool_call(prior_messages: list) -> bool:

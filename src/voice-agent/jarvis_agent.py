@@ -4254,6 +4254,15 @@ async def pre_tts_confab_gate_filter(text):
     # tool actually completed — the user hears the claim before the
     # action finishes. We scan the last 8 chat_ctx items for a
     # FunctionCallOutput or tool_result to confirm the tool finished.
+    # NOTE (2026-07-24): error-awareness here was REVERTED after preflight
+    # found it routes a genuinely-failed-tool + success-claim into the
+    # confab retry chain, which can't re-run tools and can yield empty text
+    # → silence (worse than the original confab). Mode-2 ("claims done
+    # without checking") enforcement is deferred until the retry chain gets
+    # an honest-hedge remediation path. has_tool_results stays presence-only.
+    # The success/error classifier (confab_detector.tool_result_is_error)
+    # still feeds the had_tool_error telemetry, which measures how often
+    # this happens — the data that justifies the retry-chain work.
     has_tool_results = False
     if tool_calls:
         try:
@@ -6386,6 +6395,7 @@ def _register_state_tracking_handlers(session) -> None:
             # handler below as the supervisor's tools fire this turn.
             try:
                 session._jarvis_tool_calls_this_turn = []
+                session._jarvis_had_tool_error_this_turn = False
                 session._jarvis_confab_check_state = None
                 session._jarvis_confab_pattern_matched = None
                 session._jarvis_confab_retry_models = []
@@ -6431,6 +6441,22 @@ def _register_state_tracking_handlers(session) -> None:
             if not calls:
                 return
             _bump_turn_activity(session)  # tool batch ran = genuine turn progress
+            # Wire the (previously dead) had_tool_error telemetry flag: our
+            # tools report failure in-band, so scan this batch's outputs for
+            # an error payload. Feeds the turn writer + makes the failure
+            # mode queryable (was hardcoded 0 across every turn).
+            try:
+                from confab_detector import tool_result_is_error
+                for fco in (getattr(ev, "function_call_outputs", None) or []):
+                    if fco is None:
+                        continue
+                    if getattr(fco, "is_error", False) or tool_result_is_error(
+                        getattr(fco, "output", None)
+                    ):
+                        session._jarvis_had_tool_error_this_turn = True
+                        break
+            except Exception:
+                pass
             # Tool-batch completion is no longer a moment we need to
             # re-touch the thinking-flag file — the heartbeat (started
             # in _on_user_input) refreshes it every 3s for the whole
