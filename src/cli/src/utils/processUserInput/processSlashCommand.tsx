@@ -798,6 +798,14 @@ async function getMessagesForSlashCommand(
                     ],
               shouldQuery: options?.shouldQuery ?? false,
               command,
+              // Surface the onDone text as the -p / SDK result, matching the
+              // type:'local' path at the bottom of this switch. It is only
+              // consumed on the no-query path (QueryEngine returns
+              // `resultText ?? ''` before the query loop); the query-driven
+              // path builds its result from assistant output and ignores this.
+              // Without it, no-query local-jsx commands (e.g. /goal status,
+              // /goal clear) print nothing in headless -p.
+              resultText: result,
               nextInput: options?.nextInput,
               submitNextInput: options?.submitNextInput,
             });

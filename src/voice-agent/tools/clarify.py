@@ -86,7 +86,11 @@ _SCHEMA = {
         "- A decision has meaningful trade-offs the user should weigh in on\n\n"
         "Do NOT use for simple yes/no confirmation of dangerous commands — those "
         "go through the terminal tool. Prefer making a reasonable default choice "
-        "yourself when the decision is low-stakes."
+        "yourself when the options are genuinely interchangeable (format, "
+        "verbosity, ordering). But do NOT default-guess a SPECIFIC referent the "
+        "user named by reference — which file, which contact, which conversation, "
+        "which value: resolve it (search/memory/read) or ask, even for a "
+        "read-only action. Acting on the wrong target wastes the turn."
     ),
     "parameters": {
         "type": "object",
