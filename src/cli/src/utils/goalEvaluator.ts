@@ -42,6 +42,8 @@ ${condition}
 
 Decide whether the condition is FULLY met RIGHT NOW, based only on concrete evidence visible in the conversation above — tool outputs, command results, test output, file contents. Do NOT trust the assistant's claims of success unless tool output confirms them. Partial progress counts as NO.
 
+If the condition specifies a COUNT, REPETITION, or set of steps ("at least N times", "in 3 separate turns", "for each X"), count the CONFIRMED occurrences and answer NO unless that exact number is definitively reached. Never round up from partial progress, and if you are unsure whether the count is reached, answer NO.
+
 Reply in EXACTLY this format:
 - First line: the single word YES (condition fully met) or NO (not yet met)
 - Following lines: 1-2 short sentences of reasoning. If NO, state concretely what is still missing.`
