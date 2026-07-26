@@ -95,29 +95,40 @@ export function CapabilitiesSection() {
         </div>
       </section>
 
+      {/* Informational status, NOT controls. There is no settings-backed
+          switch behind these — tool availability is built into the /code
+          workspace runtime. Rendered as muted read-only status so they
+          don't masquerade as toggles (the old primary-colored "enabled"
+          pills looked interactive but did nothing). If a real kill-switch
+          is ever added, wire it through the /code execution path first,
+          then promote these back to <Switch>es. */}
       <section>
         <SectionTitle>Tools</SectionTitle>
+        <p className="mb-1 text-[12px] text-muted-foreground">
+          Status only — tool availability is built into the workspace runtime
+          and isn&apos;t configurable here.
+        </p>
         <div className="divide-y divide-border/60">
           <div className="flex items-center justify-between py-3.5">
             <div>
               <p className="text-[14px] font-medium">Workspace tools</p>
               <p className="mt-0.5 text-[13px] text-muted-foreground">
-                Allow Jarvis to read and write files in the active workspace.
+                Jarvis can read and write files in the active workspace.
               </p>
             </div>
-            <span className="rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 font-mono text-[11px] text-primary">
-              enabled
+            <span className="font-mono text-[11px] text-muted-foreground">
+              always on
             </span>
           </div>
           <div className="flex items-center justify-between py-3.5">
             <div>
               <p className="text-[14px] font-medium">Shell execution</p>
               <p className="mt-0.5 text-[13px] text-muted-foreground">
-                Allow Jarvis to run shell commands inside the workspace sandbox.
+                Jarvis can run shell commands inside the workspace sandbox.
               </p>
             </div>
-            <span className="rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 font-mono text-[11px] text-primary">
-              enabled
+            <span className="font-mono text-[11px] text-muted-foreground">
+              always on
             </span>
           </div>
         </div>
