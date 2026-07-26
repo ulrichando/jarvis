@@ -1,12 +1,18 @@
-# LiveKit Agents + Groq voice stack. Pinned to minor versions that
-# were live when the agent was first wired; bump these deliberately.
+# LiveKit Agents voice stack. EXACT-pinned to 1.5.17 — the version the
+# tree is proven-green against locally and what the live agent runs.
+# `~=1.5` means >=1.5,<2.0, so CI's fresh install silently drifted to a
+# newer 1.x whose llm/utils.py broke the sanitizer tests with
+# `AttributeError: 'Event' object has no attribute '_buffer'` (0 failures
+# locally on 1.5.17) — reddening pytest with no code change on our side,
+# same failure mode as the unpinned-ruff drift fixed in #316. Bump these
+# two deliberately, together, after re-running the suite against the new pin.
 #
 # Install:
 #   python3 -m venv .venv
 #   source .venv/bin/activate
 #   pip install -r requirements.txt
 
-livekit-agents[silero,openai,anthropic,google]~=1.5
+livekit-agents[silero,openai,anthropic,google]==1.5.17
 
 # Deepgram Nova-3 streaming STT — primary STT path as of 2026-05-18
 # for fast barge-in. Without this, Groq Whisper Turbo (final-only)
@@ -14,7 +20,7 @@ livekit-agents[silero,openai,anthropic,google]~=1.5
 # turn detection). Requires DEEPGRAM_API_KEY in .env. Falls through
 # to Whisper-only when the key is unset (`providers/stt.py` handles
 # the absence gracefully).
-livekit-plugins-deepgram~=1.5
+livekit-plugins-deepgram==1.5.17
 
 # Agent Client Protocol — JSON-RPC over stdio so IDEs (Zed, Cursor,
 # VS Code via plugin) can drive JARVIS as a coding agent. Loaded by
