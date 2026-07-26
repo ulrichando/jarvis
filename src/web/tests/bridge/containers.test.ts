@@ -186,6 +186,49 @@ describe('launchContainerSession', () => {
     expect(flat).toContain(`network rm jarvis-net-${sessionId}`)
   })
 
+  test('a no-repo (scratch / ultraplan) session gets the from-scratch prompt, not the clone-a-repo one', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    const { calls, exec } = fakeDocker()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: '', // no repo -> empty git-init scratch container
+      baseUrl: 'http://127.0.0.1:3000',
+      exec,
+    })
+    const workerCmd = calls
+      .map((c) => c.join(' '))
+      .find((c) => c.includes('cli.tsx'))!
+    const promptMatch = workerCmd.match(/--append-system-prompt '([^']*)'/)
+    expect(promptMatch).not.toBeNull()
+    const prompt = promptMatch![1]
+    // Truthful from-scratch guidance is present...
+    expect(prompt).toContain('empty git-initialized directory')
+    expect(prompt).toContain('never tell the user the repository is empty')
+    // ...the false "this is a clone of the repo / push a branch" guidance is gone...
+    expect(prompt).not.toContain('clone of the selected GitHub repository')
+    // ...and capturing through to the prompt's final clause proves no apostrophe
+    // truncated the single-quoted sh -c string.
+    expect(prompt).toContain('report what you did')
+  })
+
+  test('a repo session still gets the clone/commit/push guidance', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    const { calls, exec } = fakeDocker()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      exec,
+    })
+    const workerCmd = calls
+      .map((c) => c.join(' '))
+      .find((c) => c.includes('cli.tsx'))!
+    expect(workerCmd).toContain('clone of the selected GitHub repository')
+    expect(workerCmd).not.toContain('empty git-initialized directory')
+  })
+
   test('configures a push-capable git identity via the proxy cap token (no real PAT, no GH_TOKEN)', async () => {
     const sessionId = makeSession()
     const store = getStore()
