@@ -1916,3 +1916,55 @@ export function listSessionEvents(
     )
     .all(sessionId, sinceRowid) as SessionEventRow[]
 }
+
+/** First `user_prompt` event for a session, or null. Point query — the sessions
+ *  list read the WHOLE transcript per row (every 6s poll) just to derive the
+ *  title from the first prompt (#7). */
+export function firstUserPrompt(
+  store: Store,
+  sessionId: string,
+): SessionEventRow | null {
+  const row = store.db
+    .prepare(
+      `SELECT rowid, event_id, session_id, type, payload_json, created_at
+       FROM session_events
+       WHERE session_id = ? AND type = 'user_prompt'
+       ORDER BY rowid ASC LIMIT 1`,
+    )
+    .get(sessionId) as SessionEventRow | undefined
+  return row ?? null
+}
+
+/** Most recent event for a session, or null. Point query for the sidebar
+ *  preview + status (#7). */
+export function lastEvent(
+  store: Store,
+  sessionId: string,
+): SessionEventRow | null {
+  const row = store.db
+    .prepare(
+      `SELECT rowid, event_id, session_id, type, payload_json, created_at
+       FROM session_events
+       WHERE session_id = ?
+       ORDER BY rowid DESC LIMIT 1`,
+    )
+    .get(sessionId) as SessionEventRow | undefined
+  return row ?? null
+}
+
+/** Batch environment lookup (one query for many ids). The sessions list
+ *  resolved envs one findEnvironment() per row (#7). */
+export function findEnvironments(
+  store: Store,
+  envIds: ReadonlyArray<string>,
+): Map<string, EnvironmentRow> {
+  const ids = [...new Set(envIds.filter(Boolean))]
+  const out = new Map<string, EnvironmentRow>()
+  if (!ids.length) return out
+  const placeholders = ids.map(() => '?').join(',')
+  const rows = store.db
+    .prepare(`SELECT * FROM environments WHERE environment_id IN (${placeholders})`)
+    .all(...ids) as EnvironmentRow[]
+  for (const r of rows) out.set(r.environment_id, r)
+  return out
+}
