@@ -44,6 +44,7 @@ import { ScheduleInterviewCards } from "./schedule-cards";
 import { TaskPanel } from "./task-panel";
 import { useChatStore } from "@/stores/chat";
 import { useVoiceMode } from "@/lib/chat/use-voice-mode";
+import { buildTurnHistory } from "@/lib/chat/turn-history";
 import { appendImageMarkdown } from "@/lib/chat/image-markdown";
 import { useEditedFiles } from "@/stores/edited-files";
 import { useSettings } from "@/hooks/use-settings";
@@ -708,6 +709,11 @@ export function Chat({
       images?: { id: string; dataUrl: string; name: string }[];
       // DeepSeek composer toggles for this turn (DeepThink / Search).
       toggles?: Record<string, boolean>;
+      // Finalized history to send instead of the render-closure `messages`.
+      // Used by the multi-stage auto-continuation, whose re-entrant submit()
+      // otherwise captures a STALE messages snapshot missing the just-finished
+      // stage's reply (#161 finding #5).
+      continuationHistory?: UIMessage[];
     } = {},
   ) => {
     turnTogglesRef.current = {
@@ -804,7 +810,11 @@ export function Chat({
     setStatus("submitted");
     setPreviewPort(null);
     previewPollRef.current?.cancel();
-    const historyForApi = [...messages, userMessage];
+    const historyForApi = buildTurnHistory(
+      messages,
+      userMessage,
+      opts.continuationHistory,
+    );
     setMessages([...historyForApi, assistantPlaceholder]);
 
     // Fire-and-forget checkpoint snapshot. Doesn't block the network
@@ -1745,8 +1755,23 @@ export function Chat({
             const total = stagePlanRef.current.totalStages;
             stagePlanRef.current.currentStage = next;
             const progressPrompt = renderStageProgressPrompt(total, next);
+            // Freeze THIS stage's finalized history — prior turns + this
+            // stage's assistant reply — and thread it into the re-entrant
+            // submit(). The queueMicrotask closure would otherwise capture the
+            // stale `messages` snapshot that predates this reply (#161 #5).
+            const continuationHistory: UIMessage[] = [
+              ...historyForApi,
+              {
+                id: assistantId,
+                role: "assistant",
+                parts: [{ type: "text", text: assistantText }],
+              } as UIMessage,
+            ];
             queueMicrotask(() => {
-              void submit(progressPrompt, { isAutoRetry: true });
+              void submit(progressPrompt, {
+                isAutoRetry: true,
+                continuationHistory,
+              });
             });
             // If this is the LAST stage, clear the ref so the next user
             // turn starts fresh (otherwise a new multi-stage plan would
