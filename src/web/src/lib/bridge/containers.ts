@@ -124,6 +124,26 @@ export function containerNameFor(sessionId: string): string {
   return `jarvis-code-${sessionId}`;
 }
 
+/**
+ * Best-effort teardown of a session's whole docker footprint: the workbench
+ * container, its egress proxy, and its private network — container FIRST
+ * (docker refuses to remove a network with an attached container). A launch
+ * that fails AFTER the egress proxy + network are created must call this or
+ * they leak until the next orphan sweep (finding #9). No-ops for `full` /
+ * non-isolated sessions that never created the egress/network.
+ */
+export async function teardownSessionDocker(
+  exec: DockerExec,
+  sessionId: string,
+  containerName?: string,
+): Promise<void> {
+  await exec(["rm", "-f", containerName ?? containerNameFor(sessionId)]).catch(
+    () => {},
+  );
+  await exec(["rm", "-f", `jarvis-egress-${sessionId}`]).catch(() => {});
+  await exec(["network", "rm", `jarvis-net-${sessionId}`]).catch(() => {});
+}
+
 /** Repo root of this checkout (the web app runs from <root>/src/web). */
 function jarvisRepoRoot(): string {
   if (process.env.JARVIS_REPO_ROOT) return process.env.JARVIS_REPO_ROOT;
@@ -325,7 +345,10 @@ export async function launchContainerSession(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       emit(store, sessionId, `✗ ${label} — ${msg.slice(0, 300)}`);
-      await exec(["rm", "-f", name]).catch(() => {});
+      // Full teardown, not just the container — a mid-launch failure after the
+      // egress proxy + private network were created would otherwise leak them
+      // until the next orphan sweep (finding #9).
+      await teardownSessionDocker(exec, sessionId, name);
       throw err;
     }
   };
@@ -1245,11 +1268,7 @@ export async function stopContainerSession(
     ? (JSON.parse(session.container_json) as { container?: string })
     : null;
   const name = meta?.container ?? containerNameFor(sessionId);
-  await exec(["rm", "-f", name]).catch(() => {});
-  // Reap the egress proxy + private network too (best-effort; no-ops for
-  // `full`/non-isolated sessions that never created them).
-  await exec(["rm", "-f", `jarvis-egress-${sessionId}`]).catch(() => {});
-  await exec(["network", "rm", `jarvis-net-${sessionId}`]).catch(() => {});
+  await teardownSessionDocker(exec, sessionId, name);
 }
 
 /**

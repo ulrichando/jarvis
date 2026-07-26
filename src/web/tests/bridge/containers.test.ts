@@ -161,6 +161,31 @@ describe('launchContainerSession', () => {
     ])
   })
 
+  test('a mid-launch step failure tears down the egress proxy + network, not just the container (finding #9)', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    // Fail the clone — this runs AFTER "Set up a cloud container" created the
+    // private network + egress proxy + workbench container. The old failure
+    // handler only removed the container, leaking the proxy + network.
+    const { calls, exec } = fakeDocker({
+      failOn: (args) => args.join(' ').includes('git clone'),
+    })
+
+    await expect(
+      launchContainerSession(store, {
+        sessionId,
+        repoFullName: 'owner/demo',
+        baseUrl: 'http://127.0.0.1:3000',
+        exec,
+      }),
+    ).rejects.toThrow()
+
+    const flat = calls.map((c) => c.join(' '))
+    expect(flat).toContain(`rm -f ${containerNameFor(sessionId)}`)
+    expect(flat).toContain(`rm -f jarvis-egress-${sessionId}`)
+    expect(flat).toContain(`network rm jarvis-net-${sessionId}`)
+  })
+
   test('configures a push-capable git identity via the proxy cap token (no real PAT, no GH_TOKEN)', async () => {
     const sessionId = makeSession()
     const store = getStore()
