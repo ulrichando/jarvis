@@ -56,8 +56,15 @@ jobs:
         with:
           python-version: "3.13"
 
+      # Pin ruff — unpinned `pip install ruff` silently upgrades to whatever
+      # released most recently, so a new ruff version's added/stricter default
+      # rules (UP035/UP037/I001 etc.) start flagging pre-existing code and turn
+      # this job red with no code change on our side (which is exactly what
+      # happened after #309). 0.15.16 is the version the tree is clean against
+      # (`ruff check src/voice-agent` → all pass). Bump deliberately when doing
+      # the violation-cleanup that lets this job ratchet to required.
       - name: pip install ruff
-        run: pip install ruff
+        run: pip install ruff==0.15.16
 
       - name: ruff check
         run: ruff check src/voice-agent
