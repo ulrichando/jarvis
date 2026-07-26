@@ -6,8 +6,14 @@ import {
   appendSessionEvent,
   findEnvironment,
   findSession,
+  mergeWorkerState,
 } from '@/lib/bridge/store'
 import { emitInbound } from '@/lib/bridge/events'
+import {
+  ASK_QUESTION_PAUSE_CLEAR,
+  ASK_QUESTION_PENDING_ONLY_CLEAR,
+  pausedRequestId,
+} from '@/lib/bridge/askQuestionPause'
 import { getUserId } from '@/lib/auth-helpers'
 import { bridgeError } from '@/lib/bridge/errors'
 import { releaseKeepAwake } from '@/lib/dispatch/keep-awake'
@@ -137,6 +143,10 @@ export async function POST(
       // A stopped dispatch task must not hold the keep-awake sleep lock
       // (no-op for non-dispatch / non-keep_awake sessions).
       releaseKeepAwake(sessionId)
+      // Abandon any paused question so it can't resurface as a phantom card the
+      // next time the worker reports requires_action (e.g. a later ExitPlanMode
+      // pause). Don't force a status — the interrupted worker is heading idle.
+      mergeWorkerState(store, sessionId, ASK_QUESTION_PENDING_ONLY_CLEAR)
     } else if (mode) {
       appendInbound(store, sessionId, {
         type: 'control_request',
@@ -178,6 +188,18 @@ export async function POST(
                 },
         },
       })
+      // Clear the requires_action pause set when a tool (e.g. AskUserQuestion)
+      // was surfaced for a human answer, so the card disappears and the spinner
+      // resumes. Do this ONLY when this answer resolves the LIVE question — a
+      // late/double/phantom answer whose request_id no longer matches must not
+      // flip an idle worker to 'running' (permanent spinner) or wipe a newer
+      // pause. On a real match the worker resumes, so 'running' is correct.
+      if (
+        pausedRequestId(findSession(store, sessionId)?.worker_state_json) ===
+        permission.request_id
+      ) {
+        mergeWorkerState(store, sessionId, ASK_QUESTION_PAUSE_CLEAR)
+      }
     }
     emitInbound(sessionId)
     return NextResponse.json({ ok: true, uuid })

@@ -6,11 +6,17 @@ import {
   appendSessionEvent,
   findSession,
   hasInboundUuid,
+  mergeWorkerState,
 } from '@/lib/bridge/store'
 import { clearLiveText, emitInbound, setLiveText } from '@/lib/bridge/events'
 import { authorizeSessionToken } from '@/lib/bridge/authz'
 import { firePushForResult } from '@/lib/push/fire'
 import { bridgeError } from '@/lib/bridge/errors'
+import {
+  ASK_QUESTION_PENDING_ONLY_CLEAR,
+  buildAskQuestionPauseState,
+  isAskUserQuestionTool,
+} from '@/lib/bridge/askQuestionPause'
 
 // Structural slice of an ephemeral stream_event carrying a full-so-far
 // text snapshot (the CLI coalesces deltas per block — ccrClient.ts).
@@ -113,6 +119,11 @@ export async function POST(
             if (/^exit_?plan_?mode/i.test(r.tool_name ?? '')) {
               // Waiting on a human decision → Dispatch "needs a go-ahead" push.
               firePushForResult(store, sessionId, 'needs_input')
+              // Drop any stale AskUserQuestion pause: the worker reports
+              // requires_action for this plan gate with no details, so a
+              // leftover pending_action (question abandoned without a Stop)
+              // would otherwise surface as a phantom question card here.
+              mergeWorkerState(store, sessionId, ASK_QUESTION_PENDING_ONLY_CLEAR)
               appendSessionEvent(store, sessionId, {
                 type: 'ultraplan_permission',
                 payload: {
@@ -125,6 +136,21 @@ export async function POST(
                   input: r.input && typeof r.input === 'object' ? r.input : {},
                 },
               })
+            } else if (isAskUserQuestionTool(r.tool_name)) {
+              // AskUserQuestion needs a human to pick options. Auto-approving
+              // it (the else branch) replays the input with NO `answers` field,
+              // so the tool tells the model "User has answered your questions: ."
+              // and the agent stalls with nothing to go on. Instead PAUSE like
+              // ExitPlanMode: surface it as a requires_action pending_action so
+              // the browser's QuestionsCard renders (code-session.tsx), and
+              // do NOT auto-approve — the /messages permission answer delivers
+              // {...input, answers} back and unblocks the worker.
+              firePushForResult(store, sessionId, 'needs_input')
+              mergeWorkerState(
+                store,
+                sessionId,
+                buildAskQuestionPauseState(requestId, r.input),
+              )
             } else {
               appendInbound(store, sessionId, {
                 type: 'control_response',
