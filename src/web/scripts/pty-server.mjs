@@ -30,6 +30,7 @@ import {
   execShellArgs,
 } from "./lib/docker.mjs";
 import { verifyPtyToken, readPtyJwtSecret } from "./lib/pty-auth.mjs";
+import { computeRequireAuth, resolveShellMode } from "./lib/pty-policy.mjs";
 
 // 8772 (NOT 8769): 8767-8769 is the voice-client status port block
 // (jarvis/gemini/openai); jarvis-gpt-tools' status server owns 8769, and
@@ -53,13 +54,16 @@ let MODE = process.env.JARVIS_WORKBENCH_MODE ?? "auto";
 
 // Per-session auth on the websocket. The init frame must carry a short-lived
 // HS256 token (minted by /api/workspace/[id]/pty-token, behind the app's auth)
-// scoped to the workspace. Required automatically whenever the socket is bound
-// off-loopback (the documented foot-gun this guards) or forced on via env —
-// so exposing the sidecar can't accidentally ship an open root shell. On
-// loopback it's optional, preserving the frictionless `npm run dev` posture.
+// scoped to the workspace. ON BY DEFAULT (computeRequireAuth): the old rule left
+// a plain loopback `npm run dev` shipping an UNauthenticated $SHELL. Opt out only
+// on loopback via JARVIS_PTY_REQUIRE_AUTH=0; any other value fails secure to ON.
 // Fails CLOSED: require auth but no secret on disk → reject every connection.
-const REQUIRE_AUTH =
-  process.env.JARVIS_PTY_REQUIRE_AUTH === "1" || HOST !== "127.0.0.1";
+const REQUIRE_AUTH = computeRequireAuth(process.env, HOST);
+// Host-shell ("local" mode — spawning $SHELL on the host) has none of the
+// container isolation. Gated behind an explicit opt-in and forced off under
+// JARVIS_REQUIRE_LOCAL_AUTH=1 (the server refuses rather than dropping to it).
+const ALLOW_HOST_SHELL = process.env.JARVIS_PTY_ALLOW_HOST_SHELL === "1";
+const REQUIRE_LOCAL_AUTH = process.env.JARVIS_REQUIRE_LOCAL_AUTH === "1";
 // The secret is read LAZILY at verify time, not cached here: the web app shares
 // this container and may create ~/.jarvis/keys.env on its first mint AFTER this
 // process boots, and a lazy read also picks up rotation. Prefer setting
@@ -130,7 +134,18 @@ wss.on("connection", (ws) => {
 
       const cols = msg.cols || 80;
       const rows = msg.rows || 24;
-      const mode = await resolveMode();
+      const decision = resolveShellMode({
+        mode: await resolveMode(),
+        allowHostShell: ALLOW_HOST_SHELL,
+        requireLocalAuth: REQUIRE_LOCAL_AUTH,
+      });
+      if (decision.error) {
+        send({ type: "output", data: `\x1b[31m[${decision.error}]\x1b[0m\r\n` });
+        send({ type: "exit", code: 1, error: "host shell disabled" });
+        try { ws.close(); } catch {}
+        return;
+      }
+      const mode = decision.mode;
 
       try {
         if (mode === "docker") {
