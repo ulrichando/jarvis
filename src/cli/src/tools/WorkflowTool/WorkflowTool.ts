@@ -5,7 +5,11 @@ import { join } from 'node:path'
 import vm from 'node:vm'
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
-import { generateTaskId, createTaskStateBase } from '../../Task.js'
+import {
+  generateTaskId,
+  createTaskStateBase,
+  isTerminalTaskStatus,
+} from '../../Task.js'
 import { registerTask, updateTaskState } from '../../utils/task/framework.js'
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -16,7 +20,10 @@ import {
   getSessionId,
 } from '../../bootstrap/state.js'
 import { getProjectDir } from '../../utils/sessionStorage.js'
-import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import {
+  notifyWorkflowComplete,
+  type LocalWorkflowTaskState,
+} from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { SdkWorkflowProgress } from '../../types/tools.js'
 import type { PermissionResult } from '../../types/permissions.js'
 import { parseWorkflowMeta, checkDeterminism } from './meta.js'
@@ -420,19 +427,48 @@ export const WorkflowTool = buildTool({
           ? 'failed'
           : 'completed'
 
+      // Set the terminal status + summary for the panel. Leave `notified` to
+      // notifyWorkflowComplete below — a kill already claimed it (notified:true)
+      // and re-setting it false here would resurrect a killed task as "unread".
       updateTaskState<LocalWorkflowTaskState>(
         taskId,
         setAppStateForTasks,
-        task => ({
-          ...task,
-          status,
-          endTime: Date.now(),
-          notified: false,
-          summary: out.error
-            ? `${task.summary ?? ''} (error: ${out.error.split('\n')[0]})`
-            : task.summary,
-        }),
+        task =>
+          task.notified && isTerminalTaskStatus(task.status)
+            ? task
+            : {
+                ...task,
+                status,
+                endTime: Date.now(),
+                summary: out.error
+                  ? `${task.summary ?? ''} (error: ${out.error.split('\n')[0]})`
+                  : task.summary,
+              },
       )
+
+      // Surface the result to the model — the step that was missing, which
+      // left finished workflows silent. Killed workflows are user-initiated;
+      // don't re-notify (markKilled already set notified:true, so the atomic
+      // claim would no-op anyway). NOTE: this skip assumes markKilled is the
+      // ONLY thing that aborts runController (true today). If runController is
+      // ever also wired to a session/Ctrl+C AbortSignal, a kill from that path
+      // would reach here with notified:false — drop this guard then, or such
+      // workflows relapse into the never-notified/never-evicted state.
+      if (status !== 'killed') {
+        notifyWorkflowComplete({
+          taskId,
+          toolUseId: context.toolUseId,
+          workflowName: taskState.workflowName ?? parsed.meta.name,
+          status,
+          result: out.result,
+          error: out.error,
+          failures: out.failures,
+          agentCount: out.agentCount,
+          durationMs: out.durationMs,
+          transcriptDir,
+          setAppState: setAppStateForTasks,
+        })
+      }
 
       // Persist journal (best-effort)
       try {
@@ -442,16 +478,32 @@ export const WorkflowTool = buildTool({
       } catch {
         // Best-effort only
       }
-    })().catch(() => {
-      // Mark failed best-effort
+    })().catch(err => {
+      // Last-resort failure path (the IIFE itself threw). Mark failed and still
+      // surface a notification so the model isn't left waiting. If the normal
+      // path already notified (notified:true), the atomic claim inside
+      // notifyWorkflowComplete makes this a no-op — no double-delivery.
       updateTaskState<LocalWorkflowTaskState>(
         taskId,
         setAppStateForTasks,
         task =>
           task.status === 'running'
-            ? { ...task, status: 'failed', endTime: Date.now(), notified: false }
+            ? { ...task, status: 'failed', endTime: Date.now() }
             : task,
       )
+      notifyWorkflowComplete({
+        taskId,
+        toolUseId: context.toolUseId,
+        workflowName: parsed.meta.name,
+        status: 'failed',
+        result: null,
+        error: err instanceof Error ? err.message : String(err),
+        failures: [],
+        agentCount: 0,
+        durationMs: 0,
+        transcriptDir,
+        setAppState: setAppStateForTasks,
+      })
     })
 
     // 8. Return immediately
@@ -485,7 +537,7 @@ export const WorkflowTool = buildTool({
       (output.transcriptDir ? `\nTranscript dir: ${output.transcriptDir}` : '') +
       (output.scriptPath ? `\nScript file: ${output.scriptPath}` : '') +
       (output.runId ? `\nRun ID: ${output.runId}` : '') +
-      '\n\nYou will be notified when it completes. Use /workflows to watch live progress.'
+      '\n\nYou will be notified when it completes or fails (a workflow you stop yourself is not re-announced). Use /workflows to watch live progress.'
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
