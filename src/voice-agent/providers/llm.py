@@ -1029,6 +1029,29 @@ def _local_failover_timeout_s() -> float:
         return 45.0
 
 
+def _same_base_installed_tag(model: str) -> str:
+    """Best installed Ollama tag sharing `model`'s base, preferring the
+    ctx-baked '-jarvis-ctx:<N>' variant (loads at the baked num_ctx, not
+    Ollama's 4096 default). '' when none / Ollama unreachable. Matches on the
+    SANITIZED base (same ':'/'/' → '-' rule as derived_ollama_ctx_tag), so
+    'qwen3:4b-…' matches its 'qwen3-4b-…-jarvis-ctx:N' variant but NOT an
+    unrelated 'qwen2.5:7b'. Deliberately NOT resolve_installed_model_tag, whose
+    installed[0] fallback can return a wrong-base model."""
+    try:
+        from providers.local_model_picker import list_installed_tags  # noqa: PLC0415
+        installed = list_installed_tags()
+    except Exception:  # noqa: BLE001 — discovery must never break the rung build
+        return ""
+    if not installed:
+        return ""
+    sani = model.replace(":", "-").replace("/", "-")
+    cands = [t for t in installed if t.split(":")[0].startswith(sani)]
+    if not cands:
+        return ""
+    ctx = [t for t in cands if OLLAMA_CTX_MARKER in t]
+    return ctx[0] if ctx else cands[0]
+
+
 def build_local_failover_llm():
     """Build the LAST-resort local rung, or None.
 
@@ -1047,11 +1070,35 @@ def build_local_failover_llm():
     url = os.environ.get(
         "JARVIS_LOCAL_LLM_URL", "http://127.0.0.1:11434/v1"
     ).strip() or "http://127.0.0.1:11434/v1"
+    # Default matches what install.sh pulls (qwen3:4b-instruct-2507-q4_K_M) so
+    # the same-base self-heal below can reach an installed qwen3 variant. The
+    # old 'qwen2.5:7b' default silently killed the rung on a fresh box: unset
+    # env → qwen2.5 default → same-base guard blocks qwen2.5→qwen3 heal → None.
+    _default_local = "qwen3:4b-instruct-2507-q4_K_M"
     model = resolve_model_tag(
-        os.environ.get("JARVIS_LOCAL_LLM_MODEL", "qwen2.5:7b").strip() or "qwen2.5:7b"
+        os.environ.get("JARVIS_LOCAL_LLM_MODEL", _default_local).strip() or _default_local
     )
     key = os.environ.get("JARVIS_LOCAL_LLM_API_KEY", "ollama").strip() or "ollama"
     ok, reason = _probe_local_llm(url, model, key, _local_failover_timeout_s())
+    if not ok:
+        # Self-heal a BARE tag ('qwen3-4b') to an installed SAME-BASE tag,
+        # PREFERRING the ctx-baked '-jarvis-ctx:<N>' variant (loads at 12288,
+        # not Ollama's 4096 default that 400s on the supervisor prompt).
+        # Ollama's /v1/models advertises only full ':tag's, so the probe above
+        # drops a bare tag and the offline backstop would silently vanish.
+        # Runs ONLY on probe-fail (happy path unchanged + stays mockable via
+        # JARVIS_LOCAL_LLM_ASSUME_AVAILABLE), searches installed tags directly
+        # (NOT resolve_installed_model_tag, whose installed[0] fallback can pick
+        # an unrelated base like qwen2.5 when several are pulled), and requires
+        # the healed tag to probe OK.
+        healed = _same_base_installed_tag(model)
+        if healed and healed != model:
+            ok2, reason2 = _probe_local_llm(url, healed, key, _local_failover_timeout_s())
+            if ok2:
+                logger.info(
+                    "[dispatch] local failover self-healed %r → %r (ctx-baked)", model, healed
+                )
+                model, ok, reason = healed, ok2, reason2
     if not ok:
         logger.warning(
             "[dispatch] local failover requested but unavailable: model=%s url=%s (%s); "
