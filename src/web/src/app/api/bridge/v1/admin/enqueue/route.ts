@@ -1,15 +1,24 @@
 import { NextResponse } from 'next/server'
 import { getStore } from '@/lib/bridge/db'
-import { enqueueWork, findEnvironment } from '@/lib/bridge/store'
+import {
+  enqueueWork,
+  findEnvironment,
+  resolveBridgeToken,
+  validateEnvSecret,
+} from '@/lib/bridge/store'
+import { extractBearer, isSharedLocalToken } from '@/lib/bridge/auth'
 import { emitWorkAvailable } from '@/lib/bridge/events'
 import { bridgeError } from '@/lib/bridge/errors'
 
-// Admin enqueue is intentionally unauthenticated. v1 access control relies
-// on the server binding to 127.0.0.1 only (loopback assumption documented
-// in the spec). Do NOT add bearer-auth here unless sub-project 3 has also
-// switched the web UI to send a real token. If the bind ever moves off
-// loopback, this route MUST grow auth before going live.
+// Enqueue work into an environment. This box is Cloudflare-fronted, NOT
+// loopback-only, so the old "unauthenticated by loopback assumption" stance was
+// false in production. Authenticated in-handler, failing CLOSED: the bearer must
+// be the environment owner's bridge token, the environment's own secret, or the
+// shared infra token — the same three-way gate as the sessions POST route. No
+// in-repo caller relied on the anonymous path.
 export async function POST(req: Request): Promise<NextResponse> {
+  const token = extractBearer(req.headers.get('authorization'))
+  if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
   const body = (await req.json().catch(() => null)) as {
     environment_id?: string
     session_id?: string
@@ -29,8 +38,24 @@ export async function POST(req: Request): Promise<NextResponse> {
   let workId: string
   try {
     const store = getStore()
-    if (!findEnvironment(store, body.environment_id)) {
+    const env = findEnvironment(store, body.environment_id)
+    if (!env) {
       return bridgeError(404, 'not_found', 'Environment not found')
+    }
+    // Fail CLOSED. An ownerless env row must NOT be claimable by an arbitrary
+    // user's bridge token (IDOR); it stays reachable via its own env secret or
+    // the shared infra token.
+    const tokenUser = resolveBridgeToken(store, token)
+    const okOwner = !!tokenUser && !!env.user_id && tokenUser === env.user_id
+    if (
+      !okOwner &&
+      !validateEnvSecret(store, body.environment_id, token) &&
+      !isSharedLocalToken(token)
+    ) {
+      if (tokenUser) {
+        return bridgeError(403, 'forbidden', 'Not your machine')
+      }
+      return bridgeError(401, 'unauthorized', 'A valid bridge token is required')
     }
     const work = enqueueWork(store, body.environment_id, {
       session_id: body.session_id,

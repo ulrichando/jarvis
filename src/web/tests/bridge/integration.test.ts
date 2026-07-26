@@ -550,7 +550,10 @@ describe('reconnect + events + archive', () => {
     const res = await enq.POST(
       new Request(`http://x/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${reg.environment_secret}`,
+        },
         body: JSON.stringify({
           environment_id: reg.environment_id,
           session_id: sessionId,
@@ -845,14 +848,17 @@ describe('reconnect + events + archive', () => {
 
 describe('admin enqueue + full E2E', () => {
   test('admin enqueue returns 200 + work_id', async () => {
-    const { environment_id } = await registerEnv()
+    const { environment_id, environment_secret } = await registerEnv()
     const { POST } = await import(
       '@/app/api/bridge/v1/admin/enqueue/route'
     )
     const res = await POST(
       new Request(`http://x/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${environment_secret}`,
+        },
         body: JSON.stringify({
           environment_id,
           session_id: 'sess1',
@@ -872,7 +878,10 @@ describe('admin enqueue + full E2E', () => {
     const res = await POST(
       new Request(`http://x/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer test-token',
+        },
         body: JSON.stringify({ environment_id: 'x' }),
       }),
     )
@@ -888,7 +897,10 @@ describe('admin enqueue + full E2E', () => {
     const res = await POST(
       new Request(`http://x/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer test-token',
+        },
         body: JSON.stringify({
           environment_id: 'nonexistent',
           session_id: 's',
@@ -910,7 +922,10 @@ describe('admin enqueue + full E2E', () => {
     const enqRes = await enq.POST(
       new Request(`http://x/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${environment_secret}`,
+        },
         body: JSON.stringify({
           environment_id,
           session_id: 'sessE',
