@@ -1,13 +1,22 @@
 import { NextResponse } from "next/server";
 import { testMcpServer } from "@/lib/mcp/client";
 import { listMcpServers } from "@/lib/mcp/store";
+import { requireMcpAuth } from "@/lib/mcp/authz";
 
 // POST /api/mcp/test
 //   { id }                        → test an already-configured server, using its
 //                                    stored headers (so the browser never needs
 //                                    the token back).
 //   { url, transport?, headers? } → validate a candidate before adding it.
+//
+// Auth-gated: the { url, headers } shape makes the SERVER open a connection to
+// an arbitrary caller-supplied URL with caller-supplied headers (SSRF vector),
+// and the { id } shape replays a stored server's REAL auth headers outbound.
+// proxy.ts's bearer gate is opt-in, so gate in-handler like the /api/mcp
+// mutations do.
 export async function POST(req: Request): Promise<NextResponse> {
+  const denied = await requireMcpAuth(req);
+  if (denied) return denied;
   const body = (await req.json().catch(() => ({}))) as {
     id?: string;
     name?: string;

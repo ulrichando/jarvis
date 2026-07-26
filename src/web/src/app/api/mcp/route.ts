@@ -12,7 +12,12 @@ import { requireMcpAuth } from "@/lib/mcp/authz";
 // Auth headers are REDACTED here: the browser only learns whether a server has
 // auth (hasAuth), never the token itself. Server-side consumers (chat, test)
 // read the real headers straight from the store.
-export async function GET(): Promise<NextResponse> {
+// Auth-gated too: the list still exposes every configured server name + URL
+// (internal-endpoint recon) to anyone who can reach the port when the opt-in
+// proxy gate is off.
+export async function GET(req: Request): Promise<NextResponse> {
+  const denied = await requireMcpAuth(req);
+  if (denied) return denied;
   const servers = (await listMcpServers()).map(({ headers, ...s }) => ({
     ...s,
     hasAuth: !!headers && Object.keys(headers).length > 0,
