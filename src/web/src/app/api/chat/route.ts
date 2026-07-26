@@ -997,6 +997,14 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
   // A broken/slow server is skipped (loadMcpTools is per-server try/catch with a
   // connect timeout) so a connector can never break chat.
   let mcpClose: (() => Promise<void>) | null = null;
+  // Idempotent, null-guarded MCP teardown. EVERY stream exit path must call this
+  // or the MCP client + its transport socket leak — the forced-image early return
+  // and the onError hook both bypass onFinish (finding #8).
+  const closeMcp = async (): Promise<void> => {
+    const c = mcpClose;
+    mcpClose = null;
+    if (c) await c().catch(() => {});
+  };
   let mcpTools: ToolSet = {};
   if (!workspaceId) {
     try {
@@ -1098,6 +1106,7 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
           controller.close();
         },
       });
+      await closeMcp();
       return new Response(stream, { headers });
     } catch (err) {
       console.warn(
@@ -1239,10 +1248,13 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
         d.raw = err;
       }
       console.error("[chat] streamText error", { model: modelId, detail: d });
+      // onError skips onFinish → close MCP here too, or the client leaks.
+      void closeMcp();
     },
     onFinish: async ({ text, totalUsage, finishReason }) => {
-      // Disconnect MCP servers now that all tool-calling steps are done.
-      await mcpClose?.().catch(() => {});
+      // Disconnect MCP servers now that all tool-calling steps are done
+      // (no-op if the forced-image path or onError already closed it).
+      await closeMcp();
       if (finishReason === "length") {
         // Length cutoff = the model ran out of tokens mid-output. Log it
         // so we can spot patterns; the client surfaces a toast separately.
