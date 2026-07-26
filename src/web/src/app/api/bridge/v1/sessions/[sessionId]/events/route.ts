@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server'
 import { authorizeSessionCredential, extractBearer } from '@/lib/bridge/auth'
+import { getUserId } from '@/lib/auth-helpers'
 import { getLiveText } from '@/lib/bridge/events'
 import { getStore } from '@/lib/bridge/db'
 import {
   appendSessionEvent,
+  findEnvironment,
   findSession,
   listSessionEvents,
 } from '@/lib/bridge/store'
@@ -59,6 +61,32 @@ export async function GET(
   ctx: { params: Promise<{ sessionId: string }> },
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params
+  // Authorize the read. Without this the GET was a cross-user IDOR: any id
+  // returned that session's full transcript + worker state. Accept a valid
+  // session credential (worker/CLI bearer) OR the logged-in owner of the
+  // session's environment (the browser /code poller sends a cookie, no bearer).
+  {
+    const store = getStore()
+    const token = extractBearer(req.headers.get('authorization'))
+    if (token) {
+      if (!authorizeSessionCredential(store, sessionId, token)) {
+        return bridgeError(401, 'unauthorized', 'Invalid session credential')
+      }
+    } else {
+      const session = findSession(store, sessionId)
+      if (!session) return bridgeError(404, 'not_found', 'Session not found')
+      const userId = await getUserId(req.headers)
+      if (!userId) {
+        return bridgeError(401, 'unauthenticated', 'Sign in to read this session')
+      }
+      const env = session.environment_id
+        ? findEnvironment(store, session.environment_id)
+        : null
+      if (env?.user_id && env.user_id !== userId) {
+        return bridgeError(403, 'forbidden', 'Not your session')
+      }
+    }
+  }
   const sinceRaw = Number(new URL(req.url).searchParams.get('since') ?? '0')
   const since = Number.isFinite(sinceRaw) && sinceRaw >= 0 ? sinceRaw : 0
   // Reopen = a chance to reconnect a worker that died while away (e.g. a
