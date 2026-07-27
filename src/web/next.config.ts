@@ -42,6 +42,17 @@ const nextConfig: NextConfig = {
   // another device on the same network still works.
   // See: node_modules/next/dist/docs/.../allowedDevOrigins.md
   allowedDevOrigins: ["127.0.0.1", "localhost", "*.local"],
+  // The Next 16 proxy (proxy.ts) buffers each matched request body in memory up
+  // to 10MB by default so the proxy AND the route handler can both read it.
+  // Bundle uploads to POST /api/v1/files (the /ultraplan git-bundle seed for a
+  // local repo) routinely exceed 10MB, so the body was truncated → req.formData()
+  // threw → 400 "multipart/form-data body required" → the CLI's teleport failed
+  // with the generic "ultraplan: session creation failed". Raise it to the
+  // endpoint's own cap (MAX_BUNDLE_BYTES = 200MB in app/api/v1/files/route.ts)
+  // so real project bundles seed the cloud plan session.
+  experimental: {
+    proxyClientMaxBodySize: "200mb",
+  },
 };
 
 export default nextConfig;
