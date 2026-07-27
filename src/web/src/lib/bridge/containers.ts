@@ -542,9 +542,8 @@ export async function launchContainerSession(
     await configureGitProxy();
     if (opts.bundlePath) {
       // Bundle-mode seed (local-only repo): clone the bind-mounted bundle.
-      // MVP = committed history only; the bundle's refs/seed/stash WIP ref is
-      // NOT applied. There is no origin remote a push could target — outcomes
-      // stay in-container.
+      // There is no origin remote a push could target — outcomes stay
+      // in-container.
       //
       // Squashed-tier bundles carry ONLY refs/seed/root (no refs/heads/*, no
       // HEAD), so a plain `git clone` exits 0 with "remote HEAD refers to
@@ -553,6 +552,17 @@ export async function launchContainerSession(
       // if the workspace is still empty, exit non-zero with the message on
       // stderr so the step machinery emits the ✗ event and tears down like a
       // failed clone (never a lying ✓ "Seeded from bundle" over nothing).
+      //
+      // WIP overlay: the CLI packs uncommitted (tracked) changes as a
+      // stash-format commit at refs/seed/stash (gitBundle.ts: `git stash
+      // create` → update-ref → bundle). After a clean clone the base HEAD
+      // matches, so `git stash apply` reconstitutes them as working-tree edits —
+      // the container plans against the caller's actual in-progress state, not
+      // just the last commit. Best-effort: absent on no-WIP repos and
+      // squashed-tier bundles (fetch fails → no-op; the squashed tier already
+      // bakes WIP into refs/seed/root), and a failed apply never fails the seed
+      // (committed history is the guarantee, WIP is a bonus). Untracked/new
+      // files are NOT captured — `git stash create` semantics, matches upstream.
       // Single sh -c so clone + fallback + verify share one exit status.
       const seedCmd = [
         `git clone /jarvis-seed.bundle ${shq(workdir)} || true`,
@@ -561,6 +571,10 @@ export async function launchContainerSession(
         `  git -C ${shq(workdir)} fetch -q /jarvis-seed.bundle 'refs/seed/root' && git -C ${shq(workdir)} checkout -q FETCH_HEAD`,
         `fi`,
         `git -C ${shq(workdir)} rev-parse --verify -q HEAD >/dev/null 2>&1 || { echo 'bundle seed produced an empty workspace' >&2; exit 1; }`,
+        // Best-effort WIP overlay (see comment above). The `|| true` keeps this
+        // from ever flipping the seed's exit code — committed history already
+        // verified above; the stash is a bonus.
+        `git -C ${shq(workdir)} fetch -q /jarvis-seed.bundle 'refs/seed/stash' 2>/dev/null && git -C ${shq(workdir)} stash apply -q FETCH_HEAD 2>/dev/null || true`,
       ].join("\n");
       await exec(["exec", name, "sh", "-c", seedCmd]);
       return;
