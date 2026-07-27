@@ -12,7 +12,6 @@ import { logForDebugging } from '../utils/debug.js';
 import { errorMessage } from '../utils/errors.js';
 import { logError } from '../utils/log.js';
 import { enqueuePendingNotification } from '../utils/messageQueueManager.js';
-import { ALL_MODEL_CONFIGS } from '../utils/model/configs.js';
 import { updateTaskState } from '../utils/task/framework.js';
 import { archiveRemoteSession, teleportToRemote } from '../utils/teleport.js';
 import { pollForApprovedExitPlanMode, UltraplanPollError } from '../utils/ultraplan/ccrSession.js';
@@ -30,7 +29,8 @@ export const CCR_TERMS_URL = '';
 // load: the GrowthBook cache is empty at import and `/config` Gates can flip
 // it between invocations.
 function getUltraplanModel(): string {
-  return getFeatureValue_CACHED_MAY_BE_STALE('tengu_ultraplan_model', ALL_MODEL_CONFIGS.opus46.firstParty);
+  // Must be a key in the web MODELS_META registry: the remote container looks the id up there, and an unknown id (e.g. opus46's 'claude-opus-4-6') silently falls back to deepseek-v4-pro.
+  return getFeatureValue_CACHED_MAY_BE_STALE('tengu_ultraplan_model', 'claude-opus-4-8');
 }
 
 // prompt.txt is wrapped in <system-reminder> so the CCR browser hides
