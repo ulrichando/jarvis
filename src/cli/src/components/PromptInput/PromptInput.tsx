@@ -2054,6 +2054,11 @@ function PromptInput({
     rows
   } = useTerminalSize();
   const textInputColumns = columns - 3 - companionReservedColumns(columns, companionSpeaking);
+  // Full-width dividers (the swarm/agent banner rules) must stop before the
+  // companion sprite too, or they overrun into it — the input already reserves
+  // this. companionReservedColumns is 0 when the buddy is off/narrow/muted, so
+  // the rules stay full-width (upstream behavior) in that case.
+  const bannerColumns = columns - companionReservedColumns(columns, companionSpeaking);
 
   // POC: click-to-position-cursor. Mouse tracking is only enabled inside
   // <AlternateScreen>, so this is dormant in the normal main-screen REPL.
@@ -2319,13 +2324,13 @@ function PromptInput({
       {swarmBanner ? <>
           <Text color={swarmBanner.bgColor}>
             {swarmBanner.text ? <>
-                {'─'.repeat(Math.max(0, columns - stringWidth(swarmBanner.text) - 4))}
+                {'─'.repeat(Math.max(0, bannerColumns - stringWidth(swarmBanner.text) - 4))}
                 <Text backgroundColor={swarmBanner.bgColor} color="inverseText">
                   {' '}
                   {swarmBanner.text}{' '}
                 </Text>
                 {'──'}
-              </> : '─'.repeat(columns)}
+              </> : '─'.repeat(Math.max(0, bannerColumns))}
           </Text>
           <Box flexDirection="row" width="100%">
             <PromptInputModeIndicator mode={mode} isLoading={isLoading} viewingAgentName={viewingAgentName} viewingAgentColor={viewingAgentColor} standaloneAgentColor={validStandaloneAgentColor} />
@@ -2333,7 +2338,7 @@ function PromptInput({
               {textInputElement}
             </Box>
           </Box>
-          <Text color={swarmBanner.bgColor}>{'─'.repeat(columns)}</Text>
+          <Text color={swarmBanner.bgColor}>{'─'.repeat(Math.max(0, bannerColumns))}</Text>
         </> : <Box flexDirection="row" alignItems="flex-start" justifyContent="flex-start" borderColor={getBorderColor()} borderStyle="round" borderLeft={false} borderRight={false} borderBottom width="100%" borderText={buildBorderText(showFastIcon ?? false, showFastIconHint, fastModeCooldown)}>
           <PromptInputModeIndicator mode={mode} isLoading={isLoading} viewingAgentName={viewingAgentName} viewingAgentColor={viewingAgentColor} standaloneAgentColor={validStandaloneAgentColor} />
           <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
