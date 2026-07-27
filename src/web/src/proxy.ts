@@ -151,6 +151,11 @@ const SELF_AUTH_POST_PATTERNS: RegExp[] = [
   // 401s at the gate.
   /^\/api\/v1\/sessions$/,
   /^\/api\/v1\/sessions\/[^/]+\/archive$/,
+  // Seed-bundle upload (bundle-mode teleport/ultraplan from a local-only
+  // repo). The handler self-auths exactly like POST /api/v1/sessions above
+  // (resolveBridgeToken / isSharedLocalToken); POST-only — the route has no
+  // other methods.
+  /^\/api\/v1\/files$/,
   // The REPL bridge's v1 path posts its session create to the BRIDGE base
   // (initReplBridge baseUrl = JARVIS_BRIDGE_BASE_URL → /api/bridge/v1/sessions),
   // not the CCR base. POST-only: the same path's GET is the web UI's session

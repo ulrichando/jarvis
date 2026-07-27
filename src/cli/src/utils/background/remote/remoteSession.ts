@@ -57,12 +57,16 @@ export async function checkBackgroundRemoteSessionEligibility({
 
   // JARVIS mode (JARVIS_CCR_BASE_URL): the self-hosted jarvis-web CCR backend
   // runs each session in a container. With a git repo it clones via the git
-  // source (teleport.tsx); WITHOUT one it runs scratch (ultraplan / research /
-  // remote-control tasks that need no codebase). So none of the Anthropic-cloud
-  // preconditions apply (claude.ai login, Anthropic env API, Claude GitHub app)
-  // and — unlike the old bundle-source assumption — a git repo is NOT required.
-  // Only the policy gate above stands. (Requiring a git repo previously blocked
-  // repo-less tasks launched from a non-git dir like /tmp — 2026-07-09.)
+  // source (teleport.tsx); with JARVIS_CCR_ENABLE_BUNDLE=1 + a local-only repo
+  // it seeds from an uploaded git bundle (teleport.tsx bundleSeedGateOn);
+  // WITHOUT either it runs scratch (ultraplan / research / remote-control
+  // tasks that need no codebase). So none of the Anthropic-cloud preconditions
+  // apply (claude.ai login, Anthropic env API, Claude GitHub app) and a git
+  // repo is NOT required — eligibility here greenlights a SESSION, not a
+  // bundle; when the bundle env is off, teleport just falls back to git-source
+  // or scratch. Only the policy gate above stands. (Requiring a git repo
+  // previously blocked repo-less tasks launched from a non-git dir like /tmp
+  // — 2026-07-09.)
   if (process.env.JARVIS_CCR_BASE_URL) {
     return errors
   }
@@ -82,13 +86,22 @@ export async function checkBackgroundRemoteSessionEligibility({
   }
 
   // When bundle seeding is on, in-git-repo is enough — CCR can seed from
-  // a local bundle. No GitHub remote or app needed. Same gate as
-  // teleport.tsx bundleSeedGateOn.
+  // a local bundle. No GitHub remote or app needed. Same gate STRUCTURE as
+  // teleport.tsx bundleSeedGateOn (jarvis mode gates purely on
+  // JARVIS_CCR_ENABLE_BUNDLE; stock mode keeps the upstream disjunction and
+  // JARVIS_CCR_ENABLE_BUNDLE has NO effect there — never bundle a private
+  // repo to Anthropic's cloud from a stock config). The JARVIS-mode early
+  // return above means the jarvis arm only matters if that return ever
+  // changes, but the eligibility precondition and the actual teleport
+  // attempt must agree.
+  const inJarvis = !!process.env.JARVIS_CCR_BASE_URL
   const bundleSeedGateOn =
     !skipBundle &&
     (isEnvTruthy(process.env.CCR_FORCE_BUNDLE) ||
-      isEnvTruthy(process.env.CCR_ENABLE_BUNDLE) ||
-      (await checkGate_CACHED_OR_BLOCKING('tengu_ccr_bundle_seed_enabled')))
+      (inJarvis
+        ? isEnvTruthy(process.env.JARVIS_CCR_ENABLE_BUNDLE)
+        : isEnvTruthy(process.env.CCR_ENABLE_BUNDLE) ||
+          (await checkGate_CACHED_OR_BLOCKING('tengu_ccr_bundle_seed_enabled'))))
 
   if (!checkIsInGitRepo()) {
     errors.push({ type: 'not_in_git_repo' })

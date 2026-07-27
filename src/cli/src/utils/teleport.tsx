@@ -972,19 +972,40 @@ export async function teleportToRemote(options: {
     // somehow accepted), fall through optimistically; if the backend
     // rejects the host, bundle next time.
     let ghViable = false;
-    let sourceReason: 'github_preflight_ok' | 'ghes_optimistic' | 'github_preflight_failed' | 'no_github_remote' | 'forced_bundle' | 'no_git_at_all' = 'no_git_at_all';
+    let sourceReason: 'github_preflight_ok' | 'ghes_optimistic' | 'github_preflight_failed' | 'jarvis_proxy_clone' | 'no_github_remote' | 'forced_bundle' | 'no_git_at_all' = 'no_git_at_all';
 
     // gitRoot gates both bundle creation and the gate check itself — no
     // point awaiting GrowthBook when there's nothing to bundle.
     const gitRoot = findGitRoot(getCwd());
     const forceBundle = !options.skipBundle && isEnvTruthy(process.env.CCR_FORCE_BUNDLE);
-    // JARVIS mode: never bundle-seed. The jarvis-web CCR backend has no Files
-    // API (the bundle upload targets Anthropic's cloud regardless), and its
-    // container engine seeds from a GitHub clone (git source below) or runs
-    // repo-less. So a GitHub repo → git source; no repo → empty sandbox.
-    const bundleSeedGateOn = !process.env.JARVIS_CCR_BASE_URL && !options.skipBundle && gitRoot !== null && (isEnvTruthy(process.env.CCR_ENABLE_BUNDLE) || (await checkGate_CACHED_OR_BLOCKING('tengu_ccr_bundle_seed_enabled')));
+    // JARVIS mode (JARVIS_CCR_BASE_URL set): bundle-seeding is opt-in via
+    // JARVIS_CCR_ENABLE_BUNDLE=1 and gates on NOTHING else — jarvis-web has a
+    // Files API (POST ${JARVIS_CCR_BASE_URL}/v1/files — the upload targets
+    // BASE_API_URL, which oauth.ts repoints at the self-hosted backend) and
+    // its container engine clones from the uploaded bundle
+    // (session_context.seed_bundle_file_id → launchContainerSession
+    // bundlePath) — so local-only repos teleport like stock Claude Code.
+    // Unset (default): a git remote → git source; no repo → empty sandbox.
+    // STOCK mode keeps the upstream gate (CCR_ENABLE_BUNDLE or GrowthBook);
+    // JARVIS_CCR_ENABLE_BUNDLE deliberately has NO effect in stock mode — it
+    // must never route a private repo to Anthropic's cloud Files API.
+    const inJarvis = !!process.env.JARVIS_CCR_BASE_URL;
+    const bundleSeedGateOn = !options.skipBundle && gitRoot !== null && (
+      inJarvis
+        ? isEnvTruthy(process.env.JARVIS_CCR_ENABLE_BUNDLE)
+        : (isEnvTruthy(process.env.CCR_ENABLE_BUNDLE) || (await checkGate_CACHED_OR_BLOCKING('tengu_ccr_bundle_seed_enabled')))
+    );
     if (repoInfo && !forceBundle) {
-      if (repoInfo.host === 'github.com') {
+      if (inJarvis) {
+        // JARVIS mode: checkGithubAppInstalled ALWAYS fails (no claude.ai
+        // OAuth), but jarvis-web clones through its own scoped git proxy —
+        // the GitHub App is irrelevant. Any detected remote is git-viable,
+        // so with the bundle gate on, bundle mode fires ONLY for local-only
+        // repos (repoInfo null, gitRoot set) and never hijacks a repo that
+        // has a remote (which would lose push/PR/outcome branches).
+        ghViable = true;
+        sourceReason = 'jarvis_proxy_clone';
+      } else if (repoInfo.host === 'github.com') {
         ghViable = await checkGithubAppInstalled(repoInfo.owner, repoInfo.name, signal);
         sourceReason = ghViable ? 'github_preflight_ok' : 'github_preflight_failed';
       } else {
