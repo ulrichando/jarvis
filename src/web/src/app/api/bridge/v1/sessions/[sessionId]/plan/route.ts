@@ -60,7 +60,8 @@ export async function GET(
 // the worker delivers to the agent, with the exact markers the ultraplan poller
 // scans for (ccrSession.ts extractApprovedPlan / extractTeleportPlan):
 //   approve → is_error:false, "## Approved Plan:\n<plan>" (+ edited variant)
-//   reject  → is_error:true  (no sentinel → poller iterates)
+//   reject  → is_error:true  (no sentinel → poller iterates; optional user
+//             feedback appended so the agent revises with the user's notes)
 //   local   → is_error:true, "__ULTRAPLAN_TELEPORT_LOCAL__\n<plan>" (run locally)
 export async function POST(
   req: Request,
@@ -73,6 +74,7 @@ export async function POST(
     decision?: string;
     plan?: string;
     edited?: boolean;
+    feedback?: string;
   } | null;
   const decision = body?.decision;
   if (decision !== "approve" && decision !== "reject" && decision !== "local") {
@@ -91,7 +93,18 @@ export async function POST(
     }
     const plan = typeof body?.plan === "string" ? body.plan : "";
     const edited = body?.edited === true;
-    const { isError, content } = buildPlanDecision(decision, plan, edited);
+    // Reject-only refine feedback: threaded into the rejection tool_result so
+    // the agent revises WITH the user's notes instead of re-planning blind.
+    const feedback =
+      decision === "reject" && typeof body?.feedback === "string"
+        ? body.feedback
+        : undefined;
+    const { isError, content } = buildPlanDecision(
+      decision,
+      plan,
+      edited,
+      feedback,
+    );
 
     // Container sessions gate ExitPlanMode through a `can_use_tool` permission
     // the worker/events route recorded (ultraplan_permission) and deliberately

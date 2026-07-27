@@ -12,12 +12,18 @@ export type PlanDecision = "approve" | "reject" | "local";
  * a pending ExitPlanMode call:
  *   approve → is_error:false, "## Approved Plan:\n<plan>" (+ "(edited by user)")
  *   local   → is_error:true,  "__ULTRAPLAN_TELEPORT_LOCAL__\n<plan>" (run locally)
- *   reject  → is_error:true,  no sentinel (the poller iterates)
+ *   reject  → is_error:true,  no sentinel (the poller iterates); optional user
+ *             feedback is appended so the agent revises WITH the user's notes.
+ *             With empty/absent feedback the string stays EXACTLY
+ *             "Plan rejected by user." — and it must never contain the approve
+ *             marker or teleport sentinel, since the poller classifies reject
+ *             by their absence.
  */
 export function buildPlanDecision(
   decision: PlanDecision,
   plan: string,
   edited: boolean,
+  feedback?: string,
 ): { isError: boolean; content: string } {
   if (decision === "approve") {
     const marker = edited
@@ -28,7 +34,22 @@ export function buildPlanDecision(
   if (decision === "local") {
     return { isError: true, content: `__ULTRAPLAN_TELEPORT_LOCAL__\n${plan}` };
   }
-  return { isError: true, content: "Plan rejected by user." };
+  // Feedback is the first free-text channel into a reject tool_result. Neutralize
+  // the poller's classification markers if the user typed them, so a rejection can
+  // never mis-classify as teleport (extractTeleportPlan scans the whole content
+  // for the sentinel) or approve.
+  const note = feedback
+    ?.trim()
+    .split("__ULTRAPLAN_TELEPORT_LOCAL__")
+    .join("[marker removed]")
+    .split("## Approved Plan:")
+    .join("## Approved-Plan:");
+  return {
+    isError: true,
+    content: note
+      ? `Plan rejected by user.\n\nFeedback to address:\n${note}`
+      : "Plan rejected by user.",
+  };
 }
 
 /**
