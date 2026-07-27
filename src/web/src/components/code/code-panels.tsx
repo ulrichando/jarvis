@@ -633,6 +633,7 @@ function PlanPanel({ sessionId }: { sessionId?: string }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [decided, setDecided] = useState<string>("");
+  const [feedback, setFeedback] = useState<string>("");
 
   useEffect(() => {
     if (!sessionId) return;
@@ -673,6 +674,10 @@ function PlanPanel({ sessionId }: { sessionId?: string }) {
           decision,
           plan: draft,
           edited: decision === "approve" && draft.trim() !== plan.trim(),
+          // Reject-only refine feedback — the agent revises with these notes.
+          ...(decision === "reject" && feedback.trim()
+            ? { feedback: feedback.trim() }
+            : {}),
         }),
       });
       setDecided(
@@ -717,31 +722,41 @@ function PlanPanel({ sessionId }: { sessionId?: string }) {
         {decided ? (
           <span className="text-[12px] text-foreground/70">{decided}</span>
         ) : (
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => decide("approve")}
-              className="rounded-md bg-foreground px-2.5 py-1 text-[12px] font-medium text-background disabled:opacity-50"
-            >
-              {draft.trim() !== plan.trim() ? "Approve edited" : "Approve"}
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => decide("local")}
-              className="rounded-md border border-border px-2.5 py-1 text-[12px] disabled:opacity-50"
-            >
-              Run locally
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => decide("reject")}
-              className="rounded-md border border-border px-2.5 py-1 text-[12px] text-foreground/70 disabled:opacity-50"
-            >
-              Reject
-            </button>
+          <div className="flex flex-col gap-2">
+            <textarea
+              value={feedback}
+              onChange={(e) => setFeedback(e.target.value)}
+              rows={2}
+              spellCheck={false}
+              placeholder="Optional: what to change before rejecting…"
+              className="w-full resize-none rounded border border-border bg-background px-2 py-1 font-sans text-[11px] text-foreground outline-none focus:border-orange-500/60"
+            />
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => decide("approve")}
+                className="rounded-md bg-foreground px-2.5 py-1 text-[12px] font-medium text-background disabled:opacity-50"
+              >
+                {draft.trim() !== plan.trim() ? "Approve edited" : "Approve"}
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => decide("local")}
+                className="rounded-md border border-border px-2.5 py-1 text-[12px] disabled:opacity-50"
+              >
+                Run locally
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => decide("reject")}
+                className="rounded-md border border-border px-2.5 py-1 text-[12px] text-foreground/70 disabled:opacity-50"
+              >
+                Reject
+              </button>
+            </div>
           </div>
         )}
       </div>
