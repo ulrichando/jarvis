@@ -29,8 +29,11 @@ export const CCR_TERMS_URL = '';
 // load: the GrowthBook cache is empty at import and `/config` Gates can flip
 // it between invocations.
 function getUltraplanModel(): string {
-  // Must be a key in the web MODELS_META registry: the remote container looks the id up there, and an unknown id (e.g. opus46's 'claude-opus-4-6') silently falls back to deepseek-v4-pro.
-  return getFeatureValue_CACHED_MAY_BE_STALE('tengu_ultraplan_model', 'claude-opus-4-8');
+  // JARVIS runs the plan flow on DeepSeek by default — Claude (esp. Opus) is
+  // expensive and JARVIS is DeepSeek-first. Must be a key in the web MODELS_META
+  // registry (the remote container resolves the id there); an unknown id silently
+  // falls back to deepseek-v4-pro anyway, so request it explicitly — no mismatch.
+  return getFeatureValue_CACHED_MAY_BE_STALE('tengu_ultraplan_model', 'deepseek-v4-pro');
 }
 
 // prompt.txt is wrapped in <system-reminder> so the CCR browser hides
