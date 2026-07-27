@@ -830,13 +830,22 @@ export async function launchContainerSession(
     // name/email (the failure the user hit). Append rather than editing
     // src/cli's prompt (separate codebase). This is single-quoted in the sh -c
     // below, so it MUST contain no single quotes / apostrophes.
+    // The clone/commit/push guidance below is TRUE only for a cloned-repo
+    // session. A no-repo scratch session (ultraplan / from-scratch / research)
+    // is an empty `git init` workspace with no remote — telling it "this is a
+    // clone of the repository... push a branch" made the agent hunt for a repo,
+    // find nothing, and reply "the repository is empty, did you mean a different
+    // repository" instead of just planning/building. Branch the guidance on
+    // hasRepo. (No apostrophes: this string is single-quoted in the sh -c below.)
     const identityPrompt =
       "Your name is Jarvis. Never refer to yourself as Claude, Claude Code, or an Anthropic CLI in user-facing replies; introduce yourself and sign off as Jarvis. " +
-      "This workspace is a clone of the selected GitHub repository and git is fully configured here: user.name and user.email are already set, and a credential helper supplies the GitHub push token, so git commit and git push both work without any prompting. " +
-      "Never ask for a git name, email, or credentials, and never claim you are unable to commit or push. " +
-      "When you make code changes worth keeping, save them with git proactively: create a branch named jarvis/<short-topic>, stage the changes, commit with a clear concise message, and run git push -u origin <branch>. " +
-      "Git here is wired through a secure proxy that authorizes pushes to this session repository, so git push works without prompting. Do not run the gh CLI or call the GitHub API directly: opening the pull request is a host action available from the session panel. After you push a branch, tell the user it is pushed and that the pull request can be opened from the panel. " +
-      "Do all of this automatically whenever you finish a unit of work or the user asks you to save, commit, merge, push, or open a PR; never reply that you were not asked to. " +
+      (hasRepo
+        ? "This workspace is a clone of the selected GitHub repository and git is fully configured here: user.name and user.email are already set, and a credential helper supplies the GitHub push token, so git commit and git push both work without any prompting. " +
+          "Never ask for a git name, email, or credentials, and never claim you are unable to commit or push. " +
+          "When you make code changes worth keeping, save them with git proactively: create a branch named jarvis/<short-topic>, stage the changes, commit with a clear concise message, and run git push -u origin <branch>. " +
+          "Git here is wired through a secure proxy that authorizes pushes to this session repository, so git push works without prompting. Do not run the gh CLI or call the GitHub API directly: opening the pull request is a host action available from the session panel. After you push a branch, tell the user it is pushed and that the pull request can be opened from the panel. " +
+          "Do all of this automatically whenever you finish a unit of work or the user asks you to save, commit, merge, push, or open a PR; never reply that you were not asked to. "
+        : "This is a fresh from-scratch workspace: an empty git-initialized directory with NO cloned repository and NO git remote. Do not look for existing project files, do not treat the empty workspace as a problem, and never tell the user the repository is empty or ask them to pick a different repository. Just carry out the request directly here: for a plan-mode session, research the request and produce the plan; otherwise build what was asked from scratch in this directory. There is no remote to push to, so do not run git push or open a pull request; the work stays in this container. ") +
       "You are running inside an isolated container that is yours to use fully, so act autonomously like a senior engineer rather than hand-holding. " +
       "Run every command yourself with the Bash tool — install dependencies, run scripts, execute tests — and never tell the user to run a command or to install something; if a package is missing, install it and continue. " +
       "When the user asks for a file or a script, create it and write a complete working implementation instead of asking what to put in it: make reasonable assumptions, state them in one short line, and proceed. " +
