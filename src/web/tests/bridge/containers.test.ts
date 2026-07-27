@@ -229,6 +229,54 @@ describe('launchContainerSession', () => {
     expect(workerCmd).not.toContain('empty git-initialized directory')
   })
 
+  test('a bundle-seeded (local project) session gets the investigate-the-project prompt, not from-scratch', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    const { calls, exec } = fakeDocker()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: '', // local bundle: no GitHub remote, so hasRepo is false...
+      bundlePath: '/srv/jarvis/workspaces/.bundles/deadbeef-0000-0000-0000-000000000000.bundle',
+      baseUrl: 'http://127.0.0.1:3000',
+      exec,
+    })
+    const workerCmd = calls
+      .map((c) => c.join(' '))
+      .find((c) => c.includes('cli.tsx'))!
+    const prompt = workerCmd.match(/--append-system-prompt '([^']*)'/)![1]
+    // ...but the bundle branch wins over from-scratch: the real project IS here,
+    // so the agent must investigate it, NOT treat the workspace as empty.
+    expect(prompt).toContain('uploaded snapshot of the local repository')
+    expect(prompt).toContain('Investigate them first')
+    expect(prompt).not.toContain('empty git-initialized directory')
+    expect(prompt).not.toContain('clone of the selected GitHub repository')
+    // final clause captured => no apostrophe truncated the single-quoted sh -c
+    expect(prompt).toContain('report what you did')
+  })
+
+  test('the container CLI launches with the Explore/Plan sub-agent feature flag (else plan mode throws)', async () => {
+    const sessionId = makeSession()
+    const store = getStore()
+    const { calls, exec } = fakeDocker()
+    await launchContainerSession(store, {
+      sessionId,
+      repoFullName: 'owner/demo',
+      baseUrl: 'http://127.0.0.1:3000',
+      exec,
+    })
+    const workerCmd = calls
+      .map((c) => c.join(' '))
+      .find((c) => c.includes('cli.tsx'))!
+    // The container bypasses start.sh, so feature() macros compile false unless
+    // passed here; without this the 5-phase plan message orders Explore/Plan
+    // sub-agents that were never registered and AgentTool throws "not found".
+    expect(workerCmd).toContain('--feature=BUILTIN_EXPLORE_PLAN_AGENTS')
+    // The flag is a bun arg: it must sit BEFORE the entrypoint or bun won't see it.
+    expect(workerCmd.indexOf('--feature=BUILTIN_EXPLORE_PLAN_AGENTS')).toBeLessThan(
+      workerCmd.indexOf('cli.tsx'),
+    )
+  })
+
   test('configures a push-capable git identity via the proxy cap token (no real PAT, no GH_TOKEN)', async () => {
     const sessionId = makeSession()
     const store = getStore()

@@ -889,9 +889,16 @@ export async function launchContainerSession(
     // find nothing, and reply "the repository is empty, did you mean a different
     // repository" instead of just planning/building. Branch the guidance on
     // hasRepo. (No apostrophes: this string is single-quoted in the sh -c below.)
+    // A bundle-seeded session (opts.bundlePath) is a third case: the project
+    // WAS cloned in from the uploaded snapshot of a local repo, so the
+    // from-scratch "do not look for existing project files" guidance is wrong
+    // there — point the agent at the checked-out files instead (still no
+    // remote to push to).
     const identityPrompt =
       "Your name is Jarvis. Never refer to yourself as Claude, Claude Code, or an Anthropic CLI in user-facing replies; introduce yourself and sign off as Jarvis. " +
-      (hasRepo
+      (opts.bundlePath
+        ? "This workspace contains the project to work on, checked out from an uploaded snapshot of the local repository, so the real files and full git history are present here. Investigate them first: read the existing files to understand the project before planning or building, and never treat the workspace as empty or ask the user to pick a repository. There is no git remote to push to, so do not run git push or open a pull request; the work stays in this container. "
+        : hasRepo
         ? "This workspace is a clone of the selected GitHub repository and git is fully configured here: user.name and user.email are already set, and a credential helper supplies the GitHub push token, so git commit and git push both work without any prompting. " +
           "Never ask for a git name, email, or credentials, and never claim you are unable to commit or push. " +
           "When you make code changes worth keeping, save them with git proactively: create a branch named jarvis/<short-topic>, stage the changes, commit with a clear concise message, and run git push -u origin <branch>. " +
@@ -907,7 +914,23 @@ export async function launchContainerSession(
     // /tmp/jarvis-cli.log). Vendored bun avoids version skew with the
     // image's bun; the MACRO runtime fallback in cli.tsx makes the direct
     // entrypoint launch safe without run-cli.mjs's --define args.
-    const workerCmd = `/opt/jarvis-cli/vendor/bun/linux-x64/bun /opt/jarvis-cli/src/entrypoints/cli.tsx --print --sdk-url '${sdkUrl}' --session-id '${sessionId}'${modelArg}${mcpArg} --append-system-prompt '${identityPrompt}' --input-format stream-json --output-format stream-json --replay-user-messages --include-partial-messages >> /tmp/jarvis-cli.log 2>&1`;
+    //
+    // Feature flags: this launch bypasses start.sh (bin/jarvis), which is the
+    // only place the CLI's `--feature=` bun flags live — a bare bun invocation
+    // compiles every feature() macro false. The plan-mode system message still
+    // unconditionally orders Explore/Plan sub-agents, but builtInAgents.ts
+    // gates their registration on feature('BUILTIN_EXPLORE_PLAN_AGENTS'), so
+    // without the flag AgentTool throws "Agent type 'Explore' not found" and
+    // /ultraplan cannot run its multi-agent plan flow. Pass the flag as a bun
+    // arg BEFORE the entrypoint (the position start.sh uses). Keep this set
+    // minimal: the worker is a headless --print process, so interactive/daemon
+    // flags (VOICE_MODE, BRIDGE_MODE, MONITOR_TOOL, UDS_INBOX, …) stay off —
+    // some gated requires can hang boot (.claude/rules/cli.md). FORK_SUBAGENT
+    // (disabled for non-interactive sessions), ULTRAPLAN (launcher-side UI
+    // only), ULTRATHINK (keyword never present here) and VERIFICATION_AGENT
+    // (GrowthBook-default-off) are deliberately omitted as no-ops here.
+    const planFeatures = "--feature=BUILTIN_EXPLORE_PLAN_AGENTS";
+    const workerCmd = `/opt/jarvis-cli/vendor/bun/linux-x64/bun ${planFeatures} /opt/jarvis-cli/src/entrypoints/cli.tsx --print --sdk-url '${sdkUrl}' --session-id '${sessionId}'${modelArg}${mcpArg} --append-system-prompt '${identityPrompt}' --input-format stream-json --output-format stream-json --replay-user-messages --include-partial-messages >> /tmp/jarvis-cli.log 2>&1`;
     // Persist the exact launch spec so a worker that later dies (e.g. a
     // web-server restart drops its SSE connection, or a crash) can be re-exec'd
     // into this still-running container on reopen — see resumeContainerWorker.
