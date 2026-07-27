@@ -292,6 +292,14 @@ export async function launchContainerSession(
     installationToken?: string;
     /** The App bot's login — the committer identity for external bot jobs. */
     botLogin?: string;
+    /** Host path of an uploaded git seed bundle (bundle-mode teleport from a
+     *  local-only repo — lib/bridge/bundles.ts). Bind-mounted read-only at
+     *  /jarvis-seed.bundle and `git clone`d into the workdir instead of a
+     *  git-proxy clone (repoFullName is '' in this mode). MUST resolve on the
+     *  HOST: the docker daemon is the host's, so only paths under a
+     *  passthrough mount (the workspaces root) work on the containerized
+     *  deploy. */
+    bundlePath?: string;
   },
 ): Promise<void> {
   const exec = opts.exec ?? realDockerExec;
@@ -455,6 +463,9 @@ export async function launchContainerSession(
       ...netArgs,
       "-v",
       `${cliMount}:/opt/jarvis-cli:ro`,
+      // Seed bundle (bundle-mode teleport): mount the uploaded bundle file
+      // read-only; the clone step below seeds the workdir from it.
+      ...(opts.bundlePath ? ["-v", `${opts.bundlePath}:/jarvis-seed.bundle:ro`] : []),
       runImage,
       "sleep",
       "infinity",
@@ -523,10 +534,37 @@ export async function launchContainerSession(
   // 2. Cloned repository (or, on a cache hit, freshen the baked-in checkout).
   // All git goes through the per-session proxy URL — no token in any argv.
   await step(
-    !hasRepo ? "Prepared workspace" : cacheHit ? "Restored repository" : "Cloned repository",
+    opts.bundlePath
+      ? "Seeded from bundle"
+      : !hasRepo ? "Prepared workspace" : cacheHit ? "Restored repository" : "Cloned repository",
     async () => {
     // Write the cap credential FIRST so clone/fetch through the proxy can auth.
     await configureGitProxy();
+    if (opts.bundlePath) {
+      // Bundle-mode seed (local-only repo): clone the bind-mounted bundle.
+      // MVP = committed history only; the bundle's refs/seed/stash WIP ref is
+      // NOT applied. There is no origin remote a push could target — outcomes
+      // stay in-container.
+      //
+      // Squashed-tier bundles carry ONLY refs/seed/root (no refs/heads/*, no
+      // HEAD), so a plain `git clone` exits 0 with "remote HEAD refers to
+      // nonexistent ref" and leaves an EMPTY worktree. Fallback: fetch
+      // refs/seed/root and check it out detached. Then VERIFY HEAD resolves —
+      // if the workspace is still empty, exit non-zero with the message on
+      // stderr so the step machinery emits the ✗ event and tears down like a
+      // failed clone (never a lying ✓ "Seeded from bundle" over nothing).
+      // Single sh -c so clone + fallback + verify share one exit status.
+      const seedCmd = [
+        `git clone /jarvis-seed.bundle ${shq(workdir)} || true`,
+        `if ! git -C ${shq(workdir)} rev-parse --verify -q HEAD >/dev/null 2>&1; then`,
+        `  git init -q ${shq(workdir)} 2>/dev/null || true`,
+        `  git -C ${shq(workdir)} fetch -q /jarvis-seed.bundle 'refs/seed/root' && git -C ${shq(workdir)} checkout -q FETCH_HEAD`,
+        `fi`,
+        `git -C ${shq(workdir)} rev-parse --verify -q HEAD >/dev/null 2>&1 || { echo 'bundle seed produced an empty workspace' >&2; exit 1; }`,
+      ].join("\n");
+      await exec(["exec", name, "sh", "-c", seedCmd]);
+      return;
+    }
     if (!hasRepo) {
       // No repo to clone. Create an empty git workdir so the CLI's workspace
       // trust check + any git-dependent tooling still work (the agent just

@@ -15,6 +15,7 @@ import {
 import { extractBearer, isSharedLocalToken } from '@/lib/bridge/auth'
 import { apiBaseFromRequest, dispatchSessionWork } from '@/lib/bridge/dispatch'
 import { launchContainerSession, validRepoFullName } from '@/lib/bridge/containers'
+import { bundlePath } from '@/lib/bridge/bundles'
 import { bridgeError } from '@/lib/bridge/errors'
 import { ccrSessionStatus } from '@/lib/bridge/ccrCompat'
 
@@ -71,6 +72,22 @@ export function repoFromContext(ctx: Record<string, unknown> | undefined): strin
   return m && validRepoFullName(`${m[1]}/${m[2]}`) ? `${m[1]}/${m[2]}` : ''
 }
 
+// Seed bundle referenced by session_context.seed_bundle_file_id (bundle-mode
+// teleport from a local-only repo — the CLI uploaded it via POST /api/v1/files).
+// Distinguishes "no bundle requested" (id absent — normal repo/scratch session)
+// from "bundle requested but unresolvable" (id present but invalid/missing/
+// traversal — bundlePath() null): the caller must 4xx the latter rather than
+// silently launching an empty scratch container for a session that asked to be
+// seeded. In bundle mode the client sends sources: [] so repoFromContext stays
+// '' (no git-proxy clone).
+export function bundleFromContext(
+  ctx: Record<string, unknown> | undefined,
+): { requested: boolean; path: string | null } {
+  const id = ctx?.seed_bundle_file_id
+  if (typeof id !== 'string') return { requested: false, path: null }
+  return { requested: true, path: bundlePath(id) }
+}
+
 // POST /api/v1/sessions — the teleport/ultraplan client creates a remote
 // session. Body: { title?, events?, session_context?, environment_id? }. The
 // initial `events` carry the set_permission_mode control_request (incl.
@@ -122,6 +139,19 @@ export async function POST(req: Request): Promise<NextResponse> {
     if (userId && env?.user_id && userId !== env.user_id) {
       return bridgeError(403, 'forbidden', 'Not your machine')
     }
+    // Bundle-mode seed (local-only repo): resolve the requested bundle BEFORE
+    // creating/launching anything. A session that asked for a bundle but whose
+    // id doesn't resolve (expired/invalid/never uploaded) must fail loudly —
+    // launching an empty scratch container instead would silently run the
+    // task against nothing.
+    const bundleSeed = bundleFromContext(body.session_context as Record<string, unknown> | undefined)
+    if (bundleSeed.requested && bundleSeed.path === null) {
+      return bridgeError(
+        404,
+        'bundle_not_found',
+        'seed_bundle_file_id does not resolve to an uploaded bundle — re-upload via POST /api/v1/files',
+      )
+    }
     const sessionId = randomBytes(8).toString('hex')
     const title =
       typeof body.title === 'string' && body.title.trim()
@@ -139,6 +169,9 @@ export async function POST(req: Request): Promise<NextResponse> {
       // remote tasks with no source run in a scratch container (no clone).
       const { prompt, mode } = parseCcrInitialEvents(body.events)
       const repo = repoFromContext(body.session_context as Record<string, unknown> | undefined)
+      // Bundle-mode seed (resolved + validated above): repo stays '' → hasRepo
+      // false; the container clones from the bind-mounted bundle instead.
+      const bundleSeedPath = bundleSeed.path
       const model =
         typeof (body.session_context as { model?: unknown } | undefined)?.model === 'string'
           ? ((body.session_context as { model?: string }).model as string)
@@ -172,6 +205,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         internalBaseUrl:
           process.env.JARVIS_CODE_INTERNAL_ORIGIN || process.env.GH_APP_WEB_URL,
         model,
+        bundlePath: bundleSeedPath ?? undefined,
       }).catch(() => {
         /* failure surfaces as a ✗ status event; container reaped */
       })
